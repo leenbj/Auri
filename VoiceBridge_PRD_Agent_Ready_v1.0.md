@@ -14,7 +14,7 @@ priority_headsets: ["HUAWEI FreeClip 2", "HUAWEI FreeClip"]
 
 > **交付用途：**供产品、架构、移动端、语音识别、服务端、测试及安全审查 Agent 共同使用。本文既定义“应当做什么”，也规定“什么证据才算做成”。
 >
-> **产品名称：**VoiceBridge 为工作代号，尚未进行商标、域名或应用商店重名核查。
+> **产品名称：**产品规范名称为 **Auri**（见 `GLOSSARY.md`）；VoiceBridge 为原工作代号，本文件名与正文沿用该名，尚未进行商标、域名或应用商店重名核查。术语以 `GLOSSARY.md` 为准，已决事项见 `docs/adr/`。
 >
 > **证据边界：**本文完成了公开网页、官方文档及上游开源仓库调研；未连接用户手机、未实测 FreeClip、未编译三端应用、未验证云服务账号。所有耳机—手机组合的初始状态均为 `NOT_TESTED`。文中的性能数字是建议验收目标，不是实测结果。
 
@@ -105,11 +105,11 @@ Apple 开发者技术支持明确指出，普通音频 API 存在后台激活新
 | 首选交互 | 耳机在系统/官方耳机管理应用中配置为播放/暂停；应用内完成映射校准。 |
 | 默认转录模式 | 本地优先配置；未安装模型时要求选择“下载本地模型”或“授权云端”，不自动上云。 |
 | 第一版转录时机 | 停止录音后自动排队；实时字幕属于后续增强，不是录音控制的前提。 |
-| 默认发送方式 | 转录完成后先预览确认；可按目标 Agent 单独开启自动发送。 |
+| 默认发送方式 | 创建 Destination 时必须显式选择“自动发送”或“预览确认”，不设隐含默认；自动发送的是标记 `review_state=not_reviewed` 的初稿 Revision；新 Revision 默认不自动重发（ADR-009）。 |
 | 默认录音来源 | `bluetooth_only`，第一版不提供自动手机麦克风回退。 |
 | 初始语言 | 普通话为必须；中文夹英文为必须评测；其他语言按模型能力显示。 |
-| 默认文件策略 | 本地保存音频与文本；不自动把原始音频上传到 Agent 网关。 |
-| 单次录音时长 | 建议 30 分钟安全上限，可配置；不是“任意长录音”的承诺。 |
+| 默认文件策略 | 本地保存音频与文本；不自动把原始音频上传到 Agent 网关。转录成功后音频默认保留 30 天再自动删除，可改为“永不删除”或“转录成功后立即删除”，单条可手动删；只对转录已成功的 Recording 计时；删除只影响 Recording，Record 与文本仍在。 |
+| 单次录音时长 | 用户可在设置中手动设定上限，默认 30 分钟，V1 硬上限 120 分钟（放开需 ADR-004 的崩溃恢复与长录音转录证据）；到点前 1 分钟提示，到点自动停止并封存，照常转录与发送，**不自动续录**。 |
 | 本地 ASR 并发 | 默认 1，优先保证新录音不掉帧。 |
 | 私有部署 | 优先支持已有电脑/NAS/服务器上的单用户网关；多用户通过租户隔离设计预留。 |
 | 第一版发布方式 | 先开发者签名/测试分发，再单独完成商店上架准备。 |
@@ -487,6 +487,8 @@ Agent 已读取并另存的内容通常无法由本应用保证彻底回收，�
 
 验收必须包含至少两个不同 MCP 客户端/Agent 宿主。MCP Inspector 可验证协议接口，但不能单独替代真实宿主集成验收。[S31]
 
+已确定的验收宿主：**Hermes（主，Nous Research 的 Hermes Agent）+ Claude Code（第二）**。V1 验收基线为拉取式：Agent 通过 MCP 工具主动领取并确认；网关用 webhook 唤醒 Hermes 属可选增强，按 Destination 单独开启，待 P3 用真实 Hermes 验证后再定是否纳入 V1。Hermes 忽略 MCP 资源变更通知，因此不得依赖资源订阅向其推送。
+
 只会读取工具结果的宿主，不等于能在无用户对话时自动执行。必须在兼容表标明“可手动读取”“支持运行器定时读取”“可事件触发”等能力。
 
 ### 10.4 FR-MCP-004：版本兼容（MUST）
@@ -501,7 +503,7 @@ Agent 已读取并另存的内容通常无法由本应用保证彻底回收，�
 
 远程部署按 MCP 官方授权规范设计 OAuth/资源服务器等兼容方式；受控私有客户端可另设服务凭证模式，但不能宣称任何宿主都支持自定义 bearer token。[S30]
 
-设备上传身份和 Agent 读取身份分离。Agent 的 `tenant_id`、`agent_id` 与作用域必须由认证结果确定，不能信任请求正文中自报的身份。可用作用域示例：`transcripts:read`、`deliveries:claim`、`deliveries:ack`；设备仅获得自己的写入/同步权限。
+设备上传身份和 Agent 读取身份分离。Agent 的 `tenant_id`、`agent_id` 与作用域必须由认证结果确定，不能信任请求正文中自报的身份。可用作用域示例：`records:read`、`deliveries:claim`、`deliveries:ack`；设备获得自己的写入/同步权限，以及管理 Destination 的权限（创建、一次性显示、轮换凭证，须本机生物识别二次确认，见 ADR-008）。V1 每个 Destination 对应一套专属凭证；`tenant_id` 只由认证结果映射得出（ADR-0013）。
 
 Agent 默认无权开启手机麦克风、修改耳机设置、读取所有用户文本或拿到云 ASR 密钥。
 
@@ -578,6 +580,7 @@ ARMED ──START──► ROUTING ──真实输入通过──► RECORDING
 | RECORDING | STOP/有效 TOGGLE | FINALIZING，串行封存。 |
 | FINALIZING | STOP | 幂等 no-op，不能破坏封存。 |
 | FINALIZING | 过时 TOGGLE | 丢弃并记录原因，不自动启动下一段。 |
+| FINALIZING | 明确 START | 忽略并记录原因，不排队；给“忙碌”反馈，封存完成后再次触发才开始。 |
 | 任意 | 权限撤销/系统不允许 | 关闭业务音频闸门，安全清理后进入受阻状态。 |
 
 ### 12.3 转录状态机
@@ -602,14 +605,14 @@ QUEUED
 
 ```text
 文本版本：DRAFT → PUBLISHED → SUPERSEDED / DELETED
-同步任务：PENDING → SENDING → ACKED / RETRY_SCHEDULED / BLOCKED
+同步任务：PENDING → SENDING → STORED / RETRY_SCHEDULED / BLOCKED
 每目标投递：PENDING → LEASED → ACKED
                         ├─暂时失败/租约到期→ PENDING
                         ├─永久拒绝────────→ REJECTED
                         └─撤销/删除────────→ CANCELLED
 ```
 
-`ACKED` 在同步表表示网关已持久化；在投递表表示该目标消费者完成了定义好的确认步骤。界面文字必须避免混淆这两个层次。
+`STORED`（已入库）表示网关已持久化；`LEASED`（已领取）只表示 Agent 取走了投递并持有租约，不表示处理；`ACKED`（已确认，术语 Acknowledged）表示该目标消费者完成了定义好的确认步骤。网关能验证“确认”，验证不了“处理”。界面文字必须避免混淆这些层次。启用 webhook 唤醒的 Destination 另有“已通知”“已接单”，二者都不等于已确认。
 
 ---
 
@@ -635,7 +638,7 @@ QUEUED
 
 ### 13.5 Agent 连接页
 
-网关地址、连接测试、认证与撤销、目标列表、可见项目/工作区、自动发送规则、当前兼容方式和健康状态。连接测试不能偷偷发送用户历史全文；使用无敏感内容的示例测试记录。
+网关地址、连接测试、认证与撤销、目标列表、可见项目/工作区、自动发送规则、当前兼容方式和健康状态。App 只与网关通信，不直连任何 Agent；用户在此添加、编辑、删除 Destination，创建时必须选择“自动发送”或“预览确认”，凭证一次性显示（须过本机生物识别二次确认）并可复制 Hermes 的 MCP 配置片段。V1 只配对一个网关，多网关后置。连接测试不能偷偷发送用户历史全文；使用无敏感内容的示例测试记录。
 
 ### 13.6 隐私和诊断页
 
@@ -773,10 +776,10 @@ voicebridge/
 | AudioChunk | chunk_id、序号、哈希、位置、route_epoch | 顺序与时间范围可恢复；未验证帧不得进入。 |
 | RouteEvidence | session_id、epoch、observed_input、时间范围、结果 | 记录系统观测，不伪造固件/标识。 |
 | AsrJob | job_id、record_id、配置快照、provider_job_id、状态 | 一个重转录是新 job。 |
-| TranscriptRevision | record_id、revision、文本、来源、哈希、审核状态 | 发布后不可原地覆盖。 |
+| Revision | record_id、revision、文本、来源、哈希、审核状态 | 发布后不可原地覆盖；ASR 转录与用户修订各产生新 Revision。（原名 TranscriptRevision） |
 | ConsentGrant | principal、scope、provider/target、region、版本、撤销 | 音频上传和 Agent 读取分开授权。 |
 | OutboxEntry | operation_id、幂等键、尝试次数、下次执行 | 与发布操作原子创建。 |
-| Destination | destination_id、agent_principal、允许用途、连接方式 | 不是任意用户可填的未认证 agent_id。 |
+| Destination | destination_id、agent_principal、允许用途、连接方式、发送方式（自动发送/预览确认） | 不是任意用户可填的未认证 agent_id；V1 一个 Destination 对应一套专属凭证，项目/工作区路由规则后置。 |
 | Delivery | delivery_id、record/revision/target、租约、结果 | 每目标独立状态，支持重投。 |
 | Tombstone | object_id、version、deleted_at | 阻止旧请求复活删除对象。 |
 
@@ -924,7 +927,12 @@ interface AsrProvider {
 | `POST /v1/asr/jobs` | 可选云转录代理提交 | 先过上传授权和预算检查，不等于文本入库。 |
 | `GET /v1/asr/jobs/{job_id}` | 代理任务查询 | provider job ID 与内部 job ID 分离。 |
 | `POST /v1/asr/jobs/{job_id}/cancel` | 请求取消云任务 | 返回实际取消能力及当前结果。 |
+| `POST /v1/pairing/redeem` | 用一次性配对码换取设备令牌 | 配对码只能由网关命令行生成，一次性、短时有效；令牌存入平台安全存储。（ADR-008） |
+| `GET/POST/PATCH/DELETE /v1/destinations` | Destination 管理 | 需设备令牌的管理权限；创建时必须带发送方式（ADR-009）；响应不回显已有凭证。 |
+| `POST /v1/destinations/{destination_id}/credential` | 签发或轮换该 Destination 的专属凭证 | 凭证只在响应中显示一次，库内只存哈希；客户端须先过本机生物识别二次确认；可撤销。 |
 | `/mcp` | MCP HTTP 端点 | 使用经测试的标准传输及授权。 |
+
+> 以上三条配对与 Destination 管理接口为本次新增草案，具体字段由合同负责人在 DEV-002 中合并。
 
 推荐 `Idempotency-Key` 与业务键共同约束；`If-Match`/版本前置条件用于修改和删除。内容相同重复请求返回同一资源信息；内容不同返回 409 类冲突。禁止信任路径之外正文中的另一个对象 ID。
 
@@ -934,13 +942,13 @@ interface AsrProvider {
 
 | 工具 | 主要输入 | 主要输出 | 权限/副作用 |
 |---|---|---|---|
-| `voice_list` | cursor、limit、时间/状态过滤 | 授权记录摘要与 next_cursor | 只读。 |
-| `voice_get` | record_id、revision | 指定版本文本、来源、用途 | 只读；不能读取未授权对象。 |
-| `voice_search` | query、过滤条件、cursor | 匹配片段和记录标识 | 只读；检索不得绕过授权。 |
-| `voice_claim_pending` | limit、lease_seconds | 待处理正文/引用、delivery_id、lease_token | 写入租约；不能标注为纯只读。 |
-| `voice_renew_lease` | delivery_id、lease_token | 新到期时间/新 token | 只允许当前持有人。 |
-| `voice_ack` | delivery_id、lease_token、result | 幂等确认结果 | 只影响认证身份的对应目标。 |
-| `voice_nack` | delivery_id、lease_token、reason、retryable | 重投/拒绝状态 | 区分暂时失败与永久拒绝。 |
+| `record_list` | cursor、limit、时间/状态过滤 | 授权记录摘要与 next_cursor | 只读。 |
+| `record_get` | record_id、revision | 指定版本文本、来源、用途 | 只读；不能读取未授权对象。 |
+| `record_search` | query、过滤条件、cursor | 匹配片段和记录标识 | 只读；检索不得绕过授权。 |
+| `delivery_claim` | limit、lease_seconds | 待处理正文/引用、delivery_id、lease_token | 写入租约；不能标注为纯只读。 |
+| `delivery_renew_lease` | delivery_id、lease_token | 新到期时间/新 token | 只允许当前持有人。 |
+| `delivery_ack` | delivery_id、lease_token、result | 幂等确认结果 | 只影响认证身份的对应目标。 |
+| `delivery_nack` | delivery_id、lease_token、reason、retryable | 重投/拒绝状态 | 区分暂时失败与永久拒绝。 |
 
 首期不开放 `start_phone_recording`、`read_all_users`、`execute_transcript` 等泛权限工具。返回值含明确 `schema_version`；错误响应不能伪装成正常空列表。
 
@@ -983,7 +991,7 @@ interface AsrProvider {
 3. AudioStore 写分段与清单，持续监听输入变更；用户收到真正开始提示。
 4. STOP 到达，关闭采集并封存，释放麦克风；如果中断则保留完整性标记。
 5. 在本地事务中登记 Recording 与 AsrJob；即使推理尚未开始，音频已经可恢复。
-6. ASR 调度器按冻结配置与授权选择本地或远端；生成原始 TranscriptRevision。
+6. ASR 调度器按冻结配置与授权选择本地或远端；生成原始 Revision（来源为 ASR）。
 7. 用户审核，或已授权规则选择发送目标；发布版本与 outbox 一起提交。
 8. SyncOutbox 向网关幂等提交；服务端在同一事务中保存版本与各目标投递任务。
 9. 网关返回持久化凭据；手机显示“网关已接收”，不是“Agent 已处理”。
@@ -1470,14 +1478,15 @@ T-017 的声音对照不能单独取代系统路由证据。物理测试应分�
 | ADR/事项 | 当前默认 | 必须在何时确定 |
 |---|---|---|
 | ADR-001：三端最低系统版本 | 鸿蒙先核对 6.0.1+ 路线；iOS/Android 按目标设备与公开 API 确定 | G0 前；记录真实设备信息。 |
-| ADR-002：iOS 耳机控制与后台能力范围 | 不承诺未知场景，保留全部原始目标 | G0；失败需产品范围决策。 |
+| ADR-002：iOS 耳机控制与后台能力范围 | 不承诺未知场景，保留全部原始目标 | G0；失败需产品范围决策。**已预授权降级路径，见 `docs/adr/0002-ios-restricted-fallback.md`。** |
 | ADR-003：每设备实际命令映射 | 语义 START/STOP 优先，校准后才允许单事件 toggle | G1 前。 |
 | ADR-004：录音容器与恢复边界 | 可恢复分段优先，原始采样信息保留 | G1 前，用崩溃测试决定。 |
 | ADR-005：默认本地模型 | sherpa-onnx 兼容候选，先测中文 | G2 前，附质量/资源/许可结果。 |
-| ADR-006：首个及备用云服务 | 优先比较阿里云与 OpenAI；至少一个正式适配 | G2 前，取决于授权账号/地域/费用。 |
+| ADR-006：首个及备用云服务 | 已选定阿里云为首个正式适配，OpenAI 为第二家；具体 ASR 产品与地域待 G2 前调研 | G2 前，取决于授权账号/地域/费用。 |
 | ADR-007：SDK 与 MCP 版本 | 共同支持版本优先，不自动追最新 main | G3 前，两个宿主联调。 |
-| ADR-008：网关部署和认证 | 自托管优先，远程 HTTPS，设备/Agent 身份分离 | G3 前。 |
-| ADR-009：自动发送与危险任务策略 | 默认预览确认；自动发送逐目标授权 | 产品发布前。 |
+| ADR-008：网关部署和认证 | 自托管优先，远程 HTTPS，设备/Agent 身份分离 | **已决**，见 `docs/adr/0008-self-hosted-gateway-credentials.md`。 |
+| ADR-009：自动发送与危险任务策略 | 创建 Destination 时显式选择，无隐含默认 | **已决**，见 `docs/adr/0009-auto-send-per-destination.md`。 |
+| ADR-0013（新增）：Tenant 来自认证 | 一个 User 一个 Tenant；V1 映射到唯一固定 Tenant | **已决**，见 `docs/adr/0013-tenant-from-auth.md`。PRD 之外的新决策从 0013 起编。 |
 | ADR-010：数据保留/备份/删除 | 音频本地，正文按授权同步，删除有墓碑 | 公开测试前。 |
 | ADR-011：正式开源许可证 | 尚未选定产品整体许可证 | 公开代码/分发前，核对依赖兼容。 |
 | ADR-012：签名与分发 | 开发测试优先，商店发布单独核验 | P5。 |
@@ -1556,5 +1565,6 @@ T-017 的声音对照不能单独取代系统路由证据。物理测试应分�
 | 版本 | 日期 | 变更 |
 |---|---|---|
 | 1.0 | 2026-10-20 | 整合三端、多耳机/FreeClip 优先、严格蓝牙输入、本地/云端转录、MCP 与多 Agent 投递需求；加入官方平台限制、14 项开源候选、39 个来源入口、状态机、接口与 50 项测试。 |
+| 1.1 | 2026-10-20 | 产品定名 Auri 并建立 `GLOSSARY.md`；新增 ADR-002/008/009/0013；`TranscriptRevision`→`Revision`、`transcripts:read`→`records:read`；MCP 工具名改为 `record_*`/`delivery_*`；同步表 `ACKED`→`STORED`；补设备配对与 Destination 管理接口草案；录音时长、音频保留、自动发送、FINALIZING 期间 START 的默认值；确定验收宿主为 Hermes + Claude Code。 |
 
 **最终原则：优先证明“耳机真的能控制、声音真的来自耳机、文字真的被正确交付”，再扩展界面和智能功能。平台不允许的能力必须诚实呈现，不能靠隐蔽录音或虚假成功补齐。**
