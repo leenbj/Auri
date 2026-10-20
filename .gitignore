@@ -1,0 +1,46 @@
+# 真实个人口述音频、密钥、签名材料不得提交（CLAUDE.md、PRD 第 20 章）
+*.wav
+*.pcm
+*.caf
+*.m4a
+*.mp3
+*.flac
+*.opus
+*.amr
+*.aac
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.p8
+*.mobileprovision
+*.keystore
+*.jks
+local.properties
+
+# 本地模型与数据库（模型按清单下载并校验哈希，不入库）
+*.onnx
+*.gguf
+models/
+*.sqlite
+*.sqlite3
+*.db
+
+# 构建产物与依赖
+.DS_Store
+build/
+DerivedData/
+.gradle/
+.idea/
+.vscode/
+node_modules/
+__pycache__/
+.venv/
+.pytest_cache/
+*.xcuserstate
+oh_modules/
+.hvigor/
+
+# 原始真机日志可能含正文或设备标识，脱敏后再放入 execution/ 下的证据目录
+execution/**/raw/
