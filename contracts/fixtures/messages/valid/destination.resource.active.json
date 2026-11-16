@@ -1,0 +1,18 @@
+{
+  "schema": "destination.schema.json#/$defs/resource",
+  "expect": "valid",
+  "description": "一个有效的 Destination。",
+  "instance": {
+    "schema_version": "1.0",
+    "destination_id": "65ea2953-505c-5c6f-9474-7cd5b8474104",
+    "display_name": "写作助手",
+    "send_mode": "auto_send",
+    "allowed_intents": [
+      "context"
+    ],
+    "created_at": "2026-11-15T02:06:00Z",
+    "created_by_device_id": "ef7b1358-df31-520f-90f3-d98fc5173b46",
+    "credential_issued": true,
+    "revoked_at": null
+  }
+}

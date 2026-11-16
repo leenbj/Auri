@@ -1,0 +1,186 @@
+{
+  "schema_version": "1.0",
+  "machine": "transcription",
+  "description": "转录任务状态机（PRD 第 12.3 节）。一次重转录是一个新任务。V1 只做本地转录（ADR-0019）。",
+  "initial_state": "QUEUED",
+  "states": [
+    "QUEUED",
+    "WAITING_MODEL",
+    "WAITING_RESOURCES",
+    "RUNNING",
+    "SUCCEEDED",
+    "NO_SPEECH",
+    "RETRY_SCHEDULED",
+    "FAILED",
+    "CANCELLED",
+    "WAITING_NETWORK",
+    "WAITING_CONSENT",
+    "SUBMITTED_REMOTE"
+  ],
+  "reserved_states": [
+    "WAITING_NETWORK",
+    "WAITING_CONSENT",
+    "SUBMITTED_REMOTE"
+  ],
+  "terminal_states": [
+    "SUCCEEDED",
+    "NO_SPEECH",
+    "FAILED",
+    "CANCELLED"
+  ],
+  "events": [
+    "MODEL_MISSING",
+    "RESOURCES_LOW",
+    "RUN_STARTED",
+    "CANCEL",
+    "MODEL_READY",
+    "RESOURCES_OK",
+    "RESULT_TEXT",
+    "RESULT_NO_SPEECH",
+    "RETRYABLE_ERROR",
+    "PERMANENT_ERROR",
+    "RETRY_DUE"
+  ],
+  "transitions": [
+    {
+      "from": "QUEUED",
+      "event": "MODEL_MISSING",
+      "outcome": "transition",
+      "to": "WAITING_MODEL",
+      "note": "没有本地模型，等待下载；不上云。"
+    },
+    {
+      "from": "QUEUED",
+      "event": "RESOURCES_LOW",
+      "outcome": "transition",
+      "to": "WAITING_RESOURCES",
+      "note": "内存或温度不允许，等待；不影响正在进行的录音。"
+    },
+    {
+      "from": "QUEUED",
+      "event": "RUN_STARTED",
+      "outcome": "transition",
+      "to": "RUNNING",
+      "note": "开始本地推理。"
+    },
+    {
+      "from": "QUEUED",
+      "event": "CANCEL",
+      "outcome": "transition",
+      "to": "CANCELLED",
+      "note": "用户取消。"
+    },
+    {
+      "from": "WAITING_MODEL",
+      "event": "MODEL_READY",
+      "outcome": "transition",
+      "to": "QUEUED",
+      "note": "模型下载并校验通过。"
+    },
+    {
+      "from": "WAITING_MODEL",
+      "event": "CANCEL",
+      "outcome": "transition",
+      "to": "CANCELLED",
+      "note": "用户取消。"
+    },
+    {
+      "from": "WAITING_RESOURCES",
+      "event": "RESOURCES_OK",
+      "outcome": "transition",
+      "to": "QUEUED",
+      "note": "资源恢复。"
+    },
+    {
+      "from": "WAITING_RESOURCES",
+      "event": "CANCEL",
+      "outcome": "transition",
+      "to": "CANCELLED",
+      "note": "用户取消。"
+    },
+    {
+      "from": "RUNNING",
+      "event": "RESULT_TEXT",
+      "outcome": "transition",
+      "to": "SUCCEEDED",
+      "note": "得到正文，产生一个新的 Revision。"
+    },
+    {
+      "from": "RUNNING",
+      "event": "RESULT_NO_SPEECH",
+      "outcome": "transition",
+      "to": "NO_SPEECH",
+      "note": "音频有效但没有识别出语音；不制造文本。"
+    },
+    {
+      "from": "RUNNING",
+      "event": "RETRYABLE_ERROR",
+      "outcome": "transition",
+      "to": "RETRY_SCHEDULED",
+      "note": "可重试的失败。"
+    },
+    {
+      "from": "RUNNING",
+      "event": "RESOURCES_LOW",
+      "outcome": "transition",
+      "to": "WAITING_RESOURCES",
+      "note": "运行中被热保护或内存压力打断。"
+    },
+    {
+      "from": "RUNNING",
+      "event": "PERMANENT_ERROR",
+      "outcome": "transition",
+      "to": "FAILED",
+      "note": "永久错误，不无限重试。"
+    },
+    {
+      "from": "RUNNING",
+      "event": "CANCEL",
+      "outcome": "transition",
+      "to": "CANCELLED",
+      "note": "用户取消。"
+    },
+    {
+      "from": "RETRY_SCHEDULED",
+      "event": "RETRY_DUE",
+      "outcome": "transition",
+      "to": "QUEUED",
+      "note": "到达重试时间。"
+    },
+    {
+      "from": "RETRY_SCHEDULED",
+      "event": "CANCEL",
+      "outcome": "transition",
+      "to": "CANCELLED",
+      "note": "用户取消。"
+    },
+    {
+      "from": "SUCCEEDED",
+      "event": "CANCEL",
+      "outcome": "ignored",
+      "to": "SUCCEEDED",
+      "note": "已结束，取消无效。"
+    },
+    {
+      "from": "NO_SPEECH",
+      "event": "CANCEL",
+      "outcome": "ignored",
+      "to": "NO_SPEECH",
+      "note": "已结束，取消无效。"
+    },
+    {
+      "from": "FAILED",
+      "event": "CANCEL",
+      "outcome": "ignored",
+      "to": "FAILED",
+      "note": "已结束，取消无效。"
+    },
+    {
+      "from": "CANCELLED",
+      "event": "CANCEL",
+      "outcome": "ignored",
+      "to": "CANCELLED",
+      "note": "重复取消。"
+    }
+  ]
+}

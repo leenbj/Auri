@@ -1,0 +1,14 @@
+{
+  "schema": "destination.schema.json#/$defs/create_request",
+  "expect": "valid",
+  "description": "创建一个预览确认的 Destination。",
+  "instance": {
+    "schema_version": "1.0",
+    "display_name": "写作助手",
+    "send_mode": "preview_confirm",
+    "allowed_intents": [
+      "context",
+      "action_request"
+    ]
+  }
+}

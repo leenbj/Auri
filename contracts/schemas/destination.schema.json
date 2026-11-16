@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.auri.invalid/1.0/destination.schema.json",
+  "title": "Destination 管理",
+  "description": "ADR-008、ADR-009。每个 Destination 一套专属凭证；响应不回显已有凭证。",
+  "$defs": {
+    "create_request": {
+      "title": "POST /v1/destinations 的请求体",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "display_name", "send_mode", "allowed_intents"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "display_name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "send_mode": { "$ref": "common.schema.json#/$defs/send_mode" },
+        "allowed_intents": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/intent" }
+        }
+      }
+    },
+    "resource": {
+      "title": "Destination",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "destination_id",
+        "display_name",
+        "send_mode",
+        "allowed_intents",
+        "created_at",
+        "created_by_device_id",
+        "credential_issued",
+        "revoked_at"
+      ],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "destination_id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "display_name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "send_mode": { "$ref": "common.schema.json#/$defs/send_mode" },
+        "allowed_intents": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/intent" }
+        },
+        "created_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "created_by_device_id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "credential_issued": {
+          "description": "是否已签发过凭证。凭证本身不在这里出现。",
+          "type": "boolean"
+        },
+        "revoked_at": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/timestamp" }, { "type": "null" }]
+        }
+      }
+    },
+    "credential_response": {
+      "title": "POST /v1/destinations/{destination_id}/credential 的响应体",
+      "description": "凭证只在这里出现一次，网关库内只存哈希。客户端须先过本机生物识别二次确认。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "destination_id", "credential", "issued_at", "replaced_previous"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "destination_id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "credential": { "type": "string", "minLength": 32, "maxLength": 512 },
+        "issued_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "replaced_previous": {
+          "description": "true 表示这是轮换，旧凭证已失效。",
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

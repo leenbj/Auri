@@ -1,0 +1,14 @@
+{
+  "schema": "delivery.schema.json#/$defs/nack_response",
+  "expect": "schema_invalid",
+  "rejected_because": "拒收的结果不可能是 ACKNOWLEDGED。",
+  "expect_error": {
+    "path": "/state",
+    "keyword": "enum"
+  },
+  "instance": {
+    "schema_version": "1.0",
+    "delivery_id": "f2902603-449e-5ad9-beee-8c3c48c0f1f7",
+    "state": "ACKNOWLEDGED"
+  }
+}

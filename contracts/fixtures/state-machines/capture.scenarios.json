@@ -1,0 +1,501 @@
+{
+  "schema_version": "1.0",
+  "machine": "capture",
+  "scenarios": [
+    {
+      "name": "normal-start-stop",
+      "description": "开启控制模式，手势开始，路由确认，手势停止，封存后回到待命。",
+      "initial_state": "DISARMED",
+      "steps": [
+        {
+          "event": "ENABLE_CONTROL_MODE",
+          "expect": "transition",
+          "state_after": "ARMED"
+        },
+        {
+          "event": "START",
+          "expect": "transition",
+          "state_after": "ROUTING"
+        },
+        {
+          "event": "ROUTE_VERIFIED",
+          "expect": "transition",
+          "state_after": "RECORDING"
+        },
+        {
+          "event": "STOP",
+          "expect": "transition",
+          "state_after": "FINALIZING"
+        },
+        {
+          "event": "FINALIZE_COMPLETE",
+          "expect": "transition",
+          "state_after": "ARMED"
+        },
+        {
+          "event": "DISABLE_CONTROL_MODE",
+          "expect": "transition",
+          "state_after": "DISARMED"
+        }
+      ]
+    },
+    {
+      "name": "toggle-cycle",
+      "description": "只发 TOGGLE 的耳机：待命时开始，录音时停止，封存中的过时 TOGGLE 不开始下一段。",
+      "initial_state": "ARMED",
+      "steps": [
+        {
+          "event": "TOGGLE",
+          "expect": "transition",
+          "state_after": "ROUTING"
+        },
+        {
+          "event": "ROUTE_VERIFIED",
+          "expect": "transition",
+          "state_after": "RECORDING"
+        },
+        {
+          "event": "TOGGLE",
+          "expect": "transition",
+          "state_after": "FINALIZING"
+        },
+        {
+          "event": "TOGGLE",
+          "expect": "ignored",
+          "state_after": "FINALIZING"
+        },
+        {
+          "event": "FINALIZE_COMPLETE",
+          "expect": "transition",
+          "state_after": "ARMED"
+        }
+      ]
+    },
+    {
+      "name": "media-events-while-disarmed",
+      "description": "没开控制模式时，任何媒体事件都不启动录音。",
+      "initial_state": "DISARMED",
+      "steps": [
+        {
+          "event": "START",
+          "expect": "ignored",
+          "state_after": "DISARMED"
+        },
+        {
+          "event": "TOGGLE",
+          "expect": "ignored",
+          "state_after": "DISARMED"
+        },
+        {
+          "event": "STOP",
+          "expect": "ignored",
+          "state_after": "DISARMED"
+        },
+        {
+          "event": "PERMISSION_REVOKED",
+          "expect": "ignored",
+          "state_after": "DISARMED"
+        },
+        {
+          "event": "PROCESS_RESTORED",
+          "expect": "ignored",
+          "state_after": "DISARMED"
+        }
+      ]
+    },
+    {
+      "name": "stop-cancels-routing",
+      "description": "准备阶段收到 STOP：取消，不产生 Record。",
+      "initial_state": "ARMED",
+      "steps": [
+        {
+          "event": "START",
+          "expect": "transition",
+          "state_after": "ROUTING"
+        },
+        {
+          "event": "START",
+          "expect": "ignored",
+          "state_after": "ROUTING"
+        },
+        {
+          "event": "STOP",
+          "expect": "transition",
+          "state_after": "ARMED"
+        },
+        {
+          "event": "STOP",
+          "expect": "ignored",
+          "state_after": "ARMED"
+        }
+      ]
+    },
+    {
+      "name": "toggle-and-screen-cancel-routing",
+      "description": "准备阶段的 TOGGLE 和屏幕取消都回到待命。",
+      "initial_state": "ARMED",
+      "steps": [
+        {
+          "event": "START",
+          "expect": "transition",
+          "state_after": "ROUTING"
+        },
+        {
+          "event": "TOGGLE",
+          "expect": "transition",
+          "state_after": "ARMED"
+        },
+        {
+          "event": "START",
+          "expect": "transition",
+          "state_after": "ROUTING"
+        },
+        {
+          "event": "USER_CANCEL",
+          "expect": "transition",
+          "state_after": "ARMED"
+        }
+      ]
+    },
+    {
+      "name": "stale-route-callback-after-cancel",
+      "description": "取消之后迟到的路由确认回调不得重新开闸。",
+      "initial_state": "ARMED",
+      "steps": [
+        {
+          "event": "START",
+          "expect": "transition",
+          "state_after": "ROUTING"
+        },
+        {
+          "event": "STOP",
+          "expect": "transition",
+          "state_after": "ARMED"
+        },
+        {
+          "event": "ROUTE_VERIFIED",
+          "expect": "rejected",
+          "state_after": "ARMED"
+        }
+      ]
+    },
+    {
+      "name": "route-unverified-blocks",
+      "description": "不能确认蓝牙输入时受阻；不会自己重试，只有再次 START 才重试。",
+      "initial_state": "ARMED",
+      "steps": [
+        {
+          "event": "START",
+          "expect": "transition",
+          "state_after": "ROUTING"
+        },
+        {
+          "event": "ROUTE_UNVERIFIED",
+          "expect": "transition",
+          "state_after": "BLOCKED"
+        },
+        {
+          "event": "STOP",
+          "expect": "ignored",
+          "state_after": "BLOCKED"
+        },
+        {
+          "event": "PERMISSION_REVOKED",
+          "expect": "ignored",
+          "state_after": "BLOCKED"
+        },
+        {
+          "event": "START",
+          "expect": "transition",
+          "state_after": "ROUTING"
+        },
+        {
+          "event": "ROUTE_TIMEOUT",
+          "expect": "transition",
+          "state_after": "BLOCKED"
+        },
+        {
+          "event": "TOGGLE",
+          "expect": "transition",
+          "state_after": "ROUTING"
+        },
+        {
+          "event": "ROUTE_VERIFIED",
+          "expect": "transition",
+          "state_after": "RECORDING"
+        }
+      ]
+    },
+    {
+      "name": "blocked-then-leave-control-mode",
+      "description": "受阻后用户退出控制模式。",
+      "initial_state": "BLOCKED",
+      "steps": [
+        {
+          "event": "DISABLE_CONTROL_MODE",
+          "expect": "transition",
+          "state_after": "DISARMED"
+        }
+      ]
+    },
+    {
+      "name": "permission-revoked",
+      "description": "权限在各状态下被撤销。",
+      "initial_state": "ARMED",
+      "steps": [
+        {
+          "event": "PERMISSION_REVOKED",
+          "expect": "transition",
+          "state_after": "BLOCKED"
+        },
+        {
+          "event": "START",
+          "expect": "transition",
+          "state_after": "ROUTING"
+        },
+        {
+          "event": "PERMISSION_REVOKED",
+          "expect": "transition",
+          "state_after": "BLOCKED"
+        },
+        {
+          "event": "START",
+          "expect": "transition",
+          "state_after": "ROUTING"
+        },
+        {
+          "event": "ROUTE_VERIFIED",
+          "expect": "transition",
+          "state_after": "RECORDING"
+        },
+        {
+          "event": "PERMISSION_REVOKED",
+          "expect": "transition",
+          "state_after": "FINALIZING"
+        },
+        {
+          "event": "PERMISSION_REVOKED",
+          "expect": "ignored",
+          "state_after": "FINALIZING"
+        },
+        {
+          "event": "FINALIZE_COMPLETE",
+          "expect": "transition",
+          "state_after": "ARMED"
+        }
+      ]
+    },
+    {
+      "name": "leave-control-mode-while-routing",
+      "description": "准备阶段退出控制模式。",
+      "initial_state": "ROUTING",
+      "steps": [
+        {
+          "event": "DISABLE_CONTROL_MODE",
+          "expect": "transition",
+          "state_after": "DISARMED"
+        }
+      ]
+    },
+    {
+      "name": "start-while-recording-and-finalizing",
+      "description": "录音中和封存中的 START 都被忽略，不排队。",
+      "initial_state": "RECORDING",
+      "steps": [
+        {
+          "event": "START",
+          "expect": "ignored",
+          "state_after": "RECORDING"
+        },
+        {
+          "event": "STOP",
+          "expect": "transition",
+          "state_after": "FINALIZING"
+        },
+        {
+          "event": "START",
+          "expect": "ignored",
+          "state_after": "FINALIZING"
+        },
+        {
+          "event": "STOP",
+          "expect": "ignored",
+          "state_after": "FINALIZING"
+        },
+        {
+          "event": "FINALIZE_COMPLETE",
+          "expect": "transition",
+          "state_after": "ARMED"
+        }
+      ]
+    },
+    {
+      "name": "duration-limit",
+      "description": "到达时长上限自动封存，不自动续录。",
+      "initial_state": "RECORDING",
+      "steps": [
+        {
+          "event": "DURATION_LIMIT",
+          "expect": "transition",
+          "state_after": "FINALIZING"
+        },
+        {
+          "event": "FINALIZE_COMPLETE",
+          "expect": "transition",
+          "state_after": "ARMED"
+        }
+      ]
+    },
+    {
+      "name": "route-lost-while-recording",
+      "description": "录音中耳机断开：截断并封存，不换用手机麦克风继续。",
+      "initial_state": "RECORDING",
+      "steps": [
+        {
+          "event": "ROUTE_LOST",
+          "expect": "transition",
+          "state_after": "FINALIZING"
+        },
+        {
+          "event": "ROUTE_VERIFIED",
+          "expect": "rejected",
+          "state_after": "FINALIZING"
+        },
+        {
+          "event": "FINALIZE_COMPLETE",
+          "expect": "transition",
+          "state_after": "ARMED"
+        }
+      ]
+    },
+    {
+      "name": "system-interruption",
+      "description": "来电打断：封存片段，等待用户重新开始。",
+      "initial_state": "RECORDING",
+      "steps": [
+        {
+          "event": "SYSTEM_INTERRUPTION",
+          "expect": "transition",
+          "state_after": "FINALIZING"
+        },
+        {
+          "event": "FINALIZE_COMPLETE",
+          "expect": "transition",
+          "state_after": "ARMED"
+        },
+        {
+          "event": "START",
+          "expect": "transition",
+          "state_after": "ROUTING"
+        }
+      ]
+    },
+    {
+      "name": "cannot-leave-control-mode-while-recording",
+      "description": "录音中和封存中不能直接退出控制模式，必须先停止。",
+      "initial_state": "RECORDING",
+      "steps": [
+        {
+          "event": "DISABLE_CONTROL_MODE",
+          "expect": "rejected",
+          "state_after": "RECORDING"
+        },
+        {
+          "event": "STOP",
+          "expect": "transition",
+          "state_after": "FINALIZING"
+        },
+        {
+          "event": "DISABLE_CONTROL_MODE",
+          "expect": "rejected",
+          "state_after": "FINALIZING"
+        }
+      ]
+    },
+    {
+      "name": "process-restored-from-armed",
+      "description": "进程在 ARMED 时被杀，恢复后回到 DISARMED，不自动开麦。",
+      "initial_state": "ARMED",
+      "steps": [
+        {
+          "event": "PROCESS_RESTORED",
+          "expect": "transition",
+          "state_after": "DISARMED"
+        },
+        {
+          "event": "START",
+          "expect": "ignored",
+          "state_after": "DISARMED"
+        }
+      ]
+    },
+    {
+      "name": "process-restored-from-routing",
+      "description": "进程在 ROUTING 时被杀，恢复后回到 DISARMED，不自动开麦。",
+      "initial_state": "ROUTING",
+      "steps": [
+        {
+          "event": "PROCESS_RESTORED",
+          "expect": "transition",
+          "state_after": "DISARMED"
+        },
+        {
+          "event": "START",
+          "expect": "ignored",
+          "state_after": "DISARMED"
+        }
+      ]
+    },
+    {
+      "name": "process-restored-from-recording",
+      "description": "进程在 RECORDING 时被杀，恢复后回到 DISARMED，不自动开麦。",
+      "initial_state": "RECORDING",
+      "steps": [
+        {
+          "event": "PROCESS_RESTORED",
+          "expect": "transition",
+          "state_after": "DISARMED"
+        },
+        {
+          "event": "START",
+          "expect": "ignored",
+          "state_after": "DISARMED"
+        }
+      ]
+    },
+    {
+      "name": "process-restored-from-finalizing",
+      "description": "进程在 FINALIZING 时被杀，恢复后回到 DISARMED，不自动开麦。",
+      "initial_state": "FINALIZING",
+      "steps": [
+        {
+          "event": "PROCESS_RESTORED",
+          "expect": "transition",
+          "state_after": "DISARMED"
+        },
+        {
+          "event": "START",
+          "expect": "ignored",
+          "state_after": "DISARMED"
+        }
+      ]
+    },
+    {
+      "name": "process-restored-from-blocked",
+      "description": "进程在 BLOCKED 时被杀，恢复后回到 DISARMED，不自动开麦。",
+      "initial_state": "BLOCKED",
+      "steps": [
+        {
+          "event": "PROCESS_RESTORED",
+          "expect": "transition",
+          "state_after": "DISARMED"
+        },
+        {
+          "event": "START",
+          "expect": "ignored",
+          "state_after": "DISARMED"
+        }
+      ]
+    }
+  ]
+}

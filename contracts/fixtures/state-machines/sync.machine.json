@@ -1,0 +1,130 @@
+{
+  "schema_version": "1.0",
+  "machine": "sync",
+  "description": "手机上一条待同步任务的状态机（PRD 第 12.4 节、ADR-0018）。",
+  "initial_state": "PENDING",
+  "states": [
+    "PENDING",
+    "SENDING",
+    "STORED",
+    "WAITING_GATEWAY",
+    "RETRY_SCHEDULED",
+    "BLOCKED"
+  ],
+  "reserved_states": [],
+  "terminal_states": [
+    "STORED"
+  ],
+  "events": [
+    "SEND_STARTED",
+    "GATEWAY_UNREACHABLE",
+    "STORED_CONFIRMED",
+    "RETRYABLE_FAILURE",
+    "KEY_MISMATCH",
+    "AUTH_REVOKED",
+    "VERSION_CONFLICT",
+    "GATEWAY_REACHABLE",
+    "RETRY_DUE",
+    "USER_RESOLVED"
+  ],
+  "transitions": [
+    {
+      "from": "PENDING",
+      "event": "SEND_STARTED",
+      "outcome": "transition",
+      "to": "SENDING",
+      "note": "开始向网关提交。"
+    },
+    {
+      "from": "PENDING",
+      "event": "GATEWAY_UNREACHABLE",
+      "outcome": "transition",
+      "to": "WAITING_GATEWAY",
+      "note": "连不上网关（例如不在局域网），排队等待；不是失败。"
+    },
+    {
+      "from": "SENDING",
+      "event": "STORED_CONFIRMED",
+      "outcome": "transition",
+      "to": "STORED",
+      "note": "网关返回了可校验的入库结果。"
+    },
+    {
+      "from": "SENDING",
+      "event": "GATEWAY_UNREACHABLE",
+      "outcome": "transition",
+      "to": "WAITING_GATEWAY",
+      "note": "发送途中断开；结果不确定时回来后先查询 operation，不盲目重发。"
+    },
+    {
+      "from": "SENDING",
+      "event": "RETRYABLE_FAILURE",
+      "outcome": "transition",
+      "to": "RETRY_SCHEDULED",
+      "note": "连上了但请求失败（如限流、5xx），按退避重试。"
+    },
+    {
+      "from": "SENDING",
+      "event": "KEY_MISMATCH",
+      "outcome": "transition",
+      "to": "BLOCKED",
+      "note": "网关公钥与配对时不符，拒绝连接，需要重新配对。"
+    },
+    {
+      "from": "SENDING",
+      "event": "AUTH_REVOKED",
+      "outcome": "transition",
+      "to": "BLOCKED",
+      "note": "设备令牌被撤销，需要重新授权。"
+    },
+    {
+      "from": "SENDING",
+      "event": "VERSION_CONFLICT",
+      "outcome": "transition",
+      "to": "BLOCKED",
+      "note": "同一版本号的正文不同，需要用户处理。"
+    },
+    {
+      "from": "WAITING_GATEWAY",
+      "event": "GATEWAY_REACHABLE",
+      "outcome": "transition",
+      "to": "PENDING",
+      "note": "回到局域网，自动继续。"
+    },
+    {
+      "from": "WAITING_GATEWAY",
+      "event": "GATEWAY_UNREACHABLE",
+      "outcome": "ignored",
+      "to": "WAITING_GATEWAY",
+      "note": "仍然连不上。"
+    },
+    {
+      "from": "RETRY_SCHEDULED",
+      "event": "RETRY_DUE",
+      "outcome": "transition",
+      "to": "PENDING",
+      "note": "到达重试时间。"
+    },
+    {
+      "from": "RETRY_SCHEDULED",
+      "event": "GATEWAY_UNREACHABLE",
+      "outcome": "transition",
+      "to": "WAITING_GATEWAY",
+      "note": "等待重试期间离开了局域网。"
+    },
+    {
+      "from": "BLOCKED",
+      "event": "USER_RESOLVED",
+      "outcome": "transition",
+      "to": "PENDING",
+      "note": "用户处理完（重新配对、重新授权等）。"
+    },
+    {
+      "from": "STORED",
+      "event": "STORED_CONFIRMED",
+      "outcome": "ignored",
+      "to": "STORED",
+      "note": "重复的确认。"
+    }
+  ]
+}

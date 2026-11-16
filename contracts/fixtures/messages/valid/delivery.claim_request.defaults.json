@@ -1,0 +1,6 @@
+{
+  "schema": "delivery.schema.json#/$defs/claim_request",
+  "expect": "valid",
+  "description": "不带参数，使用默认值。",
+  "instance": {}
+}

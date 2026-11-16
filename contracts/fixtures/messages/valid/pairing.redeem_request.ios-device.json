@@ -1,0 +1,15 @@
+{
+  "schema": "pairing.schema.json#/$defs/redeem_request",
+  "expect": "valid",
+  "description": "手机用配对码换取设备令牌。",
+  "instance": {
+    "schema_version": "1.0",
+    "pairing_code": "FIXTURE-PAIRING-CODE-NOT-A-SECRET",
+    "device": {
+      "platform": "ios",
+      "app_version": "0.1.0-fixture",
+      "os_build": "fixture-build",
+      "display_name": "我的 iPhone"
+    }
+  }
+}

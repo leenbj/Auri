@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.auri.invalid/1.0/pairing.schema.json",
+  "title": "设备配对",
+  "description": "ADR-008、ADR-0018。配对码只能由网关命令行生成；网关的身份依据是公钥指纹，不是地址。",
+  "$defs": {
+    "address": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host", "port"],
+      "properties": {
+        "host": {
+          "description": "局域网内的主机名或 IP。",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253
+        },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+      }
+    },
+    "payload": {
+      "title": "配对载荷（网关命令行输出，可显示为二维码）",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "gateway_id",
+        "addresses",
+        "mdns_service_type",
+        "public_key_sha256",
+        "pairing_code",
+        "expires_at"
+      ],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "gateway_id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "addresses": {
+          "description": "配对时网关的地址。之后先连这些地址，连不上再用 mDNS 查找。",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": { "$ref": "#/$defs/address" }
+        },
+        "mdns_service_type": { "const": "_auri-gateway._tcp" },
+        "public_key_sha256": {
+          "description": "网关 TLS 证书中公钥（SubjectPublicKeyInfo 的 DER 编码）的 SHA-256。手机每次连接都要核对，不符即拒绝。",
+          "$ref": "common.schema.json#/$defs/sha256_hex"
+        },
+        "pairing_code": {
+          "description": "一次性、短时有效。",
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128
+        },
+        "expires_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+      }
+    },
+    "redeem_request": {
+      "title": "POST /v1/pairing/redeem 的请求体",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "pairing_code", "device"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "pairing_code": { "type": "string", "minLength": 16, "maxLength": 128 },
+        "device": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["platform", "app_version", "os_build", "display_name"],
+          "properties": {
+            "platform": { "$ref": "common.schema.json#/$defs/platform" },
+            "app_version": { "type": "string", "minLength": 1, "maxLength": 64 },
+            "os_build": { "type": "string", "minLength": 1, "maxLength": 100 },
+            "display_name": {
+              "description": "用户在网关命令行里辨认这台设备用的名字。",
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            }
+          }
+        }
+      }
+    },
+    "redeem_response": {
+      "title": "POST /v1/pairing/redeem 的响应体",
+      "description": "device_id 由网关生成。device_token 只在这里出现一次，手机存入平台安全存储。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "gateway_id", "device_id", "device_token", "paired_at"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "gateway_id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "device_id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "device_token": { "type": "string", "minLength": 32, "maxLength": 512 },
+        "paired_at": { "$ref": "common.schema.json#/$defs/timestamp" }
+      }
+    }
+  }
+}

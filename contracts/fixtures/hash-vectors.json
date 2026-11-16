@@ -1,0 +1,66 @@
+{
+  "schema_version": "1.0",
+  "description": "text_sha256 的跨语言测试向量：正文按 UTF-8 编码后的原始字节直接算 SHA-256，不做 Unicode 规范化、不去空白、不转换换行。nfc 与 nfd 两条看起来相同，哈希必须不同。",
+  "vectors": [
+    {
+      "name": "chinese",
+      "text": "帮我记录一下，明天检查小说记忆模块。",
+      "utf8_hex": "e5b8aee68891e8aeb0e5bd95e4b880e4b88befbc8ce6988ee5a4a9e6a380e69fa5e5b08fe8afb4e8aeb0e5bf86e6a8a1e59d97e38082",
+      "text_sha256": "d0d776b5f83facd57fa2b9ecd4e39984745e516a4c4de0495cdb71acc28f56ec"
+    },
+    {
+      "name": "ascii",
+      "text": "check the memory module tomorrow",
+      "utf8_hex": "636865636b20746865206d656d6f7279206d6f64756c6520746f6d6f72726f77",
+      "text_sha256": "330a84cd0e15a9beac9267f0bbb0422affa7227383f804b9693f737fe32649a6"
+    },
+    {
+      "name": "mixed",
+      "text": "明天 review 一下 memory 模块",
+      "utf8_hex": "e6988ee5a4a92072657669657720e4b880e4b88b206d656d6f727920e6a8a1e59d97",
+      "text_sha256": "73b9fd6764313f189448dcac73a8b3f4e1111d3b778b25f622dcb8496f517332"
+    },
+    {
+      "name": "emoji",
+      "text": "记一下 📝 明天开会",
+      "utf8_hex": "e8aeb0e4b880e4b88b20f09f939d20e6988ee5a4a9e5bc80e4bc9a",
+      "text_sha256": "55bca99f5ecd17b65c4e32a34751b24b7f5d9a7b3a64f331ee2b1780feb365a9"
+    },
+    {
+      "name": "nfc",
+      "text": "café 备忘",
+      "utf8_hex": "636166c3a920e5a487e5bf98",
+      "text_sha256": "1514a2ac90c9f758f21b728ef8773cc1ec1cdf9a91e51fe2db2209ecb3a3f5a1"
+    },
+    {
+      "name": "nfd",
+      "text": "café 备忘",
+      "utf8_hex": "63616665cc8120e5a487e5bf98",
+      "text_sha256": "60c957d4f0ca063561d03aaf8f8ec31e7684e2c6dec5db95d84e7ec8361f7436"
+    },
+    {
+      "name": "trailing-newline",
+      "text": "第一行\n",
+      "utf8_hex": "e7acace4b880e8a18c0a",
+      "text_sha256": "6e5e189fd42b1a0dd6d6bfdee495d21414119abc4df0d570f066166065abb877"
+    },
+    {
+      "name": "crlf",
+      "text": "第一行\r\n第二行",
+      "utf8_hex": "e7acace4b880e8a18c0d0ae7acace4ba8ce8a18c",
+      "text_sha256": "ebf2d2d3b034853c183c5820f24df083cd02c77ca9e7b2de9e390a1bcaf06008"
+    },
+    {
+      "name": "leading-space",
+      "text": " 前面有空格",
+      "utf8_hex": "20e5898de99da2e69c89e7a9bae6a0bc",
+      "text_sha256": "20ecca1589ae85a2aa66dc879f2ce2390c13cb78dd416306fc824ebb4a372276"
+    },
+    {
+      "name": "fullwidth-vs-halfwidth",
+      "text": "ＡＢＣ abc",
+      "utf8_hex": "efbca1efbca2efbca320616263",
+      "text_sha256": "9d36ae883e0c8837521e5e5a2e78d577bfb8256357f31075bdb652415a03ecad"
+    }
+  ]
+}

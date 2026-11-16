@@ -1,0 +1,26 @@
+{
+  "schema": "pairing.schema.json#/$defs/payload",
+  "expect": "schema_invalid",
+  "rejected_because": "没有公钥指纹就无法确认网关身份。",
+  "expect_error": {
+    "path": "",
+    "keyword": "required"
+  },
+  "instance": {
+    "schema_version": "1.0",
+    "gateway_id": "fa1b98ec-1bfb-53b3-85a3-4d36b680fe6e",
+    "addresses": [
+      {
+        "host": "study-pc.local",
+        "port": 8443
+      },
+      {
+        "host": "192.168.1.20",
+        "port": 8443
+      }
+    ],
+    "mdns_service_type": "_auri-gateway._tcp",
+    "pairing_code": "FIXTURE-PAIRING-CODE-NOT-A-SECRET",
+    "expires_at": "2026-11-15T02:10:00Z"
+  }
+}

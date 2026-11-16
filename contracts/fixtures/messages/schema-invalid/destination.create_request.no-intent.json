@@ -1,0 +1,15 @@
+{
+  "schema": "destination.schema.json#/$defs/create_request",
+  "expect": "schema_invalid",
+  "rejected_because": "至少允许一种用途。",
+  "expect_error": {
+    "path": "/allowed_intents",
+    "keyword": "minItems"
+  },
+  "instance": {
+    "schema_version": "1.0",
+    "display_name": "写作助手",
+    "send_mode": "auto_send",
+    "allowed_intents": []
+  }
+}

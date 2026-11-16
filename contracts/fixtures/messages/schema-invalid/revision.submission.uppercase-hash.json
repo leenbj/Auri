@@ -1,0 +1,69 @@
+{
+  "schema": "revision.schema.json#/$defs/submission",
+  "expect": "schema_invalid",
+  "rejected_because": "text_sha256 必须是小写十六进制。",
+  "expect_error": {
+    "path": "/content/text_sha256",
+    "keyword": "pattern"
+  },
+  "instance": {
+    "schema_version": "1.0",
+    "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
+    "revision": 1,
+    "capture": {
+      "platform": "android",
+      "app_version": "0.1.0-fixture",
+      "started_at": "2026-11-15T02:30:00Z",
+      "capture_duration_ms": 18500,
+      "speech_duration_ms": 9200,
+      "speech_segments": [
+        {
+          "start_ms": 800,
+          "end_ms": 5200
+        },
+        {
+          "start_ms": 12100,
+          "end_ms": 16900
+        }
+      ],
+      "end_reason": "headset_command",
+      "status": "complete",
+      "input_policy": "bluetooth_only",
+      "input_verification": "verified",
+      "headset_display_name": "HUAWEI FreeClip 2",
+      "headset_firmware": null,
+      "input_route_type": "bluetooth_hfp",
+      "route_evidence_id": "f1cef522-05c0-5d51-9b15-23e36eb453d4"
+    },
+    "content": {
+      "text": "帮我记录一下，明天检查小说记忆模块。",
+      "text_sha256": "D0D776B5F83FACD57FA2B9ECD4E39984745E516A4C4DE0495CDB71ACC28F56EC",
+      "source": "asr",
+      "language": "zh-CN",
+      "review_state": "not_reviewed",
+      "execution_location": "on_device",
+      "engine": "sherpa-onnx",
+      "model_id": "fixture-local-model",
+      "model_version": "fixture-pinned-version",
+      "confidence": null,
+      "segments": [
+        {
+          "start_ms": 800,
+          "end_ms": 5200,
+          "text": "帮我记录一下，"
+        },
+        {
+          "start_ms": 12100,
+          "end_ms": 16900,
+          "text": "明天检查小说记忆模块。"
+        }
+      ]
+    },
+    "publication": {
+      "intent": "context",
+      "destination_ids": [
+        "65ea2953-505c-5c6f-9474-7cd5b8474104"
+      ]
+    }
+  }
+}

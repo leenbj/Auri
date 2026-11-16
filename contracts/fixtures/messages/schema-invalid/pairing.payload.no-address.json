@@ -1,0 +1,18 @@
+{
+  "schema": "pairing.schema.json#/$defs/payload",
+  "expect": "schema_invalid",
+  "rejected_because": "至少要有一个地址。",
+  "expect_error": {
+    "path": "/addresses",
+    "keyword": "minItems"
+  },
+  "instance": {
+    "schema_version": "1.0",
+    "gateway_id": "fa1b98ec-1bfb-53b3-85a3-4d36b680fe6e",
+    "addresses": [],
+    "mdns_service_type": "_auri-gateway._tcp",
+    "public_key_sha256": "eedd1d30512d98a7084435f20abdccb697f22dba6ed119f3bd6ef60d1cfef8b1",
+    "pairing_code": "FIXTURE-PAIRING-CODE-NOT-A-SECRET",
+    "expires_at": "2026-11-15T02:10:00Z"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "schema": "delivery.schema.json#/$defs/renew_request",
+  "expect": "schema_invalid",
+  "rejected_because": "续租必须带当前的 lease_token。",
+  "expect_error": {
+    "path": "",
+    "keyword": "required"
+  },
+  "instance": {
+    "delivery_id": "f2902603-449e-5ad9-beee-8c3c48c0f1f7"
+  }
+}

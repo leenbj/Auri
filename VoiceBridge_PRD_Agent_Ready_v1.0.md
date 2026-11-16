@@ -448,7 +448,7 @@ V1 至少交付一个商业云服务适配器，推荐将第二个独立提供�
 
 ASR 结果和用户修订都形成不可变文本版本。推荐流程：`draft → reviewed → published`，开启自动发送后可由获授权规则发布 final ASR 结果，但必须标注 `review_state=not_reviewed`。
 
-发送出去的版本不能被静默覆盖。修改后形成新 revision，显示哪些目标已收到旧版本；新版本是否重新投递由规则或用户确认，不自动重复触发同一外部动作。
+发送出去的版本不能被静默覆盖。用户每次保存修订形成一个新 revision（编辑框里未保存的内容不算），显示哪些目标已收到旧版本；新版本是否重新投递由规则或用户确认，不自动重复触发同一外部动作。
 
 ### 9.3 FR-TXT-003：目的地与用途（MUST）
 
@@ -539,7 +539,7 @@ Agent 默认无权开启手机麦克风、修改耳机设置、读取所有用�
 
 ### 11.2 FR-SYNC-002：幂等和冲突（MUST）
 
-相同身份下相同 `record_id + revision` 和内容哈希重复提交，应返回同一业务结果，不创建新记录/新投递。键相同但内容不同必须冲突，不能覆盖。
+相同身份下相同 `record_id + revision` 和内容哈希重复提交，应返回同一业务结果，不创建新记录/新投递。键相同但内容不同必须冲突，不能覆盖。“内容相同”只比较 `text_sha256`；正文相同而其他字段不同时以首次入库的为准，不报冲突。
 
 删除、修订、目标变更与旧上传同时发生时，使用版本前置条件、墓碑与服务端事务裁定。对已发送记录新增目标应创建新的目标投递，不复用其他 Agent 的确认。
 
@@ -587,6 +587,8 @@ ARMED ──START──► ROUTING ──真实输入通过──► RECORDING
 | FINALIZING | 明确 START | 忽略并记录原因，不排队；给“忙碌”反馈，封存完成后再次触发才开始。 |
 | 任意 | 权限撤销/系统不允许 | 关闭业务音频闸门，安全清理后进入受阻状态。 |
 
+`BLOCKED` 带原因码。只有再次收到 START（耳机手势或屏幕按钮）才重试并进入 `ROUTING`，原因没消除就再次回到 `BLOCKED`；退出控制模式回到 `DISARMED`；不定时自动重试，也不自动回到 `ARMED`。录音中和封存中不能直接退出控制模式，须先停止。
+
 ### 12.3 转录状态机
 
 ```text
@@ -603,20 +605,24 @@ QUEUED
                        └─取消────────► CANCELLED
 ```
 
-远端提交后需要保存 provider job ID；`SUBMITTED_REMOTE` 不是 `SUCCEEDED`。本地与云端结果不能同时抢写同一文本版本。
+远端提交后需要保存 provider job ID；`SUBMITTED_REMOTE` 不是 `SUCCEEDED`。本地与云端结果不能同时抢写同一文本版本。`WAITING_NETWORK`、`WAITING_CONSENT`、`SUBMITTED_REMOTE` 留在枚举里，V1 的实现不得产生（ADR-0019）。
 
 ### 12.4 同步与消费状态机
 
 ```text
-文本版本：DRAFT → PUBLISHED → SUPERSEDED / DELETED
-同步任务：PENDING → SENDING → STORED / RETRY_SCHEDULED / BLOCKED
-每目标投递：PENDING → LEASED → ACKED
+文本版本：DRAFT → PUBLISHED → SUPERSEDED
+同步任务：PENDING → SENDING → STORED / WAITING_GATEWAY / RETRY_SCHEDULED / BLOCKED
+每目标投递：PENDING → LEASED → ACKNOWLEDGED
                         ├─暂时失败/租约到期→ PENDING
                         ├─永久拒绝────────→ REJECTED
                         └─撤销/删除────────→ CANCELLED
 ```
 
-`STORED`（已入库）表示网关已持久化；`LEASED`（已领取）只表示 Agent 取走了投递并持有租约，不表示处理；`ACKED`（已确认，术语 Acknowledged）表示该目标消费者完成了定义好的确认步骤。网关能验证“确认”，验证不了“处理”。界面文字必须避免混淆这些层次。启用 webhook 唤醒的 Destination 另有“已通知”“已接单”，二者都不等于已确认。
+`STORED`（已入库）表示网关已持久化；`LEASED`（已领取）只表示 Agent 取走了投递并持有租约，不表示处理；`ACKNOWLEDGED`（已确认）表示该目标消费者完成了定义好的确认步骤。网关能验证“确认”，验证不了“处理”。界面文字必须避免混淆这些层次。启用 webhook 唤醒的 Destination 另有“已通知”“已接单”，二者都不等于已确认。
+
+DEV-002 冻结后的补充：删除只到 Record 一级，Revision 没有“已删除”状态；同一 Record 的新 Revision 发给同一 Destination 时，旧版本尚未被领取的 Delivery 变为 `CANCELLED`，已领取或已确认的保留（ADR-009）。同步任务的三种非成功状态含义不同：`WAITING_GATEWAY` 是连不上网关（例如手机不在局域网），连上后自动继续，界面不得显示为失败（ADR-0018）；`RETRY_SCHEDULED` 是连上了但请求失败；`BLOCKED` 需要用户处理。
+
+四个状态机的完整转移表与事件序列样本以 `contracts/fixtures/state-machines/` 为准，本章的图只是概览。转移表里没有列出的（状态，事件）组合一律被拒绝。
 
 ---
 
@@ -674,7 +680,10 @@ QUEUED
 | ASR_NO_SPEECH | 有效音频未检测到语音 | 保存记录，不制造文本。 |
 | GATEWAY_UNREACHABLE | 网关/网络不可达 | 本地 outbox 保留并退避。 |
 | GATEWAY_AUTH_REVOKED | 设备或 Agent 凭证被撤销 | 停止传输，要求重新授权。 |
+| GATEWAY_KEY_MISMATCH | 网关公钥与配对时记下的指纹不符 | 拒绝连接，不提供“忽略并继续”；要求重新配对。（ADR-0018） |
 | RECORD_VERSION_CONFLICT | 幂等键相同但内容不同 | 拒绝覆盖，需版本处理。 |
+| RECORD_NOT_ORIGIN_DEVICE | 提交或删除请求来自不是录下该 Record 的设备 | 拒绝，不重试。（ADR-0020） |
+| RECORD_DELETED | 向已有删除墓碑的 Record 提交 | 拒绝，不重试；手机丢弃对应的待同步任务。 |
 | MCP_VERSION_UNSUPPORTED | 协议没有共同版本 | 返回支持信息，不错误解析。 |
 | DELIVERY_LEASE_EXPIRED | 消费者持有过期租约 | 拒绝 ack，按流程重新领取。 |
 
@@ -776,16 +785,16 @@ voicebridge/
 |---|---|---|
 | Device | device_id、platform、app_version、os_build | 设备身份由注册流程生成，不能用耳机名代替。 |
 | HeadsetProfile | profile_id、version、matchers、mapping、capabilities | 兼容结论绑定证据，不以 unknown 当通过。 |
-| Recording | record_id、capture_session_id、时间、完整性、输入策略 | 一段物理采集一个 record_id。 |
+| Recording | record_id、capture_session_id、时间、完整性、输入策略 | 与 Record 共用 `record_id`，不另设标识；只含有人声的片段，整段无人说话时为空（ADR-0016）。 |
 | AudioChunk | chunk_id、序号、哈希、位置、route_epoch | 顺序与时间范围可恢复；未验证帧不得进入。 |
 | RouteEvidence | session_id、epoch、observed_input、时间范围、结果 | 记录系统观测，不伪造固件/标识。 |
 | AsrJob | job_id、record_id、配置快照、provider_job_id、状态 | 一个重转录是新 job。 |
-| Revision | record_id、revision、文本、来源、哈希、审核状态 | 发布后不可原地覆盖；ASR 转录与用户修订各产生新 Revision。（原名 TranscriptRevision） |
+| Revision | record_id、revision、文本、来源、哈希、审核状态 | 发布后不可原地覆盖；ASR 转录与用户每次保存的修订各产生新 Revision，版本号由手机从 1 递增，网关接受不连续；只有录下该 Record 的设备能写（ADR-0020）。没录到人声的 Record 没有 Revision，不提交到网关。（原名 TranscriptRevision） |
 | ConsentGrant | principal、scope、provider/target、region、版本、撤销 | 音频上传和 Agent 读取分开授权。 |
 | OutboxEntry | operation_id、幂等键、尝试次数、下次执行 | 与发布操作原子创建。 |
 | Destination | destination_id、agent_principal、允许用途、连接方式、发送方式（自动发送/预览确认） | 不是任意用户可填的未认证 agent_id；V1 一个 Destination 对应一套专属凭证，项目/工作区路由规则后置。 |
 | Delivery | delivery_id、record/revision/target、租约、结果 | 每目标独立状态，支持重投。 |
-| Tombstone | object_id、version、deleted_at | 阻止旧请求复活删除对象。 |
+| Tombstone | record_id、deleted_at | 阻止旧请求复活删除对象。只针对整个 Record，不能只删某个 Revision；删除本地音频是独立操作，不产生墓碑。 |
 
 ### 16.2 时间与标识
 
@@ -795,42 +804,16 @@ voicebridge/
 
 ### 16.3 文本入库示例
 
-以下为**建议业务 JSON，不是 MCP 协议原生消息，也不是已经生成的真实用户记录**。`transcript_hash` 等派生值由实现计算，示例不伪造哈希。
+请求体的字段已在 DEV-002 冻结，以 `contracts/schemas/revision.schema.json` 为准，可校验的样本在 `contracts/fixtures/messages/`。与本文 1.2 版示例的差别：正文对象由 `transcript` 改名为 `content`（术语表禁用 Transcript）；哈希字段叫 `text_sha256`，算法是正文按 UTF-8 编码后的原始字节直接算 SHA-256，不做字符规范化，跨语言测试向量在 `contracts/fixtures/hash-vectors.json`；新增 `source`（`asr` / `user_edit`）、`end_reason`、`capture_duration_ms`、`speech_duration_ms` 与 `speech_segments`；`destination_ids` 是 UUID；请求体里没有 `tenant_id`。下面只保留结构示意，不是可提交的完整请求。
 
 ```json
 {
   "schema_version": "1.0",
-  "record_id": "6e49ce27-43c6-4c0c-9f56-9f5f801c8c65",
+  "record_id": "<uuid>",
   "revision": 1,
-  "capture": {
-    "platform": "harmonyos",
-    "app_version": "0.1.0-example",
-    "started_at": "2026-10-20T02:30:00Z",
-    "duration_ms": 18500,
-    "status": "complete",
-    "input_policy": "bluetooth_only",
-    "input_verification": "verified",
-    "headset_display_name": "HUAWEI FreeClip 2",
-    "headset_firmware": null,
-    "input_route_type": "bluetooth_hfp",
-    "route_evidence_id": "route-evidence-example-01"
-  },
-  "transcript": {
-    "text": "帮我记录一下，明天检查小说记忆模块。",
-    "language": "zh-CN",
-    "execution_location": "on_device",
-    "engine": "sherpa-onnx",
-    "model_id": "configured-local-model",
-    "model_version": "pinned-by-model-manifest",
-    "confidence": null,
-    "segments": [],
-    "review_state": "reviewed"
-  },
-  "publication": {
-    "intent": "context",
-    "destination_ids": ["writing-assistant"],
-    "policy_id": "user-confirmed-send"
-  }
+  "capture": { "end_reason": "headset_command", "status": "complete", "capture_duration_ms": 18500, "speech_duration_ms": 9200, "speech_segments": ["…"], "input_policy": "bluetooth_only", "…": "…" },
+  "content": { "text": "…", "text_sha256": "<sha256>", "source": "asr", "review_state": "not_reviewed", "execution_location": "on_device", "…": "…" },
+  "publication": { "intent": "context", "destination_ids": ["<uuid>"] }
 }
 ```
 
@@ -900,7 +883,7 @@ interface AsrProvider {
 
 输入错误、未授权、生命周期拒绝等必须返回结构化失败；不允许 catch 后返回一个空对象当成功。原生层与共享层均校验合同，不信任另一端已经检查。
 
-最小类型字段须在 DEV-002 中落实为可校验 schema：
+最小类型字段须落实为可校验 schema。**下表八个原生适配器类型没有包含在 DEV-002 本次冻结的范围内**（本次冻结的是网关与 MCP 的消息、Headset Profile 和四个状态机），留待 DEV-007、DEV-008 开工前补齐：
 
 | 类型 | 必需字段/语义 |
 |---|---|
@@ -936,7 +919,7 @@ interface AsrProvider {
 | `POST /v1/destinations/{destination_id}/credential` | 签发或轮换该 Destination 的专属凭证 | 凭证只在响应中显示一次，库内只存哈希；客户端须先过本机生物识别二次确认；可撤销。 |
 | `/mcp` | MCP HTTP 端点 | 使用经测试的标准传输及授权。 |
 
-> 以上三条配对与 Destination 管理接口为本次新增草案，具体字段由合同负责人在 DEV-002 中合并。
+> 配对与 Destination 管理接口的字段已在 DEV-002 冻结，见 `contracts/schemas/pairing.schema.json` 与 `destination.schema.json`。手机先连配对时记下的地址，连不上时用 mDNS（服务类型 `_auri-gateway._tcp`）在局域网内查找，连接前一律核对网关公钥指纹（ADR-0018）。
 
 推荐 `Idempotency-Key` 与业务键共同约束；`If-Match`/版本前置条件用于修改和删除。内容相同重复请求返回同一资源信息；内容不同返回 409 类冲突。禁止信任路径之外正文中的另一个对象 ID。
 
@@ -957,6 +940,8 @@ interface AsrProvider {
 首期不开放 `start_phone_recording`、`read_all_users`、`execute_transcript` 等泛权限工具。返回值含明确 `schema_version`；错误响应不能伪装成正常空列表。
 
 ### 17.4 领取与确认示例
+
+MCP 工具的输入输出已在 DEV-002 冻结，以 `contracts/schemas/delivery.schema.json` 为准。相对下面的示例，每条 Delivery 另有 `text_sha256`、`source`、`supersedes_revisions`、`capture_status`、`end_reason`；标识均为 UUID；确认后的状态写作 `ACKNOWLEDGED`。
 
 ```json
 {
@@ -1498,6 +1483,7 @@ T-017 的声音对照不能单独取代系统路由证据。物理测试应分�
 | ADR-0017（新增）：qwen3-asr-1.7b 的地位 | ADR-005 的候选，实测后定默认模型 | **已决**，见 `docs/adr/0017-qwen3-asr-as-candidate-model.md`。 |
 | ADR-0018（新增）：网关网络范围 | 只在局域网，自签证书加指纹绑定，V1 不做手机直连 MCP | **已决**，见 `docs/adr/0018-lan-only-gateway.md`。 |
 | ADR-0019（新增）：V1 转录范围 | 只做本地转录，云端推迟 | **已决**，见 `docs/adr/0019-v1-local-transcription-only.md`。 |
+| ADR-0020（新增）：Record 的写权限 | 只有录下 Record 的那台设备能提交新 Revision 或删除它 | **已决**，见 `docs/adr/0020-origin-device-writes-record.md`。 |
 | ADR-010：数据保留/备份/删除 | 音频本地，正文按授权同步，删除有墓碑 | 公开测试前。 |
 | ADR-011：正式开源许可证 | 尚未选定产品整体许可证 | 公开代码/分发前，核对依赖兼容。 |
 | ADR-012：签名与分发 | 开发测试优先，商店发布单独核验 | P5。 |
@@ -1578,5 +1564,6 @@ T-017 的声音对照不能单独取代系统路由证据。物理测试应分�
 | 1.0 | 2026-10-20 | 整合三端、多耳机/FreeClip 优先、严格蓝牙输入、本地/云端转录、MCP 与多 Agent 投递需求；加入官方平台限制、14 项开源候选、39 个来源入口、状态机、接口与 50 项测试。 |
 | 1.1 | 2026-10-20 | 产品定名 Auri 并建立 `GLOSSARY.md`；新增 ADR-002/008/009/0013；`TranscriptRevision`→`Revision`、`transcripts:read`→`records:read`；MCP 工具名改为 `record_*`/`delivery_*`；同步表 `ACKED`→`STORED`；补设备配对与 Destination 管理接口草案；录音时长、音频保留、自动发送、FINALIZING 期间 START 的默认值；确定验收宿主为 Hermes + Claude Code。 |
 | 1.2 | 2026-11-15 | 同步产品负责人的新要求：Handy 只作流程参考（ADR-0015）；VAD 只在会话内过滤静音（ADR-0016）；qwen3-asr-1.7b 列为默认本地模型候选（ADR-0017）；网关只在局域网、自签证书加指纹绑定、V1 不做手机直连 MCP（ADR-0018，取代 ADR-008 的公网域名部分）；V1 只做本地转录，DEV-011/012 推迟（ADR-0019）；第 28 章补登 ADR-0014 至 0019。 |
+| 1.3 | 2026-11-15 | DEV-002 合同冻结：新增 `contracts/schemas/`、`contracts/fixtures/` 与 `tests/contract/`；投递状态 `ACKED`→`ACKNOWLEDGED`；Revision 状态去掉 `DELETED`；同步状态新增 `WAITING_GATEWAY`；补 `BLOCKED` 的离开规则；请求体 `transcript`→`content`、`transcript_hash`→`text_sha256`，新增 `end_reason`、两个时长与 `speech_segments`；新增错误码 `GATEWAY_KEY_MISMATCH`、`RECORD_NOT_ORIGIN_DEVICE`、`RECORD_DELETED`；新增 ADR-0020，修订 ADR-009、ADR-0018；第 17.1 节八个原生适配器类型标明尚未冻结。 |
 
 **最终原则：优先证明“耳机真的能控制、声音真的来自耳机、文字真的被正确交付”，再扩展界面和智能功能。平台不允许的能力必须诚实呈现，不能靠隐蔽录音或虚假成功补齐。**

@@ -1,0 +1,11 @@
+{
+  "schema": "delivery.schema.json#/$defs/nack_request",
+  "expect": "valid",
+  "description": "永久拒绝。",
+  "instance": {
+    "delivery_id": "f2902603-449e-5ad9-beee-8c3c48c0f1f7",
+    "lease_token": "fixture-lease-token-not-a-real-secret",
+    "reason": "不接受这类内容。",
+    "retryable": false
+  }
+}

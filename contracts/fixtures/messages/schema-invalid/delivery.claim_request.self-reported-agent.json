@@ -1,0 +1,12 @@
+{
+  "schema": "delivery.schema.json#/$defs/claim_request",
+  "expect": "schema_invalid",
+  "rejected_because": "不能靠自报 agent_id 领取别人的内容。",
+  "expect_error": {
+    "path": "",
+    "keyword": "additionalProperties"
+  },
+  "instance": {
+    "agent_id": "someone-else"
+  }
+}

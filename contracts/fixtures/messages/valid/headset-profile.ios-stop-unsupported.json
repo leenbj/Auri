@@ -1,0 +1,51 @@
+{
+  "schema": "headset-profile.schema.json",
+  "expect": "valid",
+  "description": "iOS 录音中耳机按键停止为 UNSUPPORTED（ADR-0014 的 E3 结论），其余能力仍是 NOT_TESTED。",
+  "instance": {
+    "schema_version": "1.0",
+    "profile_id": "fixture-freeclip2-ios",
+    "profile_version": 1,
+    "manufacturer_hint": "HUAWEI",
+    "model_hint": "FreeClip 2",
+    "firmware_constraint": null,
+    "platform": "ios",
+    "raw_gesture_visible": false,
+    "command_mapping": {
+      "play": "START",
+      "pause": "STOP",
+      "toggle": "TOGGLE",
+      "volume_change": "STOP"
+    },
+    "input_policy": "bluetooth_only",
+    "capabilities": {
+      "foreground_start_stop": {
+        "status": "NOT_TESTED",
+        "evidence_level": null,
+        "evidence_ids": []
+      },
+      "stop_while_bluetooth_mic_active": {
+        "status": "UNSUPPORTED",
+        "evidence_level": "E3",
+        "evidence_ids": [
+          "execution/p0-spikes/ios-probe/results/2026-10-20-freeclip2-iphone-air.md"
+        ]
+      },
+      "continue_recording_when_locked": {
+        "status": "NOT_TESTED",
+        "evidence_level": null,
+        "evidence_ids": []
+      },
+      "restart_after_stop_when_locked": {
+        "status": "NOT_TESTED",
+        "evidence_level": null,
+        "evidence_ids": []
+      },
+      "start_after_process_termination": {
+        "status": "NOT_TESTED",
+        "evidence_level": null,
+        "evidence_ids": []
+      }
+    }
+  }
+}

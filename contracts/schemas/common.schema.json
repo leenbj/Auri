@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.auri.invalid/1.0/common.schema.json",
+  "title": "Auri 合同公共定义",
+  "description": "被其他 schema 引用的标识、时间、哈希与枚举。命名以 GLOSSARY.md 为准。",
+  "$defs": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "uuid": {
+      "description": "小写 UUID 字符串。",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "timestamp": {
+      "description": "带时区的 ISO 8601 时间；网关一律以 UTC 存储和返回。",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "sha256_hex": {
+      "description": "小写十六进制的 SHA-256。",
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "revision_number": {
+      "description": "手机本地从 1 递增的整数；网关接受不连续的版本号。",
+      "type": "integer",
+      "minimum": 1
+    },
+    "platform": {
+      "enum": ["harmonyos", "ios", "android"]
+    },
+    "intent": {
+      "description": "action_request 只是用户意图描述，不授予任何额外权限（SEC-004）。",
+      "enum": ["context", "action_request"]
+    },
+    "review_state": {
+      "enum": ["not_reviewed", "reviewed"]
+    },
+    "revision_source": {
+      "enum": ["asr", "user_edit"]
+    },
+    "execution_location": {
+      "description": "V1 只允许产生 on_device；另外两个值为云端转录保留（ADR-0019）。",
+      "enum": ["on_device", "self_hosted_remote", "commercial_cloud"]
+    },
+    "input_route_type": {
+      "enum": ["bluetooth_hfp", "bluetooth_le_audio", "bluetooth_unknown_profile"]
+    },
+    "end_reason": {
+      "description": "一次 Capture Session 是怎么结束的。后四种表示录音被截断。",
+      "enum": [
+        "headset_command",
+        "volume_gesture",
+        "screen_control",
+        "duration_limit",
+        "route_lost",
+        "system_interruption",
+        "permission_revoked",
+        "process_terminated"
+      ]
+    },
+    "capture_status": {
+      "description": "complete：由用户命令或时长上限正常结束；partial：被截断。",
+      "enum": ["complete", "partial"]
+    },
+    "send_mode": {
+      "description": "创建 Destination 时必须显式选择，没有默认值（ADR-009）。",
+      "enum": ["auto_send", "preview_confirm"]
+    },
+    "compat_status": {
+      "enum": [
+        "NOT_TESTED",
+        "CALIBRATION_REQUIRED",
+        "SUPPORTED_FOREGROUND",
+        "SUPPORTED_RECORDING_IN_BACKGROUND",
+        "SUPPORTED_BACKGROUND_RESTART",
+        "PARTIAL",
+        "UNSUPPORTED"
+      ]
+    },
+    "evidence_level": {
+      "enum": ["E0", "E1", "E2", "E3", "E4"]
+    },
+    "business_command": {
+      "enum": ["START", "STOP", "TOGGLE", "IGNORE"]
+    },
+    "capture_state": {
+      "enum": ["DISARMED", "ARMED", "ROUTING", "RECORDING", "FINALIZING", "BLOCKED"]
+    },
+    "transcription_state": {
+      "description": "WAITING_NETWORK、WAITING_CONSENT、SUBMITTED_REMOTE 为云端转录保留，V1 不产生（ADR-0019）。",
+      "enum": [
+        "QUEUED",
+        "WAITING_MODEL",
+        "WAITING_RESOURCES",
+        "RUNNING",
+        "SUCCEEDED",
+        "NO_SPEECH",
+        "RETRY_SCHEDULED",
+        "FAILED",
+        "CANCELLED",
+        "WAITING_NETWORK",
+        "WAITING_CONSENT",
+        "SUBMITTED_REMOTE"
+      ]
+    },
+    "revision_state": {
+      "description": "删除只到 Record 一级，Revision 没有“已删除”状态。",
+      "enum": ["DRAFT", "PUBLISHED", "SUPERSEDED"]
+    },
+    "sync_state": {
+      "description": "WAITING_GATEWAY：连不上网关，连上后自动继续；RETRY_SCHEDULED：连上了但请求失败；BLOCKED：需要用户处理。",
+      "enum": ["PENDING", "SENDING", "STORED", "WAITING_GATEWAY", "RETRY_SCHEDULED", "BLOCKED"]
+    },
+    "delivery_state": {
+      "enum": ["PENDING", "LEASED", "ACKNOWLEDGED", "REJECTED", "CANCELLED"]
+    },
+    "error_code": {
+      "description": "PRD 第 14 章的错误码清单。",
+      "enum": [
+        "PERMISSION_MIC_DENIED",
+        "BACKGROUND_START_DENIED",
+        "CONTROL_NOT_AVAILABLE",
+        "INPUT_DEVICE_MISSING",
+        "INPUT_ROUTE_UNVERIFIED",
+        "INPUT_ROUTE_CHANGED",
+        "AUDIO_INTERRUPTED",
+        "STORAGE_EXHAUSTED",
+        "MODEL_NOT_INSTALLED",
+        "MODEL_INTEGRITY_FAILED",
+        "ASR_RESOURCE_LIMIT",
+        "CLOUD_CONSENT_REQUIRED",
+        "CLOUD_AUTH_FAILED",
+        "CLOUD_RATE_LIMITED",
+        "CLOUD_RESULT_UNCERTAIN",
+        "ASR_NO_SPEECH",
+        "GATEWAY_UNREACHABLE",
+        "GATEWAY_AUTH_REVOKED",
+        "GATEWAY_KEY_MISMATCH",
+        "RECORD_VERSION_CONFLICT",
+        "RECORD_NOT_ORIGIN_DEVICE",
+        "RECORD_DELETED",
+        "MCP_VERSION_UNSUPPORTED",
+        "DELIVERY_LEASE_EXPIRED"
+      ]
+    }
+  }
+}

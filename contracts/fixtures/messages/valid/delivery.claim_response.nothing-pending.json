@@ -1,0 +1,10 @@
+{
+  "schema": "delivery.schema.json#/$defs/claim_response",
+  "expect": "valid",
+  "description": "没有待领取的内容；这是正常的空结果，不是错误。",
+  "instance": {
+    "schema_version": "1.0",
+    "deliveries": [],
+    "next_cursor": null
+  }
+}

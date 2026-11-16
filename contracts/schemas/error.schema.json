@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.auri.invalid/1.0/error.schema.json",
+  "title": "统一错误结构",
+  "description": "PRD 第 14 章。错误响应不得伪装成正常的空结果。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "code", "message", "retryable", "required_action", "operation_id"],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+    "code": { "$ref": "common.schema.json#/$defs/error_code" },
+    "message": {
+      "description": "用户能看懂的说明；不含密钥、正文或堆栈。",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "retryable": { "type": "boolean" },
+    "required_action": {
+      "description": "需要用户做的事；不需要时为 null。",
+      "type": ["string", "null"],
+      "maxLength": 200
+    },
+    "operation_id": {
+      "oneOf": [{ "$ref": "common.schema.json#/$defs/uuid" }, { "type": "null" }]
+    }
+  }
+}

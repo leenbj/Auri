@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.auri.invalid/1.0/state-machine.schema.json",
+  "title": "状态机定义与事件序列样本的文件格式",
+  "description": "与语言无关。三端和网关读同一批文件做测试。转移表里没有列出的（状态，事件）组合一律视为被拒绝：状态不变，并返回错误。",
+  "$defs": {
+    "name": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+    "machine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "machine", "description", "initial_state", "states", "reserved_states", "terminal_states", "events", "transitions"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "machine": { "enum": ["capture", "transcription", "sync", "delivery"] },
+        "description": { "type": "string" },
+        "initial_state": { "$ref": "#/$defs/name" },
+        "states": { "type": "array", "minItems": 2, "uniqueItems": true, "items": { "$ref": "#/$defs/name" } },
+        "reserved_states": {
+          "description": "留在枚举里但 V1 不允许产生的状态；不得出现在转移和样本里。",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/name" }
+        },
+        "terminal_states": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/name" } },
+        "events": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/name" } },
+        "transitions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["from", "event", "outcome", "to", "note"],
+            "properties": {
+              "from": { "$ref": "#/$defs/name" },
+              "event": { "$ref": "#/$defs/name" },
+              "outcome": {
+                "description": "transition：按规则转移（可以转到自身）；ignored：幂等地忽略，状态不变，不报错。",
+                "enum": ["transition", "ignored"]
+              },
+              "to": { "$ref": "#/$defs/name" },
+              "end_reason": { "$ref": "common.schema.json#/$defs/end_reason" },
+              "note": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "scenarios": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "machine", "scenarios"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "machine": { "enum": ["capture", "transcription", "sync", "delivery"] },
+        "scenarios": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "description", "initial_state", "steps"],
+            "properties": {
+              "name": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+              "description": { "type": "string", "minLength": 1 },
+              "initial_state": { "$ref": "#/$defs/name" },
+              "steps": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["event", "expect", "state_after"],
+                  "properties": {
+                    "event": { "$ref": "#/$defs/name" },
+                    "expect": { "enum": ["transition", "ignored", "rejected"] },
+                    "state_after": { "$ref": "#/$defs/name" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

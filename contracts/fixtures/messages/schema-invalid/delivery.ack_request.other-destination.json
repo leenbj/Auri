@@ -1,0 +1,15 @@
+{
+  "schema": "delivery.schema.json#/$defs/ack_request",
+  "expect": "schema_invalid",
+  "rejected_because": "确认只影响调用者自己的 Destination，不能指定别的。",
+  "expect_error": {
+    "path": "",
+    "keyword": "additionalProperties"
+  },
+  "instance": {
+    "delivery_id": "f2902603-449e-5ad9-beee-8c3c48c0f1f7",
+    "lease_token": "fixture-lease-token-not-a-real-secret",
+    "note": "已保存到本地笔记。",
+    "destination_id": "f9b31447-7c9e-58ec-a575-69c74c6bc7f5"
+  }
+}

@@ -1,0 +1,172 @@
+{
+  "schema_version": "1.0",
+  "machine": "sync",
+  "scenarios": [
+    {
+      "name": "straight-store",
+      "description": "在局域网内，一次入库成功。",
+      "initial_state": "PENDING",
+      "steps": [
+        {
+          "event": "SEND_STARTED",
+          "expect": "transition",
+          "state_after": "SENDING"
+        },
+        {
+          "event": "STORED_CONFIRMED",
+          "expect": "transition",
+          "state_after": "STORED"
+        },
+        {
+          "event": "STORED_CONFIRMED",
+          "expect": "ignored",
+          "state_after": "STORED"
+        }
+      ]
+    },
+    {
+      "name": "away-from-home",
+      "description": "在外面录音：排队等待，回到局域网后自动补传。",
+      "initial_state": "PENDING",
+      "steps": [
+        {
+          "event": "GATEWAY_UNREACHABLE",
+          "expect": "transition",
+          "state_after": "WAITING_GATEWAY"
+        },
+        {
+          "event": "GATEWAY_UNREACHABLE",
+          "expect": "ignored",
+          "state_after": "WAITING_GATEWAY"
+        },
+        {
+          "event": "GATEWAY_REACHABLE",
+          "expect": "transition",
+          "state_after": "PENDING"
+        },
+        {
+          "event": "SEND_STARTED",
+          "expect": "transition",
+          "state_after": "SENDING"
+        },
+        {
+          "event": "STORED_CONFIRMED",
+          "expect": "transition",
+          "state_after": "STORED"
+        }
+      ]
+    },
+    {
+      "name": "disconnect-while-sending",
+      "description": "发送途中离开局域网。",
+      "initial_state": "SENDING",
+      "steps": [
+        {
+          "event": "GATEWAY_UNREACHABLE",
+          "expect": "transition",
+          "state_after": "WAITING_GATEWAY"
+        },
+        {
+          "event": "GATEWAY_REACHABLE",
+          "expect": "transition",
+          "state_after": "PENDING"
+        }
+      ]
+    },
+    {
+      "name": "retry-after-server-error",
+      "description": "连上了但请求失败，按退避重试；等待期间离开局域网则改为等待网关。",
+      "initial_state": "SENDING",
+      "steps": [
+        {
+          "event": "RETRYABLE_FAILURE",
+          "expect": "transition",
+          "state_after": "RETRY_SCHEDULED"
+        },
+        {
+          "event": "RETRY_DUE",
+          "expect": "transition",
+          "state_after": "PENDING"
+        },
+        {
+          "event": "SEND_STARTED",
+          "expect": "transition",
+          "state_after": "SENDING"
+        },
+        {
+          "event": "RETRYABLE_FAILURE",
+          "expect": "transition",
+          "state_after": "RETRY_SCHEDULED"
+        },
+        {
+          "event": "GATEWAY_UNREACHABLE",
+          "expect": "transition",
+          "state_after": "WAITING_GATEWAY"
+        }
+      ]
+    },
+    {
+      "name": "key-mismatch-needs-repairing",
+      "description": "网关公钥不符：停下来等用户重新配对，不会自己重试。",
+      "initial_state": "SENDING",
+      "steps": [
+        {
+          "event": "KEY_MISMATCH",
+          "expect": "transition",
+          "state_after": "BLOCKED"
+        },
+        {
+          "event": "RETRY_DUE",
+          "expect": "rejected",
+          "state_after": "BLOCKED"
+        },
+        {
+          "event": "USER_RESOLVED",
+          "expect": "transition",
+          "state_after": "PENDING"
+        }
+      ]
+    },
+    {
+      "name": "auth-revoked",
+      "description": "设备令牌被撤销。",
+      "initial_state": "SENDING",
+      "steps": [
+        {
+          "event": "AUTH_REVOKED",
+          "expect": "transition",
+          "state_after": "BLOCKED"
+        },
+        {
+          "event": "SEND_STARTED",
+          "expect": "rejected",
+          "state_after": "BLOCKED"
+        }
+      ]
+    },
+    {
+      "name": "version-conflict",
+      "description": "同一版本号正文不同。",
+      "initial_state": "SENDING",
+      "steps": [
+        {
+          "event": "VERSION_CONFLICT",
+          "expect": "transition",
+          "state_after": "BLOCKED"
+        }
+      ]
+    },
+    {
+      "name": "stored-is-final",
+      "description": "已入库的任务不会再发送。",
+      "initial_state": "STORED",
+      "steps": [
+        {
+          "event": "SEND_STARTED",
+          "expect": "rejected",
+          "state_after": "STORED"
+        }
+      ]
+    }
+  ]
+}

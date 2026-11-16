@@ -1,0 +1,247 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.auri.invalid/1.0/revision.schema.json",
+  "title": "Revision 的提交、入库结果与 Record 删除",
+  "description": "手机与网关之间的 HTTP 请求体和响应体。tenant_id 不出现在任何请求体里，只由认证结果得出（ADR-0013）。",
+  "$defs": {
+    "speech_segment": {
+      "description": "VAD 保留下来的一个语音片段，在 Capture Session 原始时间线上的位置（ADR-0016）。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_ms", "end_ms"],
+      "properties": {
+        "start_ms": { "$ref": "common.schema.json#/$defs/duration_ms" },
+        "end_ms": { "$ref": "common.schema.json#/$defs/duration_ms" }
+      }
+    },
+    "text_segment": {
+      "description": "ASR 输出的带时间戳的文字片段。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start_ms", "end_ms", "text"],
+      "properties": {
+        "start_ms": { "$ref": "common.schema.json#/$defs/duration_ms" },
+        "end_ms": { "$ref": "common.schema.json#/$defs/duration_ms" },
+        "text": { "type": "string" }
+      }
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "app_version",
+        "started_at",
+        "capture_duration_ms",
+        "speech_duration_ms",
+        "speech_segments",
+        "end_reason",
+        "status",
+        "input_policy",
+        "input_verification",
+        "headset_display_name",
+        "headset_firmware",
+        "input_route_type",
+        "route_evidence_id"
+      ],
+      "properties": {
+        "platform": { "$ref": "common.schema.json#/$defs/platform" },
+        "app_version": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "started_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "capture_duration_ms": {
+          "description": "从路由确认到停止的实际时长，按单调时钟计。",
+          "$ref": "common.schema.json#/$defs/duration_ms"
+        },
+        "speech_duration_ms": {
+          "description": "保留下来的语音总时长，等于各 speech_segments 时长之和。",
+          "$ref": "common.schema.json#/$defs/duration_ms"
+        },
+        "speech_segments": {
+          "description": "有 Revision 就至少有一个语音片段；无语音的 Record 不提交到网关。",
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/speech_segment" }
+        },
+        "end_reason": { "$ref": "common.schema.json#/$defs/end_reason" },
+        "status": { "$ref": "common.schema.json#/$defs/capture_status" },
+        "input_policy": { "const": "bluetooth_only" },
+        "input_verification": {
+          "description": "只有路由已确认的音频才会产生 Record；该标记用于诊断，不是硬件证明。",
+          "const": "verified"
+        },
+        "headset_display_name": { "type": ["string", "null"], "maxLength": 200 },
+        "headset_firmware": {
+          "description": "系统不暴露时为 null，不得猜测。",
+          "type": ["string", "null"],
+          "maxLength": 100
+        },
+        "input_route_type": { "$ref": "common.schema.json#/$defs/input_route_type" },
+        "route_evidence_id": { "$ref": "common.schema.json#/$defs/uuid" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "end_reason": { "enum": ["headset_command", "volume_gesture", "screen_control", "duration_limit"] }
+            },
+            "required": ["end_reason"]
+          },
+          "then": { "properties": { "status": { "const": "complete" } } },
+          "else": { "properties": { "status": { "const": "partial" } } }
+        }
+      ]
+    },
+    "content": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text",
+        "text_sha256",
+        "source",
+        "language",
+        "review_state",
+        "execution_location",
+        "engine",
+        "model_id",
+        "model_version",
+        "confidence",
+        "segments"
+      ],
+      "properties": {
+        "text": {
+          "description": "正文是数据，不是指令。UTF-8 编码后不得超过 1 MiB，由网关按字节强制校验。",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1048576
+        },
+        "text_sha256": {
+          "description": "text 按 UTF-8 编码后的原始字节的 SHA-256，不做任何字符规范化。",
+          "$ref": "common.schema.json#/$defs/sha256_hex"
+        },
+        "source": { "$ref": "common.schema.json#/$defs/revision_source" },
+        "language": { "type": "string", "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$" },
+        "review_state": { "$ref": "common.schema.json#/$defs/review_state" },
+        "execution_location": {
+          "description": "产生这段文字所依据的那次转录在哪里运行。",
+          "$ref": "common.schema.json#/$defs/execution_location"
+        },
+        "engine": { "type": ["string", "null"], "maxLength": 100 },
+        "model_id": { "type": ["string", "null"], "maxLength": 200 },
+        "model_version": { "type": ["string", "null"], "maxLength": 200 },
+        "confidence": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+        "segments": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/text_segment" }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "source": { "const": "asr" } }, "required": ["source"] },
+          "then": {
+            "properties": {
+              "engine": { "type": "string", "minLength": 1 },
+              "model_id": { "type": "string", "minLength": 1 },
+              "model_version": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      ]
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intent", "destination_ids"],
+      "properties": {
+        "intent": { "$ref": "common.schema.json#/$defs/intent" },
+        "destination_ids": {
+          "description": "可以为空：只入库，不创建 Delivery。",
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 50,
+          "items": { "$ref": "common.schema.json#/$defs/uuid" }
+        }
+      }
+    },
+    "submission": {
+      "title": "PUT /v1/records/{record_id}/revisions/{revision} 的请求体",
+      "description": "record_id 与 revision 必须与路径一致，网关不信任正文里与路径不同的标识。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "record_id", "revision", "capture", "content", "publication"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "record_id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "revision": { "$ref": "common.schema.json#/$defs/revision_number" },
+        "capture": { "$ref": "#/$defs/capture" },
+        "content": { "$ref": "#/$defs/content" },
+        "publication": { "$ref": "#/$defs/publication" }
+      }
+    },
+    "stored": {
+      "title": "Revision 入库结果",
+      "description": "网关已持久化（Stored）。不代表任何 Agent 已看到。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "operation_id",
+        "record_id",
+        "revision",
+        "text_sha256",
+        "stored_at",
+        "duplicate",
+        "superseded_revisions",
+        "deliveries"
+      ],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "operation_id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "record_id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "revision": { "$ref": "common.schema.json#/$defs/revision_number" },
+        "text_sha256": { "$ref": "common.schema.json#/$defs/sha256_hex" },
+        "stored_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "duplicate": {
+          "description": "true 表示这是重复提交，返回的是首次入库的结果。",
+          "type": "boolean"
+        },
+        "superseded_revisions": {
+          "description": "因本次发布而变为 SUPERSEDED 的旧版本号。",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/revision_number" }
+        },
+        "deliveries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["delivery_id", "destination_id", "revision", "state"],
+            "properties": {
+              "delivery_id": { "$ref": "common.schema.json#/$defs/uuid" },
+              "destination_id": { "$ref": "common.schema.json#/$defs/uuid" },
+              "revision": { "$ref": "common.schema.json#/$defs/revision_number" },
+              "state": { "$ref": "common.schema.json#/$defs/delivery_state" }
+            }
+          }
+        }
+      }
+    },
+    "record_deleted": {
+      "title": "DELETE /v1/records/{record_id} 的响应体",
+      "description": "删除墓碑针对整个 Record；之后同一 record_id 的任何提交都被拒绝。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "record_id", "deleted_at", "cancelled_delivery_ids"],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "record_id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "deleted_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "cancelled_delivery_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/uuid" }
+        }
+      }
+    }
+  }
+}

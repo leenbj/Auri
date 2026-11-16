@@ -1,0 +1,4 @@
+# 合同测试的依赖，固定版本（PRD 第 15.4 节：依赖锁定）。
+jsonschema==4.26.0
+referencing==0.37.0
+pytest==9.2.0

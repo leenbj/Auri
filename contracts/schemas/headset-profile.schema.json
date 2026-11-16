@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.auri.invalid/1.0/headset-profile.schema.json",
+  "title": "Headset Profile（耳机档案）",
+  "description": "某种耳机在某平台上的命令映射与已实测能力。档案只是数据，不含可执行代码。每项能力各自带状态与证据等级，未知不算通过。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "profile_id",
+    "profile_version",
+    "manufacturer_hint",
+    "model_hint",
+    "firmware_constraint",
+    "platform",
+    "raw_gesture_visible",
+    "command_mapping",
+    "input_policy",
+    "capabilities"
+  ],
+  "properties": {
+    "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+    "profile_id": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$", "maxLength": 100 },
+    "profile_version": { "type": "integer", "minimum": 1 },
+    "manufacturer_hint": { "type": ["string", "null"], "maxLength": 100 },
+    "model_hint": { "type": ["string", "null"], "maxLength": 100 },
+    "firmware_constraint": {
+      "description": "适用的固件范围；未知为 null，不得猜测。",
+      "type": ["string", "null"],
+      "maxLength": 100
+    },
+    "platform": { "$ref": "common.schema.json#/$defs/platform" },
+    "raw_gesture_visible": {
+      "description": "应用是否能看到原始手势（如 doubleTap）。看不到时不得声称知道是左耳还是右耳。",
+      "type": "boolean"
+    },
+    "command_mapping": {
+      "description": "平台事件到业务命令的映射。键是平台事件，不是物理手势。",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "play": { "$ref": "common.schema.json#/$defs/business_command" },
+        "pause": { "$ref": "common.schema.json#/$defs/business_command" },
+        "toggle": { "$ref": "common.schema.json#/$defs/business_command" },
+        "next": { "$ref": "common.schema.json#/$defs/business_command" },
+        "previous": { "$ref": "common.schema.json#/$defs/business_command" },
+        "volume_change": {
+          "description": "iOS 录音中的停止信号（ADR-0014）。只能映射为 STOP 或 IGNORE。",
+          "enum": ["STOP", "IGNORE"]
+        }
+      }
+    },
+    "input_policy": { "const": "bluetooth_only" },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "foreground_start_stop",
+        "stop_while_bluetooth_mic_active",
+        "continue_recording_when_locked",
+        "restart_after_stop_when_locked",
+        "start_after_process_termination"
+      ],
+      "properties": {
+        "foreground_start_stop": { "$ref": "#/$defs/capability" },
+        "stop_while_bluetooth_mic_active": { "$ref": "#/$defs/capability" },
+        "continue_recording_when_locked": { "$ref": "#/$defs/capability" },
+        "restart_after_stop_when_locked": { "$ref": "#/$defs/capability" },
+        "start_after_process_termination": { "$ref": "#/$defs/capability" }
+      }
+    }
+  },
+  "$defs": {
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "evidence_level", "evidence_ids"],
+      "properties": {
+        "status": { "$ref": "common.schema.json#/$defs/compat_status" },
+        "evidence_level": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/evidence_level" }, { "type": "null" }]
+        },
+        "evidence_ids": {
+          "description": "证据的仓库内路径或标识。",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 300 }
+        }
+      },
+      "allOf": [
+        {
+          "description": "兼容结论（无论支持还是不支持）必须有 E3 以上的真机证据。",
+          "if": {
+            "properties": { "status": { "enum": ["NOT_TESTED", "CALIBRATION_REQUIRED"] } },
+            "required": ["status"]
+          },
+          "else": {
+            "properties": {
+              "evidence_level": { "enum": ["E3", "E4"] },
+              "evidence_ids": { "minItems": 1 }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

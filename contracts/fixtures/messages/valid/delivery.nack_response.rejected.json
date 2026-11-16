@@ -1,0 +1,10 @@
+{
+  "schema": "delivery.schema.json#/$defs/nack_response",
+  "expect": "valid",
+  "description": "永久拒绝后进入 REJECTED。",
+  "instance": {
+    "schema_version": "1.0",
+    "delivery_id": "f2902603-449e-5ad9-beee-8c3c48c0f1f7",
+    "state": "REJECTED"
+  }
+}

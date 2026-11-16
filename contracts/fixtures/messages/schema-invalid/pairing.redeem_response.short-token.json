@@ -1,0 +1,16 @@
+{
+  "schema": "pairing.schema.json#/$defs/redeem_response",
+  "expect": "schema_invalid",
+  "rejected_because": "设备令牌长度不足。",
+  "expect_error": {
+    "path": "/device_token",
+    "keyword": "minLength"
+  },
+  "instance": {
+    "schema_version": "1.0",
+    "gateway_id": "fa1b98ec-1bfb-53b3-85a3-4d36b680fe6e",
+    "device_id": "ef7b1358-df31-520f-90f3-d98fc5173b46",
+    "device_token": "short",
+    "paired_at": "2026-11-15T02:05:00Z"
+  }
+}

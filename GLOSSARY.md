@@ -7,7 +7,7 @@
 ### 采集
 
 **Recording（录音）**:
-一次采集产生的音频，只存在于手机本地；每个 Recording 对应且仅对应一个 Record。
+一个 Record 的音频，只存在于手机本地，只包含有人声的片段；整段无人说话时为空。每个 Recording 属于且仅属于一个 Record。
 _Avoid_: 音频文件、录音记录
 
 **Strict Bluetooth Input（严格蓝牙输入）**:
@@ -19,7 +19,7 @@ _Avoid_: 蓝牙优先、麦克风自动回退、已连接即可
 _Avoid_: 监听模式、常驻录音
 
 **Capture Session（采集会话）**:
-从一次有效 START 到封存结束的一次采集过程；至多产生一个 Recording，在路由确认前被取消的不产生。
+从一次有效 START 到封存结束的一次采集过程；路由已确认的产生且仅产生一个 Record，在路由确认前被取消的不产生。
 
 **Route Evidence（路由证据）**:
 系统观测到的实际输入来源记录，用来证明音频来自所选耳机。
@@ -34,11 +34,11 @@ _Avoid_: 已连接、已配对（它们都不是证据）
 ### 文本
 
 **Record（记录）**:
-一条逻辑条目，与一个 Recording 一一对应，其下挂着由不可变 Revision 组成的链；音频被删除后，Record 与其文本仍然存在。
+一条逻辑条目，由一次路由已确认的 Capture Session 产生，其下挂着由不可变 Revision 组成的链。没录到人声的 Record 没有 Revision，标为“无语音”；音频被删除后，Record 与其文本仍然存在。
 _Avoid_: 笔记、条目、转录结果
 
 **Revision（修订）**:
-Record 的一个不可变文本版本；ASR 转录与用户修订各产生新的 Revision，已发布的 Revision 不可覆盖。转录只是 Revision 的一种来源，不是独立实体。
+Record 的一个不可变文本版本；ASR 转录与用户每次保存的修订各产生新的 Revision，已发布的 Revision 不可覆盖。转录只是 Revision 的一种来源，不是独立实体。同一 Record 有更新的 Revision 发布后，旧的称为被取代（Superseded），仍然保留、仍可读取。只有录下该 Record 的那台设备能为它产生 Revision。
 _Avoid_: Transcript、TranscriptRevision、转录稿
 
 ### 投递
@@ -60,6 +60,10 @@ _Avoid_: target（不加限定时）、自报的 agent_id
 _Avoid_: 推送、消费记录
 
 ### 投递状态
+
+**Waiting for Gateway（等待网关）**:
+手机当前连不上网关（例如不在同一局域网），已发布的 Revision 在手机本地排队，连上后自动继续；不是失败，不需要用户处理。
+_Avoid_: 发送失败、离线错误
 
 **Stored（已入库）**:
 网关已持久化某个 Revision；不代表任何 Agent 已看到它。

@@ -1,0 +1,13 @@
+{
+  "schema": "error.schema.json",
+  "expect": "valid",
+  "description": "租约过期后确认被拒绝。",
+  "instance": {
+    "schema_version": "1.0",
+    "code": "DELIVERY_LEASE_EXPIRED",
+    "message": "租约已过期，请重新领取。",
+    "retryable": true,
+    "required_action": null,
+    "operation_id": "ad0129c1-f135-5068-b3bd-03c8cda978ea"
+  }
+}

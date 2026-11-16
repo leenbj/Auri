@@ -1,0 +1,18 @@
+{
+  "schema": "revision.schema.json#/$defs/record_deleted",
+  "expect": "schema_invalid",
+  "rejected_because": "删除只到 Record 一级，不能只删某个 Revision。",
+  "expect_error": {
+    "path": "",
+    "keyword": "additionalProperties"
+  },
+  "instance": {
+    "schema_version": "1.0",
+    "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
+    "deleted_at": "2026-11-16T08:00:00Z",
+    "cancelled_delivery_ids": [
+      "7106606a-520c-56b6-bfdc-f3326d5828a4"
+    ],
+    "revision": 1
+  }
+}

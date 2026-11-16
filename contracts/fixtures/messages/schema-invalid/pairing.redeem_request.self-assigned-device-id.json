@@ -1,0 +1,20 @@
+{
+  "schema": "pairing.schema.json#/$defs/redeem_request",
+  "expect": "schema_invalid",
+  "rejected_because": "device_id 由网关生成，手机不能自报。",
+  "expect_error": {
+    "path": "/device",
+    "keyword": "additionalProperties"
+  },
+  "instance": {
+    "schema_version": "1.0",
+    "pairing_code": "FIXTURE-PAIRING-CODE-NOT-A-SECRET",
+    "device": {
+      "platform": "ios",
+      "app_version": "0.1.0-fixture",
+      "os_build": "fixture-build",
+      "display_name": "我的 iPhone",
+      "device_id": "ef7b1358-df31-520f-90f3-d98fc5173b46"
+    }
+  }
+}

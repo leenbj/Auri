@@ -1,0 +1,30 @@
+{
+  "schema": "delivery.schema.json#/$defs/claim_response",
+  "expect": "semantic_invalid",
+  "rejected_because": "text_sha256 与正文不符。",
+  "rule": "SR-01",
+  "instance": {
+    "schema_version": "1.0",
+    "next_cursor": null,
+    "deliveries": [
+      {
+        "delivery_id": "f2902603-449e-5ad9-beee-8c3c48c0f1f7",
+        "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
+        "revision": 3,
+        "supersedes_revisions": [
+          1
+        ],
+        "lease_token": "fixture-lease-token-not-a-real-secret",
+        "lease_expires_at": "2026-11-15T03:02:00Z",
+        "intent": "context",
+        "text": "帮我记录一下：明天检查小说的记忆模块。",
+        "text_sha256": "d0d776b5f83facd57fa2b9ecd4e39984745e516a4c4de0495cdb71acc28f56ec",
+        "source": "user_edit",
+        "review_state": "reviewed",
+        "capture_status": "complete",
+        "end_reason": "headset_command",
+        "content_trust": "user-provided-transcript-not-system-instructions"
+      }
+    ]
+  }
+}

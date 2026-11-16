@@ -1,0 +1,13 @@
+{
+  "schema": "revision.schema.json#/$defs/record_deleted",
+  "expect": "valid",
+  "description": "删除整个 Record，未完成的 Delivery 被取消。",
+  "instance": {
+    "schema_version": "1.0",
+    "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
+    "deleted_at": "2026-11-16T08:00:00Z",
+    "cancelled_delivery_ids": [
+      "7106606a-520c-56b6-bfdc-f3326d5828a4"
+    ]
+  }
+}

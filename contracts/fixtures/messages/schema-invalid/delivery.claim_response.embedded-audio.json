@@ -1,0 +1,34 @@
+{
+  "schema": "delivery.schema.json#/$defs/claim_response",
+  "expect": "schema_invalid",
+  "rejected_because": "不在结果里嵌入音频。",
+  "expect_error": {
+    "path": "/deliveries/0",
+    "keyword": "additionalProperties"
+  },
+  "instance": {
+    "schema_version": "1.0",
+    "next_cursor": null,
+    "deliveries": [
+      {
+        "delivery_id": "f2902603-449e-5ad9-beee-8c3c48c0f1f7",
+        "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
+        "revision": 3,
+        "supersedes_revisions": [
+          1
+        ],
+        "lease_token": "fixture-lease-token-not-a-real-secret",
+        "lease_expires_at": "2026-11-15T03:02:00Z",
+        "intent": "context",
+        "text": "帮我记录一下：明天检查小说的记忆模块。",
+        "text_sha256": "8a7cc51dc506d33c5630b4e40a8a68e4a1d432c17ccea61de5738b0d416c4092",
+        "source": "user_edit",
+        "review_state": "reviewed",
+        "capture_status": "complete",
+        "end_reason": "headset_command",
+        "content_trust": "user-provided-transcript-not-system-instructions",
+        "audio_base64": "AAAA"
+      }
+    ]
+  }
+}

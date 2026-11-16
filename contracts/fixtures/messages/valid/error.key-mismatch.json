@@ -1,0 +1,13 @@
+{
+  "schema": "error.schema.json",
+  "expect": "valid",
+  "description": "公钥指纹不符。",
+  "instance": {
+    "schema_version": "1.0",
+    "code": "GATEWAY_KEY_MISMATCH",
+    "message": "网关的公钥与配对时记下的不一致，已拒绝连接。",
+    "retryable": false,
+    "required_action": "在网关电脑上重新生成配对码并重新配对。",
+    "operation_id": null
+  }
+}

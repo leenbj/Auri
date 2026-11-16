@@ -1,0 +1,165 @@
+{
+  "schema_version": "1.0",
+  "machine": "delivery",
+  "description": "网关上一条 Delivery 的状态机（PRD 第 12.4 节）。至少一次投递，消费者按 delivery_id 去重。",
+  "initial_state": "PENDING",
+  "states": [
+    "PENDING",
+    "LEASED",
+    "ACKNOWLEDGED",
+    "REJECTED",
+    "CANCELLED"
+  ],
+  "reserved_states": [],
+  "terminal_states": [
+    "ACKNOWLEDGED",
+    "REJECTED",
+    "CANCELLED"
+  ],
+  "events": [
+    "CLAIM",
+    "SUPERSEDED",
+    "RECORD_DELETED",
+    "DESTINATION_REVOKED",
+    "RENEW_LEASE",
+    "ACK",
+    "NACK_RETRYABLE",
+    "NACK_PERMANENT",
+    "LEASE_EXPIRED"
+  ],
+  "transitions": [
+    {
+      "from": "PENDING",
+      "event": "CLAIM",
+      "outcome": "transition",
+      "to": "LEASED",
+      "note": "Agent 领取并获得租约；只代表读到。"
+    },
+    {
+      "from": "PENDING",
+      "event": "SUPERSEDED",
+      "outcome": "transition",
+      "to": "CANCELLED",
+      "note": "同一 Record 的新 Revision 发给了同一 Destination，未领取的旧版本取消。"
+    },
+    {
+      "from": "PENDING",
+      "event": "RECORD_DELETED",
+      "outcome": "transition",
+      "to": "CANCELLED",
+      "note": "Record 被删除。"
+    },
+    {
+      "from": "PENDING",
+      "event": "DESTINATION_REVOKED",
+      "outcome": "transition",
+      "to": "CANCELLED",
+      "note": "Destination 被撤销。"
+    },
+    {
+      "from": "LEASED",
+      "event": "RENEW_LEASE",
+      "outcome": "transition",
+      "to": "LEASED",
+      "note": "当前持有人续租，得到新的到期时间。"
+    },
+    {
+      "from": "LEASED",
+      "event": "ACK",
+      "outcome": "transition",
+      "to": "ACKNOWLEDGED",
+      "note": "Agent 完成确认；网关验证不了是否真的处理。"
+    },
+    {
+      "from": "LEASED",
+      "event": "NACK_RETRYABLE",
+      "outcome": "transition",
+      "to": "PENDING",
+      "note": "暂时失败，等待重投。"
+    },
+    {
+      "from": "LEASED",
+      "event": "NACK_PERMANENT",
+      "outcome": "transition",
+      "to": "REJECTED",
+      "note": "永久拒绝。"
+    },
+    {
+      "from": "LEASED",
+      "event": "LEASE_EXPIRED",
+      "outcome": "transition",
+      "to": "PENDING",
+      "note": "租约到期未确认，回到待领取。"
+    },
+    {
+      "from": "LEASED",
+      "event": "SUPERSEDED",
+      "outcome": "ignored",
+      "to": "LEASED",
+      "note": "已被领取的旧版本保留。"
+    },
+    {
+      "from": "LEASED",
+      "event": "RECORD_DELETED",
+      "outcome": "transition",
+      "to": "CANCELLED",
+      "note": "Record 被删除，撤销后续访问。"
+    },
+    {
+      "from": "LEASED",
+      "event": "DESTINATION_REVOKED",
+      "outcome": "transition",
+      "to": "CANCELLED",
+      "note": "Destination 被撤销。"
+    },
+    {
+      "from": "ACKNOWLEDGED",
+      "event": "ACK",
+      "outcome": "ignored",
+      "to": "ACKNOWLEDGED",
+      "note": "重复确认，幂等。"
+    },
+    {
+      "from": "ACKNOWLEDGED",
+      "event": "SUPERSEDED",
+      "outcome": "ignored",
+      "to": "ACKNOWLEDGED",
+      "note": "已确认的旧版本保留。"
+    },
+    {
+      "from": "ACKNOWLEDGED",
+      "event": "RECORD_DELETED",
+      "outcome": "ignored",
+      "to": "ACKNOWLEDGED",
+      "note": "Agent 已读走的内容无法收回，确认记录保留。"
+    },
+    {
+      "from": "REJECTED",
+      "event": "SUPERSEDED",
+      "outcome": "ignored",
+      "to": "REJECTED",
+      "note": "已结束。"
+    },
+    {
+      "from": "REJECTED",
+      "event": "RECORD_DELETED",
+      "outcome": "ignored",
+      "to": "REJECTED",
+      "note": "已结束。"
+    },
+    {
+      "from": "CANCELLED",
+      "event": "SUPERSEDED",
+      "outcome": "ignored",
+      "to": "CANCELLED",
+      "note": "已结束。"
+    },
+    {
+      "from": "CANCELLED",
+      "event": "RECORD_DELETED",
+      "outcome": "ignored",
+      "to": "CANCELLED",
+      "note": "已结束。"
+    }
+  ]
+}

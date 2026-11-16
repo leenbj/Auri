@@ -16,3 +16,4 @@ status: accepted
 - 创建 Destination 的流程（App 内与网关侧）必须包含这一选择，缺省时不允许完成创建。
 - 选了“预览确认”的 Destination，在用户确认前不为它创建 Delivery；选了“自动发送”的，ASR 完成后随 Revision 提交网关并立即创建 Delivery。
 - 重发是针对某个 Destination 的显式用户操作；Agent 侧据 `review_state` 与 Revision 编号自行区分新旧版本。
+- 2026-11-15 补充（DEV-002）：用户确认把新 Revision 发给某个 Destination 时，同一 Record 的旧 Revision 发给该 Destination 的 Delivery 若尚未被领取，自动变为 `CANCELLED`，Agent 只会领到新版本；若已被领取或已确认，则保留，新 Delivery 用 `supersedes_revisions` 标明它取代了哪些版本。理由与否决“自动重发”相同：避免 Agent 先后收到两版同一段话而重复执行。

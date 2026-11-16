@@ -1,0 +1,54 @@
+{
+  "schema": "headset-profile.schema.json",
+  "expect": "schema_invalid",
+  "rejected_because": "mock 和单测只算 E2，不能证明真机行为。",
+  "expect_error": {
+    "path": "/capabilities/foreground_start_stop/evidence_level",
+    "keyword": "enum"
+  },
+  "instance": {
+    "schema_version": "1.0",
+    "profile_id": "fixture-freeclip2-harmonyos-candidate",
+    "profile_version": 1,
+    "manufacturer_hint": "HUAWEI",
+    "model_hint": "FreeClip 2",
+    "firmware_constraint": null,
+    "platform": "harmonyos",
+    "raw_gesture_visible": false,
+    "command_mapping": {
+      "play": "START",
+      "pause": "STOP",
+      "toggle": "TOGGLE"
+    },
+    "input_policy": "bluetooth_only",
+    "capabilities": {
+      "foreground_start_stop": {
+        "status": "SUPPORTED_FOREGROUND",
+        "evidence_level": "E2",
+        "evidence_ids": [
+          "tests/unit"
+        ]
+      },
+      "stop_while_bluetooth_mic_active": {
+        "status": "NOT_TESTED",
+        "evidence_level": null,
+        "evidence_ids": []
+      },
+      "continue_recording_when_locked": {
+        "status": "NOT_TESTED",
+        "evidence_level": null,
+        "evidence_ids": []
+      },
+      "restart_after_stop_when_locked": {
+        "status": "NOT_TESTED",
+        "evidence_level": null,
+        "evidence_ids": []
+      },
+      "start_after_process_termination": {
+        "status": "NOT_TESTED",
+        "evidence_level": null,
+        "evidence_ids": []
+      }
+    }
+  }
+}

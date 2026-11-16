@@ -1,0 +1,243 @@
+{
+  "schema_version": "1.0",
+  "machine": "delivery",
+  "scenarios": [
+    {
+      "name": "claim-and-ack",
+      "description": "领取后确认；重复确认是幂等的。",
+      "initial_state": "PENDING",
+      "steps": [
+        {
+          "event": "CLAIM",
+          "expect": "transition",
+          "state_after": "LEASED"
+        },
+        {
+          "event": "RENEW_LEASE",
+          "expect": "transition",
+          "state_after": "LEASED"
+        },
+        {
+          "event": "ACK",
+          "expect": "transition",
+          "state_after": "ACKNOWLEDGED"
+        },
+        {
+          "event": "ACK",
+          "expect": "ignored",
+          "state_after": "ACKNOWLEDGED"
+        }
+      ]
+    },
+    {
+      "name": "ack-after-lease-expired",
+      "description": "租约到期后再确认会被拒绝，需要重新领取。",
+      "initial_state": "PENDING",
+      "steps": [
+        {
+          "event": "CLAIM",
+          "expect": "transition",
+          "state_after": "LEASED"
+        },
+        {
+          "event": "LEASE_EXPIRED",
+          "expect": "transition",
+          "state_after": "PENDING"
+        },
+        {
+          "event": "ACK",
+          "expect": "rejected",
+          "state_after": "PENDING"
+        },
+        {
+          "event": "CLAIM",
+          "expect": "transition",
+          "state_after": "LEASED"
+        },
+        {
+          "event": "ACK",
+          "expect": "transition",
+          "state_after": "ACKNOWLEDGED"
+        }
+      ]
+    },
+    {
+      "name": "double-claim",
+      "description": "已被领取的 Delivery 不能被再次领取。",
+      "initial_state": "PENDING",
+      "steps": [
+        {
+          "event": "CLAIM",
+          "expect": "transition",
+          "state_after": "LEASED"
+        },
+        {
+          "event": "CLAIM",
+          "expect": "rejected",
+          "state_after": "LEASED"
+        }
+      ]
+    },
+    {
+      "name": "nack-retryable-then-permanent",
+      "description": "暂时失败后重投，再永久拒绝。",
+      "initial_state": "PENDING",
+      "steps": [
+        {
+          "event": "CLAIM",
+          "expect": "transition",
+          "state_after": "LEASED"
+        },
+        {
+          "event": "NACK_RETRYABLE",
+          "expect": "transition",
+          "state_after": "PENDING"
+        },
+        {
+          "event": "CLAIM",
+          "expect": "transition",
+          "state_after": "LEASED"
+        },
+        {
+          "event": "NACK_PERMANENT",
+          "expect": "transition",
+          "state_after": "REJECTED"
+        },
+        {
+          "event": "SUPERSEDED",
+          "expect": "ignored",
+          "state_after": "REJECTED"
+        },
+        {
+          "event": "RECORD_DELETED",
+          "expect": "ignored",
+          "state_after": "REJECTED"
+        }
+      ]
+    },
+    {
+      "name": "superseded-before-claim",
+      "description": "旧版本还没被领取时发了新版本：旧的取消，Agent 领不到它。",
+      "initial_state": "PENDING",
+      "steps": [
+        {
+          "event": "SUPERSEDED",
+          "expect": "transition",
+          "state_after": "CANCELLED"
+        },
+        {
+          "event": "CLAIM",
+          "expect": "rejected",
+          "state_after": "CANCELLED"
+        },
+        {
+          "event": "SUPERSEDED",
+          "expect": "ignored",
+          "state_after": "CANCELLED"
+        },
+        {
+          "event": "RECORD_DELETED",
+          "expect": "ignored",
+          "state_after": "CANCELLED"
+        }
+      ]
+    },
+    {
+      "name": "superseded-after-claim",
+      "description": "旧版本已被领取或确认时发了新版本：旧的保留。",
+      "initial_state": "PENDING",
+      "steps": [
+        {
+          "event": "CLAIM",
+          "expect": "transition",
+          "state_after": "LEASED"
+        },
+        {
+          "event": "SUPERSEDED",
+          "expect": "ignored",
+          "state_after": "LEASED"
+        },
+        {
+          "event": "ACK",
+          "expect": "transition",
+          "state_after": "ACKNOWLEDGED"
+        },
+        {
+          "event": "SUPERSEDED",
+          "expect": "ignored",
+          "state_after": "ACKNOWLEDGED"
+        }
+      ]
+    },
+    {
+      "name": "record-deleted-before-claim",
+      "description": "Record 在领取前被删除。",
+      "initial_state": "PENDING",
+      "steps": [
+        {
+          "event": "RECORD_DELETED",
+          "expect": "transition",
+          "state_after": "CANCELLED"
+        }
+      ]
+    },
+    {
+      "name": "record-deleted-while-leased",
+      "description": "Record 在租约期间被删除：之后的确认被拒绝。",
+      "initial_state": "LEASED",
+      "steps": [
+        {
+          "event": "RECORD_DELETED",
+          "expect": "transition",
+          "state_after": "CANCELLED"
+        },
+        {
+          "event": "ACK",
+          "expect": "rejected",
+          "state_after": "CANCELLED"
+        }
+      ]
+    },
+    {
+      "name": "record-deleted-after-ack",
+      "description": "Agent 确认后 Record 被删除：确认记录保留。",
+      "initial_state": "ACKNOWLEDGED",
+      "steps": [
+        {
+          "event": "RECORD_DELETED",
+          "expect": "ignored",
+          "state_after": "ACKNOWLEDGED"
+        }
+      ]
+    },
+    {
+      "name": "destination-revoked",
+      "description": "Destination 被撤销，待领取和已领取的都取消。",
+      "initial_state": "PENDING",
+      "steps": [
+        {
+          "event": "DESTINATION_REVOKED",
+          "expect": "transition",
+          "state_after": "CANCELLED"
+        }
+      ]
+    },
+    {
+      "name": "destination-revoked-while-leased",
+      "description": "租约期间 Destination 被撤销。",
+      "initial_state": "LEASED",
+      "steps": [
+        {
+          "event": "DESTINATION_REVOKED",
+          "expect": "transition",
+          "state_after": "CANCELLED"
+        },
+        {
+          "event": "RENEW_LEASE",
+          "expect": "rejected",
+          "state_after": "CANCELLED"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,335 @@
+{
+  "schema_version": "1.0",
+  "machine": "capture",
+  "description": "采集状态机（PRD 第 12.1、12.2 节）。命令串行处理；迟到的旧回调不在转移表里，一律被拒绝。",
+  "initial_state": "DISARMED",
+  "states": [
+    "DISARMED",
+    "ARMED",
+    "ROUTING",
+    "RECORDING",
+    "FINALIZING",
+    "BLOCKED"
+  ],
+  "reserved_states": [],
+  "terminal_states": [],
+  "events": [
+    "ENABLE_CONTROL_MODE",
+    "START",
+    "STOP",
+    "TOGGLE",
+    "PERMISSION_REVOKED",
+    "PROCESS_RESTORED",
+    "DISABLE_CONTROL_MODE",
+    "ROUTE_VERIFIED",
+    "USER_CANCEL",
+    "ROUTE_UNVERIFIED",
+    "ROUTE_TIMEOUT",
+    "DURATION_LIMIT",
+    "ROUTE_LOST",
+    "SYSTEM_INTERRUPTION",
+    "FINALIZE_COMPLETE"
+  ],
+  "transitions": [
+    {
+      "from": "DISARMED",
+      "event": "ENABLE_CONTROL_MODE",
+      "outcome": "transition",
+      "to": "ARMED",
+      "note": "用户开启控制模式。待命不代表麦克风已开。"
+    },
+    {
+      "from": "DISARMED",
+      "event": "START",
+      "outcome": "ignored",
+      "to": "DISARMED",
+      "note": "未开启控制模式时的媒体事件一律忽略，不启动录音。"
+    },
+    {
+      "from": "DISARMED",
+      "event": "STOP",
+      "outcome": "ignored",
+      "to": "DISARMED",
+      "note": "同上。"
+    },
+    {
+      "from": "DISARMED",
+      "event": "TOGGLE",
+      "outcome": "ignored",
+      "to": "DISARMED",
+      "note": "同上。"
+    },
+    {
+      "from": "DISARMED",
+      "event": "PERMISSION_REVOKED",
+      "outcome": "ignored",
+      "to": "DISARMED",
+      "note": "没有打开的音频闸门，无需处理。"
+    },
+    {
+      "from": "DISARMED",
+      "event": "PROCESS_RESTORED",
+      "outcome": "ignored",
+      "to": "DISARMED",
+      "note": "进程恢复后保持 DISARMED，不自动开麦。"
+    },
+    {
+      "from": "ARMED",
+      "event": "START",
+      "outcome": "transition",
+      "to": "ROUTING",
+      "note": "创建新的 Capture Session，开始确认路由；帧只进 Quarantine。"
+    },
+    {
+      "from": "ARMED",
+      "event": "TOGGLE",
+      "outcome": "transition",
+      "to": "ROUTING",
+      "note": "待命时的有效 TOGGLE 等同 START。"
+    },
+    {
+      "from": "ARMED",
+      "event": "STOP",
+      "outcome": "ignored",
+      "to": "ARMED",
+      "note": "没有在录音，STOP 是幂等的空操作。"
+    },
+    {
+      "from": "ARMED",
+      "event": "PERMISSION_REVOKED",
+      "outcome": "transition",
+      "to": "BLOCKED",
+      "note": "权限被撤销，进入受阻状态。"
+    },
+    {
+      "from": "ARMED",
+      "event": "DISABLE_CONTROL_MODE",
+      "outcome": "transition",
+      "to": "DISARMED",
+      "note": "用户退出控制模式。"
+    },
+    {
+      "from": "ARMED",
+      "event": "PROCESS_RESTORED",
+      "outcome": "transition",
+      "to": "DISARMED",
+      "note": "进程恢复后回到 DISARMED。"
+    },
+    {
+      "from": "ROUTING",
+      "event": "ROUTE_VERIFIED",
+      "outcome": "transition",
+      "to": "RECORDING",
+      "note": "有路由证据证明输入来自所选耳机，开闸；此时产生 Record。"
+    },
+    {
+      "from": "ROUTING",
+      "event": "STOP",
+      "outcome": "transition",
+      "to": "ARMED",
+      "note": "取消准备，清空 Quarantine，不产生 Record。防抖不得吞掉这个 STOP。"
+    },
+    {
+      "from": "ROUTING",
+      "event": "TOGGLE",
+      "outcome": "transition",
+      "to": "ARMED",
+      "note": "准备阶段的有效 TOGGLE 解释为取消。"
+    },
+    {
+      "from": "ROUTING",
+      "event": "USER_CANCEL",
+      "outcome": "transition",
+      "to": "ARMED",
+      "note": "用户在屏幕上取消。"
+    },
+    {
+      "from": "ROUTING",
+      "event": "START",
+      "outcome": "ignored",
+      "to": "ROUTING",
+      "note": "已经在准备，不创建第二个会话。"
+    },
+    {
+      "from": "ROUTING",
+      "event": "ROUTE_UNVERIFIED",
+      "outcome": "transition",
+      "to": "BLOCKED",
+      "note": "不能确认蓝牙输入，丢弃 Quarantine；不回退手机麦克风。"
+    },
+    {
+      "from": "ROUTING",
+      "event": "ROUTE_TIMEOUT",
+      "outcome": "transition",
+      "to": "BLOCKED",
+      "note": "路由确认超时，丢弃 Quarantine。"
+    },
+    {
+      "from": "ROUTING",
+      "event": "PERMISSION_REVOKED",
+      "outcome": "transition",
+      "to": "BLOCKED",
+      "note": "权限被撤销，丢弃 Quarantine。"
+    },
+    {
+      "from": "ROUTING",
+      "event": "DISABLE_CONTROL_MODE",
+      "outcome": "transition",
+      "to": "DISARMED",
+      "note": "退出控制模式，取消准备并清空 Quarantine。"
+    },
+    {
+      "from": "ROUTING",
+      "event": "PROCESS_RESTORED",
+      "outcome": "transition",
+      "to": "DISARMED",
+      "note": "进程恢复后回到 DISARMED；Quarantine 在内存里，已随进程消失。"
+    },
+    {
+      "from": "RECORDING",
+      "event": "STOP",
+      "outcome": "transition",
+      "to": "FINALIZING",
+      "note": "串行封存。end_reason 按命令来源取 headset_command、volume_gesture 或 screen_control。"
+    },
+    {
+      "from": "RECORDING",
+      "event": "TOGGLE",
+      "outcome": "transition",
+      "to": "FINALIZING",
+      "end_reason": "headset_command",
+      "note": "录音中的有效 TOGGLE 解释为停止。"
+    },
+    {
+      "from": "RECORDING",
+      "event": "START",
+      "outcome": "ignored",
+      "to": "RECORDING",
+      "note": "幂等空操作，不创建第二个录音器。"
+    },
+    {
+      "from": "RECORDING",
+      "event": "DURATION_LIMIT",
+      "outcome": "transition",
+      "to": "FINALIZING",
+      "end_reason": "duration_limit",
+      "note": "到达时长上限，自动封存，不自动续录。"
+    },
+    {
+      "from": "RECORDING",
+      "event": "ROUTE_LOST",
+      "outcome": "transition",
+      "to": "FINALIZING",
+      "end_reason": "route_lost",
+      "note": "输入路由变化或耳机断开，立即关闸，封存已确认的部分。"
+    },
+    {
+      "from": "RECORDING",
+      "event": "SYSTEM_INTERRUPTION",
+      "outcome": "transition",
+      "to": "FINALIZING",
+      "end_reason": "system_interruption",
+      "note": "来电等系统中断，封存片段，不自动续录。"
+    },
+    {
+      "from": "RECORDING",
+      "event": "PERMISSION_REVOKED",
+      "outcome": "transition",
+      "to": "FINALIZING",
+      "end_reason": "permission_revoked",
+      "note": "权限被撤销，关闸并封存已有部分。"
+    },
+    {
+      "from": "RECORDING",
+      "event": "PROCESS_RESTORED",
+      "outcome": "transition",
+      "to": "DISARMED",
+      "end_reason": "process_terminated",
+      "note": "进程被杀后恢复：残段由恢复流程封存，采集回到 DISARMED。"
+    },
+    {
+      "from": "FINALIZING",
+      "event": "FINALIZE_COMPLETE",
+      "outcome": "transition",
+      "to": "ARMED",
+      "note": "封存与资源释放完成，回到待命。"
+    },
+    {
+      "from": "FINALIZING",
+      "event": "STOP",
+      "outcome": "ignored",
+      "to": "FINALIZING",
+      "note": "幂等空操作，不能破坏封存。"
+    },
+    {
+      "from": "FINALIZING",
+      "event": "TOGGLE",
+      "outcome": "ignored",
+      "to": "FINALIZING",
+      "note": "过时的 TOGGLE，丢弃并记录原因，封存后不自动开始下一段。"
+    },
+    {
+      "from": "FINALIZING",
+      "event": "START",
+      "outcome": "ignored",
+      "to": "FINALIZING",
+      "note": "忽略并记录原因，不排队；给“忙碌”反馈。"
+    },
+    {
+      "from": "FINALIZING",
+      "event": "PERMISSION_REVOKED",
+      "outcome": "ignored",
+      "to": "FINALIZING",
+      "note": "闸门已关，继续完成封存。"
+    },
+    {
+      "from": "FINALIZING",
+      "event": "PROCESS_RESTORED",
+      "outcome": "transition",
+      "to": "DISARMED",
+      "note": "进程恢复后由恢复流程完成封存，采集回到 DISARMED。"
+    },
+    {
+      "from": "BLOCKED",
+      "event": "START",
+      "outcome": "transition",
+      "to": "ROUTING",
+      "note": "只有再次收到 START 才重试；原因没消除会再次回到 BLOCKED。"
+    },
+    {
+      "from": "BLOCKED",
+      "event": "TOGGLE",
+      "outcome": "transition",
+      "to": "ROUTING",
+      "note": "等同 START。"
+    },
+    {
+      "from": "BLOCKED",
+      "event": "STOP",
+      "outcome": "ignored",
+      "to": "BLOCKED",
+      "note": "没有在录音。"
+    },
+    {
+      "from": "BLOCKED",
+      "event": "PERMISSION_REVOKED",
+      "outcome": "ignored",
+      "to": "BLOCKED",
+      "note": "已经受阻。"
+    },
+    {
+      "from": "BLOCKED",
+      "event": "DISABLE_CONTROL_MODE",
+      "outcome": "transition",
+      "to": "DISARMED",
+      "note": "用户退出控制模式。"
+    },
+    {
+      "from": "BLOCKED",
+      "event": "PROCESS_RESTORED",
+      "outcome": "transition",
+      "to": "DISARMED",
+      "note": "进程恢复后回到 DISARMED。"
+    }
+  ]
+}

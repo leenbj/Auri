@@ -1,0 +1,10 @@
+{
+  "schema": "delivery.schema.json#/$defs/ack_request",
+  "expect": "valid",
+  "description": "确认并附说明。",
+  "instance": {
+    "delivery_id": "f2902603-449e-5ad9-beee-8c3c48c0f1f7",
+    "lease_token": "fixture-lease-token-not-a-real-secret",
+    "note": "已保存到本地笔记。"
+  }
+}

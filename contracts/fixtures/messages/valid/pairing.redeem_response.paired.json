@@ -1,0 +1,12 @@
+{
+  "schema": "pairing.schema.json#/$defs/redeem_response",
+  "expect": "valid",
+  "description": "配对成功。",
+  "instance": {
+    "schema_version": "1.0",
+    "gateway_id": "fa1b98ec-1bfb-53b3-85a3-4d36b680fe6e",
+    "device_id": "ef7b1358-df31-520f-90f3-d98fc5173b46",
+    "device_token": "fixture-device-token-not-a-real-secret-0001",
+    "paired_at": "2026-11-15T02:05:00Z"
+  }
+}

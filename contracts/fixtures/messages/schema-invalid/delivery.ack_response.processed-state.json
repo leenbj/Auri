@@ -1,0 +1,16 @@
+{
+  "schema": "delivery.schema.json#/$defs/ack_response",
+  "expect": "schema_invalid",
+  "rejected_because": "网关只能说“已确认”，不能说“已处理”。",
+  "expect_error": {
+    "path": "/state",
+    "keyword": "const"
+  },
+  "instance": {
+    "schema_version": "1.0",
+    "delivery_id": "f2902603-449e-5ad9-beee-8c3c48c0f1f7",
+    "state": "PROCESSED",
+    "acknowledged_at": "2026-11-15T03:01:10Z",
+    "duplicate": false
+  }
+}

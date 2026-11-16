@@ -1,0 +1,13 @@
+{
+  "schema": "destination.schema.json#/$defs/create_request",
+  "expect": "valid",
+  "description": "创建一个自动发送的 Destination。",
+  "instance": {
+    "schema_version": "1.0",
+    "display_name": "写作助手",
+    "send_mode": "auto_send",
+    "allowed_intents": [
+      "context"
+    ]
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "schema": "delivery.schema.json#/$defs/claim_request",
+  "expect": "valid",
+  "description": "指定数量和租约时长。",
+  "instance": {
+    "limit": 5,
+    "lease_seconds": 300
+  }
+}
