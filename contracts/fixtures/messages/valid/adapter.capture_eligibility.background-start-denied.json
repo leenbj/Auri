@@ -1,0 +1,11 @@
+{
+  "schema": "adapter.schema.json#/$defs/capture_eligibility",
+  "expect": "valid",
+  "description": "后台不能新开录音（iOS）。",
+  "instance": {
+    "permission": "granted",
+    "lifecycle": "background",
+    "can_start": "no",
+    "reason": "BACKGROUND_START_DENIED"
+  }
+}

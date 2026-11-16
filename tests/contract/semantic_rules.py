@@ -22,23 +22,40 @@ def _check_text(text: str, declared_hash: str) -> list[str]:
     return violations
 
 
-def _check_submission(instance: dict) -> list[str]:
-    violations = _check_text(instance["content"]["text"], instance["content"]["text_sha256"])
-    capture = instance["capture"]
-    segments = capture["speech_segments"]
-
-    ordered = all(seg["start_ms"] < seg["end_ms"] for seg in segments) and all(
-        earlier["end_ms"] <= later["start_ms"] for earlier, later in zip(segments, segments[1:])
+def _check_ranges(ranges: list[dict], capture_duration_ms: int, speech_duration_ms: int) -> list[str]:
+    """SR-02/03/04：保留的时间段升序不重叠、不超出采集时长、时长之和等于语音时长。"""
+    violations = []
+    ordered = all(r["start_ms"] < r["end_ms"] for r in ranges) and all(
+        earlier["end_ms"] <= later["start_ms"] for earlier, later in zip(ranges, ranges[1:])
     )
     if not ordered:
         violations.append("SR-02")
-    if any(seg["end_ms"] > capture["capture_duration_ms"] for seg in segments):
+    if any(r["end_ms"] > capture_duration_ms for r in ranges):
         violations.append("SR-03")
-    if sum(seg["end_ms"] - seg["start_ms"] for seg in segments) != capture["speech_duration_ms"]:
+    if sum(r["end_ms"] - r["start_ms"] for r in ranges) != speech_duration_ms:
         violations.append("SR-04")
+    return violations
+
+
+def _check_submission(instance: dict) -> list[str]:
+    violations = _check_text(instance["content"]["text"], instance["content"]["text_sha256"])
+    capture = instance["capture"]
+    violations.extend(
+        _check_ranges(capture["speech_segments"], capture["capture_duration_ms"], capture["speech_duration_ms"])
+    )
     if instance["content"]["execution_location"] != "on_device":
         violations.append("SR-05")
     return violations
+
+
+def _check_recording_result(instance: dict) -> list[str]:
+    return _check_ranges(
+        instance["verified_ranges"], instance["capture_duration_ms"], instance["speech_duration_ms"]
+    )
+
+
+def _check_asr_capabilities(instance: dict) -> list[str]:
+    return [] if instance["execution_location"] == "on_device" else ["SR-05"]
 
 
 def _check_claim_response(instance: dict) -> list[str]:
@@ -51,6 +68,8 @@ def _check_claim_response(instance: dict) -> list[str]:
 _CHECKS = {
     "revision.schema.json#/$defs/submission": _check_submission,
     "delivery.schema.json#/$defs/claim_response": _check_claim_response,
+    "adapter.schema.json#/$defs/recording_result": _check_recording_result,
+    "adapter.schema.json#/$defs/asr_capabilities": _check_asr_capabilities,
 }
 
 

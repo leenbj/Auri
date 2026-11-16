@@ -148,6 +148,23 @@
         "MCP_VERSION_UNSUPPORTED",
         "DELIVERY_LEASE_EXPIRED"
       ]
+    },
+    "platform_event": {
+      "description": "平台实际给出的事件种类，不是物理手势；不存在 doubleTap 这类原始手势值。screen_button 是 App 内的屏幕操作。",
+      "enum": ["play", "pause", "toggle", "next", "previous", "volume_change", "screen_button"]
+    },
+    "observed_input_route_type": {
+      "description": "系统观测到的实际输入来源。前三个与 input_route_type 相同，是蓝牙输入；其余都不满足严格蓝牙输入。",
+      "enum": [
+        "bluetooth_hfp",
+        "bluetooth_le_audio",
+        "bluetooth_unknown_profile",
+        "built_in_mic",
+        "wired_headset",
+        "usb_audio",
+        "other",
+        "unknown"
+      ]
     }
   }
 }

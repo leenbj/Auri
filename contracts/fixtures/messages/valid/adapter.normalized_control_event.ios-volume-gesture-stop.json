@@ -1,0 +1,16 @@
+{
+  "schema": "adapter.schema.json#/$defs/normalized_control_event",
+  "expect": "valid",
+  "description": "iOS 录音中的音量变化映射为 STOP（ADR-0014）。",
+  "instance": {
+    "event_id": "8e1de48b-c2d3-5d0d-bd8c-ef57d28b0ae2",
+    "source": "volume_gesture",
+    "platform_event": "volume_change",
+    "command": "STOP",
+    "monotonic_ns": 812345678901,
+    "sequence": 42,
+    "profile_id": "fixture-freeclip2-ios",
+    "profile_version": 1,
+    "raw_event_id": null
+  }
+}

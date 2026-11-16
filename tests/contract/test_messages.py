@@ -29,6 +29,14 @@ MESSAGE_SCHEMAS = [
     "delivery.schema.json#/$defs/ack_response",
     "delivery.schema.json#/$defs/nack_request",
     "delivery.schema.json#/$defs/nack_response",
+    "adapter.schema.json#/$defs/normalized_control_event",
+    "adapter.schema.json#/$defs/capture_eligibility",
+    "adapter.schema.json#/$defs/prepared_input",
+    "adapter.schema.json#/$defs/capture_handle",
+    "adapter.schema.json#/$defs/route_change_event",
+    "adapter.schema.json#/$defs/recording_result",
+    "adapter.schema.json#/$defs/asr_capabilities",
+    "adapter.schema.json#/$defs/asr_task_handle",
 ]
 
 

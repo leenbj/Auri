@@ -1,0 +1,22 @@
+{
+  "schema": "adapter.schema.json#/$defs/recording_result",
+  "expect": "valid",
+  "description": "整段没人说话：仍有 Record，但没有音频。",
+  "instance": {
+    "record_id": "8ae31b80-17de-5faa-a260-dc9146415d08",
+    "capture_session_id": "627b5182-8e96-5207-be62-d51e5441c4c2",
+    "status": "complete",
+    "end_reason": "headset_command",
+    "capture_duration_ms": 30000,
+    "speech_duration_ms": 0,
+    "chunks": [],
+    "verified_ranges": [],
+    "discarded_ranges": [
+      {
+        "start_ms": 0,
+        "end_ms": 30000,
+        "reason": "silence"
+      }
+    ]
+  }
+}

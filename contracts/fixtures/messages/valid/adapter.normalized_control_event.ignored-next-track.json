@@ -1,0 +1,16 @@
+{
+  "schema": "adapter.schema.json#/$defs/normalized_control_event",
+  "expect": "valid",
+  "description": "不属于本控制模式的命令归一化为 IGNORE。",
+  "instance": {
+    "event_id": "f8e0f243-ce60-5509-9f87-e461e11e4b17",
+    "source": "headset_remote",
+    "platform_event": "next",
+    "command": "IGNORE",
+    "monotonic_ns": 812345678901,
+    "sequence": 44,
+    "profile_id": "fixture-freeclip2-harmonyos-candidate",
+    "profile_version": 1,
+    "raw_event_id": "keyevent-87-down"
+  }
+}

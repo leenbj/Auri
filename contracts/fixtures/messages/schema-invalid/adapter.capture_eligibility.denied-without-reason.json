@@ -1,0 +1,15 @@
+{
+  "schema": "adapter.schema.json#/$defs/capture_eligibility",
+  "expect": "schema_invalid",
+  "rejected_because": "不能开始时必须给出原因。",
+  "expect_error": {
+    "path": "/reason",
+    "keyword": "type"
+  },
+  "instance": {
+    "permission": "denied",
+    "lifecycle": "foreground",
+    "can_start": "no",
+    "reason": null
+  }
+}

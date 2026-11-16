@@ -1,0 +1,19 @@
+{
+  "schema": "adapter.schema.json#/$defs/prepared_input",
+  "expect": "schema_invalid",
+  "rejected_because": "准备句柄不能带“已验证”的结论；验证只来自 RouteChangeEvent。",
+  "expect_error": {
+    "path": "",
+    "keyword": "additionalProperties"
+  },
+  "instance": {
+    "operation_id": "b291f080-8571-5cf0-9d04-47c4fb40c401",
+    "generation": 7,
+    "requested_device": {
+      "display_name": "HUAWEI FreeClip 2",
+      "platform_device_ref": "fixture-device-ref-01"
+    },
+    "request_status": "accepted_by_system",
+    "verified": true
+  }
+}

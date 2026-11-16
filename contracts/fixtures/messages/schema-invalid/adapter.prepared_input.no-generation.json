@@ -1,0 +1,17 @@
+{
+  "schema": "adapter.schema.json#/$defs/prepared_input",
+  "expect": "schema_invalid",
+  "rejected_because": "没有 generation 就无法丢弃已取消操作的迟到回调。",
+  "expect_error": {
+    "path": "",
+    "keyword": "required"
+  },
+  "instance": {
+    "operation_id": "b291f080-8571-5cf0-9d04-47c4fb40c401",
+    "requested_device": {
+      "display_name": "HUAWEI FreeClip 2",
+      "platform_device_ref": "fixture-device-ref-01"
+    },
+    "request_status": "accepted_by_system"
+  }
+}

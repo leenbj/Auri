@@ -1,0 +1,14 @@
+{
+  "schema": "adapter.schema.json#/$defs/capture_handle",
+  "expect": "schema_invalid",
+  "rejected_because": "没有已确认的 route_epoch 就不存在采集句柄。",
+  "expect_error": {
+    "path": "",
+    "keyword": "required"
+  },
+  "instance": {
+    "capture_session_id": "f62d1c20-234a-510b-bbcf-c02962ce2421",
+    "generation": 7,
+    "gate_state": "open"
+  }
+}

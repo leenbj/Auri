@@ -1,0 +1,15 @@
+{
+  "schema": "adapter.schema.json#/$defs/route_change_event",
+  "expect": "valid",
+  "description": "系统没有给出可用的输入信息。",
+  "instance": {
+    "capture_session_id": "f62d1c20-234a-510b-bbcf-c02962ce2421",
+    "epoch": 5,
+    "observed_input": {
+      "route_type": "unknown",
+      "display_name": null
+    },
+    "observed_at_monotonic_ns": 812400000000,
+    "verification_state": "unknown"
+  }
+}

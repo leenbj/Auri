@@ -1,0 +1,20 @@
+{
+  "schema": "adapter.schema.json#/$defs/normalized_control_event",
+  "expect": "schema_invalid",
+  "rejected_because": "经耳机档案映射的事件必须写明档案版本。",
+  "expect_error": {
+    "path": "/profile_version",
+    "keyword": "type"
+  },
+  "instance": {
+    "event_id": "e0a40e31-6134-5553-949b-9f8f385332c8",
+    "source": "unknown_remote",
+    "platform_event": "play",
+    "command": "START",
+    "monotonic_ns": 812345678901,
+    "sequence": 41,
+    "profile_id": "fixture-freeclip2-harmonyos-candidate",
+    "profile_version": null,
+    "raw_event_id": null
+  }
+}

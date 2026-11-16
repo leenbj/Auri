@@ -1,0 +1,11 @@
+{
+  "schema": "adapter.schema.json#/$defs/capture_eligibility",
+  "expect": "valid",
+  "description": "麦克风权限被拒绝。",
+  "instance": {
+    "permission": "denied",
+    "lifecycle": "foreground",
+    "can_start": "no",
+    "reason": "PERMISSION_MIC_DENIED"
+  }
+}

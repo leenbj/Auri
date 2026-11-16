@@ -1,0 +1,15 @@
+{
+  "schema": "adapter.schema.json#/$defs/capture_eligibility",
+  "expect": "schema_invalid",
+  "rejected_because": "权限状态未知不等于允许。",
+  "expect_error": {
+    "path": "/permission",
+    "keyword": "const"
+  },
+  "instance": {
+    "permission": "unknown",
+    "lifecycle": "foreground",
+    "can_start": "yes",
+    "reason": null
+  }
+}

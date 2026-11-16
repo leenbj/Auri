@@ -1,0 +1,15 @@
+{
+  "schema": "adapter.schema.json#/$defs/capture_eligibility",
+  "expect": "schema_invalid",
+  "rejected_because": "原因必须取自错误码清单。",
+  "expect_error": {
+    "path": "/reason",
+    "keyword": "oneOf"
+  },
+  "instance": {
+    "permission": "granted",
+    "lifecycle": "background",
+    "can_start": "no",
+    "reason": "app is in background"
+  }
+}

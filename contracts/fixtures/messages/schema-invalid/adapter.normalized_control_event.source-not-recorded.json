@@ -1,0 +1,20 @@
+{
+  "schema": "adapter.schema.json#/$defs/normalized_control_event",
+  "expect": "schema_invalid",
+  "rejected_because": "来源不可验证时必须记为 unknown_remote，不能留空。",
+  "expect_error": {
+    "path": "/source",
+    "keyword": "enum"
+  },
+  "instance": {
+    "event_id": "e0a40e31-6134-5553-949b-9f8f385332c8",
+    "source": null,
+    "platform_event": "play",
+    "command": "START",
+    "monotonic_ns": 812345678901,
+    "sequence": 41,
+    "profile_id": "fixture-freeclip2-harmonyos-candidate",
+    "profile_version": 1,
+    "raw_event_id": null
+  }
+}

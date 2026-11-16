@@ -1,0 +1,14 @@
+{
+  "schema": "adapter.schema.json#/$defs/prepared_input",
+  "expect": "valid",
+  "description": "系统没有明确答复。",
+  "instance": {
+    "operation_id": "11ed0b3d-cafc-58e3-baa2-d272315bbeb8",
+    "generation": 7,
+    "requested_device": {
+      "display_name": "HUAWEI FreeClip 2",
+      "platform_device_ref": "fixture-device-ref-01"
+    },
+    "request_status": "unknown"
+  }
+}

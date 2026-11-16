@@ -1,0 +1,31 @@
+{
+  "schema": "adapter.schema.json#/$defs/asr_capabilities",
+  "expect": "semantic_invalid",
+  "rejected_because": "V1 只做本地转录，不接受云端引擎（ADR-0019）。",
+  "rule": "SR-05",
+  "instance": {
+    "execution_location": "commercial_cloud",
+    "engine": "sherpa-onnx",
+    "model_id": "fixture-local-model",
+    "model_version": "fixture-pinned-version",
+    "languages": [
+      "zh-CN",
+      "en"
+    ],
+    "accepts_recorded_file": true,
+    "formats": [
+      {
+        "encoding": "pcm_s16le",
+        "sample_rate_hz": 16000,
+        "channels": 1
+      }
+    ],
+    "streaming": false,
+    "timestamp_granularity": "segment",
+    "limits": {
+      "max_audio_duration_ms": 7200000,
+      "max_concurrent_jobs": 1
+    },
+    "cancel_support": "best_effort"
+  }
+}

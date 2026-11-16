@@ -1,0 +1,18 @@
+{
+  "schema": "adapter.schema.json#/$defs/prepared_input",
+  "expect": "schema_invalid",
+  "rejected_because": "request_status 没有 verified 这个值。",
+  "expect_error": {
+    "path": "/request_status",
+    "keyword": "enum"
+  },
+  "instance": {
+    "operation_id": "b291f080-8571-5cf0-9d04-47c4fb40c401",
+    "generation": 7,
+    "requested_device": {
+      "display_name": "HUAWEI FreeClip 2",
+      "platform_device_ref": "fixture-device-ref-01"
+    },
+    "request_status": "verified"
+  }
+}

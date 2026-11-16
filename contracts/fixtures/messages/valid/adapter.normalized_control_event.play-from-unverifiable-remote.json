@@ -1,0 +1,16 @@
+{
+  "schema": "adapter.schema.json#/$defs/normalized_control_event",
+  "expect": "valid",
+  "description": "媒体 play 事件映射为 START；来源无法验证，记为 unknown_remote。",
+  "instance": {
+    "event_id": "e0a40e31-6134-5553-949b-9f8f385332c8",
+    "source": "unknown_remote",
+    "platform_event": "play",
+    "command": "START",
+    "monotonic_ns": 812345678901,
+    "sequence": 41,
+    "profile_id": "fixture-freeclip2-harmonyos-candidate",
+    "profile_version": 1,
+    "raw_event_id": null
+  }
+}

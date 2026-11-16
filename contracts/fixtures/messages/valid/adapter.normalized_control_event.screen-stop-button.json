@@ -1,0 +1,16 @@
+{
+  "schema": "adapter.schema.json#/$defs/normalized_control_event",
+  "expect": "valid",
+  "description": "屏幕停止按钮；不经过耳机档案。",
+  "instance": {
+    "event_id": "85c1aaec-fbf2-53ff-9be4-0a1633de1f7b",
+    "source": "screen_control",
+    "platform_event": "screen_button",
+    "command": "STOP",
+    "monotonic_ns": 812345678901,
+    "sequence": 43,
+    "profile_id": null,
+    "profile_version": null,
+    "raw_event_id": null
+  }
+}

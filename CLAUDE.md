@@ -15,7 +15,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `tests/contract/`：合同测试（pytest）。
 - `apps/`、`core/`、`services/`、`packages/` 以及 `tests/` 的其他子目录目前只有 `.gitkeep`。
 
-任务进度：DEV-001（仓库基线）已完成；DEV-004（iOS 探针）已跑过 FreeClip 2 × iPhone Air，结论见 ADR-0014，遗留音量手势停止的设计与复测。DEV-002（合同冻结）已完成网关与 MCP 消息、Headset Profile 和四个状态机，PRD 第 17.1 节的八个原生适配器类型尚未冻结，须在 DEV-007、DEV-008 开工前补齐。尚未开始：DEV-003（鸿蒙探针）、DEV-005（Android 探针）、网关。DEV-011/012（云端转录）已推迟到 V1 之后（ADR-0019）。新增工具链命令后请补充到本文件。
+任务进度：DEV-001（仓库基线）已完成；DEV-004（iOS 探针）已跑过 FreeClip 2 × iPhone Air，结论见 ADR-0014，遗留音量手势停止的设计与复测。DEV-002（合同冻结）已完成：网关与 MCP 消息、Headset Profile、八个原生适配器类型和四个状态机。V1 的规格在 `docs/spec/auri-v1-spec.md`。尚未开始：DEV-003（鸿蒙探针）、DEV-005（Android 探针）、网关。DEV-011/012（云端转录）已推迟到 V1 之后（ADR-0019）。新增工具链命令后请补充到本文件。
 
 工具链与账号：iOS 只能在 macOS 上构建；Apple 目前是免费个人团队签名，鸿蒙签名证书尚未申请，P0 探针先用免费签名，付费账号在 P5 分发前再办。DevEco Studio 与 Android SDK 在基线记录时均未安装，开工前先核对当前机器的实际情况。
 

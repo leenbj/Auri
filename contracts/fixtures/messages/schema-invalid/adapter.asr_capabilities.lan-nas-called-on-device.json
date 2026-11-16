@@ -1,0 +1,34 @@
+{
+  "schema": "adapter.schema.json#/$defs/asr_capabilities",
+  "expect": "schema_invalid",
+  "rejected_because": "运行位置只有三个取值；局域网 NAS 是 self_hosted_remote，不能另造名字。",
+  "expect_error": {
+    "path": "/execution_location",
+    "keyword": "enum"
+  },
+  "instance": {
+    "execution_location": "on_device_lan",
+    "engine": "sherpa-onnx",
+    "model_id": "fixture-local-model",
+    "model_version": "fixture-pinned-version",
+    "languages": [
+      "zh-CN",
+      "en"
+    ],
+    "accepts_recorded_file": true,
+    "formats": [
+      {
+        "encoding": "pcm_s16le",
+        "sample_rate_hz": 16000,
+        "channels": 1
+      }
+    ],
+    "streaming": false,
+    "timestamp_granularity": "segment",
+    "limits": {
+      "max_audio_duration_ms": 7200000,
+      "max_concurrent_jobs": 1
+    },
+    "cancel_support": "best_effort"
+  }
+}

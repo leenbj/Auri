@@ -1,0 +1,16 @@
+{
+  "schema": "adapter.schema.json#/$defs/capture_handle",
+  "expect": "schema_invalid",
+  "rejected_because": "不得用单个布尔值表示采集状态。",
+  "expect_error": {
+    "path": "",
+    "keyword": "additionalProperties"
+  },
+  "instance": {
+    "capture_session_id": "f62d1c20-234a-510b-bbcf-c02962ce2421",
+    "generation": 7,
+    "verified_route_epoch": 3,
+    "gate_state": "open",
+    "is_recording": true
+  }
+}

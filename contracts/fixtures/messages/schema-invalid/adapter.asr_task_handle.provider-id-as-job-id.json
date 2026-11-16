@@ -1,0 +1,15 @@
+{
+  "schema": "adapter.schema.json#/$defs/asr_task_handle",
+  "expect": "schema_invalid",
+  "rejected_because": "内部 job_id 必须是 UUID，不能直接用远端任务标识。",
+  "expect_error": {
+    "path": "/job_id",
+    "keyword": "pattern"
+  },
+  "instance": {
+    "job_id": "provider-task-8842",
+    "provider_id": "local-sherpa-onnx",
+    "provider_job_id": null,
+    "config_revision": 1
+  }
+}

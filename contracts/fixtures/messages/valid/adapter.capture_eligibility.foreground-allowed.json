@@ -1,0 +1,11 @@
+{
+  "schema": "adapter.schema.json#/$defs/capture_eligibility",
+  "expect": "valid",
+  "description": "前台、已授权，可以开始。",
+  "instance": {
+    "permission": "granted",
+    "lifecycle": "foreground",
+    "can_start": "yes",
+    "reason": null
+  }
+}

@@ -883,7 +883,7 @@ interface AsrProvider {
 
 输入错误、未授权、生命周期拒绝等必须返回结构化失败；不允许 catch 后返回一个空对象当成功。原生层与共享层均校验合同，不信任另一端已经检查。
 
-最小类型字段须落实为可校验 schema。**下表八个原生适配器类型没有包含在 DEV-002 本次冻结的范围内**（本次冻结的是网关与 MCP 的消息、Headset Profile 和四个状态机），留待 DEV-007、DEV-008 开工前补齐：
+下表八个类型已冻结为可校验 schema，见 `contracts/schemas/adapter.schema.json`。与下表的差别：`stop_reason` 统一叫 `end_reason`；`RouteChangeEvent` 的 `session_id` 叫 `capture_session_id`；这些类型在进程内传递，不带 `schema_version`；`platform_event` 目前没有“原始按键事件”的取值，Android 与鸿蒙探针看到实际事件后可能需要补充。
 
 | 类型 | 必需字段/语义 |
 |---|---|
@@ -1564,6 +1564,6 @@ T-017 的声音对照不能单独取代系统路由证据。物理测试应分�
 | 1.0 | 2026-10-20 | 整合三端、多耳机/FreeClip 优先、严格蓝牙输入、本地/云端转录、MCP 与多 Agent 投递需求；加入官方平台限制、14 项开源候选、39 个来源入口、状态机、接口与 50 项测试。 |
 | 1.1 | 2026-10-20 | 产品定名 Auri 并建立 `GLOSSARY.md`；新增 ADR-002/008/009/0013；`TranscriptRevision`→`Revision`、`transcripts:read`→`records:read`；MCP 工具名改为 `record_*`/`delivery_*`；同步表 `ACKED`→`STORED`；补设备配对与 Destination 管理接口草案；录音时长、音频保留、自动发送、FINALIZING 期间 START 的默认值；确定验收宿主为 Hermes + Claude Code。 |
 | 1.2 | 2026-11-15 | 同步产品负责人的新要求：Handy 只作流程参考（ADR-0015）；VAD 只在会话内过滤静音（ADR-0016）；qwen3-asr-1.7b 列为默认本地模型候选（ADR-0017）；网关只在局域网、自签证书加指纹绑定、V1 不做手机直连 MCP（ADR-0018，取代 ADR-008 的公网域名部分）；V1 只做本地转录，DEV-011/012 推迟（ADR-0019）；第 28 章补登 ADR-0014 至 0019。 |
-| 1.3 | 2026-11-15 | DEV-002 合同冻结：新增 `contracts/schemas/`、`contracts/fixtures/` 与 `tests/contract/`；投递状态 `ACKED`→`ACKNOWLEDGED`；Revision 状态去掉 `DELETED`；同步状态新增 `WAITING_GATEWAY`；补 `BLOCKED` 的离开规则；请求体 `transcript`→`content`、`transcript_hash`→`text_sha256`，新增 `end_reason`、两个时长与 `speech_segments`；新增错误码 `GATEWAY_KEY_MISMATCH`、`RECORD_NOT_ORIGIN_DEVICE`、`RECORD_DELETED`；新增 ADR-0020，修订 ADR-009、ADR-0018；第 17.1 节八个原生适配器类型标明尚未冻结。 |
+| 1.3 | 2026-11-15 | DEV-002 合同冻结：新增 `contracts/schemas/`、`contracts/fixtures/` 与 `tests/contract/`；投递状态 `ACKED`→`ACKNOWLEDGED`；Revision 状态去掉 `DELETED`；同步状态新增 `WAITING_GATEWAY`；补 `BLOCKED` 的离开规则；请求体 `transcript`→`content`、`transcript_hash`→`text_sha256`，新增 `end_reason`、两个时长与 `speech_segments`；新增错误码 `GATEWAY_KEY_MISMATCH`、`RECORD_NOT_ORIGIN_DEVICE`、`RECORD_DELETED`；新增 ADR-0020，修订 ADR-009、ADR-0018；第 17.1 节八个原生适配器类型随后补齐（`adapter.schema.json`）。 |
 
 **最终原则：优先证明“耳机真的能控制、声音真的来自耳机、文字真的被正确交付”，再扩展界面和智能功能。平台不允许的能力必须诚实呈现，不能靠隐蔽录音或虚假成功补齐。**

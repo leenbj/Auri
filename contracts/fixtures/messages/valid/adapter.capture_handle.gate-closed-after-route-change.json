@@ -1,0 +1,11 @@
+{
+  "schema": "adapter.schema.json#/$defs/capture_handle",
+  "expect": "valid",
+  "description": "路由变化后闸门关闭。",
+  "instance": {
+    "capture_session_id": "f62d1c20-234a-510b-bbcf-c02962ce2421",
+    "generation": 7,
+    "verified_route_epoch": 3,
+    "gate_state": "closed"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "schema": "adapter.schema.json#/$defs/route_change_event",
+  "expect": "schema_invalid",
+  "rejected_because": "输入来源未知不能被标为 verified。",
+  "expect_error": {
+    "path": "/observed_input/route_type",
+    "keyword": "enum"
+  },
+  "instance": {
+    "capture_session_id": "f62d1c20-234a-510b-bbcf-c02962ce2421",
+    "epoch": 3,
+    "observed_input": {
+      "route_type": "unknown",
+      "display_name": "HUAWEI FreeClip 2"
+    },
+    "observed_at_monotonic_ns": 812400000000,
+    "verification_state": "verified"
+  }
+}

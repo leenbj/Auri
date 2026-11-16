@@ -1,0 +1,11 @@
+{
+  "schema": "adapter.schema.json#/$defs/asr_task_handle",
+  "expect": "valid",
+  "description": "本地转录任务，没有远端任务标识。",
+  "instance": {
+    "job_id": "7d76cbc4-6c81-551c-807c-14fa4691df3a",
+    "provider_id": "local-sherpa-onnx",
+    "provider_job_id": null,
+    "config_revision": 1
+  }
+}

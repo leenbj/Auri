@@ -1,0 +1,14 @@
+{
+  "schema": "adapter.schema.json#/$defs/prepared_input",
+  "expect": "valid",
+  "description": "系统接受了蓝牙输入请求；这不代表实际输入已经来自耳机。",
+  "instance": {
+    "operation_id": "b291f080-8571-5cf0-9d04-47c4fb40c401",
+    "generation": 7,
+    "requested_device": {
+      "display_name": "HUAWEI FreeClip 2",
+      "platform_device_ref": "fixture-device-ref-01"
+    },
+    "request_status": "accepted_by_system"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "schema": "adapter.schema.json#/$defs/capture_eligibility",
+  "expect": "schema_invalid",
+  "rejected_because": "can_start 不能是布尔值，必须能表达“未知”。",
+  "expect_error": {
+    "path": "/can_start",
+    "keyword": "enum"
+  },
+  "instance": {
+    "permission": "granted",
+    "lifecycle": "foreground",
+    "can_start": true,
+    "reason": null
+  }
+}

@@ -26,11 +26,13 @@ DEV-002 的产物，合同版本 `1.0`，冻结于 2026-11-15。三端（ArkTS /
 | Destination 管理与凭证签发 | `destination.schema.json` |
 | Headset Profile | `headset-profile.schema.json` |
 | 统一错误结构 | `error.schema.json` |
+| 八个原生适配器类型（PRD 第 17.1 节）：`NormalizedControlEvent`、`CaptureEligibility`、`PreparedInput`、`CaptureHandle`、`RouteChangeEvent`、`RecordingResult`、`AsrCapabilities`、`AsrTaskHandle` | `adapter.schema.json` |
 | 采集、转录、同步、投递四个状态机 | `fixtures/state-machines/` |
+
+适配器类型在进程内传递，不是网络消息，所以不带 `schema_version`。它们描述的是跨平台语义，三端各自用本平台的类型实现，并用同一批样本验证。
 
 没有冻结的部分：
 
-- PRD 第 17.1 节的八个原生适配器类型（`NormalizedControlEvent`、`CaptureEligibility`、`PreparedInput`、`CaptureHandle`、`RouteChangeEvent`、`RecordingResult`、`AsrCapabilities`、`AsrTaskHandle`），在 DEV-007、DEV-008 开工前补齐。
 - 云端转录的任务字段和 `/v1/asr/jobs` 接口（ADR-0019）。
 - `record_list`、`record_get`、`record_search` 三个只读 MCP 工具，以及 `/health`、`/v1/capabilities`、`/v1/operations/{id}`、`/v1/records/{id}/status`。
 
@@ -41,10 +43,10 @@ DEV-002 的产物，合同版本 `1.0`，冻结于 2026-11-15。三端（ArkTS /
 | 编号 | 规则 |
 |---|---|
 | SR-01 | `text_sha256` 等于正文按 UTF-8 编码后的原始字节的 SHA-256。不做 Unicode 规范化，不去空白，不转换换行。 |
-| SR-02 | `speech_segments` 每段 `start_ms < end_ms`，各段按时间升序且互不重叠。 |
+| SR-02 | `speech_segments`（`RecordingResult` 里是 `verified_ranges`，下同）每段 `start_ms < end_ms`，各段按时间升序且互不重叠。 |
 | SR-03 | 任何语音片段的 `end_ms` 不超过 `capture_duration_ms`。 |
 | SR-04 | `speech_duration_ms` 等于各语音片段时长之和。 |
-| SR-05 | V1 只接受 `execution_location = on_device`（ADR-0019）。 |
+| SR-05 | V1 只接受 `execution_location = on_device`（ADR-0019）；对提交的 Revision 和 `AsrCapabilities` 都适用。 |
 | SR-06 | 正文按 UTF-8 编码后不超过 1 MiB。超过时拒绝，不截断后假装成功。 |
 
 另有几条规则依赖网关的状态，样本无法单独表达，由 DEV-015 的网关测试覆盖：

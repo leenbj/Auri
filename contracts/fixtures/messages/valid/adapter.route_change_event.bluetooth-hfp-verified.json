@@ -1,0 +1,15 @@
+{
+  "schema": "adapter.schema.json#/$defs/route_change_event",
+  "expect": "valid",
+  "description": "系统观测到输入来自耳机的 HFP 通道。",
+  "instance": {
+    "capture_session_id": "f62d1c20-234a-510b-bbcf-c02962ce2421",
+    "epoch": 3,
+    "observed_input": {
+      "route_type": "bluetooth_hfp",
+      "display_name": "HUAWEI FreeClip 2"
+    },
+    "observed_at_monotonic_ns": 812400000000,
+    "verification_state": "verified"
+  }
+}

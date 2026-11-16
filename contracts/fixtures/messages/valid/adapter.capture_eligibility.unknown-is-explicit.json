@@ -1,0 +1,11 @@
+{
+  "schema": "adapter.schema.json#/$defs/capture_eligibility",
+  "expect": "valid",
+  "description": "锁屏下能否开始尚未实测：显式写 unknown，调用方不得当成允许。",
+  "instance": {
+    "permission": "granted",
+    "lifecycle": "locked",
+    "can_start": "unknown",
+    "reason": null
+  }
+}

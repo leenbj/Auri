@@ -1,0 +1,62 @@
+{
+  "schema": "adapter.schema.json#/$defs/recording_result",
+  "expect": "schema_invalid",
+  "rejected_because": "结束原因字段叫 end_reason，不叫 stop_reason。",
+  "expect_error": {
+    "path": "",
+    "keyword": "additionalProperties"
+  },
+  "instance": {
+    "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
+    "capture_session_id": "f62d1c20-234a-510b-bbcf-c02962ce2421",
+    "status": "complete",
+    "capture_duration_ms": 18500,
+    "speech_duration_ms": 9200,
+    "chunks": [
+      {
+        "chunk_id": "7ef52a3c-9176-5467-bc9c-b0a2d48b2bc4",
+        "sequence": 0,
+        "sha256": "b55873835304aa8691d9cf7d3dace2b6c45b83ef9d3e35cdc65d92dc1fdc176d",
+        "route_epoch": 3,
+        "start_ms": 800,
+        "end_ms": 5200
+      },
+      {
+        "chunk_id": "4f28aa25-cb05-58c8-a922-254e34676d20",
+        "sequence": 1,
+        "sha256": "d5ba6a0f48f87264ae5d2e8ec09a27902b51fc810c15d2700c2f825fa009961b",
+        "route_epoch": 3,
+        "start_ms": 12100,
+        "end_ms": 16900
+      }
+    ],
+    "verified_ranges": [
+      {
+        "start_ms": 800,
+        "end_ms": 5200
+      },
+      {
+        "start_ms": 12100,
+        "end_ms": 16900
+      }
+    ],
+    "discarded_ranges": [
+      {
+        "start_ms": 0,
+        "end_ms": 800,
+        "reason": "silence"
+      },
+      {
+        "start_ms": 5200,
+        "end_ms": 12100,
+        "reason": "silence"
+      },
+      {
+        "start_ms": 16900,
+        "end_ms": 18500,
+        "reason": "silence"
+      }
+    ],
+    "stop_reason": "headset_command"
+  }
+}
