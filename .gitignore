@@ -44,3 +44,8 @@ oh_modules/
 
 # 原始真机日志可能含正文或设备标识，脱敏后再放入 execution/ 下的证据目录
 execution/**/raw/
+
+# DEV-004 探针：工程由 XcodeGen 生成，原始日志不入库
+execution/p0-spikes/ios-probe/*.xcodeproj/
+execution/p0-spikes/ios-probe/Info.plist
+execution/p0-spikes/ios-probe/results/raw/

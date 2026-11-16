@@ -1,0 +1,31 @@
+name: AuriProbeIOS
+options:
+  bundleIdPrefix: app.auri.probe
+  deploymentTarget:
+    iOS: "18.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "0.0.1"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  AuriProbeIOS:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Auri Probe
+        UILaunchScreen: {}
+        NSMicrophoneUsageDescription: 探针需要用蓝牙耳机的麦克风验证输入路由，音频只保存在本机。
+        NSBluetoothAlwaysUsageDescription: 探针只读地探索耳机有没有向第三方开放的 BLE 通道，不写入任何数据。
+        UIBackgroundModes:
+          - audio
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.auri.probe.ios
