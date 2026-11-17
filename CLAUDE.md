@@ -43,6 +43,18 @@ PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway renew-cert --data-d
 
 证书有效期与续签运维说明见 `services/gateway/OPERATIONS.md`。
 
+iOS 探针离线单测（macOS + XcodeGen 2.46.0 + Xcode 27.1）与探针日志汇总（跨平台 Python）：
+
+```bash
+# macOS：生成工程并跑离线单测（E2）
+cd execution/p0-spikes/ios-probe && xcodegen generate --spec project.yml --project .
+xcodebuild test -project execution/p0-spikes/ios-probe/AuriProbeIOS.xcodeproj -scheme AuriProbeIOS -destination 'platform=iOS Simulator,name=iPhone 16'
+
+# 日志汇总脚本单测（Linux / macOS 均可）与原始日志汇总
+.venv/bin/pytest execution/p0-spikes/ios-probe/scripts/test_summarize_log.py
+python3 execution/p0-spikes/ios-probe/scripts/summarize_log.py execution/p0-spikes/ios-probe/results/raw/probe-log.jsonl
+```
+
 改了 `contracts/` 下的任何文件都要跑一遍。不得通过改样本的期望或删无效样本让测试通过；改 schema、状态机或语义规则的流程见 `contracts/README.md` 的“修改规则”。
 
 ## 产品与已决前提
