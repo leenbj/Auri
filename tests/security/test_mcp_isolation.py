@@ -42,15 +42,15 @@ def schema_invalid_requests(*request_names: str) -> list[tuple[str, str, dict[st
     return found
 
 
-CLAIM_INPUTS = schema_invalid_requests("claim_request")
+INVALID_INPUTS = schema_invalid_requests("claim_request", "renew_request", "ack_request", "nack_request")
 
 
 @pytest.mark.parametrize(
     ("tool", "arguments"),
-    [(tool, instance) for _, tool, instance in CLAIM_INPUTS],
-    ids=[name for name, _, _ in CLAIM_INPUTS],
+    [(tool, instance) for _, tool, instance in INVALID_INPUTS],
+    ids=[name for name, _, _ in INVALID_INPUTS],
 )
-def test_contract_invalid_claim_input_is_rejected_and_leases_nothing(
+def test_contract_invalid_tool_input_is_rejected_and_has_no_effect(
     world: World, tool: str, arguments: dict[str, Any]
 ) -> None:
     destination = world.destination()
@@ -95,3 +95,55 @@ def test_a_destination_only_ever_claims_the_deliveries_addressed_to_it(world: Wo
 
     assert [d["delivery_id"] for d in alpha_claim["deliveries"]] == [delivery_ids[alpha.destination_id]]
     assert [d["delivery_id"] for d in beta_claim["deliveries"]] == [delivery_ids[beta.destination_id]]
+
+
+@pytest.mark.parametrize("tool", ["delivery_renew_lease", "delivery_ack", "delivery_nack"])
+def test_another_destination_cannot_renew_ack_or_nack_even_with_a_valid_lease_token(
+    world: World, tool: str
+) -> None:
+    owner = world.destination("Owner")
+    intruder = world.destination("Intruder")
+    world.publish(owner)
+    owner_agent = world.agent(owner)
+    (delivery,) = owner_agent.claim()["deliveries"]
+    intruder_agent = world.agent(intruder)
+    arguments = {"delivery_id": delivery["delivery_id"], "lease_token": delivery["lease_token"]}
+    if tool == "delivery_nack":
+        arguments |= {"reason": "不是我的", "retryable": False}
+
+    error = intruder_agent.call_error(tool, arguments)
+
+    assert error["code"] == "REQUEST_INVALID"
+    # Not even the existence of the other Destination's Delivery is revealed.
+    unknown = intruder_agent.call_error(
+        tool, {**arguments, "delivery_id": "00000000-0000-4000-8000-000000000000"}
+    )
+    assert (error["code"], error["message"]) == (unknown["code"], unknown["message"])
+    # The owner's lease is untouched: it can still acknowledge.
+    assert owner_agent.ack(delivery["delivery_id"], delivery["lease_token"])["duplicate"] is False
+
+
+@pytest.mark.parametrize("tool", ["delivery_renew_lease", "delivery_ack", "delivery_nack"])
+def test_a_self_reported_identity_field_invalidates_a_call_on_the_callers_own_delivery(
+    world: World, tool: str
+) -> None:
+    mine = world.destination("Mine")
+    other = world.destination("Other")
+    world.publish(mine)
+    agent = world.agent(mine)
+    (delivery,) = agent.claim()["deliveries"]
+    arguments = {"delivery_id": delivery["delivery_id"], "lease_token": delivery["lease_token"]}
+    if tool == "delivery_nack":
+        arguments |= {"reason": "自报身份", "retryable": False}
+
+    for self_reported in (
+        {"destination_id": other.destination_id},
+        {"tenant_id": "00000000-0000-4000-8000-000000000000"},
+        {"agent_id": "someone-else"},
+    ):
+        error = agent.call_error(tool, arguments | self_reported)
+        assert error["code"] == "REQUEST_INVALID", (tool, self_reported)
+
+    # Without the self-reported field the same call is valid, and none of the rejected ones
+    # had any effect: this is the first acknowledgement.
+    assert agent.ack(delivery["delivery_id"], delivery["lease_token"])["duplicate"] is False
