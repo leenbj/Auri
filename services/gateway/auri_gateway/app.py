@@ -14,7 +14,17 @@ from starlette.routing import Route
 from .contracts import UUID_RE, check_revision_semantic_rules, validate_schema
 from .db import ensure_gateway_initialized
 from .error_codes import REQUEST_INVALID, GatewayError
-from .store import authenticate_device, redeem_pairing_code, store_revision
+from .store import (
+    authenticate_destination,
+    authenticate_device,
+    create_destination,
+    get_destination,
+    issue_destination_credential,
+    list_destinations,
+    redeem_pairing_code,
+    revoke_destination,
+    store_revision,
+)
 
 logger = logging.getLogger("auri_gateway")
 
@@ -35,6 +45,36 @@ async def _parse_json_object(request: Request) -> dict[str, Any]:
             "Request body must be a JSON object.",
         )
     return payload
+
+
+def _validate_uuid_param(value: str, param_name: str) -> str:
+    if not UUID_RE.match(value):
+        raise GatewayError(
+            422,
+            REQUEST_INVALID,
+            f"Path parameter {param_name} must be a lowercase UUID.",
+        )
+    return value
+
+
+async def _ensure_empty_or_empty_object_body(request: Request) -> None:
+    raw = await request.body()
+    if not raw.strip():
+        return
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+        raise GatewayError(
+            400,
+            REQUEST_INVALID,
+            "Request body must be empty or valid UTF-8 JSON.",
+        ) from exc
+    if payload != {}:
+        raise GatewayError(
+            422,
+            REQUEST_INVALID,
+            "Request body must be empty.",
+        )
 
 
 def _validate_contract_or_raise(schema_ref: str, body: dict[str, Any]) -> None:
@@ -115,6 +155,51 @@ def create_app(data_dir: pathlib.Path) -> Starlette:
         )
         return JSONResponse(result)
 
+    async def create_destination_endpoint(request: Request) -> JSONResponse:
+        auth = authenticate_device(db_path, request.headers.get("authorization"))
+        body = await _parse_json_object(request)
+        _validate_contract_or_raise("destination.schema.json#/$defs/create_request", body)
+        result = create_destination(db_path, auth, body)
+        logger.info("destination_created destination_id=%s", result["destination_id"])
+        return JSONResponse(result)
+
+    async def list_destinations_endpoint(request: Request) -> JSONResponse:
+        auth = authenticate_device(db_path, request.headers.get("authorization"))
+        return JSONResponse(list_destinations(db_path, auth))
+
+    async def get_destination_endpoint(request: Request) -> JSONResponse:
+        auth = authenticate_device(db_path, request.headers.get("authorization"))
+        destination_id = _validate_uuid_param(request.path_params["destination_id"], "destination_id")
+        return JSONResponse(get_destination(db_path, auth, destination_id))
+
+    async def issue_destination_credential_endpoint(request: Request) -> JSONResponse:
+        auth = authenticate_device(db_path, request.headers.get("authorization"))
+        destination_id = _validate_uuid_param(request.path_params["destination_id"], "destination_id")
+        await _ensure_empty_or_empty_object_body(request)
+        result = issue_destination_credential(db_path, auth, destination_id)
+        logger.info(
+            "destination_credential_issued destination_id=%s replaced_previous=%s",
+            destination_id,
+            result["replaced_previous"],
+        )
+        return JSONResponse(result)
+
+    async def revoke_destination_endpoint(request: Request) -> JSONResponse:
+        auth = authenticate_device(db_path, request.headers.get("authorization"))
+        destination_id = _validate_uuid_param(request.path_params["destination_id"], "destination_id")
+        result = revoke_destination(db_path, auth, destination_id)
+        logger.info("destination_revoked destination_id=%s", destination_id)
+        return JSONResponse(result)
+
+    async def mcp_auth_gate(request: Request) -> JSONResponse:
+        dest_auth = authenticate_destination(db_path, request.headers.get("authorization"))
+        logger.info("mcp_authenticated destination_id=%s", dest_auth.destination_id)
+        raise GatewayError(
+            501,
+            REQUEST_INVALID,
+            "MCP delivery tools are not implemented in this milestone.",
+        )
+
     async def gateway_error_handler(_request: Request, exc: GatewayError) -> JSONResponse:
         logger.info("request_rejected status=%s code=%s", exc.status_code, exc.code)
         return JSONResponse(exc.to_payload(), status_code=exc.status_code)
@@ -122,11 +207,21 @@ def create_app(data_dir: pathlib.Path) -> Starlette:
     routes = [
         Route("/health", health, methods=["GET"]),
         Route("/v1/pairing/redeem", pairing_redeem, methods=["POST"]),
+        Route("/v1/destinations", list_destinations_endpoint, methods=["GET"]),
+        Route("/v1/destinations", create_destination_endpoint, methods=["POST"]),
+        Route("/v1/destinations/{destination_id:str}", get_destination_endpoint, methods=["GET"]),
+        Route("/v1/destinations/{destination_id:str}", revoke_destination_endpoint, methods=["DELETE"]),
+        Route(
+            "/v1/destinations/{destination_id:str}/credential",
+            issue_destination_credential_endpoint,
+            methods=["POST"],
+        ),
         Route(
             "/v1/records/{record_id:str}/revisions/{revision:str}",
             put_revision,
             methods=["PUT"],
         ),
+        Route("/mcp", mcp_auth_gate, methods=["GET", "POST"]),
     ]
     return Starlette(
         routes=routes,

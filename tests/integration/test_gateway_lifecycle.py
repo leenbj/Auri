@@ -85,26 +85,26 @@ def test_cli_migrate_initializes_database_and_supports_future_migrations(
 
     migrations_dir = tmp_path / "extra-migrations"
     migrations_dir.mkdir()
-    (migrations_dir / "0001_initial.sql").write_text(
-        (REPO_ROOT / "services" / "gateway" / "auri_gateway" / "migrations" / "0001_initial.sql").read_text(
-            encoding="utf-8"
-        ),
-        encoding="utf-8",
-    )
-    (migrations_dir / "0002_add_destinations_placeholder.sql").write_text(
+    real_migrations_dir = REPO_ROOT / "services" / "gateway" / "auri_gateway" / "migrations"
+    for existing_sql in sorted(real_migrations_dir.glob("*.sql")):
+        (migrations_dir / existing_sql.name).write_text(
+            existing_sql.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+    (migrations_dir / "0003_future_placeholder.sql").write_text(
         "CREATE TABLE IF NOT EXISTS sample_future_table (id TEXT PRIMARY KEY);\n",
         encoding="utf-8",
     )
 
     with open_connection(db_path) as conn:
         applied = apply_migrations(conn, migrations_dir=migrations_dir)
-        assert applied == [(2, "0002_add_destinations_placeholder.sql")]
+        assert applied == [(3, "0003_future_placeholder.sql")]
         assert apply_migrations(conn, migrations_dir=migrations_dir) == []
         versions = [
             row[0]
             for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()
         ]
-        assert versions == [1, 2]
+        assert versions == [1, 2, 3]
         tables = {
             row[0]
             for row in conn.execute(

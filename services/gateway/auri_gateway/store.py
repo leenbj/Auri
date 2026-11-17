@@ -17,6 +17,7 @@ from .error_codes import (
     RECORD_DELETED,
     RECORD_NOT_ORIGIN_DEVICE,
     RECORD_VERSION_CONFLICT,
+    REQUEST_INVALID,
     GatewayError,
 )
 
@@ -25,6 +26,13 @@ from .error_codes import (
 class AuthenticatedDevice:
     device_id: str
     tenant_id: str
+
+
+@dataclass(frozen=True)
+class AuthenticatedDestination:
+    destination_id: str
+    tenant_id: str
+    allowed_intents: tuple[str, ...]
 
 
 def issue_pairing_code(data_dir: pathlib.Path, *, ttl_seconds: int = 300) -> dict[str, Any]:
@@ -151,14 +159,18 @@ def redeem_pairing_code(db_path: pathlib.Path, body: dict[str, Any]) -> dict[str
         conn.close()
 
 
-def authenticate_device(db_path: pathlib.Path, auth_header: str | None) -> AuthenticatedDevice:
-    """Resolve (device_id, tenant_id) strictly from the Bearer token hash in SQLite."""
+def _extract_bearer_token_hash(
+    auth_header: str | None,
+    *,
+    missing_action: str,
+    format_action: str,
+) -> str:
     if not auth_header:
         raise GatewayError(
             401,
             GATEWAY_AUTH_INVALID,
             "Missing Authorization header.",
-            required_action="Pair the device and provide a Bearer device token.",
+            required_action=missing_action,
         )
     scheme, _, token = auth_header.partition(" ")
     if scheme.lower() != "bearer" or not token.strip():
@@ -166,9 +178,18 @@ def authenticate_device(db_path: pathlib.Path, auth_header: str | None) -> Authe
             401,
             GATEWAY_AUTH_INVALID,
             "Invalid Authorization header format.",
-            required_action="Provide an Authorization: Bearer <device_token> header.",
+            required_action=format_action,
         )
-    token_hash = sha256_str(token.strip())
+    return sha256_str(token.strip())
+
+
+def authenticate_device(db_path: pathlib.Path, auth_header: str | None) -> AuthenticatedDevice:
+    """Resolve (device_id, tenant_id) strictly from the Bearer token hash in SQLite."""
+    token_hash = _extract_bearer_token_hash(
+        auth_header,
+        missing_action="Pair the device and provide a Bearer device token.",
+        format_action="Provide an Authorization: Bearer <device_token> header.",
+    )
     conn = open_connection(db_path)
     try:
         row = conn.execute(
@@ -193,6 +214,94 @@ def authenticate_device(db_path: pathlib.Path, auth_header: str | None) -> Authe
             required_action="Re-pair the device on the gateway.",
         )
     return AuthenticatedDevice(device_id=row["device_id"], tenant_id=row["tenant_id"])
+
+
+def authenticate_destination(
+    db_path: pathlib.Path, auth_header: str | None
+) -> AuthenticatedDestination:
+    """Resolve (destination_id, tenant_id) strictly from a Destination Bearer credential hash."""
+    token_hash = _extract_bearer_token_hash(
+        auth_header,
+        missing_action="Provide a Bearer destination credential.",
+        format_action="Provide an Authorization: Bearer <destination_credential> header.",
+    )
+    conn = open_connection(db_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT c.destination_id,
+                   c.tenant_id,
+                   c.revoked_at AS cred_revoked_at,
+                   d.revoked_at AS dest_revoked_at,
+                   d.allowed_intents_json
+            FROM destination_credentials AS c
+            JOIN destinations AS d
+              ON d.tenant_id = c.tenant_id AND d.destination_id = c.destination_id
+            WHERE c.token_hash = ?
+            """,
+            (token_hash,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        raise GatewayError(
+            401,
+            GATEWAY_AUTH_INVALID,
+            "Destination credential is invalid.",
+            required_action="Issue a new credential for this destination.",
+        )
+    if row["cred_revoked_at"] is not None or row["dest_revoked_at"] is not None:
+        raise GatewayError(
+            401,
+            GATEWAY_AUTH_REVOKED,
+            "Destination credential has been revoked or rotated.",
+            required_action="Use the latest credential or re-create the destination.",
+        )
+    return AuthenticatedDestination(
+        destination_id=row["destination_id"],
+        tenant_id=row["tenant_id"],
+        allowed_intents=tuple(json.loads(row["allowed_intents_json"])),
+    )
+
+
+def _validate_publication_destinations(
+    conn: Any, tenant_id: str, destination_ids: list[str], intent: str
+) -> None:
+    """Verify every target destination exists in tenant, is active, and permits intent."""
+    if not destination_ids:
+        return
+    placeholders = ", ".join("?" for _ in destination_ids)
+    rows = conn.execute(
+        f"""
+        SELECT destination_id, allowed_intents_json, revoked_at
+        FROM destinations
+        WHERE tenant_id = ? AND destination_id IN ({placeholders})
+        """,
+        (tenant_id, *destination_ids),
+    ).fetchall()
+    by_id = {row["destination_id"]: row for row in rows}
+    for dest_id in destination_ids:
+        row = by_id.get(dest_id)
+        if row is None:
+            raise GatewayError(
+                422,
+                REQUEST_INVALID,
+                "Target destination does not exist.",
+            )
+        if row["revoked_at"] is not None:
+            raise GatewayError(
+                422,
+                REQUEST_INVALID,
+                "Target destination has been revoked.",
+            )
+        allowed_intents = json.loads(row["allowed_intents_json"])
+        if intent not in allowed_intents:
+            raise GatewayError(
+                422,
+                REQUEST_INVALID,
+                "Target destination does not allow this publication intent.",
+            )
 
 
 def store_revision(
@@ -273,6 +382,9 @@ def store_revision(
                     "deliveries": json.loads(existing["deliveries_json"]),
                 }
 
+            destination_ids = list(publication["destination_ids"])
+            _validate_publication_destinations(conn, tenant_id, destination_ids, publication["intent"])
+
             prior_published = conn.execute(
                 """
                 SELECT revision
@@ -304,7 +416,15 @@ def store_revision(
             state = "SUPERSEDED" if higher_exists is not None else "PUBLISHED"
 
             operation_id = str(uuid.uuid4())
-            deliveries: list[dict[str, Any]] = []
+            deliveries: list[dict[str, Any]] = [
+                {
+                    "delivery_id": str(uuid.uuid4()),
+                    "destination_id": dest_id,
+                    "revision": revision,
+                    "state": "PENDING",
+                }
+                for dest_id in destination_ids
+            ]
             conn.execute(
                 """
                 INSERT INTO revisions (
@@ -338,11 +458,31 @@ def store_revision(
                     json.dumps(content["segments"], ensure_ascii=False),
                     json.dumps(capture, ensure_ascii=False),
                     publication["intent"],
-                    json.dumps(publication["destination_ids"]),
+                    json.dumps(destination_ids),
                     json.dumps(superseded_revisions),
                     json.dumps(deliveries),
                 ),
             )
+            for item in deliveries:
+                conn.execute(
+                    """
+                    INSERT INTO deliveries (
+                        delivery_id, tenant_id, record_id, revision, destination_id,
+                        state, intent, supersedes_revisions_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        item["delivery_id"],
+                        tenant_id,
+                        record_id,
+                        revision,
+                        item["destination_id"],
+                        item["state"],
+                        publication["intent"],
+                        json.dumps(superseded_revisions),
+                        now_iso,
+                    ),
+                )
             conn.execute("COMMIT")
             return {
                 "schema_version": "1.1",
@@ -355,6 +495,275 @@ def store_revision(
                 "superseded_revisions": superseded_revisions,
                 "deliveries": deliveries,
             }
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+
+
+def _destination_row_to_resource(row: Any) -> dict[str, Any]:
+    return {
+        "schema_version": "1.1",
+        "destination_id": row["destination_id"],
+        "display_name": row["display_name"],
+        "send_mode": row["send_mode"],
+        "allowed_intents": json.loads(row["allowed_intents_json"]),
+        "created_at": row["created_at"],
+        "created_by_device_id": row["created_by_device_id"],
+        "credential_issued": bool(row["credential_issued"]),
+        "revoked_at": row["revoked_at"],
+    }
+
+
+def create_destination(
+    db_path: pathlib.Path, auth: AuthenticatedDevice, body: dict[str, Any]
+) -> dict[str, Any]:
+    """Create a Destination scoped to the authenticated tenant and creator device."""
+    destination_id = str(uuid.uuid4())
+    now_iso = format_utc(utc_now())
+    allowed_intents = list(body["allowed_intents"])
+
+    conn = open_connection(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                """
+                INSERT INTO destinations (
+                    tenant_id, destination_id, display_name, send_mode,
+                    allowed_intents_json, created_at, created_by_device_id,
+                    credential_issued, revoked_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL)
+                """,
+                (
+                    auth.tenant_id,
+                    destination_id,
+                    body["display_name"],
+                    body["send_mode"],
+                    json.dumps(allowed_intents),
+                    now_iso,
+                    auth.device_id,
+                ),
+            )
+            row = conn.execute(
+                """
+                SELECT destination_id, display_name, send_mode, allowed_intents_json,
+                       created_at, created_by_device_id, credential_issued, revoked_at
+                FROM destinations
+                WHERE tenant_id = ? AND destination_id = ?
+                """,
+                (auth.tenant_id, destination_id),
+            ).fetchone()
+            assert row is not None
+            conn.execute("COMMIT")
+            return _destination_row_to_resource(row)
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+
+
+def list_destinations(db_path: pathlib.Path, auth: AuthenticatedDevice) -> dict[str, Any]:
+    """List all Destinations for the authenticated tenant without echoing credentials."""
+    conn = open_connection(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT destination_id, display_name, send_mode, allowed_intents_json,
+                   created_at, created_by_device_id, credential_issued, revoked_at
+            FROM destinations
+            WHERE tenant_id = ?
+            ORDER BY created_at ASC, destination_id ASC
+            """,
+            (auth.tenant_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return {
+        "schema_version": "1.1",
+        "destinations": [_destination_row_to_resource(row) for row in rows],
+    }
+
+
+def get_destination(
+    db_path: pathlib.Path, auth: AuthenticatedDevice, destination_id: str
+) -> dict[str, Any]:
+    """Return a single Destination for the authenticated tenant without echoing credentials."""
+    conn = open_connection(db_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT destination_id, display_name, send_mode, allowed_intents_json,
+                   created_at, created_by_device_id, credential_issued, revoked_at
+            FROM destinations
+            WHERE tenant_id = ? AND destination_id = ?
+            """,
+            (auth.tenant_id, destination_id),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        raise GatewayError(
+            404,
+            REQUEST_INVALID,
+            "Destination was not found.",
+        )
+    return _destination_row_to_resource(row)
+
+
+def issue_destination_credential(
+    db_path: pathlib.Path, auth: AuthenticatedDevice, destination_id: str
+) -> dict[str, Any]:
+    """Issue or rotate the Bearer credential for a Destination; store only its SHA-256 hash."""
+    now_iso = format_utc(utc_now())
+    credential = f"auri_dst_{secrets.token_urlsafe(32)}"
+    token_hash = sha256_str(credential)
+    credential_id = str(uuid.uuid4())
+
+    conn = open_connection(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            dest = conn.execute(
+                """
+                SELECT credential_issued, revoked_at
+                FROM destinations
+                WHERE tenant_id = ? AND destination_id = ?
+                """,
+                (auth.tenant_id, destination_id),
+            ).fetchone()
+            if dest is None:
+                raise GatewayError(
+                    404,
+                    REQUEST_INVALID,
+                    "Destination was not found.",
+                )
+            if dest["revoked_at"] is not None:
+                raise GatewayError(
+                    409,
+                    REQUEST_INVALID,
+                    "Cannot issue a credential for a revoked destination.",
+                )
+
+            replaced_previous = bool(dest["credential_issued"])
+            if replaced_previous:
+                conn.execute(
+                    """
+                    UPDATE destination_credentials
+                    SET revoked_at = ?
+                    WHERE tenant_id = ? AND destination_id = ? AND revoked_at IS NULL
+                    """,
+                    (now_iso, auth.tenant_id, destination_id),
+                )
+
+            conn.execute(
+                """
+                INSERT INTO destination_credentials (
+                    credential_id, tenant_id, destination_id, token_hash,
+                    issued_by_device_id, issued_at, revoked_at
+                ) VALUES (?, ?, ?, ?, ?, ?, NULL)
+                """,
+                (
+                    credential_id,
+                    auth.tenant_id,
+                    destination_id,
+                    token_hash,
+                    auth.device_id,
+                    now_iso,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE destinations
+                SET credential_issued = 1
+                WHERE tenant_id = ? AND destination_id = ?
+                """,
+                (auth.tenant_id, destination_id),
+            )
+            conn.execute("COMMIT")
+            return {
+                "schema_version": "1.1",
+                "destination_id": destination_id,
+                "credential": credential,
+                "issued_at": now_iso,
+                "replaced_previous": replaced_previous,
+            }
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+
+
+def revoke_destination(
+    db_path: pathlib.Path, auth: AuthenticatedDevice, destination_id: str
+) -> dict[str, Any]:
+    """Revoke a Destination, all its active credentials, and any pending/leased deliveries."""
+    now_iso = format_utc(utc_now())
+    conn = open_connection(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                """
+                SELECT destination_id, display_name, send_mode, allowed_intents_json,
+                       created_at, created_by_device_id, credential_issued, revoked_at
+                FROM destinations
+                WHERE tenant_id = ? AND destination_id = ?
+                """,
+                (auth.tenant_id, destination_id),
+            ).fetchone()
+            if row is None:
+                raise GatewayError(
+                    404,
+                    REQUEST_INVALID,
+                    "Destination was not found.",
+                )
+            if row["revoked_at"] is not None:
+                conn.execute("COMMIT")
+                return _destination_row_to_resource(row)
+
+            conn.execute(
+                """
+                UPDATE destinations
+                SET revoked_at = ?
+                WHERE tenant_id = ? AND destination_id = ?
+                """,
+                (now_iso, auth.tenant_id, destination_id),
+            )
+            conn.execute(
+                """
+                UPDATE destination_credentials
+                SET revoked_at = ?
+                WHERE tenant_id = ? AND destination_id = ? AND revoked_at IS NULL
+                """,
+                (now_iso, auth.tenant_id, destination_id),
+            )
+            conn.execute(
+                """
+                UPDATE deliveries
+                SET state = 'CANCELLED',
+                    cancelled_at = ?,
+                    lease_token_hash = NULL,
+                    lease_expires_at = NULL
+                WHERE tenant_id = ? AND destination_id = ? AND state IN ('PENDING', 'LEASED')
+                """,
+                (now_iso, auth.tenant_id, destination_id),
+            )
+            updated = conn.execute(
+                """
+                SELECT destination_id, display_name, send_mode, allowed_intents_json,
+                       created_at, created_by_device_id, credential_issued, revoked_at
+                FROM destinations
+                WHERE tenant_id = ? AND destination_id = ?
+                """,
+                (auth.tenant_id, destination_id),
+            ).fetchone()
+            assert updated is not None
+            conn.execute("COMMIT")
+            return _destination_row_to_resource(updated)
         except Exception:
             conn.execute("ROLLBACK")
             raise
