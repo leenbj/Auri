@@ -59,3 +59,52 @@ def test_deleted_record_is_hidden_from_agent_reads_but_preserves_acknowledgement
     assert destination_status["delivery_id"] == delivery_id
     assert destination_status["delivery_state"] == "ACKNOWLEDGED"
     assert destination_status["acknowledged_at"] == acknowledgement["acknowledged_at"]
+
+
+def test_superseded_unclaimed_revision_is_readable_until_record_deletion(
+    world: World,
+) -> None:
+    destination = world.destination("Revision Reader")
+    agent = world.agent(destination)
+    first_text = "Original cross-ticket revision."
+    first = world.publish(destination, text=first_text)
+    record_id = first["record_id"]
+    assert first["deliveries"][0]["state"] == "PENDING"
+
+    second_text = "Updated cross-ticket revision."
+    world.publish(
+        destination,
+        record_id=record_id,
+        revision=2,
+        text=second_text,
+        source="user_edit",
+    )
+
+    older = agent.record_get(record_id, revision=1)
+    assert older["revision"] == 1
+    assert older["text"] == first_text
+    assert older["delivery_state"] == "CANCELLED"
+    latest = agent.record_get(record_id)
+    assert latest["revision"] == 2
+    assert latest["text"] == second_text
+    assert [(record["record_id"], record["revision"]) for record in agent.record_list()["records"]] == [
+        (record_id, 2)
+    ]
+
+    headers = {"Authorization": f"Bearer {world.device_token}"}
+    deleted = httpx.delete(
+        f"{world.gw.base_url}/v1/records/{record_id}", headers=headers, timeout=5.0
+    )
+    assert deleted.status_code == 200, deleted.text
+    assert_valid_contract("revision.schema.json#/$defs/record_deleted", deleted.json())
+    assert deleted.json()["record_id"] == record_id
+
+    request = {"record_id": record_id, "revision": 1}
+    assert_valid_contract("record_query.schema.json#/$defs/get_request", request)
+    deleted_error = agent.call_error("record_get", request)
+    missing_error = agent.call_error("record_get", {"record_id": str(uuid.uuid4()), "revision": 1})
+    assert deleted_error["code"] == "REQUEST_INVALID"
+    assert deleted_error["retryable"] is False
+    assert (deleted_error["code"], deleted_error["message"]) == (
+        missing_error["code"], missing_error["message"]
+    )

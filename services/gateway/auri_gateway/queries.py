@@ -361,7 +361,6 @@ def _query_visible_rows(
                   ON rec.tenant_id = d.tenant_id AND rec.record_id = d.record_id
                 WHERE d.tenant_id = ?
                   AND d.destination_id = ?
-                  AND d.state != 'CANCELLED'
                   AND rec.deleted_at IS NULL
             )
             SELECT record_id, revision, delivery_id, eff_state, intent, source, language,
@@ -498,7 +497,6 @@ def get_record(
             WHERE d.tenant_id = ?
               AND d.destination_id = ?
               AND d.record_id = ?
-              AND d.state != 'CANCELLED'
               AND rec.deleted_at IS NULL
               {rev_filter}
             ORDER BY d.revision DESC
