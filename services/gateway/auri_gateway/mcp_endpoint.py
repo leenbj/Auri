@@ -5,6 +5,7 @@ tenant, agent or Destination fields. The endpoint is served statelessly: every c
 """
 from __future__ import annotations
 
+import json
 import logging
 import pathlib
 from contextlib import asynccontextmanager
@@ -19,6 +20,7 @@ from mcp.types import (
     CallToolResult,
     ListToolsResult,
     PaginatedRequestParams,
+    TextContent,
     Tool,
     ToolAnnotations,
 )
@@ -93,6 +95,13 @@ def _build_tool(
     )
 
 
+def _ok(payload: dict[str, Any]) -> CallToolResult:
+    return CallToolResult(
+        content=[TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))],
+        structured_content=payload,
+    )
+
+
 class _DestinationAuthGate:
     """ASGI gate: authenticate the Destination credential before any MCP processing."""
 
@@ -113,6 +122,7 @@ class AgentMcpEndpoint:
     def __init__(self, db_path: pathlib.Path) -> None:
         self._db_path = db_path
         self._tools = [_build_tool(*spec) for spec in _DELIVERY_TOOLS]
+        self._handlers = {"delivery_claim": self._claim}
         self._server = Server(
             "auri-gateway",
             version=__version__,
@@ -143,6 +153,12 @@ class AgentMcpEndpoint:
         return ListToolsResult(tools=self._tools)
 
     async def _call_tool(
-        self, _ctx: ServerRequestContext, params: CallToolRequestParams
+        self, ctx: ServerRequestContext, params: CallToolRequestParams
     ) -> CallToolResult:
-        raise MCPError(INVALID_PARAMS, f"Unknown tool: {params.name}")
+        handler = self._handlers.get(params.name)
+        if handler is None:
+            raise MCPError(INVALID_PARAMS, f"Unknown tool: {params.name}")
+        return _ok(handler(ctx, params.arguments or {}))
+
+    def _claim(self, _ctx: ServerRequestContext, _arguments: dict[str, Any]) -> dict[str, Any]:
+        return {"schema_version": "1.1", "deliveries": [], "next_cursor": None}

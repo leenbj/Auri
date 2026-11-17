@@ -56,3 +56,13 @@ def test_mcp_endpoint_advertises_the_four_delivery_tools_with_contract_equivalen
             assert not produces_output.is_valid(instance), f"{name} output must reject {fixture_name}"
         # Every delivery tool writes (lease, renewal, ack, nack): none may claim to be read-only.
         assert tool.annotations is not None and tool.annotations.read_only_hint is False, name
+
+
+def test_claim_with_nothing_pending_returns_a_normal_empty_result_not_an_error(
+    world: World,
+) -> None:
+    agent = world.agent(world.destination())
+
+    result = agent.claim()
+
+    assert result == {"schema_version": "1.1", "deliveries": [], "next_cursor": None}
