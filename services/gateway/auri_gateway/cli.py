@@ -7,12 +7,13 @@ import json
 import logging
 import pathlib
 import sys
+import tarfile
 
 import qrcode
 import uvicorn
 
 from .app import create_app
-from .db import ensure_gateway_initialized, open_connection
+from .db import MigrationError, ensure_gateway_initialized, open_connection
 from .mdns import MdnsAdvertiser
 from .network import (
     MDNS_SERVICE_TYPE,
@@ -24,7 +25,15 @@ from .network import (
     resolve_bind_hosts,
     write_runtime_state,
 )
-from .store import MAX_PAIRING_TTL_SECONDS, issue_pairing_code
+from .operations import backup_gateway, restore_gateway
+from .store import (
+    MAX_PAIRING_TTL_SECONDS,
+    delete_revoked_device_records,
+    issue_pairing_code,
+    list_devices_and_credentials,
+    revoke_credential,
+    revoke_device,
+)
 from .tls import DEFAULT_CERT_VALIDITY_DAYS, ensure_tls_material, renew_certificate
 
 
@@ -124,6 +133,129 @@ def _build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Persistent directory for SQLite database",
     )
+
+    list_devices_cmd = subparsers.add_parser(
+        "list-devices",
+        help="List paired devices and the Destination credentials each device issued",
+    )
+    list_devices_cmd.add_argument(
+        "--data-dir",
+        type=pathlib.Path,
+        required=True,
+        help="Persistent directory used by the Gateway",
+    )
+    list_devices_cmd.add_argument(
+        "--json",
+        action="store_true",
+        help="Output device and credential metadata as JSON",
+    )
+
+    revoke_device_cmd = subparsers.add_parser(
+        "revoke-device",
+        help="Revoke a paired device (does not revoke Destination credentials it created)",
+    )
+    revoke_device_cmd.add_argument(
+        "--data-dir",
+        type=pathlib.Path,
+        required=True,
+        help="Persistent directory used by the Gateway",
+    )
+    revoke_device_cmd.add_argument(
+        "--device-id",
+        required=True,
+        help="UUID of the paired device to revoke",
+    )
+    revoke_device_cmd.add_argument(
+        "--json",
+        action="store_true",
+        help="Output revocation result as JSON",
+    )
+
+    revoke_cred_cmd = subparsers.add_parser(
+        "revoke-credential",
+        help="Revoke a single Destination credential by credential_id",
+    )
+    revoke_cred_cmd.add_argument(
+        "--data-dir",
+        type=pathlib.Path,
+        required=True,
+        help="Persistent directory used by the Gateway",
+    )
+    revoke_cred_cmd.add_argument(
+        "--credential-id",
+        required=True,
+        help="UUID of the Destination credential to revoke",
+    )
+    revoke_cred_cmd.add_argument(
+        "--json",
+        action="store_true",
+        help="Output revocation result as JSON",
+    )
+
+    del_dev_records_cmd = subparsers.add_parser(
+        "delete-device-records",
+        help="Tombstone all Records belonging to a revoked device and cancel open Deliveries",
+    )
+    del_dev_records_cmd.add_argument(
+        "--data-dir",
+        type=pathlib.Path,
+        required=True,
+        help="Persistent directory used by the Gateway",
+    )
+    del_dev_records_cmd.add_argument(
+        "--device-id",
+        required=True,
+        help="UUID of the revoked device whose Records should be deleted",
+    )
+    del_dev_records_cmd.add_argument(
+        "--json",
+        action="store_true",
+        help="Output deletion summary as JSON",
+    )
+
+    backup_cmd = subparsers.add_parser(
+        "backup",
+        help="Create a consistent 0600 backup archive of the Gateway data directory",
+    )
+    backup_cmd.add_argument(
+        "--data-dir",
+        type=pathlib.Path,
+        required=True,
+        help="Persistent directory used by the Gateway",
+    )
+    backup_cmd.add_argument(
+        "--output",
+        type=pathlib.Path,
+        required=True,
+        help="Destination path for the backup .tar.gz archive",
+    )
+    backup_cmd.add_argument(
+        "--json",
+        action="store_true",
+        help="Output backup metadata as JSON",
+    )
+
+    restore_cmd = subparsers.add_parser(
+        "restore",
+        help="Restore a Gateway backup archive into an empty target directory",
+    )
+    restore_cmd.add_argument(
+        "--backup",
+        type=pathlib.Path,
+        required=True,
+        help="Path to the backup .tar.gz archive",
+    )
+    restore_cmd.add_argument(
+        "--data-dir",
+        type=pathlib.Path,
+        required=True,
+        help="Empty or new target directory to restore into",
+    )
+    restore_cmd.add_argument(
+        "--json",
+        action="store_true",
+        help="Output restore metadata as JSON",
+    )
     return parser
 
 
@@ -156,7 +288,11 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         )
         return 1
 
-    app = create_app(args.data_dir)
+    try:
+        app = create_app(args.data_dir)
+    except MigrationError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     sockets, actual_port = bind_tcp_sockets(bind_hosts, args.port)
     write_runtime_state(args.data_dir, port=actual_port, hosts=bind_hosts)
     advertiser: MdnsAdvertiser | None = None
@@ -247,6 +383,120 @@ def _cmd_renew_cert(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_list_devices(args: argparse.Namespace) -> int:
+    try:
+        listing = list_devices_and_credentials(args.data_dir)
+    except (FileNotFoundError, MigrationError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(listing, ensure_ascii=False))
+        return 0
+    devices = listing["devices"]
+    if not devices:
+        print("No paired devices.")
+        return 0
+    for dev in devices:
+        print(
+            f"{dev['device_id']}  {dev['display_name']}  ({dev['platform']})  "
+            f"[{dev['state']}]  paired_at={dev['paired_at']}  revoked_at={dev['revoked_at'] or '-'}"
+        )
+        creds = dev["credentials"]
+        if not creds:
+            print("  (no credentials)")
+        else:
+            for cred in creds:
+                print(
+                    f"  - credential={cred['credential_id']}  "
+                    f"destination={cred['destination_id']} ({cred['destination_display_name']})  "
+                    f"[{cred['state']}]  issued_at={cred['issued_at']}  revoked_at={cred['revoked_at'] or '-'}"
+                )
+    return 0
+
+
+def _cmd_revoke_device(args: argparse.Namespace) -> int:
+    try:
+        info = revoke_device(args.data_dir, args.device_id)
+    except (FileNotFoundError, LookupError, MigrationError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(info, ensure_ascii=False))
+    else:
+        status = "already revoked" if info["already_revoked"] else "revoked"
+        print(
+            f"Device {info['device_id']} ({info['display_name']}) {status} at {info['revoked_at']}."
+        )
+    return 0
+
+
+def _cmd_revoke_credential(args: argparse.Namespace) -> int:
+    try:
+        info = revoke_credential(args.data_dir, args.credential_id)
+    except (FileNotFoundError, LookupError, MigrationError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(info, ensure_ascii=False))
+    else:
+        status = "already revoked" if info["already_revoked"] else "revoked"
+        print(
+            f"Credential {info['credential_id']} for destination {info['destination_id']} "
+            f"({info['destination_display_name']}) {status} at {info['revoked_at']}."
+        )
+    return 0
+
+
+def _cmd_delete_device_records(args: argparse.Namespace) -> int:
+    try:
+        summary = delete_revoked_device_records(args.data_dir, args.device_id)
+    except (FileNotFoundError, LookupError, ValueError, MigrationError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(summary, ensure_ascii=False))
+    else:
+        print(
+            f"Deleted {len(summary['deleted_record_ids'])} record(s) for revoked device "
+            f"{summary['device_id']} ({summary['display_name']}); "
+            f"cancelled {len(summary['cancelled_delivery_ids'])} open delivery(s)."
+        )
+    return 0
+
+
+def _cmd_backup(args: argparse.Namespace) -> int:
+    try:
+        info = backup_gateway(args.data_dir, args.output)
+    except (FileNotFoundError, ValueError, RuntimeError, OSError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(info, ensure_ascii=False))
+    else:
+        print(
+            f"Backup created at {info['backup_path']} "
+            f"(gateway_id={info['gateway_id']}, schema_version={info['schema_version']}, "
+            f"files={', '.join(info['files'])})."
+        )
+    return 0
+
+
+def _cmd_restore(args: argparse.Namespace) -> int:
+    try:
+        info = restore_gateway(args.backup, args.data_dir)
+    except (FileNotFoundError, ValueError, RuntimeError, OSError, tarfile.TarError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(info, ensure_ascii=False))
+    else:
+        print(
+            f"Restored gateway_id={info['gateway_id']} (schema_version={info['schema_version']}) "
+            f"into {info['data_dir']} (files={', '.join(info['restored_files'])})."
+        )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -258,9 +508,25 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "renew-cert":
         return _cmd_renew_cert(args)
     if args.command == "migrate":
-        db_path = ensure_gateway_initialized(args.data_dir)
+        try:
+            db_path = ensure_gateway_initialized(args.data_dir)
+        except MigrationError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
         print(f"Database ready at {db_path}")
         return 0
+    if args.command == "list-devices":
+        return _cmd_list_devices(args)
+    if args.command == "revoke-device":
+        return _cmd_revoke_device(args)
+    if args.command == "revoke-credential":
+        return _cmd_revoke_credential(args)
+    if args.command == "delete-device-records":
+        return _cmd_delete_device_records(args)
+    if args.command == "backup":
+        return _cmd_backup(args)
+    if args.command == "restore":
+        return _cmd_restore(args)
     return 2
 
 
