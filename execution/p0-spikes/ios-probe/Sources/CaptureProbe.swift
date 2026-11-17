@@ -9,10 +9,12 @@ final class CaptureProbe: @unchecked Sendable {
     }
 
     var onStateChange: (@Sendable (State, String) -> Void)?
+    var onVolumeUpdate: (@Sendable (Double, VolumeBoundary, VolumeGestureEvaluation?) -> Void)?
+    var onVolumeStopTriggered: (@Sendable (String, Double, String, UInt64) -> Void)?
     /// 会话模式是对照变量：探针要回答“换模式后录音中的耳机命令能否到达”。
     var sessionMode: AVAudioSession.Mode = .default
-
-    private static let bluetoothInputTypes: [AVAudioSession.Port] = [.bluetoothHFP, .bluetoothLE]
+    /// 录音时长硬上限（秒），ADR-0014 保留时长上限兜底；默认 30 分钟。
+    var maxDurationSeconds: TimeInterval = 1800
 
     private let session = AVAudioSession.sharedInstance()
     private var engine = AVAudioEngine()
@@ -21,13 +23,20 @@ final class CaptureProbe: @unchecked Sendable {
     private var current: State = .idle
     private var gateOpen = false
     private var routeEpoch = 0
+    private var generation = 0
     private var acceptedFrames: Int64 = 0
     private var discardedFrames: Int64 = 0
     private var firstAcceptedMono: UInt64 = 0
     private var lastAcceptedMono: UInt64 = 0
+    private var recordingStartedMono: UInt64 = 0
     private var sampleRate: Double = 0
     private var writeFailures = 0
     private var sessionID = ""
+    private var volumeStopEnabledStorage = true
+    private var activeScenarioStorage = "middle"
+    private var volumeSequence = 0
+    private var volumeDetector = VolumeGestureDetector()
+    private var durationLimitWorkItem: DispatchWorkItem?
     private var observers: [NSObjectProtocol] = []
     private var volumeObservation: NSKeyValueObservation?
 
@@ -38,11 +47,9 @@ final class CaptureProbe: @unchecked Sendable {
         ) { _ in
             ProbeLogger.shared.log("input_mute_state_changed", ["muted": AVAudioApplication.shared.isInputMuted])
         })
-        // 音量类手势是否能作为录音中的停止信号：只记录变化，不做动作。
-        volumeObservation = session.observe(\.outputVolume, options: [.old, .new]) { _, change in
-            let new = Double(change.newValue ?? -1)
-            let old = Double(change.oldValue ?? -1)
-            ProbeLogger.shared.log("output_volume_changed", ["value": new, "previous": old, "delta": new - old])
+        // 音量往返停止规则（ADR-0021 提议）：录音中观测 AVAudioSession.outputVolume KVO。
+        volumeObservation = session.observe(\.outputVolume, options: [.old, .new]) { [weak self] _, change in
+            self?.handleVolumeChange(newValue: change.newValue, oldValue: change.oldValue)
         }
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: nil, queue: nil) { [weak self] note in
@@ -63,6 +70,32 @@ final class CaptureProbe: @unchecked Sendable {
         return current
     }
 
+    var volumeStopEnabled: Bool {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return volumeStopEnabledStorage
+        }
+        set {
+            lock.lock()
+            volumeStopEnabledStorage = newValue
+            lock.unlock()
+        }
+    }
+
+    var activeScenarioTag: String {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return activeScenarioStorage
+        }
+        set {
+            lock.lock()
+            activeScenarioStorage = newValue
+            lock.unlock()
+        }
+    }
+
     func requestMicPermission() {
         AVAudioApplication.requestRecordPermission { granted in
             ProbeLogger.shared.log("mic_permission", ["granted": granted])
@@ -77,7 +110,16 @@ final class CaptureProbe: @unchecked Sendable {
         case (.start, .idle), (.start, .blocked), (.toggle, .idle), (.toggle, .blocked):
             start(trigger: platformCommand)
         case (.stop, .recording), (.stop, .routing), (.toggle, .recording), (.toggle, .routing):
-            stop(reason: "command_\(platformCommand)")
+            let reason: String
+            switch platformCommand {
+            case "volume_gesture":
+                reason = "volume_gesture"
+            case "manual":
+                reason = "screen_control"
+            default:
+                reason = "command_\(platformCommand)"
+            }
+            stop(reason: reason)
         case (.start, .finalizing):
             // 封存期间的明确 START：忽略并记录，不排队（PRD §12.2）。
             logger.log("command_ignored_busy", ["command": command.rawValue, "platform_command": platformCommand])
@@ -98,10 +140,17 @@ final class CaptureProbe: @unchecked Sendable {
             return
         }
         sessionID = UUID().uuidString
+        lock.lock()
+        generation += 1
+        let capGeneration = generation
+        volumeDetector.reset()
+        lock.unlock()
+
         set(.routing)
         logger.log("capture_start_requested", [
             "trigger": trigger,
             "session_id": sessionID,
+            "scenario": activeScenarioTag,
             "route_before": routeSnapshot(),
         ])
 
@@ -114,7 +163,7 @@ final class CaptureProbe: @unchecked Sendable {
 
         let available = session.availableInputs ?? []
         logger.log("available_inputs", ["inputs": available.map { portInfo($0) }])
-        guard let bluetooth = available.first(where: { Self.bluetoothInputTypes.contains($0.portType) }) else {
+        guard let bluetooth = available.first(where: { RouteEvidenceGate.classify(portTypeRaw: $0.portType.rawValue).isBluetooth }) else {
             return block("no_bluetooth_input_available")
         }
         do {
@@ -123,7 +172,8 @@ final class CaptureProbe: @unchecked Sendable {
             return block("set_preferred_input_failed", error: error)
         }
         // 引擎启动之前先取路由证据：未确认来自蓝牙就不创建任何采集管线。
-        guard routeIsBluetoothInput() else {
+        let entryVerdict = evaluateCurrentRoute()
+        guard entryVerdict.isBluetoothOnlyVerified else {
             return block("route_not_bluetooth_after_preferred_input")
         }
 
@@ -142,6 +192,10 @@ final class CaptureProbe: @unchecked Sendable {
             return block("audio_file_create_failed", error: error)
         }
 
+        let startedMono = ProbeLogger.monoNanos()
+        let initialVolume = Double(session.outputVolume)
+        let initialBoundary = volumeDetector.classifyBoundary(volume: initialVolume)
+
         lock.lock()
         gateOpen = true
         routeEpoch += 1
@@ -149,8 +203,10 @@ final class CaptureProbe: @unchecked Sendable {
         discardedFrames = 0
         firstAcceptedMono = 0
         lastAcceptedMono = 0
+        recordingStartedMono = startedMono
         writeFailures = 0
         sampleRate = format.sampleRate
+        volumeDetector.reset()
         let epoch = routeEpoch
         lock.unlock()
 
@@ -164,11 +220,18 @@ final class CaptureProbe: @unchecked Sendable {
             return block("engine_start_failed", error: error)
         }
 
+        scheduleDurationLimit(forGeneration: capGeneration, expectedSessionID: sessionID)
         set(.recording)
+        onVolumeUpdate?(initialVolume, initialBoundary, nil)
         logger.log("capture_started", [
             "session_id": sessionID,
+            "scenario": activeScenarioTag,
             "route_epoch": epoch,
             "route_verified_before_engine_start": true,
+            "observed_route_type": entryVerdict.primaryObservedRouteType.rawValue,
+            "initial_volume": initialVolume,
+            "initial_boundary": initialBoundary.rawValue,
+            "volume_stop_enabled": volumeStopEnabled,
             "sample_rate": format.sampleRate,
             "channels": Int(format.channelCount),
             "route": routeSnapshot(),
@@ -188,9 +251,14 @@ final class CaptureProbe: @unchecked Sendable {
             logger.log("capture_stop_ignored", ["state": before.rawValue, "reason": reason])
             return
         }
+        durationLimitWorkItem?.cancel()
+        durationLimitWorkItem = nil
+
         set(.finalizing)
         lock.lock()
         gateOpen = false
+        volumeDetector.reset()
+        recordingStartedMono = 0
         lock.unlock()
 
         engine.inputNode.removeTap(onBus: 0)
@@ -209,6 +277,7 @@ final class CaptureProbe: @unchecked Sendable {
 
         logger.log("capture_stopped", [
             "session_id": sessionID,
+            "scenario": activeScenarioTag,
             "reason": reason,
             "accepted_frames": accepted,
             "discarded_frames": discarded,
@@ -219,6 +288,89 @@ final class CaptureProbe: @unchecked Sendable {
             "route_after": routeSnapshot(),
         ])
         set(.idle)
+    }
+
+    private func scheduleDurationLimit(forGeneration capGeneration: Int, expectedSessionID: String) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.durationLimitWorkItem?.cancel()
+            let item = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.lock.lock()
+                let matches = (self.generation == capGeneration && self.sessionID == expectedSessionID && self.current == .recording)
+                self.lock.unlock()
+                if matches {
+                    self.stop(reason: "duration_limit")
+                }
+            }
+            self.durationLimitWorkItem = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + self.maxDurationSeconds, execute: item)
+        }
+    }
+
+    // MARK: 音量手势
+
+    private func handleVolumeChange(newValue: Float?, oldValue: Float?) {
+        let new = Double(newValue ?? -1)
+        let old = oldValue.map { Double($0) }
+        let now = ProbeLogger.monoNanos()
+
+        lock.lock()
+        let isRecording = (current == .recording)
+        let started = recordingStartedMono
+        let enabled = volumeStopEnabledStorage
+        let scenario = activeScenarioStorage
+        let activeSessionID = sessionID
+        volumeSequence += 1
+        let seq = volumeSequence
+        let eval = volumeDetector.evaluate(VolumeObservationInput(
+            newVolume: new,
+            previousVolume: old,
+            monoNanos: now,
+            isRecording: isRecording,
+            recordingStartedMonoNanos: started > 0 ? started : nil,
+            sequence: seq
+        ))
+        lock.unlock()
+
+        var data: [String: Any] = [
+            "value": new,
+            "previous": old ?? -1,
+            "delta": eval.delta,
+            "recording": isRecording,
+            "boundary": eval.boundary.rawValue,
+            "decision": eval.outcome.label,
+            "volume_stop_enabled": enabled,
+            "scenario": scenario,
+            "normalized_event": eval.normalizedEvent.dictionary,
+        ]
+        if let reason = eval.outcome.reason {
+            data["decision_reason"] = reason
+        }
+        if case let .triggeredStop(first, second, dtNanos, startB, endB) = eval.outcome {
+            data["direction_pair"] = "\(first.rawValue)->\(second.rawValue)"
+            data["dt_ms"] = Int(dtNanos / 1_000_000)
+            data["start_boundary"] = startB.rawValue
+            data["end_boundary"] = endB.rawValue
+        }
+
+        ProbeLogger.shared.log("output_volume_changed", data)
+        onVolumeUpdate?(new, eval.boundary, eval)
+
+        if enabled, case let .triggeredStop(first, second, dtNanos, startB, endB) = eval.outcome {
+            let pair = "\(first.rawValue)->\(second.rawValue)"
+            ProbeLogger.shared.log("volume_stop_triggered", [
+                "session_id": activeSessionID,
+                "scenario": scenario,
+                "direction_pair": pair,
+                "dt_ms": Int(dtNanos / 1_000_000),
+                "value": new,
+                "start_boundary": startB.rawValue,
+                "end_boundary": endB.rawValue,
+            ])
+            onVolumeStopTriggered?(scenario, new, pair, dtNanos)
+            apply(.stop, platformCommand: "volume_gesture")
+        }
     }
 
     // MARK: 音频帧
@@ -292,6 +444,8 @@ final class CaptureProbe: @unchecked Sendable {
     }
 
     private func block(_ reason: String, error: Error? = nil) {
+        durationLimitWorkItem?.cancel()
+        durationLimitWorkItem = nil
         var data: [String: Any] = ["reason": reason, "session_id": sessionID, "route": routeSnapshot()]
         if let ns = error as NSError? {
             data["error_domain"] = ns.domain
@@ -300,20 +454,27 @@ final class CaptureProbe: @unchecked Sendable {
         }
         lock.lock()
         gateOpen = false
+        volumeDetector.reset()
+        recordingStartedMono = 0
         lock.unlock()
         try? session.setActive(false, options: .notifyOthersOnDeactivation)
         set(.blocked)
         ProbeLogger.shared.log("capture_blocked", data)
     }
 
+    private func evaluateCurrentRoute() -> RouteEvidenceVerdict {
+        let ports = session.currentRoute.inputs.map {
+            ObservedAudioPort(portTypeRaw: $0.portType.rawValue, portName: $0.portName, uid: $0.uid)
+        }
+        return RouteEvidenceGate.evaluate(inputs: ports)
+    }
+
     private func routeIsBluetoothInput() -> Bool {
-        let inputs = session.currentRoute.inputs
-        return !inputs.isEmpty && inputs.allSatisfy { Self.bluetoothInputTypes.contains($0.portType) }
+        evaluateCurrentRoute().isBluetoothOnlyVerified
     }
 
     private func portInfo(_ port: AVAudioSessionPortDescription) -> [String: String] {
-        // uid 只保留末 6 位，避免日志里出现完整蓝牙地址。
-        ["type": port.portType.rawValue, "name": port.portName, "uid_tail": String(port.uid.suffix(6))]
+        LogRedactor.redactPort(type: port.portType.rawValue, name: port.portName, uid: port.uid)
     }
 
     private func routeSnapshot() -> [String: Any] {
