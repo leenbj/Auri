@@ -14,7 +14,7 @@ from datetime import timedelta
 from typing import Any
 
 from .db import format_utc, open_connection, sha256_str, utc_now
-from .delivery_machine import CLAIM, PENDING, RENEW_LEASE, step
+from .delivery_machine import ACK, CLAIM, PENDING, RENEW_LEASE, step
 from .error_codes import DELIVERY_LEASE_EXPIRED, REQUEST_INVALID, GatewayError
 from .store import AuthenticatedDestination
 
@@ -119,6 +119,49 @@ def renew_lease(
     }
 
 
+def ack_delivery(
+    db_path: pathlib.Path,
+    destination: AuthenticatedDestination,
+    delivery_id: str,
+    lease_token: str,
+    note: str | None,
+) -> dict[str, Any]:
+    """Acknowledge a Delivery. Repeating the call with the same lease reports the first ack."""
+    conn = open_connection(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = _load_owned_delivery(conn, destination, delivery_id)
+            if not _holds_lease(row, lease_token):
+                raise _lease_lost()
+            outcome = step(row["state"], ACK)
+            if outcome.kind == "rejected":
+                raise _refused_in_state(row["state"])
+            duplicate = outcome.kind == "ignored"
+            acknowledged_at = row["acknowledged_at"]
+            if not duplicate:
+                acknowledged_at = format_utc(utc_now())
+                conn.execute(
+                    """
+                    UPDATE deliveries SET state = ?, acknowledged_at = ?, ack_note = ?
+                    WHERE delivery_id = ?
+                    """,
+                    (outcome.state, acknowledged_at, note, delivery_id),
+                )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+    return {
+        "delivery_id": delivery_id,
+        "state": outcome.state,
+        "acknowledged_at": acknowledged_at,
+        "duplicate": duplicate,
+    }
+
+
 def _load_owned_delivery(
     conn: sqlite3.Connection, destination: AuthenticatedDestination, delivery_id: str
 ) -> sqlite3.Row:
@@ -128,7 +171,7 @@ def _load_owned_delivery(
     """
     row = conn.execute(
         """
-        SELECT delivery_id, state, lease_token_hash, lease_seconds
+        SELECT delivery_id, state, lease_token_hash, lease_seconds, acknowledged_at
         FROM deliveries
         WHERE tenant_id = ? AND destination_id = ? AND delivery_id = ?
         """,

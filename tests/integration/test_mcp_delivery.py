@@ -223,3 +223,58 @@ def test_renew_with_a_token_that_is_not_the_current_lease_is_refused(world: Worl
 
     assert error["code"] == "DELIVERY_LEASE_EXPIRED"
     assert error["retryable"] is True
+
+
+def test_ack_acknowledges_the_delivery_and_it_is_never_handed_out_again(world: World) -> None:
+    destination = world.destination()
+    world.publish(destination)
+    agent = world.agent(destination)
+    (delivery,) = agent.claim()["deliveries"]
+    before = datetime.now(timezone.utc)
+
+    acked = agent.ack(delivery["delivery_id"], delivery["lease_token"], note="已保存到本地笔记。")
+
+    assert acked["delivery_id"] == delivery["delivery_id"]
+    assert acked["state"] == "ACKNOWLEDGED"
+    assert acked["duplicate"] is False
+    assert abs((parse_timestamp(acked["acknowledged_at"]) - before).total_seconds()) < 30
+    assert agent.claim()["deliveries"] == []
+
+
+def test_repeating_an_ack_is_safe_and_reports_the_original_acknowledgement(
+    world: World,
+) -> None:
+    # Contract scenario `claim-and-ack`: the second ACK is ignored, not an error.
+    destination = world.destination()
+    world.publish(destination)
+    agent = world.agent(destination)
+    (delivery,) = agent.claim()["deliveries"]
+
+    first = agent.ack(delivery["delivery_id"], delivery["lease_token"])
+    second = agent.ack(delivery["delivery_id"], delivery["lease_token"])
+    third = agent.ack(delivery["delivery_id"], delivery["lease_token"])
+
+    assert first["duplicate"] is False
+    for repeat in (second, third):
+        assert repeat["duplicate"] is True
+        assert repeat["state"] == "ACKNOWLEDGED"
+        assert repeat["acknowledged_at"] == first["acknowledged_at"]
+
+
+def test_ack_with_a_token_that_is_not_the_current_lease_is_refused_and_changes_nothing(
+    world: World,
+) -> None:
+    destination = world.destination()
+    world.publish(destination)
+    agent = world.agent(destination)
+    (delivery,) = agent.claim()["deliveries"]
+
+    error = agent.call_error(
+        "delivery_ack",
+        {"delivery_id": delivery["delivery_id"], "lease_token": "not-the-lease-token-0000"},
+    )
+
+    assert error["code"] == "DELIVERY_LEASE_EXPIRED"
+    assert error["retryable"] is True
+    # The refused call changed nothing: the real lease holder can still acknowledge.
+    assert agent.ack(delivery["delivery_id"], delivery["lease_token"])["duplicate"] is False
