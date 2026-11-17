@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Auri Probe Android</string>
+    <string name="fgs_channel_name">Auri Probe Mic Capture</string>
+    <string name="fgs_notification_title">Auri Probe Mic Active</string>
+    <string name="fgs_notification_body">Bluetooth-only probe capture check</string>
+</resources>

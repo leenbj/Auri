@@ -43,6 +43,17 @@ PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway renew-cert --data-d
 
 证书有效期与续签运维说明见 `services/gateway/OPERATIONS.md`。
 
+Android 探针（在 `execution/p0-spikes/android-probe/` 下执行，需 JDK 17 与 Android SDK 35 + `adb`；详情见该目录 `README.md`）：
+
+```bash
+cd execution/p0-spikes/android-probe
+./gradlew test                                                       # 离线 JVM 单测（仅 E2）
+./gradlew assembleDebug                                              # 构建 Debug APK
+adb install -r app/build/outputs/apk/debug/app-debug.apk             # 装机
+adb shell am start -n app.auri.probe.android/app.auri.probe.MainActivity
+adb shell run-as app.auri.probe.android cat files/probe-log.jsonl > results/raw/probe-log.jsonl
+```
+
 改了 `contracts/` 下的任何文件都要跑一遍。不得通过改样本的期望或删无效样本让测试通过；改 schema、状态机或语义规则的流程见 `contracts/README.md` 的“修改规则”。
 
 ## 产品与已决前提
