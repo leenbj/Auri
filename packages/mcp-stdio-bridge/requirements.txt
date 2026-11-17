@@ -1,0 +1,2 @@
+# Reuse the Gateway's exact SDK and pinned TLS transport dependencies.
+-r ../../services/gateway/requirements.txt
