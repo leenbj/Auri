@@ -46,6 +46,10 @@ def validate_report(report: dict, *, expect_warm_repeats: int | None = None) -> 
     duration, inference, rtf = report["audio"]["duration_ms"], report["metrics"]["inference_ms"], report["metrics"]["rtf"]
     if duration <= 0:
         problems.append(f"audio.duration_ms 必须为正，实际 {duration}")
+    if inference <= 0:
+        problems.append(f"metrics.inference_ms 必须为正，实际 {inference}：实测推理不可能是 0 毫秒")
+    if "unavailable" in report["engine"].values():
+        problems.append("engine 信息是 unavailable：原生库没能加载，这样的运行不是性能证据")
     if rtf is None:
         problems.append("metrics.rtf 缺失（null）：取不到就是取不到，不能当 0")
     elif duration > 0 and abs(rtf - inference / duration) > RTF_RELATIVE_TOLERANCE * max(rtf, 1e-12):
@@ -69,6 +73,8 @@ def validate_report(report: dict, *, expect_warm_repeats: int | None = None) -> 
     warm = report["warm_inference_ms"]
     if expect_warm_repeats is not None and len(warm) != expect_warm_repeats:
         problems.append(f"warm_inference_ms 有 {len(warm)} 项，期望 {expect_warm_repeats} 项")
+    if any(v <= 0 for v in warm):
+        problems.append(f"warm_inference_ms 里有不为正的值 {warm}：失败的运行不能记成 0 毫秒来拉低中位数")
     return problems
 
 

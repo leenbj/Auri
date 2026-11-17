@@ -2,12 +2,14 @@ package app.auri.android
 
 import app.auri.asr.TranscriptionState
 import app.auri.asr.audio.WavFormatException
+import app.auri.asr.audio.WavReader
 import app.auri.asr.engine.AsrEngine
 import app.auri.asr.engine.AsrEngineFactory
 import app.auri.asr.engine.EngineOutput
 import app.auri.asr.manifest.ModelRefusal
 import app.auri.asr.manifest.ModelRefusedException
 import java.io.File
+import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.security.MessageDigest
@@ -54,15 +56,22 @@ class FileTranscriptionTest {
         override fun msSinceProcessStart(): Long = processStartedAtMs + clock.ns / 1_000_000
         override fun uidNetworkBytes(): Long? = netBytes
         override fun device() = ReportDevice("Pixel 6", "ranchu", "google/test/fingerprint", 35, listOf("arm64-v8a"))
-        override fun engine() = ReportEngine("2.0.1", "1.28.2", "af2d8d8", 2)
+
+        /** 非 null 时 [engine] 抛它：模拟原生库根本没能加载。 */
+        var engineInfoFailure: Throwable? = null
+        override fun engine() = engineInfoFailure?.let { throw it } ?: ReportEngine("2.0.1", "1.28.2", "af2d8d8", 2)
     }
 
     private class FakeEngine(private val clock: Clock, private val probe: FakeProbe, val text: String) : AsrEngine {
         val inferenceMs = ArrayDeque(listOf(50L))
         var netBytesPerCall = 0L
         var calls = 0
+
+        /** 第几次调用抛异常（从 1 数起）；null 表示从不失败。 */
+        var failOnCall: Int? = null
         override fun recognize(samples: FloatArray): EngineOutput {
             calls++
+            if (calls == failOnCall) throw IllegalStateException("引擎故障")
             clock.advanceMs(inferenceMs.removeFirstOrNull() ?: 20L)
             probe.netBytes += netBytesPerCall
             return EngineOutput(text, "<|zh|>")
@@ -208,6 +217,29 @@ class FileTranscriptionTest {
     }
 
     @Test
+    fun `热运行中途失败时整次运行失败 不把失败的那次记成 0 毫秒耗时`() {
+        engine.failOnCall = 3 // 第一次转录与第一次热运行成功，第二次热运行失败
+        val req = request(warmRepeats = 2)
+
+        val e = assertThrows(IllegalStateException::class.java) { transcription().run(req) }
+
+        assertTrue("消息要指出是第几次热运行：${e.message}", e.message!!.contains("第 2 次"))
+        assertFalse("没有可信的基准就不留报告", req.outDir.exists())
+    }
+
+    @Test
+    fun `原生库加载失败时报告里的引擎信息写 unavailable 而不是让整次运行崩溃`() {
+        probe.engineInfoFailure = UnsatisfiedLinkError("no libsherpa-onnx-jni.so")
+        val failing = AsrEngineFactory { _ -> throw UnsatisfiedLinkError("no libsherpa-onnx-jni.so") }
+
+        val result = FileTranscription(failing, probe, nanoTime = { clock.ns }).run(request())
+
+        assertEquals(TranscriptionState.FAILED, result.finalState)
+        assertEquals("FAILED", report().getValue("final_state").jsonPrimitive.content)
+        assertEquals("unavailable", report().getValue("engine").jsonObject.getValue("version").jsonPrimitive.content)
+    }
+
+    @Test
     fun `设备与引擎信息原样写进报告`() {
         transcription().run(request())
 
@@ -238,6 +270,27 @@ class FileTranscriptionTest {
 
         assertThrows(WavFormatException::class.java) { transcription().run(req) }
 
+        assertFalse(req.outDir.exists())
+        assertEquals(0, factoryCalls)
+    }
+
+    @Test
+    fun `读进内存的 WAV 大小上限由清单的时长上限推出 并且有绝对封顶`() {
+        // 30 s × 192 kHz × 2 声道 × 2 字节 = 23040000，再加 1 MiB 头部余量：声明范围内最大的合法文件也装得下
+        assertEquals(24_088_576L, FileTranscription.maxWavBytes(30_000))
+        assertEquals(1_816_576L, FileTranscription.maxWavBytes(1)) // 不足一秒按一秒算
+        assertEquals(WavReader.DEFAULT_MAX_BYTES, FileTranscription.maxWavBytes(null))
+        assertEquals("时长上限再大也不能让宿主去读 GB 级文件", WavReader.DEFAULT_MAX_BYTES, FileTranscription.maxWavBytes(10_000_000_000L))
+    }
+
+    @Test
+    fun `超过上限的大文件在读进内存之前就被拒绝 不碰引擎也不留输出`() {
+        val req = request()
+        RandomAccessFile(req.wav, "rw").use { it.setLength(25_000_000L) } // 比 30 s 清单能装的最大 WAV 还大
+
+        val e = assertThrows(WavFormatException::class.java) { transcription().run(req) }
+
+        assertTrue("消息要说明是大小上限：${e.message}", e.message!!.contains("上限"))
         assertFalse(req.outDir.exists())
         assertEquals(0, factoryCalls)
     }

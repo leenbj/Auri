@@ -72,6 +72,9 @@ case "$RESULT_LINE" in
   "OK ("*) ;;
   *) grep -E 'stack=|INSTRUMENTATION_STATUS: test=' "$OUT/instrumentation.log" | tail -20 >&2; fail "仪器测试没有全部通过" ;;
 esac
+# 只看 OK (N tests) 不够：被 @Ignore 的不计数，Assume 失败也算“通过”。按源码里的每个 @Test 逐个核对
+"$PYTHON" "$HERE/check_instrumentation.py" "$OUT/instrumentation.log" "$ANDROID_DIR/app/src/androidTest" \
+  || fail "仪器测试没有全部真正通过（见上面逐项列出的问题）"
 
 step "5/7 冷启动基准：每次 am start -S -W 都是全新进程，各跑一次 + 同引擎再推理 $WARM_REPEATS 次"
 for i in $(seq 1 "$COLD_RUNS"); do

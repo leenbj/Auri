@@ -84,6 +84,27 @@ def test_the_warm_run_count_must_match_what_was_requested():
     assert any("warm_inference_ms" in p for p in problems), problems
 
 
+@pytest.mark.parametrize("bad_warm", [[104, 0, 105], [104, -3, 105]])
+def test_a_warm_run_recorded_as_zero_or_negative_milliseconds_is_rejected(bad_warm):
+    """失败的热运行如果被记成 0 毫秒，中位数会变得好看得不真实：实测不可能是 0。"""
+    problems = bs.validate_report(mutated(lambda r: r.update(warm_inference_ms=bad_warm)))
+
+    assert any("warm_inference_ms" in p and "正" in p for p in problems), problems
+
+
+def test_a_zero_millisecond_cold_inference_is_rejected():
+    problems = bs.validate_report(mutated(lambda r: r["metrics"].update(inference_ms=0, rtf=0.0)))
+
+    assert any("inference_ms" in p and "正" in p for p in problems), problems
+
+
+def test_a_report_whose_engine_info_is_unavailable_is_not_benchmark_evidence():
+    """原生库没加载起来时报告写 unavailable（见 ReportEngine.UNAVAILABLE）；那样的运行不可能是 SUCCEEDED，这里再兜一道。"""
+    problems = bs.validate_report(mutated(lambda r: r["engine"].update(version="unavailable")))
+
+    assert any("engine" in p and "unavailable" in p for p in problems), problems
+
+
 def test_a_non_positive_cold_start_time_is_rejected():
     problems = bs.validate_report(mutated(lambda r: r["process"].update(start_to_first_result_ms=0)))
 

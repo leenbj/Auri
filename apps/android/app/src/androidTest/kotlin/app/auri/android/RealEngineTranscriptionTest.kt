@@ -67,15 +67,17 @@ class RealEngineTranscriptionTest {
     @Test fun cantoneseSampleIsTranscribed() = checkSample("yue")
 
     /**
-     * 已知限制（2026-11-18 在 API 35 模拟器上实测，E2）：SenseVoice-Small int8 对 3 秒纯数字静音**不会**返回空文本，
-     * 而是编出一两个字（观察到韩文“그.”），于是合同状态是 SUCCEEDED 而不是 NO_SPEECH。
-     * 所以 NO_SPEECH 只能靠“引擎返回空文本”触发，不能指望引擎自己识别静音；
-     * 静音过滤必须由会话内的 VAD 在送进引擎之前做（ADR-0016，Ticket 16 之后），否则静音会变成幻觉文本入库。
-     * 这里把这个事实钉成测试：将来换了模型或加了前置闸门导致它不再成立，测试会失败，逼着相关人员有意识地更新。
-     * NO_SPEECH 的状态映射本身由 :asr 的 JVM 测试用假引擎覆盖。
+     * **已知缺口，不是“通过”：PRD T-026（FR-ASR-008）要求“无语音/纯噪声 → NO_SPEECH 或明确失败，不编造正文”，
+     * 引擎单独做不到。** 2026-11-18 在 API 35 模拟器上实测（E2）：SenseVoice-Small int8 对 3 秒纯数字静音
+     * 不返回空文本，而是编出一两个字（观察到韩文“그.”），于是合同状态是 SUCCEEDED 而不是 NO_SPEECH。
+     *
+     * 这个测试“通过”只表示缺口如实存在，防止有人悄悄把它当成已满足；不表示 T-026 满足。
+     * 补上它是 Ticket 18 的事：会话内 VAD 在送进引擎之前过滤静音（ADR-0016）。纯噪声没有在这里测，要靠 VAD 的实测。
+     * 将来换了模型或加了前置闸门使缺口不再成立，这个测试会失败；到时把断言改成 NO_SPEECH，并删掉“缺口”二字。
+     * NO_SPEECH 的状态映射本身（引擎返回空文本时）由 :asr 的 JVM 测试用假引擎覆盖。
      */
     @Test
-    fun digitalSilenceIsNotRecognisedAsNoSpeechByTheEngineAlone() {
+    fun knownGapT026DigitalSilenceMakesTheEngineInventText() {
         DeviceEnv.requireInstalled()
         val silence = File(DeviceEnv.target.cacheDir, "silence-3s.wav")
         TestAudio.writeWav(silence, ShortArray(16000 * 3), 16000)

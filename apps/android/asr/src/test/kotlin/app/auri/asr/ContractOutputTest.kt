@@ -33,6 +33,9 @@ class ContractOutputTest {
 
     private val textWithAstralChar = "你好，Auri 😀 hello"
 
+    /** 同一个场景名可以重复运行（复用输出目录的测试），所以临时目录名要带序号。 */
+    private var scenarioRuns = 0
+
     private class ScriptedEngine(private val reply: () -> EngineOutput) : AsrEngine {
         override fun recognize(samples: FloatArray) = reply()
         override fun close() {}
@@ -52,7 +55,7 @@ class ContractOutputTest {
         reply: () -> EngineOutput = { EngineOutput(textWithAstralChar, "<|zh|>") },
         prepare: (File) -> Unit = {},
     ): File {
-        val manifest = TestModel.install(tmp.newFolder("manifest-$name")).manifest
+        val manifest = TestModel.install(tmp.newFolder("manifest-$name-${scenarioRuns++}")).manifest
         prepare(modelDir)
         LocalTranscriber(manifest, modelDir, factory(ScriptedEngine(reply))).use { t ->
             val result = t.transcribe(audio)
@@ -169,6 +172,32 @@ class ContractOutputTest {
         all.filterKeys { it.startsWith("waiting-model") }.values.forEach { dir ->
             assertFalse(dir.json("error.json").toString().contains(tmp.root.path))
         }
+    }
+
+    /**
+     * 目录会被复用（比如同一个 `--es out NAME` 跑两次）。上一次成功留下的修订内容（含口述正文）不能在这次失败后
+     * 还躺在目录里，上一次的错误文件也不能留到这次成功之后，否则一个目录里同时有两种互斥的结论。
+     */
+    @Test
+    fun `同一个目录先后写入不同结果时 不留下上一次的修订内容或错误文件`() {
+        val out = tmp.newFolder("out")
+        val installed = { n: String -> TestModel.install(tmp.newFolder("installed-$n")).dir }
+
+        val afterSuccess = scenario(out, "reused-a", installed("a1"))
+        assertTrue(File(afterSuccess, "revision-content.json").isFile)
+        scenario(out, "reused-a", File(tmp.root, "never-installed-a"))
+        assertFalse("失败之后不能还留着上一次成功的正文", File(afterSuccess, "revision-content.json").exists())
+        assertTrue(File(afterSuccess, "error.json").isFile)
+
+        val afterError = scenario(out, "reused-b", File(tmp.root, "never-installed-b"))
+        assertTrue(File(afterError, "error.json").isFile)
+        scenario(out, "reused-b", installed("b1"))
+        assertFalse("成功之后不能还留着上一次的错误", File(afterError, "error.json").exists())
+        assertTrue(File(afterError, "revision-content.json").isFile)
+
+        val afterEngineFailure = scenario(out, "reused-c", File(tmp.root, "never-installed-c"))
+        scenario(out, "reused-c", installed("c1"), reply = { throw IllegalStateException("boom") })
+        assertFalse("引擎失败没有错误码，也就不该留着上一次的错误文件", File(afterEngineFailure, "error.json").exists())
     }
 
     @Test

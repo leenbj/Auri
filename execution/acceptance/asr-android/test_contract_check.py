@@ -209,6 +209,72 @@ def test_malformed_json_is_a_problem_not_a_crash(tmp_path):
     assert any("capabilities.json" in p for p in cc.check_scenario(dir_, "SUCCEEDED"))
 
 
+SECRET = "SECRET-DICTATION-口述内容"
+
+
+def test_problem_messages_never_echo_transcript_text_even_when_text_has_the_wrong_type(tmp_path):
+    """校验器的输出会被贴进报告和聊天记录：jsonschema 的默认消息带着出错的值，正文不能借它外泄。"""
+    dir_ = make_scenario(tmp_path)
+    edit(dir_, "revision-content.json", lambda c: c.update(text=[SECRET]))
+
+    problems = cc.check_scenario(dir_, "SUCCEEDED")
+
+    assert any("/text" in p for p in problems), "类型错误必须被报告，并指出是哪个字段"
+    assert not any("SECRET-DICTATION" in p for p in problems), problems
+
+
+def test_problem_messages_never_echo_text_hidden_inside_a_composite_instance(tmp_path):
+    """多一个不认识的字段时，别的字段的值（含正文）同样不能出现在问题描述里。"""
+    dir_ = make_scenario(tmp_path)
+    edit(dir_, "revision-content.json", lambda c: c.update(text=SECRET, text_sha256=cc.text_sha256(SECRET), surprise=1))
+
+    problems = cc.check_scenario(dir_, "SUCCEEDED")
+
+    assert any("surprise" in p for p in problems), "多余字段必须被报告"
+    assert not any("SECRET-DICTATION" in p for p in problems), problems
+
+
+def test_a_top_level_json_array_is_a_problem_not_a_crash_and_is_not_echoed(tmp_path):
+    dir_ = make_scenario(tmp_path)
+    write(dir_, "revision-content.json", [SECRET])
+
+    problems = cc.check_scenario(dir_, "SUCCEEDED")
+
+    assert any("revision-content.json" in p and "JSON 对象" in p for p in problems), problems
+    assert not any("SECRET-DICTATION" in p for p in problems), problems
+
+
+def test_a_shown_offending_value_is_still_useful_for_short_non_text_fields(tmp_path):
+    """脱敏不能把诊断信息一并抹掉：枚举值不对时仍要说出是哪个值、允许哪些。"""
+    dir_ = make_scenario(tmp_path)
+    edit(dir_, "revision-content.json", lambda c: c.update(execution_location="cloud"))
+
+    problems = cc.check_scenario(dir_, "SUCCEEDED")
+
+    assert any("execution_location" in p and "cloud" in p and "on_device" in p for p in problems), problems
+
+
+def test_text_longer_than_one_mib_of_utf8_is_reported_as_sr06_even_if_the_hash_is_right(tmp_path):
+    """schema 只数字符（≤1048576），SR-06 数的是 UTF-8 字节：40 万个汉字约 1.2 MB，schema 放行但违反 SR-06。"""
+    dir_ = make_scenario(tmp_path)
+    long_text = "汉" * 400_000
+    edit(dir_, "revision-content.json", lambda c: c.update(text=long_text, text_sha256=cc.text_sha256(long_text)))
+
+    problems = cc.check_scenario(dir_, "SUCCEEDED")
+
+    assert any("SR-06" in p for p in problems), problems
+    assert not any("SR-01" in p for p in problems), "哈希是对的，不应同时报 SR-01"
+    assert all(len(p) < 500 for p in problems), "问题描述里不能带整段正文"
+
+
+def test_text_of_exactly_one_mib_of_utf8_is_accepted(tmp_path):
+    dir_ = make_scenario(tmp_path)
+    exact = "a" * (1024 * 1024)
+    edit(dir_, "revision-content.json", lambda c: c.update(text=exact, text_sha256=cc.text_sha256(exact)))
+
+    assert cc.check_scenario(dir_, "SUCCEEDED") == []
+
+
 def test_a_missing_scenario_directory_is_a_problem(tmp_path):
     make_scenario(tmp_path)
 
@@ -287,6 +353,18 @@ def test_device_preset_covers_the_refusal_and_airplane_scenarios_with_exact_code
     assert device["refused-not-installed"] == "WAITING_MODEL:MODEL_NOT_INSTALLED"
     assert device["airplane-zh"] == "SUCCEEDED"
     assert {f"real-{lang}" for lang in ("zh", "en", "ja", "ko", "yue")} <= set(device)
+
+
+def test_every_run_the_activity_tests_write_is_registered_in_the_runs_preset():
+    """仪器测试新增一个会写出报告的 Activity 场景却忘了登记，要等整轮设备验收跑完才在严格模式里暴露；这里离线先拦住。"""
+    source = (REPO_ROOT / "apps/android/app/src/androidTest/kotlin/app/auri/android/TranscribeFileActivityTest.kt").read_text(encoding="utf-8")
+    # 只取普通名字：../ 开头的是“输出名逃逸”负例，不会有输出目录
+    named = set(re.findall(r'"out" to "([A-Za-z0-9][A-Za-z0-9._-]*)"', source))
+    leaves_no_output = {"activity-missing"}  # 输入有问题的负例：测试自己断言不留半成品输出
+
+    assert named, "没有找到任何 out 参数：这个检查本身失效了"
+    unregistered = named - leaves_no_output - set(cc.PRESETS["runs"])
+    assert not unregistered, f"这些场景会写出输出，但没登记到 contract_check.py 的 runs 预设：{sorted(unregistered)}"
 
 
 def test_cli_preset_runs_the_named_expectations_and_is_strict(tmp_path, monkeypatch, capsys):

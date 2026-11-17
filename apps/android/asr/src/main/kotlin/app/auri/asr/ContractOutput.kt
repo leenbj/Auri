@@ -4,6 +4,7 @@ import app.auri.asr.contract.AsrCapabilities
 import app.auri.asr.contract.AsrError
 import app.auri.asr.contract.ContractJson
 import java.io.File
+import java.nio.file.Files
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -18,6 +19,9 @@ import kotlinx.serialization.Serializable
 object ContractOutput {
     fun write(dir: File, capabilities: AsrCapabilities, result: TranscriptionResult) {
         dir.mkdirs()
+        // 目录可能被复用：先清掉上一次留下的、互斥的结果文件，免得口述正文在失败之后还躺在目录里，
+        // 或者一个目录里同时有“成功”与“出错”两种结论。deleteIfExists 删不掉就抛异常，不静默留着。
+        listOf("revision-content.json", "error.json").forEach { Files.deleteIfExists(File(dir, it).toPath()) }
         File(dir, "capabilities.json").writeUtf8(ContractJson.encode(capabilities))
         File(dir, "task-handle.json").writeUtf8(ContractJson.encode(result.job))
         File(dir, "trace.json").writeUtf8(ContractJson.encode(trace(result)))

@@ -1,15 +1,23 @@
 package app.auri.asr.audio
 
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 /** 宿主应用的“转写这个文件”入口读的是 WAV；读错格式不能悄悄当成别的格式往下走。 */
 class WavReaderTest {
+    @get:Rule
+    val tmp = TemporaryFolder()
 
     private class Chunk(val id: String, val body: ByteArray)
 
@@ -168,5 +176,38 @@ class WavReaderTest {
     @Test
     fun `只有文件头没有样本时得到空音频`() {
         assertEquals(0, WavReader.parse(riff(standard(ShortArray(0)))).samples.size)
+    }
+
+    // ---- 从文件读：先看大小再读内容，不能让一个超大文件把整个进程的内存吃光 ----
+
+    private fun wavFile(name: String, bytes: ByteArray) = File(tmp.root, name).also { it.writeBytes(bytes) }
+
+    @Test
+    fun `文件大小恰好等于上限时可以读 多一个字节就拒绝`() {
+        val bytes = riff(standard(shortArrayOf(1, 2, 3)))
+
+        assertEquals(3, WavReader.read(wavFile("edge.wav", bytes), maxBytes = bytes.size.toLong()).samples.size)
+        val e = assertThrows(WavFormatException::class.java) {
+            WavReader.read(wavFile("over.wav", bytes), maxBytes = bytes.size - 1L)
+        }
+        assertTrue("消息要说明是大小上限：${e.message}", e.message!!.contains("上限"))
+    }
+
+    @Test
+    fun `超大的稀疏文件在读进内存之前就被默认上限拒绝`() {
+        // 8 GiB 的稀疏文件几乎不占磁盘；若先 readBytes 再检查，这里会以 OutOfMemoryError 收场而不是 WavFormatException
+        val huge = File(tmp.root, "huge.wav").also { RandomAccessFile(it, "rw").use { f -> f.setLength(8L shl 30) } }
+
+        val e = assertThrows(WavFormatException::class.java) { WavReader.read(huge) }
+
+        assertTrue(e.message!!.contains("上限"))
+    }
+
+    @Test
+    fun `目录 不存在的路径和设备文件都不是 WAV 文件 一律按格式错误拒绝`() {
+        assertThrows(WavFormatException::class.java) { WavReader.read(tmp.newFolder("a-directory")) }
+        assertThrows(WavFormatException::class.java) { WavReader.read(File(tmp.root, "no-such.wav")) }
+        // 设备文件的 length() 是 0，只看大小拦不住它；/dev/zero 若被当文件读会无限分配直到进程崩溃
+        assertThrows(WavFormatException::class.java) { WavReader.read(File("/dev/zero")) }
     }
 }

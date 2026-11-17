@@ -4,6 +4,8 @@
 
 **状态（2026-11-18）**：代码、JVM 单元测试、模拟器仪器测试全部通过。**没有任何真机（E3）结果**：本机没有 Android 手机，所有真机列都是 `NOT_RUN`，产品负责人的真机步骤在第 4 节。模拟器数字是 **E2**，只能说明管线通了，**不代表任何手机的性能**（模拟器跑在 Apple Silicon 主机上，硬件加速，比真机快得多）。
 
+**有一项引用的验收点没有满足：T-026（静音/纯噪声不得编造正文）。** 实测 SenseVoice 对 3 秒数字静音返回了韩文 “그.” 并以 `SUCCEEDED` 收尾，引擎单独做不到 `NO_SPEECH`；这属于 Ticket 18（会话内 VAD）与 Ticket 15（模型评测），见第 7 节第一条。设备测试把它记成“已知缺口”，**不是通过**。
+
 证据等级沿用 PRD 第 5.2 节：JVM 单测与模拟器 = E2；真机 = E3；没有真机/账号/签名的项标 `NOT_RUN` 或 `BLOCKED_EXTERNAL`，不用模拟或伪造替代。
 
 ## 1. 这里有什么
@@ -13,11 +15,12 @@
 | `apps/android/` | Gradle 工程：库 `:asr`（引擎适配、清单与校验、重采样、合同输出）+ 极简宿主 `:app`（仪器测试 + debug 专用的“转录这个文件”入口；真正的录音界面是 Ticket 16） |
 | `apps/android/engine/sherpa-onnx.properties` | 引擎固定信息：sherpa-onnx v2.0.1（Apache-2.0）预编译 AAR 的大小与 SHA-256、上游提交、ONNX Runtime 版本 |
 | `apps/android/manifests/*.manifest.json` | 模型清单：名称、版本、文件（大小 + SHA-256）、许可证、语言、采样率；代码与具体模型无关，换模型只换清单 |
-| `prepare_model.py` | 下载模型包到仓库外缓存 `~/.cache/auri/`，校验哈希，只解出清单列出的文件和示例音频 |
-| `install_on_device.sh` | 把模型与示例音频放进应用私有目录（模拟器与真机共用） |
+| `prepare_model.py` | 下载模型包到仓库外缓存 `~/.cache/auri/`，校验哈希，只解出清单列出的文件和示例音频；下载大小以清单为上限，先解到暂存目录、全部校验通过后才换掉旧的 |
+| `install_on_device.sh` | 把模型与示例音频放进应用私有目录（模拟器与真机共用）；先整份拷到设备上的暂存目录再换位，中途失败不会留下半份模型 |
 | `run_device_acceptance.sh` | 设备侧一键验收：构建 → 安装 → 仪器测试 → 三次冷启动基准 → 拉回输出 → 合同校验 → 汇总表 |
-| `contract_check.py` | 用真实 `contracts/schemas/*.json`、语义规则 SR-01/SR-05、转录状态机转移表校验 Kotlin 写出的 JSON |
-| `benchmark_summary.py` | 校验 `run-report.json`（RTF 定义、离线字节、峰值内存等），渲染 Markdown 结果表 |
+| `check_instrumentation.py` | 读 `am instrument -r` 的原始输出，逐个核对源码里每个 `@Test` 都跑了且通过（缺跑、被忽略、假设不成立、没跑完都算失败），防止 `OK (N tests)` 掩盖“少跑了” |
+| `contract_check.py` | 用真实 `contracts/schemas/*.json`、语义规则 SR-01/SR-05/SR-06、转录状态机转移表校验 Kotlin 写出的 JSON；报错只描述违反了什么约束，不回显 `text` 等正文 |
+| `benchmark_summary.py` | 校验 `run-report.json`（RTF 定义、离线字节、峰值内存、计时必须为正、引擎信息不得是 `unavailable` 等），渲染 Markdown 结果表 |
 | `test_*.py` | 上面这些 Python 工具的测试（含变异验证，见第 5.1 节） |
 
 模型权重、示例音频、AAR、APK、Gradle 缓存都**不入库**：它们在 `~/.cache/auri/` 与 `apps/android/build/`（均被 `.gitignore` 覆盖）。
@@ -27,11 +30,11 @@
 | # | 要求 | 覆盖它的测试 / 文件 | 证据等级 |
 |---|---|---|---|
 | 1 | 引擎经原生绑定集成，版本固定，构建里有 AAR 哈希检查 | `test_engine_pin_guard.py`（7 个，真实跑 Gradle：翻一个字节、截断、缺失都拒绝构建，只接受固定的那份）；设备上 `EnginePinTest`（原生库自报版本、ONNX Runtime 版本、提交都等于固定值） | E2（模拟器），AAR 守卫是构建期检查，与设备无关 |
-| 2 | 模型按清单加载，哈希不符在碰引擎之前拒绝 | JVM：`ModelManifestTest`（17）、`ModelVerifierTest`（9，含篡改与截断文件）、`ModelLoaderTest`（4）、`ShippedManifestTest`（4，真清单）；设备：`ModelRefusalOnDeviceTest`（4，真 239 MB 模型翻一个字节 / 截断到 1 MiB / 未安装，用计数包装器证明引擎一次都没被创建，随后完好模型仍能用） | E2 |
+| 2 | 模型按清单加载，哈希不符在碰引擎之前拒绝 | JVM：`ModelManifestTest`（17）、`ModelVerifierTest`（10，含篡改、截断文件与读取失败：读不了也按 `MODEL_INTEGRITY_FAILED` 拒绝，不会让异常漏到引擎那一步）、`ModelLoaderTest`（4）、`ShippedManifestTest`（4，真清单）；设备：`ModelRefusalOnDeviceTest`（4，真 239 MB 模型翻一个字节 / 截断到 1 MiB / 未安装，用计数包装器证明引擎一次都没被创建，随后完好模型仍能用） | E2 |
 | 3 | 真正的重采样：48 kHz / 44.1 kHz 16 位 → 16 kHz float | `ResamplerTest`（16：合成正弦保频保幅、带外成分被抑制、不折叠、不产生镜像、直流增益为 1、零相位等）；设备上 `RealEngineTranscriptionTest.speechResampledFrom48kAnd44k1TranscribesLikeTheOriginal`；算法与引用见第 8 节 | E2 |
 | 4 | 飞行模式下可用；证明模型路径不联网 | 三层证据，见 `OfflineProofTest`（3）与 JVM `NoNetworkManifestTest`（3）：①合并后的清单与已安装的包都没有 INTERNET 权限；②系统对该 UID 的网络 socket 一律“权限被拒”（同时用 AF_UNIX 做正对照）；③模拟器系统飞行模式下整条转录 SUCCEEDED，且该 UID 的收发字节增量为 0。真机飞行模式：`NOT_RUN`，步骤见第 4 节 | ①②③ 都是 E2；真机 E3 `NOT_RUN` |
 | 5 | 记录 RTF、峰值内存、冷启动 | `run_device_acceptance.sh` 三次 `am start -S -W` 冷进程各跑一次样例音频，`benchmark_summary.py` 校验并出表；结果在第 5.2 节 | 模拟器 E2；真机列 `NOT_RUN` |
-| 6 | 输出用合同类型，JSON 通过真实合同校验 | JVM：`ContractJsonTest`（5）、`ContractOutputTest`（7 个场景导出 JSON）；Python：`test_contract_output.py`（3，真实跑 Gradle 再用 `jsonschema` 校验，含 Kotlin 与 Python 对含 😀 文本的 SHA-256 一致）；设备输出：`contract_check.py --preset device`（15 个场景）与 `--preset runs`（4 个场景）全部 0 问题 | E2 |
+| 6 | 输出用合同类型，JSON 通过真实合同校验 | JVM：`ContractJsonTest`（5）、`ContractOutputTest`（8：7 个场景导出 JSON，外加“同一目录复用时不留上一次的正文或错误文件”）；Python：`test_contract_output.py`（3，真实跑 Gradle 再用 `jsonschema` 校验，含 Kotlin 与 Python 对含 😀 文本的 SHA-256 一致）；设备输出：`contract_check.py --preset device`（15 个场景）与 `--preset runs`（5 个场景）全部 0 问题；JSON 里的正文按合同 SR-06 以 UTF-8 **字节数**限 1 MiB（schema 的 `maxLength` 数的是字符，两者不等价，校验器两个都查） | E2 |
 
 另：`README`（本文件）、`CLAUDE.md` “命令”一节、`.gitignore` 都已更新。
 
@@ -43,7 +46,7 @@
 source ~/.config/auri/android-env.sh
 cd apps/android
 
-# JVM 单元测试（不需要设备）：:asr 102 个 + :app 19 个
+# JVM 单元测试（不需要设备）：:asr 109 个 + :app 23 个
 ./gradlew :asr:testDebugUnitTest :app:testDebugUnitTest
 
 # 构建 debug APK 与仪器测试 APK
@@ -77,7 +80,7 @@ adb emu kill
 avdmanager delete avd -n auri-t14-asr
 ```
 
-脚本做七件事：①`prepare_model.py`；②构建两个 APK；③`adb install -r -t` 安装（**不用** `gradle connectedAndroidTest`：它跑完会卸载应用，带走私有目录里的模型），再放模型与样例；④`am instrument` 跑全部仪器测试（必须 `OK (N tests)`，N=0 也算失败）；⑤三次 `am start -S -W` 冷进程基准；⑥`adb exec-out run-as … tar` 拉回 `files/contract-out` 与 `files/runs` 到 `apps/android/build/device-out/`；⑦两个严格预设校验（多出来的场景目录也算失败）并出汇总表 `benchmark.md`。任何一步不过就以非零退出。
+脚本做七件事：①`prepare_model.py`；②构建两个 APK；③`adb install -r -t` 安装（**不用** `gradle connectedAndroidTest`：它跑完会卸载应用，带走私有目录里的模型），再放模型与样例；④`am instrument -r` 跑全部仪器测试（必须 `OK (N tests)`，N=0 也算失败；再由 `check_instrumentation.py` 对着源码逐个核对：任何一个 `@Test` 没跑、被忽略、假设不成立或没跑完都算失败）；⑤三次 `am start -S -W` 冷进程基准；⑥`adb exec-out run-as … tar` 拉回 `files/contract-out` 与 `files/runs` 到 `apps/android/build/device-out/`；⑦两个严格预设校验（多出来的场景目录也算失败）并出汇总表 `benchmark.md`。任何一步不过就以非零退出。
 
 ## 4. 产品负责人：真机验收步骤（`NOT_RUN`，等一台真机）
 
@@ -125,18 +128,18 @@ avdmanager delete avd -n auri-t14-asr
 
 | 套件 | 命令 | 结果 |
 |---|---|---|
-| `:asr` JVM 单测 | `./gradlew :asr:testDebugUnitTest` | 102 通过，0 失败，0 跳过 |
-| `:app` JVM 单测 | `./gradlew :app:testDebugUnitTest` | 19 通过，0 失败，0 跳过 |
-| 仪器测试（API 35 arm64 模拟器，真引擎 + 真模型） | `run_device_acceptance.sh`（第 4 步） | `OK (21 tests)`：EnginePinTest 2、TestAudioTest 3、RealEngineTranscriptionTest 7、ModelRefusalOnDeviceTest 4、OfflineProofTest 3、TranscribeFileActivityTest 2 |
-| 设备输出的合同校验 | 同上第 7 步 | `contract-out` 15 个场景 0 问题；`runs` 4 个场景 0 问题 |
-| Python 验收工具 | `.venv/bin/pytest execution/acceptance/asr-android` | 67 通过（`test_benchmark_summary` 18、`test_contract_check` 30、`test_contract_output` 3、`test_engine_pin_guard` 7、`test_prepare_model` 9） |
-| 合同 / 集成 / 安全（全仓库） | `.venv/bin/pytest tests/contract tests/integration tests/security` | 见交付报告 |
+| `:asr` JVM 单测 | `./gradlew :asr:testDebugUnitTest` | 109 通过，0 失败，0 跳过 |
+| `:app` JVM 单测 | `./gradlew :app:testDebugUnitTest` | 23 通过，0 失败，0 跳过 |
+| 仪器测试（API 35 arm64 模拟器，真引擎 + 真模型） | `run_device_acceptance.sh`（第 4 步） | `OK (23 tests)`，`check_instrumentation.py` 核对 23 个 `@Test` 全部跑到且通过：EnginePinTest 2、TestAudioTest 3、RealEngineTranscriptionTest 7、ModelRefusalOnDeviceTest 4、OfflineProofTest 3、TranscribeFileActivityTest 4 |
+| 设备输出的合同校验 | 同上第 7 步 | `contract-out` 15 个场景 0 问题；`runs` 5 个场景 0 问题 |
+| Python 验收工具 | `.venv/bin/pytest execution/acceptance/asr-android` | 100 通过（`test_benchmark_summary` 22、`test_check_instrumentation` 12、`test_contract_check` 37、`test_contract_output` 3、`test_engine_pin_guard` 7、`test_install_on_device` 5、`test_prepare_model` 14） |
+| 合同 / 集成 / 安全（全仓库） | `.venv/bin/pytest tests/contract tests/integration tests/security` | 492 通过，0 失败，0 跳过（197 秒；本票没有改动 `contracts/`、`tests/`、`services/`） |
 
 **变异验证**（证明测试真能失败；每次改完立即还原，已用 `diff` 核对）：
 - 设备：关掉加载器的哈希比对 → `oneFlippedByteInTheRealModelIsRefusedBeforeTheEngineIsTouched` 失败（实际终态是 `FAILED`：被篡改的模型进了引擎）；不真正打开飞行模式 → `transcriptionSucceedsInAirplaneModeWithoutAnyNetworkBytes` 以“飞行模式没有生效”失败；给应用加上 INTERNET 权限 → `theInstalledPackageRequestsNoInternetPermission` 与 `theKernelRefusesEveryNetworkSocketButStillAllowsLocalOnes` 两个失败（注意这时飞行模式那条仍然通过：单靠飞行模式不能证明不联网，所以才要三层证据）。
 - Python：`benchmark_summary.py` 六种变异（关掉 RTF 定义检查、允许非零网络字节、允许未知字段、允许峰值内存下降、忽略终态、把 KiB 当 1000）全部被抓；开发时还手工变异验证过 `contract_check.py`（5 种）与 `prepare_model.py`（3 种），全部被抓。
 - JVM：Kotlin 侧对 SR-01 用 UTF-16 算哈希的变异被 `test_contract_output.py` 抓到；合并清单里加 INTERNET 被 `NoNetworkManifestTest` 抓到。
-- 以上变异都是开发时手工做的，变异本身不入库（入库的是能抓住它们的测试）。
+- 以上变异都是开发时手工做的，变异本身不入库（入库的是能抓住它们的测试）。提交前外部评审（`codex review`）之后新增的那批测试（读取上限、校验读取失败、`LinkageError`、热运行失败、Activity 重建、`check_instrumentation.py`、`install_on_device.sh`、下载封顶等）都是先看着它因正确的原因失败、再改绿，没有再逐个做变异。
 
 ### 5.2 性能
 
@@ -146,12 +149,12 @@ avdmanager delete avd -n auri-t14-asr
 
 | 运行 | 音频 ms | 冷启动 ms（进程启动→首个结果） | 校验 ms | 引擎加载 ms | 推理 ms | RTF | 同引擎再推理 ms | VmHWM MiB | VmRSS MiB | 网络字节增量 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 冷启动 1 | 5592 | 1901 | 680 | 813 | 112 | 0.0200 | 111, 111, 109 | 492.7 | 491.0 | 0 |
-| 冷启动 2 | 5592 | 1809 | 610 | 850 | 107 | 0.0191 | 105, 105, 103 | 493.0 | 491.2 | 0 |
-| 冷启动 3 | 5592 | 1967 | 413 | 1101 | 110 | 0.0197 | 105, 114, 105 | 493.0 | 491.1 | 0 |
-| 中位数 | 5592 | 1901 | 610 | 850 | 110 | 0.0197 | — | 493.0 | 491.1 | — |
+| 冷启动 1 | 5592 | 1646 | 401 | 947 | 103 | 0.0184 | 103, 102, 101 | 493.1 | 491.3 | 0 |
+| 冷启动 2 | 5592 | 1653 | 424 | 911 | 104 | 0.0186 | 102, 101, 106 | 493.3 | 491.3 | 0 |
+| 冷启动 3 | 5592 | 1750 | 327 | 1039 | 105 | 0.0188 | 103, 103, 102 | 493.2 | 491.2 | 0 |
+| 中位数 | 5592 | 1653 | 401 | 947 | 104 | 0.0186 | — | 493.2 | 491.3 | — |
 
-上表是合并 `origin/integration/auri-v2` 之后最后一次 `run_device_acceptance.sh` 的结果。同一台模拟器上更早的一次同样的运行中位数是冷启动 1683 ms、RTF 0.0188、VmHWM 492.1 MiB：**模拟器自身的波动约 ±10%**，所以这些数字只能用来看量级与有没有退化，不能当精确值。
+上表是提交前最后一次 `run_device_acceptance.sh`（23 个仪器测试全过）的结果。同一台模拟器上这套代码前后跑过好几次，四次的中位数冷启动在 1635–1901 ms、RTF 在 0.0186–0.0197 之间浮动，VmHWM 稳定在 492–493 MiB：**模拟器自身的波动约 ±10%**，所以这些数字只能用来看量级与有没有退化，不能当精确值。
 
 引擎 sherpa-onnx 2.0.1（ONNX Runtime 1.28.2，提交 `af2d8d81`），模型 `sensevoice-small-int8` `2024-07-17+7d1efa2138a6`。VmHWM/VmRSS 来自 `/proc/self/status`（进程历史峰值 / 当前驻留）。
 
@@ -161,7 +164,7 @@ avdmanager delete avd -n auri-t14-asr
 |---|---|---|---|---|---|
 | （待产品负责人填） | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` |
 
-**怎么读这些数字**：仪器测试进程里的 `run-report.json`（`files/contract-out/*`、`files/runs/activity-zh`）**不是基准**：那个进程在此之前已经加载过模型，`start_to_first_result_ms` 和 `vm_hwm_kb_before` 都被前面的测试污染了（本次实测 `activity-zh` 是 14092 ms、起步就已有约 499 MiB；冷进程 `bench-1` 是 1688 ms、起步约 144 MiB）。性能只看 `bench-*`（每个都是全新进程）。
+**怎么读这些数字**：仪器测试进程里的 `run-report.json`（`files/contract-out/*`、`files/runs/activity-zh`）**不是基准**：那个进程在此之前已经加载过模型，`start_to_first_result_ms` 和 `vm_hwm_kb_before` 都被前面的测试污染了（最后一次实测 `activity-zh` 是 13358 ms、起步就已有约 497 MiB；冷进程 `bench-1` 是 1646 ms、起步约 131 MiB）。性能只看 `bench-*`（每个都是全新进程）。
 
 ### 5.3 一次观察到的识别输出（E2，回归基线而非准确率）
 
@@ -174,6 +177,7 @@ avdmanager delete avd -n auri-t14-asr
 | 任意真机上的转录、RTF、峰值内存、冷启动 | `NOT_RUN`（E3） | 本机没有 Android 手机；按第 4 节执行 |
 | 真机飞行模式下转录 | `NOT_RUN`（E3） | 同上；模拟器的飞行模式只是“系统没有默认网络”的 E2 证据 |
 | 连续多次推理后的发热降频、低内存机型 | `NOT_RUN` | 需要真机，且不在本票清单里 |
+| 静音 / 纯噪声 → `NO_SPEECH`，不编造正文（PRD T-026、FR-ASR-008） | **未满足**（E2 实测；不是 `NOT_RUN`） | 引擎对 3 秒数字静音编出了 “그.”，终态 `SUCCEEDED`。靠会话内 VAD 在送进引擎前挡掉静音（ADR-0016），属于 Ticket 18；模型对静音/噪声的幻觉率属于 Ticket 15（`docs/research/asr-candidates.md` U15 目前没有实测数据，本票的这一个样本可以补进去）。纯噪声（非数字静音）本票没有测 |
 | 蓝牙耳机录音 → 转录链路 | 不在本票范围 | Ticket 16 及之后；本票入口只吃 WAV 文件 |
 | 识别准确率（WER/CER）与默认模型 | 不在本票范围 | Ticket 15 / ADR-0017；SenseVoice 只是第一个占位模型 |
 | SenseVoice 权重的再分发许可 | `UNCONFIRMED` | 模型协议是 FunASR Model Open Source License v1.1，清单里 `redistribution` 标 `unconfirmed`；本仓库不分发权重，也不随 APK 打包，只在评测时从本地缓存取 |
@@ -181,17 +185,20 @@ avdmanager delete avd -n auri-t14-asr
 ## 7. 发现、已知限制与环境问题
 
 **发现（需要后续票注意）**
-- **SenseVoice 对纯数字静音也会出字**：3 秒全零音频不会返回空文本，而是编出一两个字（观察到韩文 “그.”），合同状态是 `SUCCEEDED` 而不是 `NO_SPEECH`。所以 `NO_SPEECH` 只能靠“引擎返回空文本”触发，静音过滤必须由会话内的 VAD 在送进引擎前做（ADR-0016），否则静音会变成幻觉文本入库。`RealEngineTranscriptionTest.digitalSilenceIsNotRecognisedAsNoSpeechByTheEngineAlone` 把这个事实钉成测试：换了模型或加了前置闸门导致它不成立时测试会失败，逼着相关人员有意识地更新；`NO_SPEECH` 的状态映射本身由 `LocalTranscriberTest` 用假引擎覆盖。
+- **SenseVoice 对纯数字静音也会出字**：3 秒全零音频不会返回空文本，而是编出一两个字（观察到韩文 “그.”），合同状态是 `SUCCEEDED` 而不是 `NO_SPEECH`。所以 `NO_SPEECH` 只能靠“引擎返回空文本”触发，静音过滤必须由会话内的 VAD 在送进引擎前做（ADR-0016），否则静音会变成幻觉文本入库。**这是 T-026 / FR-ASR-008 的缺口，不是通过**：`RealEngineTranscriptionTest.knownGapT026DigitalSilenceMakesTheEngineInventText` 把当前事实钉成测试（名字里带 `knownGap`，断言的是“编出了短文本”）；换了模型或加了前置闸门导致它不成立时测试会失败，到那时应当把它改成断言 `NO_SPEECH`，而不是删掉。`NO_SPEECH` 的状态映射本身（引擎返回空文本、空音频、纯空白）由 `LocalTranscriberTest` 用假引擎覆盖。只测了数字静音一个样本，没有测过真实环境噪声；这也是 `docs/research/asr-candidates.md` U15（静音/噪声幻觉）至今缺的实测数据，Ticket 15 评测时应当补上。
 - **逆文本规范化（ITN）已开启**：输出里数字是阿拉伯数字（“9点”“5点”）。关掉会改变文本，这个选择留给 Ticket 15。
 - **模型校验是每次加载都算一遍 SHA-256**：对 239 MB 模型，模拟器上 390–497 ms；真机会更慢。是否缓存校验结果（例如记录 mtime+大小）没有做，留给产品化时决定。
 - **Android 对缺 INTERNET 的应用，创建网络 socket 返回的 errno 因内核机制而异**：API 35 模拟器实测是 `EPERM`，旧内核是 `EACCES`。测试接受这两种“权限被拒”，其他错误码（如 `EAFNOSUPPORT`）不算数。
 
 **限制 / 取舍**
 - 模型文件校验发生在加载时，校验通过到引擎真正读取之间存在同 UID 进程替换文件的窗口（TOCTOU）。模型放在应用私有目录，同 UID 的恶意进程不在本票的威胁模型内。
-- `TranscribeFileActivity` 在 `src/debug/` 里，且 `android:exported="true"`（`am start` 从 shell 启动非导出的 Activity 会被拒），因此**只存在于 debug 构建**，release 构建里没有。它只在本应用私有目录里读写，界面和日志不带路径与正文。
+- `TranscribeFileActivity` 在 `src/debug/` 里，且 `android:exported="true"`（`am start` 从 shell 启动非导出的 Activity 会被拒），因此**只存在于 debug 构建**，release 构建里没有。它只在本应用私有目录里读写；界面和日志只写状态、数字和异常类型，不写正文，输入路径不合法时也只显示异常类型。`--es out` 只接受以字母或数字开头的简单名字（`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`），带 `../` 之类的名字在写任何文件之前就被拒绝，日志里不回显它（只写 `(invalid)`）；合法的名字会出现在日志的 `out=runs/<名字>` 里，它受上面的正则约束，是调用方自己传的短字符串（`TranscribeFileActivityTest` 有测试）。入口还声明了 `android:permission="android.permission.DUMP"`，意图是只让 shell/system（以及同 UID 的仪器测试）启动它、第三方应用启动不了：**这一条只有静态证据**（合并后的清单里确有该声明；正向对照：shell 与仪器测试都能启动它），**“第三方应用确实被拒”的负向对照没有做成**（试过用 `su <uid>` 冒充第三方调用方，被系统的包名/UID 校验挡回，没有得出有效结论），所以不要把它当成已证实的访问控制，真正的保障是它只在 debug 构建里。Activity 被系统重建（旋转屏幕等）时不会再起第二次转录（`recreatingTheActivityDuringARunDoesNotStartASecondRun`，先看它因“出现两条结束记录”而失败，再修好）。输出目录被复用时，上一次留下的 `revision-content.json` / `error.json` 会先被清掉，不会出现“失败了正文还在”或“同时有成功与出错两种结论”。
 - 引擎只用 CPU（provider `cpu`），线程数 2 是假设（`SherpaOnnxEngineFactory.DEFAULT_THREADS`），Ticket 15 评测后再定。
 - 单段音频最长 30 秒（清单 `limits.max_audio_duration_ms`），超过按 `FAILED` / `ASR_RESOURCE_LIMIT` 处理；长音频切分不在本票范围。
 - 仪器测试需要先装好模型与样例，缺了会**失败并说明怎么装**，不会跳过（跳过会把“没测”显示成“通过”）。
+- **WAV 读取有大小上限，防止一个超大/不是文件的输入把进程撑爆**：`WavReader` 只接受普通文件（目录、设备文件如 `/dev/zero` 一律按格式错误拒绝）；`FileTranscription` 按清单的 `limits.max_audio_duration_ms` 推出上限（最坏按 192 kHz 双声道 16 位算，再加 1 MiB 头部余量：30 秒 → 24,088,576 字节），超过的在读进内存之前就拒绝，不跑引擎、不写输出。检查大小与读取之间不是原子的（`shortcut:` 注释里写了），威胁模型只到“别让手滑的大文件拖垮进程”。
+- **失败要响，不能静默变成“看起来正常”**：校验时读文件出错按 `MODEL_INTEGRITY_FAILED` 拒绝（`ModelRefusal.UNREADABLE`，消息里不带底层异常文本）；引擎原生库缺失/不匹配（`LinkageError`）按 `FAILED` 收尾而不是让进程崩掉，此时报告里引擎信息写 `unavailable`，`benchmark_summary.py` 不接受这样的报告；基准里的热运行只要有一次没跑完就整个基准报错，不再把它记成 0 ms。
+- **下载与安装脚本的取舍**：`prepare_model.py` 下载时以清单里的压缩包大小为上限（`curl --max-filesize`，对没声明长度的流式响应也生效，本机 curl 8.7.1 有测试证明；更老的 curl 若不生效，只剩下完之后的大小与 SHA-256 校验兜底），超限就删掉残片，不留给下次续传；解包先进暂存目录，模型与示例音频全部校验通过后才换掉旧的，失败的刷新不会弄坏已有缓存。`install_on_device.sh` 的模型/样例 id 与版本先按格式校验再拼进设备上的命令，先整份拷到设备暂存目录再换位；**没有加锁**，不要对同一台设备并发运行两份。
 
 **已知环境问题**
 - **macOS 上 adb 的服务端可能卡死在 USB 初始化（IOKit）**：现象是 `adb devices`/`adb start-server` 永远不返回，还会堆积 fork-server 进程。解决：`export ADB_LIBUSB=1`，并在一个常驻终端里手动起服务 `adb -L tcp:5037 server nodaemon`。`ADB_MDNS_OPENSCREEN=0` 没有用。本目录的脚本默认已导出 `ADB_LIBUSB=1`。
@@ -217,6 +224,8 @@ avdmanager delete avd -n auri-t14-asr
 5. **ASR 结果用 Revision 的 `content` 类型**承载（`source=ASR`、`execution_location=on_device`、引擎与模型字段），因为合同 1.1 没有独立的“转录结果”类型（见第 10 节）。`confidence` 为 `null`、`segments` 为空：当前引擎配置不给时间戳。
 6. **冷启动基准取三次，中位数**；样例用 `zh.wav`；`warm_repeats=3`。
 7. 用户规则里的“TDD 接缝需用户确认”无法确认，下面列出我选的接缝。
+8. **WAV 大小上限**：清单没给时长上限就用 64 MiB；给了就按“最坏格式（192 kHz 双声道 16 位）× 时长（向上取整到秒，最多按 3600 秒）+ 1 MiB”推出，且不超过 64 MiB。这是我选的保守值，需求里没有这个数。
+9. **T-026 不在本票做**：本票的清单没有要求 VAD，Ticket 18 负责“静音过滤、无语音与时长上限”；所以我没有在 `:asr` 里加能量门限之类的临时闸门（那会替后面的设计做决定），只把缺口如实记录并钉成测试。
 
 TDD 接缝（真实实现在设备上、假实现在 JVM 里）：
 - `AsrEngine` / `AsrEngineFactory`：JVM 用假引擎，设备用 `SherpaOnnxEngineFactory`；工厂只接受 `VerifiedModel`，它的构造函数是 `internal`（`:asr` 之外的代码造不出来，`:asr` 的正式代码里只有 `ModelVerifier` 在造），所以“先校验后加载”有类型层面的保证。

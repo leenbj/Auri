@@ -61,7 +61,12 @@ data class ReportEngine(
     @SerialName("onnxruntime_version") val onnxruntimeVersion: String,
     @SerialName("git_sha1") val gitSha1: String,
     @SerialName("num_threads") val numThreads: Int,
-)
+) {
+    companion object {
+        /** 原生库没能加载，读不到任何版本信息。 */
+        val UNAVAILABLE = ReportEngine("unavailable", "unavailable", "unavailable", 0)
+    }
+}
 
 @Serializable
 data class ReportModel(

@@ -17,7 +17,19 @@ object WavReader {
 
     private class Format(val channels: Int, val sampleRateHz: Int)
 
-    fun read(file: File): PcmAudio = parse(file.readBytes())
+    /** 64 MiB：约合 16 kHz 单声道 35 分钟。调用方知道更紧的上限就传更紧的。 */
+    const val DEFAULT_MAX_BYTES = 64L shl 20
+
+    /**
+     * 先看大小再读内容：超大的（或恶意的稀疏）文件不能被整个读进内存。
+     * shortcut: 检查与读取之间文件若被追加不会再被拦住，只面向本机验收用的文件，产品录音不走这条路。
+     */
+    fun read(file: File, maxBytes: Long = DEFAULT_MAX_BYTES): PcmAudio {
+        if (!file.isFile) throw WavFormatException("不是常规文件")
+        val size = file.length()
+        if (size > maxBytes) throw WavFormatException("文件 $size 字节，超过读取上限 $maxBytes 字节")
+        return parse(file.readBytes())
+    }
 
     fun parse(bytes: ByteArray): PcmAudio {
         if (bytes.size < 12) throw WavFormatException("文件不足 12 字节，不是 WAV")

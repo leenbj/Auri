@@ -33,7 +33,7 @@ class FileTranscription(
     fun run(request: Request): TranscriptionResult {
         require(request.warmRepeats >= 0) { "warmRepeats 不能是负数" }
         val manifest = ModelManifest.parse(request.manifestJson)
-        val audio = WavReader.read(request.wav)
+        val audio = WavReader.read(request.wav, maxWavBytes(manifest.limits.maxAudioDurationMs))
 
         val peakBefore = probe.peakRssKb()
         val netBefore = probe.uidNetworkBytes()
@@ -43,8 +43,16 @@ class FileTranscription(
             val startToFirstResultMs = probe.msSinceProcessStart()
 
             // 只有引擎已经加载（出了结果）才有“热运行”可言；否则每次都会重新校验模型
-            val engineRan = first.finalState == TranscriptionState.SUCCEEDED || first.finalState == TranscriptionState.NO_SPEECH
-            val warm = if (engineRan) List(request.warmRepeats) { transcriber.transcribe(audio).metrics.inferenceMs } else emptyList()
+            val warm = if (first.finalState.engineRan()) {
+                List(request.warmRepeats) { i ->
+                    val run = transcriber.transcribe(audio)
+                    // 失败那次的推理耗时是 0，混进去会让基准好看得不真实：让整次运行失败，不留报告
+                    check(run.finalState.engineRan()) { "第 ${i + 1} 次热运行没有跑完（终态 ${run.finalState}），基准不可信" }
+                    run.metrics.inferenceMs
+                }
+            } else {
+                emptyList()
+            }
 
             val netAfter = probe.uidNetworkBytes()
             val report = RunReport(
@@ -60,7 +68,8 @@ class FileTranscription(
                     uidNetworkBytesDelta = if (netBefore != null && netAfter != null) netAfter - netBefore else null,
                 ),
                 warmInferenceMs = warm,
-                engine = probe.engine(),
+                // 原生库没能加载时读引擎版本会再抛一次链接错误；报告要能如实写“不可用”，不能因此崩溃
+                engine = try { probe.engine() } catch (e: LinkageError) { ReportEngine.UNAVAILABLE },
                 model = ReportModel(manifest.modelId, manifest.modelVersion),
                 device = probe.device(),
             )
@@ -70,8 +79,22 @@ class FileTranscription(
         }
     }
 
-    private companion object {
-        val reportJson = Json {
+    companion object {
+        /** 声明范围内数据量最大的 WAV：192 kHz、双声道、16 位 = 768000 字节/秒。 */
+        private const val WORST_CASE_BYTES_PER_SECOND = 192_000L * 2 * 2
+        private const val HEADER_SLACK_BYTES = 1L shl 20
+
+        /**
+         * 模型时长上限内最大的合法 WAV 有多大；比它还大的文件不用读就知道超限。没有上限或上限太大时用 [WavReader.DEFAULT_MAX_BYTES] 封顶。
+         */
+        internal fun maxWavBytes(maxAudioDurationMs: Long?): Long {
+            val seconds = maxAudioDurationMs?.let { minOf((it + 999) / 1000, 3_600L) } ?: return WavReader.DEFAULT_MAX_BYTES
+            return minOf(seconds * WORST_CASE_BYTES_PER_SECOND + HEADER_SLACK_BYTES, WavReader.DEFAULT_MAX_BYTES)
+        }
+
+        private fun TranscriptionState.engineRan() = this == TranscriptionState.SUCCEEDED || this == TranscriptionState.NO_SPEECH
+
+        private val reportJson = Json {
             encodeDefaults = true
             explicitNulls = true // 读不到的读数要写 null，不能省略
             prettyPrint = true

@@ -13,6 +13,9 @@ enum class ModelRefusal(val errorCode: ErrorCode) {
     NOT_INSTALLED(ErrorCode.MODEL_NOT_INSTALLED),
     SIZE_MISMATCH(ErrorCode.MODEL_INTEGRITY_FAILED),
     HASH_MISMATCH(ErrorCode.MODEL_INTEGRITY_FAILED),
+
+    /** 文件在，但读不出来（权限、设备读错误）：证明不了完整性，同样不加载。 */
+    UNREADABLE(ErrorCode.MODEL_INTEGRITY_FAILED),
 }
 
 /** 消息只含清单里的名字与哈希前缀，不含文件内容（日志默认不含正文、音频或凭证）。 */

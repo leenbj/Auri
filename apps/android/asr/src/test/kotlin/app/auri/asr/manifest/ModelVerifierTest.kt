@@ -3,6 +3,7 @@ package app.auri.asr.manifest
 import app.auri.asr.TestModel
 import app.auri.asr.contract.ErrorCode
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -118,6 +119,25 @@ class ModelVerifierTest {
 
         assertEquals(ModelRefusal.UNSAFE_PATH, e.refusal)
         assertEquals(ErrorCode.MODEL_INTEGRITY_FAILED, e.errorCode)
+    }
+
+    @Test
+    fun `读取文件内容失败时同样拒绝加载 而不是把 IO 异常抛给调用方`() {
+        val model = TestModel.install(tmp.newFolder("m"))
+        val verifier = ModelVerifier(hash = { throw IOException("/data/secret/path: 设备读错误") })
+
+        val e = try {
+            verifier.verify(model.manifest, model.dir)
+            fail("应当拒绝，但通过了校验")
+            error("unreachable")
+        } catch (e: ModelRefusedException) {
+            e
+        }
+
+        assertEquals(ModelRefusal.UNREADABLE, e.refusal)
+        assertEquals("读不出来就证明不了完整性", ErrorCode.MODEL_INTEGRITY_FAILED, e.errorCode)
+        assertTrue("消息要指出是哪个文件", e.message!!.contains("model.int8.onnx"))
+        assertFalse("底层异常的文字可能带路径，不放进消息", e.message!!.contains("secret"))
     }
 
     @Test

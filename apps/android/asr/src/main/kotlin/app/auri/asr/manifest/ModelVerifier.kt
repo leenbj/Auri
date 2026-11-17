@@ -16,7 +16,7 @@ class VerifiedModel internal constructor(val manifest: ModelManifest, private va
  * 已知限制：校验的是路径，引擎随后按路径重新打开文件。模型目录必须是应用私有目录（Ticket 20 的产品存储），
  * 否则校验与加载之间文件可被替换。调试宿主把模型放在外部应用目录，只用于验收，不用于产品。
  */
-class ModelVerifier {
+class ModelVerifier(private val hash: (File) -> String = ::sha256HexOf) {
     fun verify(manifest: ModelManifest, modelDir: File): VerifiedModel {
         val root = try {
             modelDir.canonicalFile
@@ -44,7 +44,12 @@ class ModelVerifier {
                     "文件 ${entry.role}（${entry.path}）大小 $size 字节，清单要求 ${entry.sizeBytes} 字节",
                 )
             }
-            val actual = sha256Hex(file)
+            val actual = try {
+                hash(file)
+            } catch (e: IOException) {
+                // 不把底层异常的文字带进消息：它常带完整路径
+                throw refuse(ModelRefusal.UNREADABLE, "文件 ${entry.role}（${entry.path}）读取失败，无法校验")
+            }
             if (actual != entry.sha256) {
                 throw refuse(
                     ModelRefusal.HASH_MISMATCH,
@@ -57,17 +62,17 @@ class ModelVerifier {
     }
 
     private fun refuse(refusal: ModelRefusal, message: String) = ModelRefusedException(refusal, message)
+}
 
-    private fun sha256Hex(file: File): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        val buffer = ByteArray(1 shl 20)
-        file.inputStream().use { input ->
-            while (true) {
-                val n = input.read(buffer)
-                if (n < 0) break
-                digest.update(buffer, 0, n)
-            }
+internal fun sha256HexOf(file: File): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+    val buffer = ByteArray(1 shl 20)
+    file.inputStream().use { input ->
+        while (true) {
+            val n = input.read(buffer)
+            if (n < 0) break
+            digest.update(buffer, 0, n)
         }
-        return digest.digest().joinToString("") { "%02x".format(it) }
     }
+    return digest.digest().joinToString("") { "%02x".format(it) }
 }

@@ -176,6 +176,9 @@ class LocalTranscriber(
             raw
         } catch (e: Exception) {
             return failed(null, e)
+        } catch (e: LinkageError) {
+            // 原生方法在推理时才发现链接不上，与创建引擎时的 LinkageError 一样当作永久失败
+            return failed(null, e)
         }
 
         if (output.text.isBlank()) {

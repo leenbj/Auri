@@ -32,6 +32,8 @@ class EnginePinTest {
         val sha = SherpaOnnxEngineFactory.runtimeInfo().gitSha1
         val pinned = pin.getProperty("source.commit")
 
-        assertTrue("原生库的 git sha=$sha，固定的提交是 $pinned", sha.isNotBlank() && (pinned.startsWith(sha) || sha.startsWith(pinned)))
+        // 前缀比对要有足够长度才有意义：一个字符的“前缀”几乎匹配任何提交
+        assertTrue("原生库的 git sha=\"$sha\" 太短，不足以确认固定的提交", sha.length >= 7)
+        assertTrue("原生库的 git sha=$sha，固定的提交是 $pinned", pinned.startsWith(sha) || sha.startsWith(pinned))
     }
 }

@@ -2,8 +2,9 @@
 
 三层检查，任何一层不过都是失败，没有“跳过”：
   1. 每个文件按真实的 contracts/schemas/*.json 校验（注册方式与 tests/contract/conftest.py 相同）；
-  2. 合同的语义规则：SR-01（正文哈希按原始 UTF-8 字节）与 SR-05（执行位置只能是 on_device），
-     直接复用 tests/contract/semantic_rules.py 的参考实现（只读，不修改合同测试）；
+  2. 合同的语义规则：SR-01（正文哈希按原始 UTF-8 字节）、SR-05（执行位置只能是 on_device）与
+     SR-06（正文按 UTF-8 编码不超过 1 MiB），复用 tests/contract/semantic_rules.py 的参考实现与常量
+     （只读，不修改合同测试）；
   3. 转录状态机轨迹按 contracts/fixtures/state-machines/transcription.machine.json 逐步重放，
      并核对终态与文件（修订内容、错误码）互相一致。
 
@@ -51,7 +52,7 @@ EXPECTED_JVM_SCENARIOS = {
 # 设备（模拟器/真机）仪器测试写在 files/contract-out/ 下的场景；名字与 app/src/androidTest 里的 outDir 对应
 EXPECTED_DEVICE_SCENARIOS = {
     **{f"real-{lang}": "SUCCEEDED" for lang in ("zh", "en", "ja", "ko", "yue")},
-    "real-silence-hallucination": "SUCCEEDED",  # 已知限制：引擎对纯静音也会出字，见 README
+    "real-silence-hallucination": "SUCCEEDED",  # 已知缺口，不是通过：PRD T-026 要求 NO_SPEECH，引擎单独做不到（README）
     "real-zh-16k-direct": "SUCCEEDED",
     "real-zh-48k": "SUCCEEDED",
     "real-zh-44k1": "SUCCEEDED",
@@ -63,9 +64,13 @@ EXPECTED_DEVICE_SCENARIOS = {
     "airplane-zh": "SUCCEEDED",
 }
 
-# 调试入口 TranscribeFileActivity 写在 files/runs/ 下的场景：仪器测试的 activity-zh，
+# 调试入口 TranscribeFileActivity 写在 files/runs/ 下的场景：仪器测试的 activity-zh 与 activity-recreate，
 # 加上 run_device_acceptance.sh 的三次冷启动基准 bench-1..3（脚本里 COLD_RUNS=3，两处要一起改）
-EXPECTED_DEVICE_RUNS = {"activity-zh": "SUCCEEDED", **{f"bench-{i}": "SUCCEEDED" for i in (1, 2, 3)}}
+EXPECTED_DEVICE_RUNS = {
+    "activity-zh": "SUCCEEDED",
+    "activity-recreate": "SUCCEEDED",
+    **{f"bench-{i}": "SUCCEEDED" for i in (1, 2, 3)},
+}
 
 PRESETS = {
     "jvm": EXPECTED_JVM_SCENARIOS,
@@ -95,12 +100,29 @@ def _flatten(errors):
         yield from _flatten(error.context or [])
 
 
+# 这几类校验器的默认消息只含字段名、不含出错的值，可以原样输出
+_MESSAGE_WITHOUT_VALUES = {"required", "additionalProperties", "unevaluatedProperties"}
+_SHOWN_VALUE_MAX_CHARS = 64
+
+
+def _describe(error) -> str:
+    """校验器的输出会被贴进报告和聊天记录，所以不能带转录正文：jsonschema 的默认消息会把出错的值原样放进去
+    （类型错误、超长、oneOf/anyOf 时甚至是整个对象）。这里只在值是短字符串、且路径不经过 text 时才说出它，
+    这样枚举写错时仍能看到是哪个值，正文却不会出现在任何一条问题里。"""
+    if error.validator in _MESSAGE_WITHOUT_VALUES:
+        return error.message
+    shown = ""
+    if isinstance(error.instance, str) and len(error.instance) <= _SHOWN_VALUE_MAX_CHARS and "text" not in error.absolute_path:
+        shown = f"，实际值 {error.instance!r}"
+    return f"违反 {error.validator} 约束（要求 {repr(error.validator_value)[:200]}{shown}）"
+
+
 def schema_problems(name: str, schema_ref: str, instance) -> list[str]:
     validator = Draft202012Validator({"$ref": BASE_URI + schema_ref}, registry=_REGISTRY)
     found = []
     for error in _flatten(validator.iter_errors(instance)):
         pointer = "".join(f"/{part}" for part in error.absolute_path) or "/"
-        found.append(f"{name}: schema {schema_ref} 不通过 {pointer}：{error.message}")
+        found.append(f"{name}: schema {schema_ref} 不通过 {pointer}：{_describe(error)}")
     return found
 
 
@@ -111,10 +133,14 @@ def _load(dir_: pathlib.Path, name: str, problems: list[str], required: bool):
             problems.append(f"{name}: 文件不存在")
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(path.read_text(encoding="utf-8"))
     except (ValueError, UnicodeDecodeError) as e:
         problems.append(f"{name}: 不是有效的 UTF-8 JSON（{e}）")
         return None
+    if not isinstance(value, dict):
+        problems.append(f"{name}: 顶层必须是 JSON 对象")  # 不回显内容：它可能就是正文
+        return None
+    return value
 
 
 def _replay(trace: dict) -> tuple[list[str], str | None]:
@@ -157,6 +183,8 @@ def check_scenario(dir_: pathlib.Path, expectation: str) -> list[str]:
     if content is not None and isinstance(content.get("text"), str):
         if text_sha256(content["text"]) != content.get("text_sha256"):
             problems.append("revision-content.json: SR-01 text_sha256 与正文按 UTF-8 原始字节算出的哈希不符")
+        if len(content["text"].encode("utf-8")) > semantic_rules.MAX_TEXT_BYTES:
+            problems.append("revision-content.json: SR-06 正文按 UTF-8 编码后超过 1 MiB")
         if content.get("execution_location") != "on_device":
             problems.append("revision-content.json: SR-05 execution_location 必须是 on_device")
     if caps is not None and isinstance(caps.get("execution_location"), str):

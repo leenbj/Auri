@@ -13,7 +13,9 @@ import app.auri.asr.contract.TimestampGranularity
 import app.auri.asr.engine.AsrEngine
 import app.auri.asr.engine.AsrEngineFactory
 import app.auri.asr.engine.EngineOutput
+import app.auri.asr.manifest.ModelVerifier
 import app.auri.asr.manifest.VerifiedModel
+import java.io.IOException
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.sin
@@ -330,6 +332,19 @@ class LocalTranscriberTest {
     }
 
     @Test
+    fun `推理时原生方法链接失败同样是永久失败 异常不会逃出转录器`() {
+        val model = TestModel.install(tmp.newFolder("m"))
+        engine.reply = { throw UnsatisfiedLinkError("native method not found，消息里带 SECRET-DICTATION") }
+
+        val failed = transcriber(model).transcribe(audio(1000))
+
+        val outcome = failed.outcome as TranscriptionOutcome.Failed
+        assertEquals(TranscriptionState.FAILED, failed.finalState)
+        assertEquals("UnsatisfiedLinkError", outcome.causeType)
+        assertFalse(failed.toString().contains("SECRET-DICTATION"))
+    }
+
+    @Test
     fun `引擎创建失败时任务永久失败 不缓存半个引擎 下次调用重新创建`() {
         val model = TestModel.install(tmp.newFolder("m"))
         var failNext = true
@@ -386,6 +401,20 @@ class LocalTranscriberTest {
         assertFalse("重新下载要用户允许，不能自动重试", waiting.error.retryable)
         assertEquals(0, factory.calls)
         assertEquals(0, engine.calls)
+    }
+
+    @Test
+    fun `读不出模型文件时按完整性失败等待 不抛 IO 异常 也不创建引擎`() {
+        val model = TestModel.install(tmp.newFolder("m"))
+        val unreadable = ModelVerifier(hash = { throw IOException("设备读错误") })
+        val t = LocalTranscriber(model.manifest, model.dir, factory, nanoTime = clock::now, newJobId = { jobId }, verifier = unreadable)
+
+        val result = t.transcribe(audio(1000))
+
+        val waiting = result.outcome as TranscriptionOutcome.WaitingModel
+        assertEquals(ErrorCode.MODEL_INTEGRITY_FAILED, waiting.error.code)
+        assertFalse("读不出来不能自动重试，等用户处理", waiting.error.retryable)
+        assertEquals(0, factory.calls)
     }
 
     @Test

@@ -7,7 +7,8 @@
   产出       <缓存>/models/<model_id>/<model_version>/（清单里列的文件）与 <缓存>/samples/*.wav（包里的示例音频）
 
 信任锚是清单里固定的 SHA-256，不是 URL：压缩包、解出的每个文件都按清单的大小与哈希校验，
-不符就删掉并以非零状态退出。模型权重与示例音频只进缓存目录，不进仓库。
+不符就以非零状态退出。解包先进暂存目录，全部校验通过才换进缓存，失败时原来的模型与示例音频原样保留。
+模型权重与示例音频只进缓存目录，不进仓库。
 只依赖标准库与 curl（下载与续传、重试交给 curl）；Python 3.8 起可用。
 """
 from __future__ import annotations
@@ -22,7 +23,8 @@ import shutil
 import subprocess
 import sys
 import tarfile
-from urllib.parse import urlparse
+import tempfile
+from urllib.parse import urlparse, urlsplit
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 DEFAULT_MANIFEST = REPO_ROOT / "apps" / "android" / "manifests" / "sensevoice-small-int8-2024-07-17.manifest.json"
@@ -74,52 +76,93 @@ def _verify_archive(path: pathlib.Path, archive: dict) -> bool:
     return path.is_file() and path.stat().st_size == int(archive["size_bytes"]) and sha256_of(path) == archive["sha256"]
 
 
-def _download(url: str, archive_path: pathlib.Path, retries: int) -> None:
+def _display_url(url: str) -> str:
+    """日志与错误信息里的 URL：去掉用户名、口令和查询参数，它们里面可能有凭证。"""
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc.rpartition('@')[2]}{parts.path}"
+
+
+def _download(url: str, archive_path: pathlib.Path, retries: int, max_bytes: int) -> None:
     part = archive_path.with_name(archive_path.name + ".part")
     archive_path.parent.mkdir(parents=True, exist_ok=True)
-    command = ["curl", "-L", "--fail", "--silent", "--show-error", "-C", "-", "--retry", str(retries), "--retry-delay", "2", "-o", str(part), url]
-    print(f"下载 {url}", flush=True)
-    if subprocess.run(command).returncode != 0:
-        die(f"下载失败：{url}（已下载的部分保留在 {part}，重跑会续传）")
+    # --max-filesize：声明的长度超过清单里的压缩包大小就不下载；没声明长度的流式响应，curl 8.7.1 也会在超出时掐断
+    # （test_a_stream_without_declared_length_is_cut_off_at_the_manifest_size 在本机实测）。
+    # shortcut: 更老的 curl 若不对流式响应执行这个限制，就只剩下完之后的大小与 SHA-256 校验兜底。
+    command = [
+        "curl", "-L", "--fail", "--silent", "--show-error", "-C", "-", "--retry", str(retries), "--retry-delay", "2",
+        "--max-filesize", str(max_bytes), "-o", str(part), url,
+    ]
+    shown = _display_url(url)
+    print(f"下载 {shown}", flush=True)
+    code = subprocess.run(command).returncode
+    if code == 63:  # curl: Maximum file size exceeded
+        part.unlink(missing_ok=True)  # 超限的残片不能留着：下次 -C - 会接着它续传
+        die(f"下载失败：{shown} 的大小超过清单里的压缩包大小（{max_bytes} 字节），已中止")
+    if code != 0:
+        die(f"下载失败：{shown}（已下载的部分保留在 {part}，重跑会续传）")
     part.replace(archive_path)
+
+
+def _replace_dir(staged: pathlib.Path, destination: pathlib.Path) -> None:
+    """用暂存好的目录换掉旧目录。旧目录先改名后删，所以换的过程出错时旧目录还在。"""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    old = destination.with_name(destination.name + ".old")
+    shutil.rmtree(old, ignore_errors=True)
+    if destination.is_symlink():
+        destination.unlink()
+    elif destination.exists():
+        destination.replace(old)
+    staged.replace(destination)
+    shutil.rmtree(old, ignore_errors=True)
 
 
 def _extract(archive_path: pathlib.Path, manifest: dict, cache_dir: pathlib.Path) -> pathlib.Path:
     model_dir = cache_dir / "models" / manifest["model_id"] / manifest["model_version"]
     samples_dir = cache_dir / "samples"
-    shutil.rmtree(model_dir, ignore_errors=True)
-    model_dir.mkdir(parents=True)
-    samples_dir.mkdir(parents=True, exist_ok=True)
-    wanted = {entry["path"]: model_dir / entry["path"] for entry in manifest["files"]}
-    found = set()
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
-    # 不用 tar.extract：每个成员都按名字自己决定写到哪里，名字里带 .. 的、不是常规文件的（符号链接等）一律不解
-    with tarfile.open(archive_path, "r:*") as tar:
-        for member in tar:
-            parts = pathlib.PurePosixPath(member.name).parts
-            if not member.isreg() or member.name.startswith("/") or ".." in parts or len(parts) < 2:
-                continue
-            relative = "/".join(parts[1:])  # 去掉包的顶层目录
-            if relative in wanted:
-                destination = wanted[relative]
-                found.add(relative)
-            elif len(parts) == 3 and parts[1] == "test_wavs" and parts[2].endswith(".wav"):
-                destination = samples_dir / parts[2]
-            else:
-                continue
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            with tar.extractfile(member) as source, destination.open("wb") as target:
-                shutil.copyfileobj(source, target, 1 << 20)
+    # 先全部解进全新的暂存目录（mkdtemp 新建，缓存里事先放好的符号链接引不走写入），逐个校验通过才换进缓存：
+    # 校验失败时，缓存里原来校验过的模型与示例音频原样保留（T-023 的精神：新文件有问题不能丢掉旧的好文件）。
+    stage = pathlib.Path(tempfile.mkdtemp(prefix="extract-", dir=cache_dir))
+    try:
+        staged_model, staged_samples = stage / "model", stage / "samples"
+        staged_model.mkdir()
+        staged_samples.mkdir()
+        wanted = {entry["path"]: staged_model / entry["path"] for entry in manifest["files"]}
+        found = set()
 
-    missing = sorted(set(wanted) - found)
-    if missing:
-        shutil.rmtree(model_dir, ignore_errors=True)
-        die(f"压缩包里没有清单要求的文件：{missing}")
-    for entry in manifest["files"]:
-        file = wanted[entry["path"]]
-        if file.stat().st_size != int(entry["size_bytes"]) or sha256_of(file) != entry["sha256"]:
-            shutil.rmtree(model_dir, ignore_errors=True)
-            die(f"解出的文件 {entry['path']} 与清单的大小或 SHA-256 不符，已删除")
+        # 不用 tar.extract：每个成员都按名字自己决定写到哪里，名字里带 .. 的、不是常规文件的（符号链接等）一律不解
+        with tarfile.open(archive_path, "r:*") as tar:
+            for member in tar:
+                parts = pathlib.PurePosixPath(member.name).parts
+                if not member.isreg() or member.name.startswith("/") or ".." in parts or len(parts) < 2:
+                    continue
+                relative = "/".join(parts[1:])  # 去掉包的顶层目录
+                if relative in wanted:
+                    destination = wanted[relative]
+                    found.add(relative)
+                elif len(parts) == 3 and parts[1] == "test_wavs" and parts[2].endswith(".wav"):
+                    destination = staged_samples / parts[2]
+                else:
+                    continue
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with tar.extractfile(member) as source, destination.open("wb") as target:
+                    shutil.copyfileobj(source, target, 1 << 20)
+
+        missing = sorted(set(wanted) - found)
+        if missing:
+            die(f"压缩包里没有清单要求的文件：{missing}")
+        for entry in manifest["files"]:
+            file = wanted[entry["path"]]
+            if file.stat().st_size != int(entry["size_bytes"]) or sha256_of(file) != entry["sha256"]:
+                die(f"解出的文件 {entry['path']} 与清单的大小或 SHA-256 不符，未写入缓存")
+
+        _replace_dir(staged_model, model_dir)
+        samples_dir.mkdir(parents=True, exist_ok=True)
+        for wav in sorted(staged_samples.iterdir()):
+            wav.replace(samples_dir / wav.name)  # rename 替换的是目录项本身：目标若是符号链接，换掉链接而不是写进链接指向的文件
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
     return model_dir
 
 
@@ -132,7 +175,7 @@ def prepare(manifest_path: pathlib.Path, cache_dir: pathlib.Path, retries: int =
         print(f"缓存里的 {archive_path.name} 与清单不符，删除后重新下载", flush=True)
         archive_path.unlink()
     if not archive_path.exists():
-        _download(archive["url"], archive_path, retries)
+        _download(archive["url"], archive_path, retries, int(archive["size_bytes"]))
         if not _verify_archive(archive_path, archive):
             actual = sha256_of(archive_path)
             archive_path.unlink()
