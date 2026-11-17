@@ -20,6 +20,11 @@ import pytest
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
 
+try:
+    BaseExceptionGroup  # Python 3.11+
+except NameError:
+    from exceptiongroup import BaseExceptionGroup
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 GATEWAY_SRC = REPO_ROOT / "services" / "gateway"
 SCHEMA_DIR = REPO_ROOT / "contracts" / "schemas"
@@ -313,7 +318,17 @@ class McpAgent:
                     self.protocol_version = client.protocol_version
                     return await operation(client)
 
-        return asyncio.run(session())
+        try:
+            return asyncio.run(session())
+        except BaseExceptionGroup as group:
+            # The SDK client runs inside anyio task groups, which wrap a single failure (such as
+            # the MCPError for a protocol-level refusal) in groups. Hand the caller that failure.
+            failure: BaseException = group
+            while isinstance(failure, BaseExceptionGroup) and len(failure.exceptions) == 1:
+                failure = failure.exceptions[0]
+            if failure is group:
+                raise
+            raise failure from None
 
     def list_tools(self) -> list[Any]:
         async def operation(client):
