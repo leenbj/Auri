@@ -7,7 +7,7 @@
     "keyword": "additionalProperties"
   },
   "instance": {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "profile_id": "fixture-freeclip2-harmonyos-candidate",
     "profile_version": 1,
     "manufacturer_hint": "HUAWEI",

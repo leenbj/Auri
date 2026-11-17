@@ -3,7 +3,7 @@
   "expect": "valid",
   "description": "首次入库，创建一条 Delivery。",
   "instance": {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "operation_id": "f248f8a6-694e-52a8-8aaf-76e5a7625808",
     "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
     "revision": 1,

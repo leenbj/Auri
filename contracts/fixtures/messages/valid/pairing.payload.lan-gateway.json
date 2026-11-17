@@ -3,7 +3,7 @@
   "expect": "valid",
   "description": "网关命令行生成的配对载荷。",
   "instance": {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "gateway_id": "fa1b98ec-1bfb-53b3-85a3-4d36b680fe6e",
     "addresses": [
       {

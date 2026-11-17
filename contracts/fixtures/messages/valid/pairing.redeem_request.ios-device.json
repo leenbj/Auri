@@ -3,7 +3,7 @@
   "expect": "valid",
   "description": "手机用配对码换取设备令牌。",
   "instance": {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "pairing_code": "FIXTURE-PAIRING-CODE-NOT-A-SECRET",
     "device": {
       "platform": "ios",

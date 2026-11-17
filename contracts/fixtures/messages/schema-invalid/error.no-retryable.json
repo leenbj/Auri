@@ -7,7 +7,7 @@
     "keyword": "required"
   },
   "instance": {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "code": "GATEWAY_KEY_MISMATCH",
     "message": "网关的公钥与配对时记下的不一致，已拒绝连接。",
     "required_action": "在网关电脑上重新生成配对码并重新配对。",

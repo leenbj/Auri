@@ -3,7 +3,7 @@
   "expect": "valid",
   "description": "删除整个 Record，未完成的 Delivery 被取消。",
   "instance": {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
     "deleted_at": "2026-11-16T08:00:00Z",
     "cancelled_delivery_ids": [

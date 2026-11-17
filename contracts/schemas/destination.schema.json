@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.auri.invalid/1.0/destination.schema.json",
+  "$id": "https://contracts.auri.invalid/1.1/destination.schema.json",
   "title": "Destination 管理",
   "description": "ADR-008、ADR-009。每个 Destination 一套专属凭证；响应不回显已有凭证。",
   "$defs": {

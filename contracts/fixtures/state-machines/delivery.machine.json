@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "machine": "delivery",
   "description": "网关上一条 Delivery 的状态机（PRD 第 12.4 节）。至少一次投递，消费者按 delivery_id 去重。",
   "initial_state": "PENDING",
