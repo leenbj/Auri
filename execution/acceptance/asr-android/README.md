@@ -133,7 +133,7 @@ avdmanager delete avd -n auri-t14-asr
 | 仪器测试（API 35 arm64 模拟器，真引擎 + 真模型） | `run_device_acceptance.sh`（第 4 步） | `OK (23 tests)`，`check_instrumentation.py` 核对 23 个 `@Test` 全部跑到且通过：EnginePinTest 2、TestAudioTest 3、RealEngineTranscriptionTest 7、ModelRefusalOnDeviceTest 4、OfflineProofTest 3、TranscribeFileActivityTest 4 |
 | 设备输出的合同校验 | 同上第 7 步 | `contract-out` 15 个场景 0 问题；`runs` 5 个场景 0 问题 |
 | Python 验收工具 | `.venv/bin/pytest execution/acceptance/asr-android` | 100 通过（`test_benchmark_summary` 22、`test_check_instrumentation` 12、`test_contract_check` 37、`test_contract_output` 3、`test_engine_pin_guard` 7、`test_install_on_device` 5、`test_prepare_model` 14） |
-| 合同 / 集成 / 安全（全仓库） | `.venv/bin/pytest tests/contract tests/integration tests/security` | 492 通过，0 失败，0 跳过（197 秒；本票没有改动 `contracts/`、`tests/`、`services/`） |
+| 合同 / 集成 / 安全（全仓库） | `.venv/bin/pytest tests/contract tests/integration tests/security` | 492 通过，0 失败，0 跳过（189 秒；本票没有改动 `contracts/`、`tests/`、`services/`） |
 
 **变异验证**（证明测试真能失败；每次改完立即还原，已用 `diff` 核对）：
 - 设备：关掉加载器的哈希比对 → `oneFlippedByteInTheRealModelIsRefusedBeforeTheEngineIsTouched` 失败（实际终态是 `FAILED`：被篡改的模型进了引擎）；不真正打开飞行模式 → `transcriptionSucceedsInAirplaneModeWithoutAnyNetworkBytes` 以“飞行模式没有生效”失败；给应用加上 INTERNET 权限 → `theInstalledPackageRequestsNoInternetPermission` 与 `theKernelRefusesEveryNetworkSocketButStillAllowsLocalOnes` 两个失败（注意这时飞行模式那条仍然通过：单靠飞行模式不能证明不联网，所以才要三层证据）。
