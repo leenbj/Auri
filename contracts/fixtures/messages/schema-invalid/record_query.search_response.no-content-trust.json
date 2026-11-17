@@ -1,0 +1,27 @@
+{
+  "schema": "record_query.schema.json#/$defs/search_response",
+  "expect": "schema_invalid",
+  "rejected_because": "搜索匹配结果必须明确标出 content_trust（SEC-004）。",
+  "expect_error": {
+    "path": "/matches/0",
+    "keyword": "required"
+  },
+  "instance": {
+    "schema_version": "1.1",
+    "next_cursor": null,
+    "matches": [
+      {
+        "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
+        "revision": 3,
+        "delivery_id": "f2902603-449e-5ad9-beee-8c3c48c0f1f7",
+        "delivery_state": "ACKNOWLEDGED",
+        "intent": "context",
+        "snippet": "帮我记录一下：明天检查小说的记忆模块。",
+        "snippet_truncated": false,
+        "text_bytes": 57,
+        "text_sha256": "8a7cc51dc506d33c5630b4e40a8a68e4a1d432c17ccea61de5738b0d416c4092",
+        "stored_at": "2026-11-15T02:35:00Z"
+      }
+    ]
+  }
+}

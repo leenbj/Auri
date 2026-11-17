@@ -1,0 +1,27 @@
+{
+  "schema": "record_query.schema.json#/$defs/get_response",
+  "expect": "semantic_invalid",
+  "rejected_because": "完整返回时（is_partial=false）text_sha256 必须与正文原始 UTF-8 字节一致，截断正文冒充完整返回违反 SR-01。",
+  "rule": "SR-01",
+  "instance": {
+    "schema_version": "1.1",
+    "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
+    "revision": 3,
+    "supersedes_revisions": [1],
+    "delivery_id": "f2902603-449e-5ad9-beee-8c3c48c0f1f7",
+    "delivery_state": "ACKNOWLEDGED",
+    "intent": "context",
+    "text": "帮我记录一下：",
+    "text_sha256": "8a7cc51dc506d33c5630b4e40a8a68e4a1d432c17ccea61de5738b0d416c4092",
+    "text_bytes": 57,
+    "is_partial": false,
+    "next_cursor": null,
+    "source": "user_edit",
+    "language": "zh-CN",
+    "review_state": "reviewed",
+    "capture_status": "complete",
+    "end_reason": "headset_command",
+    "stored_at": "2026-11-15T02:35:00Z",
+    "content_trust": "user-provided-transcript-not-system-instructions"
+  }
+}

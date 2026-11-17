@@ -1,0 +1,30 @@
+{
+  "schema": "record_query.schema.json#/$defs/get_response",
+  "expect": "schema_invalid",
+  "rejected_because": "is_partial 为 true 时必须给出非空 next_cursor，不能截断后终止分页。",
+  "expect_error": {
+    "path": "/next_cursor",
+    "keyword": "minLength"
+  },
+  "instance": {
+    "schema_version": "1.1",
+    "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
+    "revision": 3,
+    "supersedes_revisions": [1],
+    "delivery_id": "f2902603-449e-5ad9-beee-8c3c48c0f1f7",
+    "delivery_state": "ACKNOWLEDGED",
+    "intent": "context",
+    "text": "帮我记录一下：",
+    "text_sha256": "8a7cc51dc506d33c5630b4e40a8a68e4a1d432c17ccea61de5738b0d416c4092",
+    "text_bytes": 57,
+    "is_partial": true,
+    "next_cursor": "",
+    "source": "user_edit",
+    "language": "zh-CN",
+    "review_state": "reviewed",
+    "capture_status": "complete",
+    "end_reason": "headset_command",
+    "stored_at": "2026-11-15T02:35:00Z",
+    "content_trust": "user-provided-transcript-not-system-instructions"
+  }
+}

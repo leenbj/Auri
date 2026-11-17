@@ -1,0 +1,12 @@
+{
+  "schema": "record_query.schema.json#/$defs/list_request",
+  "expect": "schema_invalid",
+  "rejected_because": "列表每页最多 100 条（PRD 17.5）。",
+  "expect_error": {
+    "path": "/limit",
+    "keyword": "maximum"
+  },
+  "instance": {
+    "limit": 101
+  }
+}

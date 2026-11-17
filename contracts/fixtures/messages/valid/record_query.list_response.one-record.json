@@ -1,0 +1,26 @@
+{
+  "schema": "record_query.schema.json#/$defs/list_response",
+  "expect": "valid",
+  "description": "返回发给当前 Destination 的 Record 摘要与下一页不透明游标。",
+  "instance": {
+    "schema_version": "1.1",
+    "records": [
+      {
+        "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
+        "revision": 3,
+        "delivery_id": "f2902603-449e-5ad9-beee-8c3c48c0f1f7",
+        "delivery_state": "ACKNOWLEDGED",
+        "intent": "context",
+        "source": "user_edit",
+        "language": "zh-CN",
+        "review_state": "reviewed",
+        "capture_status": "complete",
+        "end_reason": "headset_command",
+        "stored_at": "2026-11-15T02:35:00Z",
+        "text_sha256": "8a7cc51dc506d33c5630b4e40a8a68e4a1d432c17ccea61de5738b0d416c4092",
+        "text_bytes": 57
+      }
+    ],
+    "next_cursor": "opaque-cursor-page-2"
+  }
+}

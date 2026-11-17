@@ -1,0 +1,13 @@
+{
+  "schema": "record_query.schema.json#/$defs/get_request",
+  "expect": "schema_invalid",
+  "rejected_because": "不能靠自报 destination_id 读取别的 Destination 的 Record。",
+  "expect_error": {
+    "path": "",
+    "keyword": "additionalProperties"
+  },
+  "instance": {
+    "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
+    "destination_id": "65ea2953-505c-5c6f-9474-7cd5b8474104"
+  }
+}

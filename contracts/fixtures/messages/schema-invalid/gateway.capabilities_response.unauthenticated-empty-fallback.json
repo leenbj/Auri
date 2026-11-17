@@ -1,0 +1,10 @@
+{
+  "schema": "gateway.schema.json#/$defs/capabilities_response",
+  "expect": "schema_invalid",
+  "rejected_because": "未认证请求不得伪造空的成功能力响应，必须返回 error.schema.json。",
+  "expect_error": {
+    "path": "",
+    "keyword": "required"
+  },
+  "instance": {}
+}

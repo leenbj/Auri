@@ -1,0 +1,10 @@
+{
+  "schema": "record_query.schema.json#/$defs/search_request",
+  "expect": "valid",
+  "description": "按关键词搜索发给当前 Destination 的 Record。",
+  "instance": {
+    "query": "记忆模块",
+    "limit": 20,
+    "cursor": null
+  }
+}

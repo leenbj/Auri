@@ -1,0 +1,35 @@
+{
+  "schema": "gateway.schema.json#/$defs/capabilities_response",
+  "expect": "schema_invalid",
+  "rejected_because": "V1 不支持云端转录（ADR-0019），cloud_asr 必须为 false。",
+  "expect_error": {
+    "path": "/features/cloud_asr",
+    "keyword": "const"
+  },
+  "instance": {
+    "schema_version": "1.1",
+    "gateway_version": "0.1.0",
+    "supported_schema_versions": ["1.1"],
+    "features": {
+      "cloud_asr": true,
+      "record_read_tools": true,
+      "delivery_tools": true,
+      "mdns_discovery": true,
+      "lan_only_tls": true
+    },
+    "limits": {
+      "max_text_bytes": 1048576,
+      "max_destinations_per_publication": 50,
+      "record_list_default_limit": 20,
+      "record_list_max_limit": 100,
+      "record_search_default_limit": 20,
+      "record_search_max_limit": 100,
+      "delivery_claim_default_limit": 10,
+      "delivery_claim_max_limit": 50,
+      "delivery_lease_default_seconds": 120,
+      "delivery_lease_min_seconds": 10,
+      "delivery_lease_max_seconds": 600,
+      "pairing_ttl_max_seconds": 3600
+    }
+  }
+}
