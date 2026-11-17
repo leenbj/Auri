@@ -1,11 +1,13 @@
 """Black-box integration tests for CLI pairing codes and token hashing."""
 from __future__ import annotations
 
+import json
 import pathlib
 import sqlite3
 import time
 
 import httpx
+import pytest
 
 from harness import (
     GatewayProcess,
@@ -92,3 +94,35 @@ def test_tokens_and_pairing_codes_are_hashed_at_rest_and_never_logged(
         ).fetchone()
         assert code_row is not None
         assert code_row[0] == sha256_hex(code)
+
+
+@pytest.mark.parametrize("bad_ttl", ["0", "-5", "3601", "86400"])
+def test_pairing_cli_rejects_out_of_range_ttl_seconds(
+    gateway: GatewayProcess, bad_ttl: str
+) -> None:
+    res = gateway.run_cli(
+        "pair",
+        "--data-dir",
+        str(gateway.data_dir),
+        "--ttl-seconds",
+        bad_ttl,
+        "--json",
+    )
+    assert res.returncode != 0
+    assert res.stdout == ""
+    assert "Traceback" not in res.stderr
+    assert "3600" in res.stderr
+
+
+def test_pairing_cli_accepts_upper_bound_ttl_3600(gateway: GatewayProcess) -> None:
+    res = gateway.run_cli(
+        "pair",
+        "--data-dir",
+        str(gateway.data_dir),
+        "--ttl-seconds",
+        "3600",
+        "--json",
+    )
+    assert res.returncode == 0, res.stderr
+    payload = json.loads(res.stdout)
+    assert_valid_contract("pairing.schema.json#/$defs/payload", payload)

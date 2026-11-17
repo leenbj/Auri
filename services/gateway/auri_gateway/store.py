@@ -37,10 +37,13 @@ class AuthenticatedDestination:
     credential_hash: str  # the credential presented; write operations check it is still current
 
 
+MAX_PAIRING_TTL_SECONDS = 3600
+
+
 def issue_pairing_code(data_dir: pathlib.Path, *, ttl_seconds: int = 300) -> dict[str, Any]:
     """Generate a one-time short-lived pairing code and persist only its SHA-256 hash."""
-    if ttl_seconds < 1:
-        raise ValueError("ttl_seconds must be at least 1")
+    if ttl_seconds < 1 or ttl_seconds > MAX_PAIRING_TTL_SECONDS:
+        raise ValueError(f"ttl_seconds must be between 1 and {MAX_PAIRING_TTL_SECONDS}.")
     db_path = ensure_gateway_initialized(data_dir)
     pairing_code = secrets.token_urlsafe(24)
     code_hash = sha256_str(pairing_code)

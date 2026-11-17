@@ -24,7 +24,7 @@ from .network import (
     resolve_bind_hosts,
     write_runtime_state,
 )
-from .store import issue_pairing_code
+from .store import MAX_PAIRING_TTL_SECONDS, issue_pairing_code
 from .tls import DEFAULT_CERT_VALIDITY_DAYS, ensure_tls_material, renew_certificate
 
 
@@ -69,7 +69,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--ttl-seconds",
         type=int,
         default=300,
-        help="Lifetime of the pairing code in seconds (default: 300)",
+        help=f"Lifetime of the pairing code in seconds (1-{MAX_PAIRING_TTL_SECONDS}, default: 300)",
     )
     pair_cmd.add_argument(
         "--port",
@@ -193,8 +193,12 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
 
 def _cmd_pair(args: argparse.Namespace) -> int:
+    try:
+        code_info = issue_pairing_code(args.data_dir, ttl_seconds=args.ttl_seconds)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     tls_material = ensure_tls_material(args.data_dir)
-    code_info = issue_pairing_code(args.data_dir, ttl_seconds=args.ttl_seconds)
     addresses = build_pairing_addresses(
         args.data_dir,
         port_override=args.port,
