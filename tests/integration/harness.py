@@ -262,10 +262,11 @@ class AgentDestination:
 
 
 class ToolOutcome(NamedTuple):
-    """What an MCP tool call returned: the error flag and the structured payload."""
+    """What an MCP tool call returned: the error flag, the structured payload and the text block."""
 
     is_error: bool
     payload: dict[str, Any]
+    text: str
 
 
 _DELIVERY_REQUEST_REFS = {
@@ -327,10 +328,11 @@ class McpAgent:
             return await client.call_tool(name, arguments)
 
         result = self._run(operation)
+        text = result.content[0].text
         payload = result.structured_content
         if payload is None:
-            payload = json.loads(result.content[0].text)
-        return ToolOutcome(bool(result.is_error), payload)
+            payload = json.loads(text)
+        return ToolOutcome(bool(result.is_error), payload, text)
 
     def call_ok(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Call a contract-valid request; the response must be a contract-valid success."""
