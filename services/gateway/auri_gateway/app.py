@@ -19,6 +19,7 @@ from .mcp_endpoint import AgentMcpEndpoint
 from .store import (
     authenticate_device,
     create_destination,
+    delete_record,
     get_destination,
     issue_destination_credential,
     list_destinations,
@@ -113,20 +114,17 @@ def create_app(data_dir: pathlib.Path) -> Starlette:
                 REQUEST_INVALID,
                 "Path parameter record_id must be a lowercase UUID.",
             )
-        try:
-            path_revision = int(path_revision_raw)
-        except ValueError as exc:
+        if (
+            not path_revision_raw.isascii()
+            or not path_revision_raw.isdigit()
+            or path_revision_raw.startswith("0")
+        ):
             raise GatewayError(
                 422,
                 REQUEST_INVALID,
                 "Path parameter revision must be a positive integer.",
-            ) from exc
-        if path_revision < 1:
-            raise GatewayError(
-                422,
-                REQUEST_INVALID,
-                "Path parameter revision must be >= 1.",
             )
+        path_revision = int(path_revision_raw)
 
         body = await _parse_json_object(request)
         _validate_contract_or_raise("revision.schema.json#/$defs/submission", body)
@@ -153,6 +151,18 @@ def create_app(data_dir: pathlib.Path) -> Starlette:
             result["record_id"],
             result["revision"],
             result["duplicate"],
+        )
+        return JSONResponse(result)
+
+    async def delete_record_endpoint(request: Request) -> JSONResponse:
+        auth = authenticate_device(db_path, request.headers.get("authorization"))
+        record_id = _validate_uuid_param(request.path_params["record_id"], "record_id")
+        await _ensure_empty_or_empty_object_body(request)
+        result = delete_record(db_path, auth, record_id)
+        logger.info(
+            "record_deleted record_id=%s cancelled_count=%s",
+            record_id,
+            len(result["cancelled_delivery_ids"]),
         )
         return JSONResponse(result)
 
@@ -238,6 +248,11 @@ def create_app(data_dir: pathlib.Path) -> Starlette:
             "/v1/destinations/{destination_id:str}/credential",
             issue_destination_credential_endpoint,
             methods=["POST"],
+        ),
+        Route(
+            "/v1/records/{record_id:str}",
+            delete_record_endpoint,
+            methods=["DELETE"],
         ),
         Route(
             "/v1/records/{record_id:str}/revisions/{revision:str}",

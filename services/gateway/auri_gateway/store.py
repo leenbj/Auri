@@ -6,11 +6,20 @@ import pathlib
 import secrets
 import uuid
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from .db import ensure_gateway_initialized, format_utc, open_connection, parse_utc, sha256_str, utc_now
-from .delivery_machine import DESTINATION_REVOKED, step
+from .delivery_machine import (
+    ACKNOWLEDGED,
+    DESTINATION_REVOKED,
+    LEASE_EXPIRED,
+    LEASED,
+    PENDING,
+    RECORD_DELETED as DELIVERY_RECORD_DELETED,
+    SUPERSEDED,
+    step,
+)
 from .error_codes import (
     GATEWAY_AUTH_INVALID,
     GATEWAY_AUTH_REVOKED,
@@ -296,6 +305,26 @@ def _credential_revoked() -> GatewayError:
     )
 
 
+def expire_due_leases(
+    conn: Any, tenant_id: str, destination_id: str, now: datetime
+) -> None:
+    """Apply LEASE_EXPIRED to every leased Delivery of the Destination whose lease ran out."""
+    due = conn.execute(
+        """
+        SELECT delivery_id, state FROM deliveries
+        WHERE tenant_id = ? AND destination_id = ? AND state = ? AND lease_expires_at <= ?
+        """,
+        (tenant_id, destination_id, LEASED, format_utc(now)),
+    ).fetchall()
+    for row in due:
+        outcome = step(row["state"], LEASE_EXPIRED)
+        if outcome.kind == "transition":
+            conn.execute(
+                "UPDATE deliveries SET state = ? WHERE delivery_id = ?",
+                (outcome.state, row["delivery_id"]),
+            )
+
+
 def _validate_publication_destinations(
     conn: Any, tenant_id: str, destination_ids: list[str], intent: str
 ) -> None:
@@ -335,6 +364,101 @@ def _validate_publication_destinations(
             )
 
 
+def _prepare_destination_deliveries(
+    conn: Any,
+    *,
+    tenant_id: str,
+    record_id: str,
+    revision: int,
+    destination_ids: list[str],
+    superseded_revisions: list[int],
+    higher_exists: bool,
+    now: datetime,
+    now_iso: str,
+) -> tuple[list[dict[str, Any]], list[tuple[dict[str, Any], list[int], str | None]]]:
+    """Cancel unclaimed older Deliveries for target Destinations and prepare new Delivery rows."""
+    cancelled_old: list[dict[str, Any]] = []
+    new_deliveries: list[dict[str, Any]] = []
+    new_rows: list[tuple[dict[str, Any], list[int], str | None]] = []
+
+    for dest_id in destination_ids:
+        expire_due_leases(conn, tenant_id, dest_id, now)
+        prior_deliveries = conn.execute(
+            """
+            SELECT delivery_id, revision, state
+            FROM deliveries
+            WHERE tenant_id = ? AND record_id = ? AND destination_id = ? AND revision < ?
+            ORDER BY revision ASC, created_at ASC, delivery_id ASC
+            """,
+            (tenant_id, record_id, dest_id, revision),
+        ).fetchall()
+
+        dest_supersedes = set(superseded_revisions)
+        for old_row in prior_deliveries:
+            outcome = step(old_row["state"], SUPERSEDED)
+            if outcome.kind != "transition":
+                continue
+            conn.execute(
+                """
+                UPDATE deliveries
+                SET state = ?,
+                    cancelled_at = ?,
+                    lease_token_hash = NULL,
+                    lease_expires_at = NULL
+                WHERE delivery_id = ?
+                """,
+                (outcome.state, now_iso, old_row["delivery_id"]),
+            )
+            dest_supersedes.add(int(old_row["revision"]))
+            cancelled_old.append(
+                {
+                    "delivery_id": old_row["delivery_id"],
+                    "destination_id": dest_id,
+                    "revision": int(old_row["revision"]),
+                    "state": outcome.state,
+                }
+            )
+
+        latest_seen = max(
+            (
+                int(old_row["revision"])
+                for old_row in prior_deliveries
+                if old_row["state"] in (LEASED, ACKNOWLEDGED)
+            ),
+            default=None,
+        )
+        if latest_seen is not None:
+            dest_supersedes.add(latest_seen)
+
+        new_state = PENDING
+        cancelled_at: str | None = None
+        if higher_exists:
+            higher_dest = conn.execute(
+                """
+                SELECT 1 FROM deliveries
+                WHERE tenant_id = ? AND record_id = ? AND destination_id = ? AND revision > ?
+                LIMIT 1
+                """,
+                (tenant_id, record_id, dest_id, revision),
+            ).fetchone()
+            if higher_dest is not None:
+                outcome = step(PENDING, SUPERSEDED)
+                if outcome.kind == "transition":
+                    new_state = outcome.state
+                    cancelled_at = now_iso
+
+        item = {
+            "delivery_id": str(uuid.uuid4()),
+            "destination_id": dest_id,
+            "revision": revision,
+            "state": new_state,
+        }
+        new_deliveries.append(item)
+        new_rows.append((item, sorted(dest_supersedes), cancelled_at))
+
+    return [*cancelled_old, *new_deliveries], new_rows
+
+
 def store_revision(
     db_path: pathlib.Path, auth: AuthenticatedDevice, submission: dict[str, Any]
 ) -> dict[str, Any]:
@@ -345,7 +469,8 @@ def store_revision(
     content = submission["content"]
     capture = submission["capture"]
     publication = submission["publication"]
-    now_iso = format_utc(utc_now())
+    now = utc_now()
+    now_iso = format_utc(now)
 
     conn = open_connection(db_path)
     try:
@@ -447,15 +572,17 @@ def store_revision(
             state = "SUPERSEDED" if higher_exists is not None else "PUBLISHED"
 
             operation_id = str(uuid.uuid4())
-            deliveries: list[dict[str, Any]] = [
-                {
-                    "delivery_id": str(uuid.uuid4()),
-                    "destination_id": dest_id,
-                    "revision": revision,
-                    "state": "PENDING",
-                }
-                for dest_id in destination_ids
-            ]
+            deliveries, new_delivery_rows = _prepare_destination_deliveries(
+                conn,
+                tenant_id=tenant_id,
+                record_id=record_id,
+                revision=revision,
+                destination_ids=destination_ids,
+                superseded_revisions=superseded_revisions,
+                higher_exists=higher_exists is not None,
+                now=now,
+                now_iso=now_iso,
+            )
             conn.execute(
                 """
                 INSERT INTO revisions (
@@ -494,13 +621,13 @@ def store_revision(
                     json.dumps(deliveries),
                 ),
             )
-            for item in deliveries:
+            for item, dest_supersedes, cancelled_at in new_delivery_rows:
                 conn.execute(
                     """
                     INSERT INTO deliveries (
                         delivery_id, tenant_id, record_id, revision, destination_id,
-                        state, intent, supersedes_revisions_json, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        state, intent, supersedes_revisions_json, created_at, cancelled_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         item["delivery_id"],
@@ -510,8 +637,9 @@ def store_revision(
                         item["destination_id"],
                         item["state"],
                         publication["intent"],
-                        json.dumps(superseded_revisions),
+                        json.dumps(dest_supersedes),
                         now_iso,
+                        cancelled_at,
                     ),
                 )
             conn.execute("COMMIT")
@@ -807,6 +935,123 @@ def revoke_destination(
             assert updated is not None
             conn.execute("COMMIT")
             return _destination_row_to_resource(updated)
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+
+
+def delete_record(
+    db_path: pathlib.Path, auth: AuthenticatedDevice, record_id: str
+) -> dict[str, Any]:
+    """Plant a deletion tombstone for a Record and cancel its open Deliveries.
+
+    Only the origin device that recorded the Record may delete it (ADR-0020).
+    Acknowledged and already-terminal Deliveries are preserved (delivery.machine.json).
+    Repeating DELETE by the origin device is idempotent.
+    """
+    now_iso = format_utc(utc_now())
+    conn = open_connection(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                """
+                SELECT origin_device_id, deleted_at, delete_cancelled_delivery_ids_json
+                FROM records
+                WHERE tenant_id = ? AND record_id = ?
+                """,
+                (auth.tenant_id, record_id),
+            ).fetchone()
+
+            if row is not None:
+                if row["origin_device_id"] != auth.device_id:
+                    raise GatewayError(
+                        403,
+                        RECORD_NOT_ORIGIN_DEVICE,
+                        "Only the device that created this record may delete it.",
+                    )
+                if row["deleted_at"] is not None:
+                    cancelled_ids = json.loads(row["delete_cancelled_delivery_ids_json"] or "[]")
+                    conn.execute("COMMIT")
+                    return {
+                        "schema_version": "1.1",
+                        "record_id": record_id,
+                        "deleted_at": row["deleted_at"],
+                        "cancelled_delivery_ids": cancelled_ids,
+                    }
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO records (
+                        tenant_id, record_id, origin_device_id, created_at,
+                        deleted_at, deleted_by_device_id, delete_cancelled_delivery_ids_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (auth.tenant_id, record_id, auth.device_id, now_iso, now_iso, auth.device_id, "[]"),
+                )
+                conn.execute("COMMIT")
+                return {
+                    "schema_version": "1.1",
+                    "record_id": record_id,
+                    "deleted_at": now_iso,
+                    "cancelled_delivery_ids": [],
+                }
+
+            delivery_rows = conn.execute(
+                """
+                SELECT delivery_id, state
+                FROM deliveries
+                WHERE tenant_id = ? AND record_id = ?
+                ORDER BY created_at ASC, delivery_id ASC
+                """,
+                (auth.tenant_id, record_id),
+            ).fetchall()
+
+            cancelled_delivery_ids: list[str] = []
+            for delivery_row in delivery_rows:
+                outcome = step(delivery_row["state"], DELIVERY_RECORD_DELETED)
+                if outcome.kind != "transition":
+                    continue
+                # Preserve lease_token_hash on LEASED->CANCELLED so the current lease holder gets a
+                # non-retryable state rejection rather than a retryable DELIVERY_LEASE_EXPIRED.
+                clear_token_sql = ", lease_token_hash = NULL" if delivery_row["state"] == PENDING else ""
+                conn.execute(
+                    f"""
+                    UPDATE deliveries
+                    SET state = ?,
+                        cancelled_at = ?,
+                        lease_expires_at = NULL{clear_token_sql}
+                    WHERE delivery_id = ?
+                    """,
+                    (outcome.state, now_iso, delivery_row["delivery_id"]),
+                )
+                cancelled_delivery_ids.append(delivery_row["delivery_id"])
+
+            conn.execute(
+                """
+                UPDATE records
+                SET deleted_at = ?,
+                    deleted_by_device_id = ?,
+                    delete_cancelled_delivery_ids_json = ?
+                WHERE tenant_id = ? AND record_id = ?
+                """,
+                (
+                    now_iso,
+                    auth.device_id,
+                    json.dumps(cancelled_delivery_ids),
+                    auth.tenant_id,
+                    record_id,
+                ),
+            )
+            conn.execute("COMMIT")
+            return {
+                "schema_version": "1.1",
+                "record_id": record_id,
+                "deleted_at": now_iso,
+                "cancelled_delivery_ids": cancelled_delivery_ids,
+            }
         except Exception:
             conn.execute("ROLLBACK")
             raise

@@ -14,7 +14,9 @@ _INTEGRATION_DIR = pathlib.Path(__file__).resolve().parents[1] / "integration"
 if str(_INTEGRATION_DIR) not in sys.path:
     sys.path.append(str(_INTEGRATION_DIR))
 
-from harness import World, gateway, world  # noqa: E402,F401
+import httpx
+
+from harness import World, gateway, make_submission, world  # noqa: E402,F401
 
 
 def test_the_gateway_output_never_contains_dictated_text_lease_tokens_or_credentials(
@@ -50,5 +52,57 @@ def test_the_gateway_output_never_contains_dictated_text_lease_tokens_or_credent
         "second lease token": second["lease_token"],
         "destination credential": destination.credential,
         "device token": world.device_token,
+    }.items():
+        assert secret not in output, f"the gateway output contains the {name}"
+
+
+def test_the_gateway_output_stays_clean_across_conflicts_rejections_and_delete(
+    world: World,
+) -> None:
+    other = world.gw.pair_device("Intruder Phone")
+    destination = world.destination()
+    record_id = str(uuid.uuid4())
+    secret_v1 = f"首版私密口述-{uuid.uuid4()}"
+    secret_conflict = f"冲突私密口述-{uuid.uuid4()}"
+    secret_v2 = f"二版私密口述-{uuid.uuid4()}"
+
+    world.publish(destination, record_id=record_id, revision=1, text=secret_v1)
+
+    # Version conflict, non-origin delete, origin delete, and post-delete submit.
+    conflict_sub = make_submission(record_id=record_id, revision=1, text=secret_conflict)
+    httpx.put(
+        f"{world.gw.base_url}/v1/records/{record_id}/revisions/1",
+        json=conflict_sub,
+        headers={"Authorization": f"Bearer {world.device_token}"},
+        timeout=5.0,
+    )
+    httpx.delete(
+        f"{world.gw.base_url}/v1/records/{record_id}",
+        headers={"Authorization": f"Bearer {other['device_token']}"},
+        timeout=5.0,
+    )
+    httpx.delete(
+        f"{world.gw.base_url}/v1/records/{record_id}",
+        headers={"Authorization": f"Bearer {world.device_token}"},
+        timeout=5.0,
+    )
+    rev2_sub = make_submission(record_id=record_id, revision=2, text=secret_v2)
+    httpx.put(
+        f"{world.gw.base_url}/v1/records/{record_id}/revisions/2",
+        json=rev2_sub,
+        headers={"Authorization": f"Bearer {world.device_token}"},
+        timeout=5.0,
+    )
+
+    stdout, stderr = world.gw.stop()
+    output = stdout + stderr
+    assert f"record_deleted record_id={record_id}" in output
+    for name, secret in {
+        "v1 text": secret_v1,
+        "conflict text": secret_conflict,
+        "v2 text": secret_v2,
+        "origin token": world.device_token,
+        "intruder token": other["device_token"],
+        "destination credential": destination.credential,
     }.items():
         assert secret not in output, f"the gateway output contains the {name}"

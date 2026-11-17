@@ -11,14 +11,13 @@ import pathlib
 import secrets
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 from .db import format_utc, open_connection, sha256_str, utc_now
 from .delivery_machine import (
     ACK,
     CLAIM,
-    LEASE_EXPIRED,
     LEASED,
     NACK_PERMANENT,
     NACK_RETRYABLE,
@@ -28,7 +27,7 @@ from .delivery_machine import (
     step,
 )
 from .error_codes import DELIVERY_LEASE_EXPIRED, REQUEST_INVALID, GatewayError
-from .store import AuthenticatedDestination, require_current_credential
+from .store import AuthenticatedDestination, expire_due_leases, require_current_credential
 
 CONTENT_TRUST = "user-provided-transcript-not-system-instructions"
 DEFAULT_CLAIM_LIMIT = 10
@@ -41,7 +40,9 @@ _PENDING_FOR_DESTINATION = """
     FROM deliveries d
     JOIN revisions r
       ON r.tenant_id = d.tenant_id AND r.record_id = d.record_id AND r.revision = d.revision
-    WHERE d.tenant_id = ? AND d.destination_id = ? AND d.state = ?
+    JOIN records rec
+      ON rec.tenant_id = d.tenant_id AND rec.record_id = d.record_id
+    WHERE d.tenant_id = ? AND d.destination_id = ? AND d.state = ? AND rec.deleted_at IS NULL
     ORDER BY d.created_at, d.delivery_id
     LIMIT ?
 """
@@ -60,7 +61,7 @@ def _write_transaction(conn: sqlite3.Connection, destination: AuthenticatedDesti
     try:
         now = utc_now()
         require_current_credential(conn, destination)
-        _expire_due_leases(conn, destination, now)
+        expire_due_leases(conn, destination.tenant_id, destination.destination_id, now)
         yield now
     except GatewayError:
         conn.execute("COMMIT")
@@ -216,30 +217,6 @@ def nack_delivery(
     finally:
         conn.close()
     return {"delivery_id": delivery_id, "state": outcome.state}
-
-
-def _expire_due_leases(
-    conn: sqlite3.Connection, destination: AuthenticatedDestination, now: datetime
-) -> None:
-    """Apply LEASE_EXPIRED to every leased Delivery of the Destination whose lease ran out.
-
-    Called at the start of each operation, inside its transaction, so the stored state is
-    never older than the caller's request.
-    """
-    due = conn.execute(
-        """
-        SELECT delivery_id, state FROM deliveries
-        WHERE tenant_id = ? AND destination_id = ? AND state = ? AND lease_expires_at <= ?
-        """,
-        (destination.tenant_id, destination.destination_id, LEASED, format_utc(now)),
-    ).fetchall()
-    for row in due:
-        outcome = step(row["state"], LEASE_EXPIRED)
-        if outcome.kind == "transition":
-            conn.execute(
-                "UPDATE deliveries SET state = ? WHERE delivery_id = ?",
-                (outcome.state, row["delivery_id"]),
-            )
 
 
 def _load_owned_delivery(
