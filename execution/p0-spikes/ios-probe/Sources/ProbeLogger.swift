@@ -42,6 +42,7 @@ final class ProbeLogger: @unchecked Sendable {
     }
 
     func log(_ kind: String, _ data: [String: Any] = [:]) {
+        let sanitized = LogRedactor.sanitizeData(data)
         lock.lock()
         seq += 1
         let line: [String: Any] = [
@@ -51,7 +52,7 @@ final class ProbeLogger: @unchecked Sendable {
             "wall": ISO8601DateFormatter().string(from: Date()),
             "kind": kind,
             "app_state": state,
-            "data": data,
+            "data": sanitized,
         ]
         let encoded = (try? JSONSerialization.data(withJSONObject: line, options: [.sortedKeys]))
             .flatMap { String(data: $0, encoding: .utf8) } ?? "{\"kind\":\"log_encode_failed\"}"

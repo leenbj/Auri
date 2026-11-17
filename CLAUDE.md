@@ -43,6 +43,44 @@ PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway renew-cert --data-d
 
 证书有效期与续签运维说明见 `services/gateway/OPERATIONS.md`。
 
+iOS 探针离线单测（macOS + XcodeGen 2.46.0 + Xcode 27.1）与探针日志汇总（跨平台 Python）：
+
+```bash
+# macOS：生成工程并跑离线单测（E2）
+cd execution/p0-spikes/ios-probe && xcodegen generate --spec project.yml --project .
+xcodebuild test -project execution/p0-spikes/ios-probe/AuriProbeIOS.xcodeproj -scheme AuriProbeIOS -destination 'platform=iOS Simulator,name=iPhone 16'
+
+# 日志汇总脚本单测（Linux / macOS 均可）与原始日志汇总
+.venv/bin/pytest execution/p0-spikes/ios-probe/scripts/test_summarize_log.py
+python3 execution/p0-spikes/ios-probe/scripts/summarize_log.py execution/p0-spikes/ios-probe/results/raw/probe-log.jsonl
+```
+
+Android 探针（在 `execution/p0-spikes/android-probe/` 下执行，需 JDK 17 与 Android SDK 35 + `adb`；详情见该目录 `README.md`）：
+
+```bash
+cd execution/p0-spikes/android-probe
+./gradlew test                                                       # 离线 JVM 单测（仅 E2）
+./gradlew assembleDebug                                              # 构建 Debug APK
+adb install -r app/build/outputs/apk/debug/app-debug.apk             # 装机
+adb shell am start -n app.auri.probe.android/app.auri.probe.MainActivity
+adb shell run-as app.auri.probe.android cat files/probe-log.jsonl > results/raw/probe-log.jsonl
+```
+
+鸿蒙探针（DEV-003，工程位于 `execution/p0-spikes/harmonyos-probe/`）：
+
+```bash
+# 离线纯逻辑单元测试（Node >= 24，E2 证据，不能证明真机蓝牙/后台行为）
+(cd execution/p0-spikes/harmonyos-probe && node --import ./tests/resolve-ts.mjs --test tests/*.test.ts)
+
+# 原始真机日志脱敏
+(cd execution/p0-spikes/harmonyos-probe && node --import ./tests/resolve-ts.mjs ./tools/redact-log.mjs results/raw/probe-log.jsonl results/raw/sanitized-probe-log.jsonl)
+
+# Mac 上用 DevEco Studio 6.0.1 工具链构建与装机（需先在 IDE 配好自动调试签名）
+(cd execution/p0-spikes/harmonyos-probe && hvigorw assembleHap -p buildMode=debug --no-daemon)
+hdc install execution/p0-spikes/harmonyos-probe/entry/build/default/outputs/default/entry-default-signed.hap
+hdc shell aa start -a EntryAbility -b app.auri.probe.harmonyos
+```
+
 改了 `contracts/` 下的任何文件都要跑一遍。不得通过改样本的期望或删无效样本让测试通过；改 schema、状态机或语义规则的流程见 `contracts/README.md` 的“修改规则”。
 
 ## 产品与已决前提

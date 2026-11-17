@@ -1,0 +1,5 @@
+{
+  "rules": {
+    "@compatibility/api-compatibility-check": "warn"
+  }
+}

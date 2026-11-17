@@ -2,6 +2,16 @@ import AVFoundation
 import SwiftUI
 import UIKit
 
+enum RetestScenarioTag: String, CaseIterable, Identifiable {
+    case middle
+    case top
+    case bottom
+    case locked
+    case background
+
+    var id: String { rawValue }
+}
+
 /// 会话模式的界面选项（对照变量）。
 enum SessionModeChoice: String, CaseIterable, Identifiable {
     case standard, voiceChat, videoChat, spokenAudio
@@ -66,12 +76,29 @@ final class ProbeModel: ObservableObject {
         didSet { remote.mapping = mapping }
     }
     @Published var captureState = "idle"
+    @Published var volumeStopEnabled = true {
+        didSet {
+            capture.volumeStopEnabled = volumeStopEnabled
+            ProbeLogger.shared.log("volume_stop_rule_toggled", ["enabled": volumeStopEnabled])
+        }
+    }
+    @Published var activeScenarioTag: RetestScenarioTag = .middle {
+        didSet {
+            capture.activeScenarioTag = activeScenarioTag.rawValue
+            ProbeLogger.shared.log("retest_scenario_selected", ["scenario": activeScenarioTag.rawValue])
+        }
+    }
+    @Published var currentVolume: Double = -1
+    @Published var volumeBoundary = "unknown"
+    @Published var lastVolumeDecision = "-"
+    @Published var retestSnapshot = RetestSnapshot()
     @Published var tail: [String] = []
 
     let remote = RemoteCommandProbe()
     let capture = CaptureProbe()
     let ble = BleProbe()
     private let lifecycle = LifecycleProbe()
+    private var bookkeeper = RetestBookkeeper()
 
     init() {
         let logger = ProbeLogger.shared
@@ -86,16 +113,84 @@ final class ProbeModel: ObservableObject {
         capture.onStateChange = { [weak self] state, _ in
             Task { @MainActor in self?.captureState = state.rawValue }
         }
+        capture.onVolumeUpdate = { [weak self] value, boundary, eval in
+            Task { @MainActor in
+                self?.currentVolume = value
+                self?.volumeBoundary = boundary.rawValue
+                if let eval {
+                    self?.lastVolumeDecision = eval.outcome.label
+                }
+            }
+        }
+        capture.onVolumeStopTriggered = { [weak self] scenario, _, _, _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.bookkeeper.recordVolumeStopTriggered(scenario: scenario)
+                self.retestSnapshot = self.bookkeeper.snapshot
+            }
+        }
         logger.log("app_launch", [
             "os_version": UIDevice.current.systemVersion,
             "model": UIDevice.current.model,
         ])
-        capture.requestMicPermission()
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            capture.requestMicPermission()
+        }
     }
 
     /// 用户做完一个手势后立刻点标记，日志里就有实际操作的精确时间点。
     func mark(_ gesture: String) {
         ProbeLogger.shared.log("user_marker", ["gesture": gesture, "capture_state": captureState])
+    }
+
+    func manualStart() {
+        capture.start(trigger: "manual")
+    }
+
+    func manualStop() {
+        bookkeeper.recordManualStop(scenario: activeScenarioTag.rawValue)
+        retestSnapshot = bookkeeper.snapshot
+        capture.stop(reason: "screen_control")
+    }
+
+    func markIntendedStop() {
+        bookkeeper.markIntendedStop(scenario: activeScenarioTag.rawValue)
+        logRetestMarker("intended_stop")
+    }
+
+    func markOrdinaryVolumeAdjust() {
+        bookkeeper.markOrdinaryVolumeAdjust(scenario: activeScenarioTag.rawValue)
+        logRetestMarker("ordinary_volume_adjust")
+    }
+
+    func markFalseStop() {
+        bookkeeper.markFalseStop(scenario: activeScenarioTag.rawValue)
+        logRetestMarker("false_stop")
+    }
+
+    func markMissedStop() {
+        bookkeeper.markMissedStop(scenario: activeScenarioTag.rawValue)
+        logRetestMarker("missed_stop")
+    }
+
+    private func logRetestMarker(_ kind: String) {
+        retestSnapshot = bookkeeper.snapshot
+        ProbeLogger.shared.log("retest_marker", [
+            "kind": kind,
+            "scenario": activeScenarioTag.rawValue,
+            "capture_state": captureState,
+            "volume": currentVolume,
+            "boundary": volumeBoundary,
+        ])
+    }
+
+    func logRetestSummary() {
+        ProbeLogger.shared.log("retest_summary", retestSnapshot.dictionary)
+    }
+
+    func resetRetestCounters() {
+        retestSnapshot = bookkeeper.reset()
+        ProbeLogger.shared.log("retest_counters_reset")
     }
 
     private func append(_ line: String) {
@@ -106,6 +201,12 @@ final class ProbeModel: ObservableObject {
 
 struct ContentView: View {
     @ObservedObject var model: ProbeModel
+
+    private var volumeText: String {
+        model.currentVolume >= 0
+            ? String(format: "%.2f (%@, %@)", model.currentVolume, model.volumeBoundary, model.lastVolumeDecision)
+            : "未知（未开启采集）"
+    }
 
     var body: some View {
         NavigationStack {
@@ -123,11 +224,35 @@ struct ContentView: View {
                     Picker("会话模式（对照变量）", selection: $model.sessionMode) {
                         ForEach(SessionModeChoice.allCases) { Text($0.rawValue).tag($0) }
                     }
+                    Toggle("音量往返停止（上↔下）", isOn: $model.volumeStopEnabled)
+                    Picker("复测场景标签", selection: $model.activeScenarioTag) {
+                        ForEach(RetestScenarioTag.allCases) { Text($0.rawValue).tag($0) }
+                    }
                     Text("状态：\(model.captureState)")
+                    Text("音量：\(volumeText)")
+                        .font(.caption)
                     HStack {
-                        Button("手动开始") { model.capture.start(trigger: "manual") }
+                        Button("手动开始") { model.manualStart() }
                         Spacer()
-                        Button("手动停止") { model.capture.stop(reason: "manual") }
+                        Button("手动停止") { model.manualStop() }
+                    }
+                    .buttonStyle(.borderless)
+                }
+                Section("音量复测计数（触发 \(model.retestSnapshot.volumeStopTriggeredCount) / 误停 \(model.retestSnapshot.falseStopCount) / 漏停 \(model.retestSnapshot.missedStopCount)）") {
+                    HStack {
+                        Button("打算停") { model.markIntendedStop() }
+                        Spacer()
+                        Button("普通调音") { model.markOrdinaryVolumeAdjust() }
+                        Spacer()
+                        Button("误停了") { model.markFalseStop() }
+                        Spacer()
+                        Button("漏停了") { model.markMissedStop() }
+                    }
+                    .buttonStyle(.borderless)
+                    HStack {
+                        Button("记录汇总") { model.logRetestSummary() }
+                        Spacer()
+                        Button("重置计数") { model.resetRetestCounters() }
                     }
                     .buttonStyle(.borderless)
                 }
