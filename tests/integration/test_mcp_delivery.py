@@ -15,6 +15,8 @@ from jsonschema import Draft202012Validator
 
 from harness import (  # noqa: F401
     FIXTURE_DIR,
+    GatewayProcess,
+    McpAgent,
     World,
     gateway,
     sha256_hex,
@@ -179,6 +181,44 @@ def test_concurrent_claims_never_hand_out_the_same_delivery(world: World) -> Non
         ]
 
     # Every Delivery went to exactly one claimer: none twice, none lost.
+    assert sorted(handed_out) == sorted(published)
+
+
+def test_claims_stay_exclusive_when_two_gateway_processes_share_one_database(
+    world: World,
+) -> None:
+    # Within one process the event loop already runs claims one after another. Two processes can
+    # only be kept apart by the write lock in SQLite itself, so this is the contention that counts.
+    second = GatewayProcess(world.gw.data_dir)
+    second.start()
+    try:
+        destination = world.destination()
+        published = [
+            world.publish(destination, text=f"跨进程口述 {index}")["deliveries"][0]["delivery_id"]
+            for index in range(120)
+        ]
+        claimers = 8
+        start_together = threading.Barrier(claimers)
+
+        def claim_until_nothing_is_left(index: int) -> list[str]:
+            gateway = world.gw if index % 2 == 0 else second
+            agent = McpAgent(gateway.base_url, destination.credential)
+            start_together.wait(timeout=10)
+            mine: list[str] = []
+            while batch := agent.claim(limit=10)["deliveries"]:
+                mine.extend(d["delivery_id"] for d in batch)
+            return mine
+
+        with ThreadPoolExecutor(max_workers=claimers) as pool:
+            handed_out = [
+                delivery_id
+                for batch in pool.map(claim_until_nothing_is_left, range(claimers))
+                for delivery_id in batch
+            ]
+    finally:
+        second.stop()
+
+    # Every Delivery went to exactly one claimer, whichever process it asked.
     assert sorted(handed_out) == sorted(published)
 
 
