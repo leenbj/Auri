@@ -6,6 +6,7 @@ import json
 import os
 import pathlib
 import socket
+import ssl
 import subprocess
 import sys
 import time
@@ -63,28 +64,51 @@ def subprocess_env() -> dict[str, str]:
 
 
 class GatewayProcess:
-    """Manages a real Auri Gateway subprocess for black-box HTTP & CLI tests."""
+    """Manages a real Auri Gateway subprocess for black-box HTTP/HTTPS & CLI tests."""
 
-    def __init__(self, data_dir: pathlib.Path, port: int | None = None) -> None:
+    def __init__(
+        self,
+        data_dir: pathlib.Path,
+        port: int | None = None,
+        *,
+        tls: bool = False,
+        host: str | None = "127.0.0.1",
+        mdns: bool = False,
+        extra_serve_args: list[str] | None = None,
+    ) -> None:
         self.data_dir = data_dir
         self.port = port or find_free_port()
-        self.base_url = f"http://127.0.0.1:{self.port}"
+        self.tls = tls
+        self.host = host
+        self.mdns = mdns
+        self.extra_serve_args = list(extra_serve_args or [])
+        scheme = "https" if tls else "http"
+        connect_host = host if host and host not in ("0.0.0.0", "::") else "127.0.0.1"
+        self.base_url = f"{scheme}://{connect_host}:{self.port}"
+        self._connect_host = connect_host
         self._proc: subprocess.Popen[str] | None = None
 
     def start(self, timeout_seconds: float = 10.0) -> None:
+        cmd = [
+            sys.executable,
+            "-m",
+            "auri_gateway",
+            "serve",
+            "--data-dir",
+            str(self.data_dir),
+            "--port",
+            str(self.port),
+        ]
+        if self.host is not None:
+            cmd.extend(["--host", self.host])
+        if not self.tls:
+            cmd.append("--plaintext-loopback")
+        if not self.mdns:
+            cmd.append("--no-mdns")
+        cmd.extend(self.extra_serve_args)
+
         self._proc = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "auri_gateway",
-                "serve",
-                "--data-dir",
-                str(self.data_dir),
-                "--host",
-                "127.0.0.1",
-                "--port",
-                str(self.port),
-            ],
+            cmd,
             cwd=str(REPO_ROOT),
             env=subprocess_env(),
             stdout=subprocess.PIPE,
@@ -99,10 +123,20 @@ class GatewayProcess:
                     f"Gateway exited prematurely ({self._proc.returncode}): stdout={stdout!r} stderr={stderr!r}"
                 )
             try:
-                resp = httpx.get(f"{self.base_url}/health", timeout=0.5)
-                if resp.status_code == 200:
-                    return
-            except httpx.HTTPError:
+                if self.tls:
+                    cert_path = self.data_dir / "tls" / "gateway.cert.pem"
+                    if cert_path.exists():
+                        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                        ctx.check_hostname = False
+                        ctx.verify_mode = ssl.CERT_NONE
+                        with socket.create_connection((self._connect_host, self.port), timeout=0.5) as raw_sock:
+                            with ctx.wrap_socket(raw_sock, server_hostname=self._connect_host):
+                                return
+                else:
+                    resp = httpx.get(f"{self.base_url}/health", timeout=0.5)
+                    if resp.status_code == 200:
+                        return
+            except (OSError, httpx.HTTPError, ssl.SSLError):
                 pass
             time.sleep(0.05)
         self.stop()
