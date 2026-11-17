@@ -52,3 +52,11 @@ PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway serve --data-dir <d
 - 默认 `serve` 会自动发现并绑定本机回环（`127.0.0.1`）及私网局域网 IP（RFC 1918 / 链路本地 / IPv6 ULA），**拒绝**绑定 `0.0.0.0`、`::`、公网 IP 或 VPN/CGNAT 地址（如 `100.64.0.0/10`）。
 - 默认强制使用 HTTPS（TLS）。仅本机开发调试时可通过 `--host 127.0.0.1 --plaintext-loopback` 启用回环明文；在任何非回环地址上指定 `--plaintext-loopback` 均会被拒绝启动。
 - 启动后 Gateway 会在局域网内广播 mDNS 服务 `_auri-gateway._tcp`（默认启用，可用 `--no-mdns` 关闭）。客户端仅将 mDNS 作为地址线索，连接前仍必须校验配对时绑定的 `public_key_sha256`，指纹不符即直接拒绝。
+
+### 局域网 IP 变化后配对地址与 mDNS 不一致的处理
+
+当运行 Gateway 的主机因 DHCP 重新分配、切换网络等原因导致局域网 IP 变化时，已配对客户端记下的配对载荷 `addresses`（或变化前生成的旧配对载荷）可能仍指向旧 IP，而重启后的 Gateway 通过 mDNS（`_auri-gateway._tcp`）广播的是当前新 IP，两者会出现不一致。依据 ADR-0018，运维人员按以下方式处理：
+
+- **依赖 mDNS 自动回退（无需重新配对，推荐）**：确保在新的网络环境下重启 Gateway `serve`（默认开启 mDNS，不要加 `--no-mdns`），使 Gateway 绑定新局域网 IP 并广播最新地址。已配对客户端在原 `addresses` 不可达时会自动通过 mDNS 查找 Gateway，并在核对不变的 `public_key_sha256` 指纹后继续连接（iOS 需已授予“本地网络”权限）。
+- **在 mDNS 不可用时重新配对**：若启动时使用了 `--no-mdns`、当前路由器/局域网拦截了 mDNS 多播、或客户端平台本身不支持 mDNS（依 ADR-0018 退回仅使用已记录地址），则必须先在新网络下重启 Gateway，再重新运行 `pair`（必要时配合 `--host <当前局域网IP>`）生成新的配对二维码并重新配对。
+- 说明：客户端校验的是私钥对应的公钥指纹（`public_key_sha256`），只要未更换 `gateway.key.pem`，IP 变化本身不需要重新生成私钥；若希望证书 SAN 列表也同步包含新 IP，可执行一次 `renew-cert` 后重启 Gateway。
