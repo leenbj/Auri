@@ -1,0 +1,13 @@
+{
+  "schema": "record_query.schema.json#/$defs/list_request",
+  "expect": "valid",
+  "description": "带不透明游标与过滤条件分页列出已投递给当前 Destination 的 Record。",
+  "instance": {
+    "cursor": "eyJ2IjoxLCJzIjoiMjAyNi0xMS0xNVQwMjozMTowMloiLCJyIjoiYTRhN2MwOGQtMjc2Ny01MGQ2LTkyMzgtNmZhMjc3MDMzYTQ5In0",
+    "limit": 20,
+    "since": "2026-11-15T00:00:00Z",
+    "until": "2026-11-16T00:00:00Z",
+    "delivery_state": "ACKNOWLEDGED",
+    "intent": "context"
+  }
+}

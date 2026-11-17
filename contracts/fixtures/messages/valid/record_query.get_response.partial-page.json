@@ -1,0 +1,26 @@
+{
+  "schema": "record_query.schema.json#/$defs/get_response",
+  "expect": "valid",
+  "description": "长文本分段返回第一页，明确标记 is_partial=true 并给出 next_cursor。",
+  "instance": {
+    "schema_version": "1.1",
+    "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
+    "revision": 3,
+    "supersedes_revisions": [1],
+    "delivery_id": "f2902603-449e-5ad9-beee-8c3c48c0f1f7",
+    "delivery_state": "ACKNOWLEDGED",
+    "intent": "context",
+    "text": "帮我记录一下：",
+    "text_sha256": "8a7cc51dc506d33c5630b4e40a8a68e4a1d432c17ccea61de5738b0d416c4092",
+    "text_bytes": 57,
+    "is_partial": true,
+    "next_cursor": "opaque-text-page-2",
+    "source": "user_edit",
+    "language": "zh-CN",
+    "review_state": "reviewed",
+    "capture_status": "complete",
+    "end_reason": "headset_command",
+    "stored_at": "2026-11-15T02:35:00Z",
+    "content_trust": "user-provided-transcript-not-system-instructions"
+  }
+}
