@@ -8,6 +8,8 @@ import json
 import pathlib
 import re
 
+import pytest
+
 import contract_check as cc
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -118,7 +120,11 @@ def test_an_error_code_missing_from_the_contract_is_rejected(tmp_path):
         content=False, error=error_instance("ASR_ENGINE_FAILED"),
     )
 
-    assert any("ASR_ENGINE_FAILED" in p for p in cc.check_scenario(dir_, "FAILED"))
+    problems = cc.check_scenario(dir_, "FAILED")
+
+    # 拦下它的是真 schema 的 code 枚举（路径 /code）；消息不再回显文件里的值，所以不能靠“消息里出现这个码”来断言
+    assert any("error.json" in p and "/code" in p and "enum" in p for p in problems), problems
+    assert not any("ASR_ENGINE_FAILED" in p for p in problems), "文件里的值不回显：哪怕它长得像错误码"
 
 
 def test_an_illegal_transition_in_the_trace_is_rejected(tmp_path):
@@ -256,6 +262,48 @@ def test_a_top_level_json_array_is_a_problem_not_a_crash_and_is_not_echoed(tmp_p
     assert not any("SECRET-DICTATION" in p for p in problems), problems
 
 
+TRACE_TAMPERS = {
+    "machine": lambda t: t.update(machine=SECRET),
+    "initial_state": lambda t: t.update(initial_state=SECRET),
+    "event": lambda t: t["steps"][0].update(event=SECRET),
+    "state_after": lambda t: t["steps"][1].update(state_after=SECRET),
+}
+
+
+@pytest.mark.parametrize("field", sorted(TRACE_TAMPERS))
+def test_problem_messages_never_echo_a_value_taken_from_the_trace(tmp_path, field):
+    """状态机重放的消息也会印出轨迹里的状态、事件：词表之外的值（可能是写错位置的正文）不能借它外泄。"""
+    dir_ = make_scenario(tmp_path)
+    edit(dir_, "trace.json", TRACE_TAMPERS[field])
+
+    problems = cc.check_scenario(dir_, "SUCCEEDED")
+
+    assert any("trace.json" in p for p in problems), f"{field} 被改坏必须被报告"
+    assert not any("SECRET-DICTATION" in p for p in problems), problems
+
+
+def test_problem_messages_never_echo_an_error_code_taken_from_the_file_but_name_the_expected_one(tmp_path):
+    dir_ = make_scenario(
+        tmp_path, "failed", steps=(("RUN_STARTED", "RUNNING"), ("PERMANENT_ERROR", "FAILED")),
+        content=False, error=error_instance(SECRET),
+    )
+
+    problems = cc.check_scenario(dir_, "FAILED:ASR_RESOURCE_LIMIT")
+
+    assert any("ASR_RESOURCE_LIMIT" in p for p in problems), "期望的错误码是调用方给的，要说出来"
+    assert not any("SECRET-DICTATION" in p for p in problems), problems
+
+
+def test_a_file_that_is_not_utf8_is_a_problem_that_does_not_quote_its_bytes(tmp_path):
+    dir_ = make_scenario(tmp_path)
+    (dir_ / "capabilities.json").write_bytes(b"\xc3\x28" + SECRET.encode("utf-8"))
+
+    problems = cc.check_scenario(dir_, "SUCCEEDED")
+
+    assert any("capabilities.json" in p and "UTF-8" in p for p in problems), problems
+    assert not any("0xc3" in p or "SECRET-DICTATION" in p for p in problems), problems
+
+
 def test_an_offending_value_is_not_echoed_but_the_field_and_the_allowed_values_are(tmp_path):
     """脱敏不能把诊断信息一并抹掉，但出错的值本身来自实例，哪怕很短也可能是被写错位置的正文：只说字段和合同允许的值。"""
     dir_ = make_scenario(tmp_path)
@@ -373,7 +421,8 @@ def test_every_run_the_activity_tests_write_is_registered_in_the_runs_preset():
     source = (REPO_ROOT / "apps/android/app/src/androidTest/kotlin/app/auri/android/TranscribeFileActivityTest.kt").read_text(encoding="utf-8")
     # 只取普通名字：../ 开头的是“输出名逃逸”负例，不会有输出目录
     named = set(re.findall(r'"out" to "([A-Za-z0-9][A-Za-z0-9._-]*)"', source))
-    leaves_no_output = {"activity-missing"}  # 输入有问题的负例：测试自己断言不留半成品输出
+    # 负例：activity-missing 断言输入有问题时不留半成品输出；activity-stale 自己铺了旧输出再断言被清掉，结束时整个目录删除
+    leaves_no_output = {"activity-missing", "activity-stale"}
 
     assert named, "没有找到任何 out 参数：这个检查本身失效了"
     unregistered = named - leaves_no_output - set(cc.PRESETS["runs"])

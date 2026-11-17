@@ -6,6 +6,7 @@ import app.auri.asr.engine.AsrEngineFactory
 import app.auri.asr.engine.EngineOutput
 import app.auri.asr.manifest.VerifiedModel
 import java.io.File
+import java.io.IOException
 import java.io.RandomAccessFile
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -16,6 +17,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -198,6 +200,24 @@ class ContractOutputTest {
         val afterEngineFailure = scenario(out, "reused-c", File(tmp.root, "never-installed-c"))
         scenario(out, "reused-c", installed("c1"), reply = { throw IllegalStateException("boom") })
         assertFalse("引擎失败没有错误码，也就不该留着上一次的错误文件", File(afterEngineFailure, "error.json").exists())
+    }
+
+    @Test
+    fun `清理时有一个文件删不掉也继续删其余的 最后才抛异常`() {
+        // 删到一半就停，会把后面的旧正文留在目录里；所以要先全删一遍，再把第一个失败抛出来
+        val dir = tmp.newFolder("reused")
+        File(dir, "capabilities.json").writeText("STALE", Charsets.UTF_8)
+        File(dir, "task-handle.json").apply { mkdirs(); File(this, "inner").writeText("x") } // 非空目录：删不掉
+        File(dir, "revision-content.json").writeText("STALE-TEXT", Charsets.UTF_8)
+        File(dir, "error.json").writeText("STALE", Charsets.UTF_8)
+        File(dir, "run-report.json").writeText("STALE-REPORT", Charsets.UTF_8)
+
+        assertThrows(IOException::class.java) { ContractOutput.clear(dir, alsoRemove = listOf("run-report.json")) }
+
+        assertFalse(File(dir, "capabilities.json").exists())
+        assertFalse("排在删不掉的那个后面的旧正文也必须被清掉", File(dir, "revision-content.json").exists())
+        assertFalse(File(dir, "error.json").exists())
+        assertFalse("调用方另外指定的文件同样要清", File(dir, "run-report.json").exists())
     }
 
     @Test

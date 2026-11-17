@@ -4,6 +4,7 @@ import app.auri.asr.contract.AsrCapabilities
 import app.auri.asr.contract.AsrError
 import app.auri.asr.contract.ContractJson
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -20,10 +21,28 @@ object ContractOutput {
     private val FILE_NAMES = listOf("capabilities.json", "task-handle.json", "trace.json", "revision-content.json", "error.json")
 
     /**
-     * 清掉本对象写过的文件（目录里别的东西不动）。目录可能被复用：免得口述正文在失败之后还躺在目录里，
-     * 被当成这一次的结果，或者一个目录里同时有“成功”与“出错”两种结论。deleteIfExists 删不掉就抛异常，不静默留着。
+     * 清掉本对象写过的文件，再加上调用方另外指定的 [alsoRemove]（目录里别的东西不动）。目录可能被复用：免得口述正文在失败之后
+     * 还躺在目录里，被当成这一次的结果，或者一个目录里同时有“成功”与“出错”两种结论。
+     * - 删不掉就抛异常，不静默留着；但不能删到一半就停：先把能删的都删了，再抛第一个失败（其余记为 suppressed），
+     *   否则排在后面的旧正文会留下来。
+     * - [input] 若恰好就是将被清掉的某个文件（含经符号链接指向它），先拒绝：清理不能把用户的输入删了。
      */
-    fun clear(dir: File) = FILE_NAMES.forEach { Files.deleteIfExists(File(dir, it).toPath()) }
+    fun clear(dir: File, input: File? = null, alsoRemove: List<String> = emptyList()) {
+        val names = FILE_NAMES + alsoRemove
+        if (input != null) {
+            val protectedInput = input.canonicalFile
+            require(names.none { File(dir, it).canonicalFile == protectedInput }) { "输入文件就是输出目录里将被清掉的输出文件：换个名字或位置" }
+        }
+        var failure: IOException? = null
+        for (name in names) {
+            try {
+                Files.deleteIfExists(File(dir, name).toPath())
+            } catch (e: IOException) {
+                if (failure == null) failure = e else failure.addSuppressed(e)
+            }
+        }
+        if (failure != null) throw failure
+    }
 
     fun write(dir: File, capabilities: AsrCapabilities, result: TranscriptionResult) {
         dir.mkdirs()

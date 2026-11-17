@@ -74,7 +74,7 @@ data class TranscriptionResult(
 
 /**
  * 一台设备上的本地转录：按清单校验模型 → 重采样 → 引擎 → 映射成合同类型。一次只处理一个任务。
- * 模型在第一次转录时才校验和加载（冷启动由此产生），之后复用；校验不过就不创建引擎。
+ * 模型在第一次转录时才校验和加载（冷启动由此产生），之后复用；校验不过就不创建引擎；超过清单时长上限的音频在校验之前就拒绝。
  * 没有任何网络路径：这里和 :asr 模块都不依赖网络，也没有云端回退（ADR-0019）。
  */
 class LocalTranscriber(
@@ -130,6 +130,14 @@ class LocalTranscriber(
             return result(TranscriptionOutcome.Failed(error, cause?.javaClass?.simpleName))
         }
 
+        // 时长只取决于音频和清单，再等也不会变短：不必先校验、加载模型就能拒绝，
+        // 也不让校验/加载的失败盖过更有用的“音频太长”。合同里 PERMANENT_ERROR 只能从 RUNNING 出发，所以先记 RUN_STARTED。
+        val limit = manifest.limits.maxAudioDurationMs
+        if (limit != null && audioMs > limit) {
+            step(TranscriptionEvent.RUN_STARTED, TranscriptionState.RUNNING)
+            return failed(durationLimitError(job))
+        }
+
         if (engine == null) {
             val verifyStart = nanoTime()
             val verified = try {
@@ -161,8 +169,6 @@ class LocalTranscriber(
             step(TranscriptionEvent.RESULT_NO_SPEECH, TranscriptionState.NO_SPEECH)
             return result(TranscriptionOutcome.NoSpeech(noSpeechError(job)))
         }
-        val limit = manifest.limits.maxAudioDurationMs
-        if (limit != null && audioMs > limit) return failed(durationLimitError(job))
 
         val output = try {
             val resampleStart = nanoTime()

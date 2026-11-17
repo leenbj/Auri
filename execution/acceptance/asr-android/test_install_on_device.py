@@ -133,6 +133,15 @@ def test_a_model_version_that_climbs_out_of_the_models_directory_is_refused(tmp_
     assert log == ""
 
 
+def test_a_model_version_named_like_a_backup_directory_is_refused(tmp_path):
+    # 设备上换位时旧目录会改名 <版本>.old 再删：叫 v1.old 的另一个版本会被当成 v1 的备份一起删掉
+    result, log = run_script(tmp_path, manifest(model_version="v1.old"), cache_dirs=("test-model", "v1.old"))
+
+    assert result.returncode != 0
+    assert "格式不对" in result.stderr, result.stderr
+    assert log == ""
+
+
 def test_the_new_model_is_staged_completely_before_the_old_one_is_replaced(tmp_path):
     result, log = run_script(tmp_path, manifest())
 

@@ -49,13 +49,16 @@ class TranscribeFileActivity : Activity() {
         Log.i(TAG, "start out=runs/$outLabel") // 只记开始，不带路径与内容；仪器测试靠它数“有没有多启动一次”
         Thread {
             val line = try {
-                requireNotNull(wavPath) { "缺少 --es $EXTRA_WAV" }
                 // 用正则判定，不能拿 outLabel 和 outName 比：传进来的名字恰好是替身文本 (invalid) 时两者相等，会被错误放行
                 require(outNameIsSafe) { "out 只能由字母、数字、点、下划线、连字符组成，且以字母或数字开头" }
+                // 输出名可能被复用：在做任何别的校验之前先清掉上一次的输出，这样下面各种“请求被拒绝”的情形
+                // 也不会让旧的正文与报告留在目录里被当成这次的结果；输入若就是将被清掉的文件，clearOutputs 会拒绝
+                val outDir = File(filesDir, "runs/$outName")
+                FileTranscription.clearOutputs(outDir, wavPath?.let(::resolve))
+                requireNotNull(wavPath) { "缺少 --es $EXTRA_WAV" }
                 val manifestJson = assets.open(manifestAsset).use { it.readBytes().toString(Charsets.UTF_8) }
                 val manifest = ModelManifest.parse(manifestJson)
                 val modelDir = modelDirOverride?.let(::resolve) ?: File(filesDir, "models/${manifest.modelId}/${manifest.modelVersion}")
-                val outDir = File(filesDir, "runs/$outName")
                 val result = FileTranscription(SherpaOnnxEngineFactory(), SystemProcessProbe())
                     .run(FileTranscription.Request(manifestJson, modelDir, resolve(wavPath), outDir, warmRepeats))
                 "state=${result.finalState} rtf=${result.metrics.rtf} out=runs/$outLabel"

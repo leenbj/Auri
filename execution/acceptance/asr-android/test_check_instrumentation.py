@@ -99,6 +99,56 @@ def test_a_test_annotation_the_parser_cannot_follow_fails_loudly_instead_of_bein
         ci.expected_tests(src)
 
 
+def test_comment_markers_inside_string_literals_do_not_swallow_the_tests_between_them(tmp_path):
+    """"files/*" 里的 /* 不是注释的开头：当成注释，会连后面的 @Test 一起抹掉，那个测试没跑也没人知道。"""
+    src = tmp_path / "androidTest"
+    src.mkdir()
+    (src / "GlobTest.kt").write_text(
+        'package app.auri.android\n\nclass GlobTest {\n'
+        '    private val quote = \'"\'; private val glob = "files/*"\n'
+        '    @Test\n    fun between() {}\n'
+        '    private val close = "*/"\n'
+        '    @Test\n    fun after() {}\n'
+        '}\n',
+        encoding="utf-8",
+    )
+
+    assert ci.expected_tests(src) == {f"{PKG}.GlobTest#between", f"{PKG}.GlobTest#after"}
+    problems = ci.check(passed("GlobTest", "after"), src)  # between 没跑
+    assert any("GlobTest#between" in p for p in problems), problems
+
+
+def test_a_raw_string_holding_a_comment_marker_does_not_swallow_the_tests_after_it(tmp_path):
+    src = tmp_path / "androidTest"
+    src.mkdir()
+    (src / "RawTest.kt").write_text(
+        'package app.auri.android\n\nclass RawTest {\n'
+        '    private val raw = """\n        带 "引号" 和 /* 注释开头\n    """\n'
+        '    @Test\n    fun afterRaw() {}\n'
+        '    private val close = "*/"\n'
+        '    @Test\n    fun last() {}\n'
+        '}\n',
+        encoding="utf-8",
+    )
+
+    assert ci.expected_tests(src) == {f"{PKG}.RawTest#afterRaw", f"{PKG}.RawTest#last"}
+
+
+def test_an_at_test_written_inside_a_string_literal_is_not_a_test(tmp_path):
+    src = tmp_path / "androidTest"
+    src.mkdir()
+    (src / "DocTest.kt").write_text(
+        'package app.auri.android\n\nclass DocTest {\n'
+        '    private val sample = "写成 @Test fun phantom() 才算测试"\n'
+        '    @Test\n    fun real() {}\n'
+        '}\n',
+        encoding="utf-8",
+    )
+
+    assert ci.expected_tests(src) == {f"{PKG}.DocTest#real"}
+    assert ci.check(passed("DocTest", "real"), src) == []
+
+
 def test_a_test_in_the_log_that_the_sources_do_not_have_is_a_problem(sources):
     """源码解析漏了它，或设备上装的是旧版测试 APK：无论哪种，“全部通过”都不可信。"""
     extra = passed("AlphaTest", "first") + passed("AlphaTest", "second") + passed("BetaTest", "third") \

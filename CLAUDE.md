@@ -87,7 +87,7 @@ Android 本地转录（Ticket 14，工程位于 `apps/android/`，需先 `source
 
 ```bash
 cd apps/android
-./gradlew :asr:testDebugUnitTest :app:testDebugUnitTest              # JVM 单测（109 + 25），不需要设备
+./gradlew :asr:testDebugUnitTest :app:testDebugUnitTest              # JVM 单测（112 + 28），不需要设备
 ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest           # 构建会校验引擎 AAR 的大小与 SHA-256，不符即失败
 cd ../..
 .venv/bin/pytest execution/acceptance/asr-android                    # Python 验收工具与合同输出校验（会调用 Gradle，需要 JAVA_HOME）

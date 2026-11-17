@@ -31,7 +31,9 @@ DEFAULT_MANIFEST = REPO_ROOT / "apps" / "android" / "manifests" / "sensevoice-sm
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _MODEL_ID = re.compile(r"^[a-z0-9][a-z0-9._-]{0,99}$")
-_MODEL_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}$")
+# 版本名不能以 .old 结尾：换位时旧目录先改名成 <版本>.old 再删（这里与 install_on_device.sh 都是），
+# 另一个版本若恰好叫 v1.old，准备/安装 v1 时就会被当成垃圾一起删掉
+_MODEL_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,199}(?<!\.old)$")
 
 
 def die(message: str) -> "NoReturn":  # noqa: F821
@@ -57,7 +59,7 @@ def load_manifest(path: pathlib.Path) -> dict:
         archive = manifest["archive"]
         files = manifest["files"]
         if not (_MODEL_ID.match(manifest["model_id"]) and _MODEL_VERSION.match(manifest["model_version"])):
-            die("model_id 或 model_version 的格式不对")
+            die("model_id 或 model_version 的格式不对（model_version 不能以 .old 结尾：那是换位时备份目录的名字）")
         if not (isinstance(archive["url"], str) and int(archive["size_bytes"]) > 0 and _SHA256.match(archive["sha256"])):
             die("archive 的 url、size_bytes、sha256 不完整")
         if not files:
@@ -95,6 +97,7 @@ def _scrub(text: str, url: str) -> str:
 def _download(url: str, archive_path: pathlib.Path, retries: int, max_bytes: int) -> None:
     part = archive_path.with_name(archive_path.name + ".part")
     archive_path.parent.mkdir(parents=True, exist_ok=True)
+    _refuse_symlink(part)  # curl 以追加方式打开 .part：它若是链接，就会往链接指向的文件里写
     have = part.stat().st_size if part.exists() else 0
     if have > max_bytes:  # 比整个压缩包还大的残片不可能是它的前半截：从头下，别带着它去续传
         part.unlink()
@@ -112,8 +115,16 @@ def _download(url: str, archive_path: pathlib.Path, retries: int, max_bytes: int
         ]
         # curl 的 stderr 要接过来脱敏再给人看：它的错误信息可能原样带着完整 URL（含口令与查询串）
         run = subprocess.run(command, stderr=subprocess.PIPE, text=True, errors="replace")
+        if run.returncode == 33:  # curl: 服务器不支持 Range，续传不可能成功；残片留着，每次重跑都是同一个请求、同一个失败
+            part.unlink(missing_ok=True)
+            die(f"下载失败：{shown} 不支持断点续传，已丢掉 {have} 字节的残片，重跑会从头下载")
         if run.returncode == 63:  # curl: Maximum file size exceeded
             part.unlink(missing_ok=True)  # 超限的残片不能留着：下次 -C - 会接着它续传
+            if have:  # 带着残片续传时收到超出“剩余额度”的内容：最常见的原因是服务器忽略 Range、整份重发
+                die(
+                    f"下载失败：续传 {shown} 时收到的内容超出了清单允许的剩余大小（已有 {have} 字节，整包上限 {max_bytes} 字节）："
+                    "服务器多半不支持断点续传，已丢掉残片，重跑会从头下载；若重跑仍然超限，说明文件比清单声明的大"
+                )
             die(f"下载失败：{shown} 的大小超过清单里的压缩包大小（{max_bytes} 字节），已中止")
         if run.returncode != 0:
             detail = _scrub(run.stderr, url).strip()

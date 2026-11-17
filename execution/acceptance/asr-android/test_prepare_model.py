@@ -352,6 +352,61 @@ def test_a_leftover_part_file_larger_than_the_manifest_size_is_discarded_and_the
     assert (model_dir / "tokens.txt").read_bytes() == TOKENS
 
 
+def test_a_part_file_that_is_a_symlink_is_refused_instead_of_written_through(tmp_path, serve):
+    """.part 本身是符号链接时，curl 会以追加方式写到链接指向的文件：必须先拒绝，别的文件不能被动。"""
+    www, base = serve
+    archive = build_archive(GOOD_MEMBERS)
+    (www / "pkg.tar.bz2").write_bytes(archive)
+    cache = tmp_path / "cache"
+    (cache / "downloads").mkdir(parents=True)
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"KEEP")
+    (cache / "downloads" / "pkg.tar.bz2.part").symlink_to(outside)
+
+    with pytest.raises(SystemExit) as refused:
+        prepare_model.prepare(write_manifest(tmp_path, make_manifest(archive, f"{base}/pkg.tar.bz2")), cache, retries=0)
+
+    assert "符号链接" in str(refused.value), str(refused.value)
+    assert outside.read_bytes() == b"KEEP"
+
+
+@pytest.mark.parametrize("declares_length", [True, False])
+def test_a_server_that_cannot_resume_gets_the_partial_file_dropped_so_a_rerun_converges(tmp_path, declares_length):
+    """服务器忽略 Range、整份回 200 时，续传永远不会成功：残片要丢掉，否则每次重跑都发同一个续传请求、再失败，要人手动去删。
+    声明了长度时 curl 先撞上 --max-filesize（63），没声明长度时是“不支持续传”（33）：两条路都要收敛。"""
+    archive = build_archive(GOOD_MEMBERS)
+
+    class IgnoresRange(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            if declares_length:
+                self.send_header("Content-Length", str(len(archive)))
+            self.end_headers()
+            self.wfile.write(archive)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), IgnoresRange)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    cache = tmp_path / "cache"
+    part = cache / "downloads" / "pkg.tar.bz2.part"
+    part.parent.mkdir(parents=True)
+    part.write_bytes(archive[:10])
+    try:
+        manifest = write_manifest(tmp_path, make_manifest(archive, f"http://127.0.0.1:{server.server_address[1]}/pkg.tar.bz2"))
+
+        with pytest.raises(SystemExit) as first:
+            prepare_model.prepare(manifest, cache, retries=0)
+        assert "断点续传" in str(first.value), str(first.value)
+        assert not part.exists(), "残片留着，下次还是同样的续传请求，永远卡在这里"
+
+        model_dir = prepare_model.prepare(manifest, cache, retries=0)  # 重跑：没有残片，从头下载
+        assert (model_dir / "tokens.txt").read_bytes() == TOKENS
+    finally:
+        server.shutdown()
+
+
 @pytest.mark.parametrize("link_name", ["downloads", "models", "models/test-model", "samples"])
 def test_a_symlinked_cache_subdirectory_is_refused_instead_of_followed(tmp_path, serve, link_name):
     """缓存里的 downloads、models、samples 若是符号链接，往里写就等于写到缓存之外：拒绝并说明，不跟随。"""
@@ -434,6 +489,18 @@ def test_rejects_unsafe_file_paths_in_the_manifest(tmp_path):
 
     with pytest.raises(SystemExit):
         prepare_model.prepare(path, tmp_path / "cache")
+
+
+def test_a_model_version_that_looks_like_the_backup_of_another_version_is_rejected(tmp_path):
+    """换位时旧目录先改名成 <版本>.old：另一个版本若恰好叫 v1.old，准备 v1 时就会把它当垃圾删掉。"""
+    archive = build_archive(GOOD_MEMBERS)
+    manifest = make_manifest(archive, "http://127.0.0.1:9/x.tar.bz2")
+    manifest["model_version"] = "v1.old"
+
+    with pytest.raises(SystemExit) as refused:
+        prepare_model.load_manifest(write_manifest(tmp_path, manifest))
+
+    assert ".old" in str(refused.value), str(refused.value)
 
 
 def test_the_real_manifest_in_the_repo_has_what_the_script_needs():

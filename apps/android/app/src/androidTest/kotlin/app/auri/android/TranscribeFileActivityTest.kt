@@ -99,6 +99,37 @@ class TranscribeFileActivityTest {
         assertFalse("(invalid) 不是合法的输出名，不能被当成目录写出", placeholderDir.exists())
     }
 
+    /**
+     * 输出名被复用时，请求即使在转录开始之前就被拒绝（清单资源不存在、没带 wav），上一次的正文与报告也不能留着：
+     * 否则“这次失败了”和“目录里是上一次成功的结果”同时成立，只看文件的人会被误导。
+     */
+    @Test
+    fun aRequestRejectedBeforeTranscriptionStillClearsThePreviousRunsOutputs() {
+        DeviceEnv.requireInstalled("zh")
+        val runDir = File(DeviceEnv.target.filesDir, "runs/activity-stale")
+        fun leaveStaleOutputs() {
+            runDir.deleteRecursively()
+            runDir.mkdirs()
+            listOf("revision-content.json", "run-report.json", "keep.txt").forEach { File(runDir, it).writeText("STALE-$it") }
+        }
+
+        try {
+            leaveStaleOutputs()
+            val noManifest = ActivityScenario.launch<TranscribeFileActivity>(
+                launch("wav" to "samples/zh.wav", "out" to "activity-stale", "manifest" to "no-such-manifest.json"),
+            ).use { awaitStatus(it) }
+            assertTrue(noManifest, noManifest.startsWith("error="))
+            assertEquals("清单资源不存在被拒绝后，旧输出要被清掉，不属于本程序的文件不动", listOf("keep.txt"), runDir.list()!!.sorted())
+
+            leaveStaleOutputs()
+            val noWav = ActivityScenario.launch<TranscribeFileActivity>(launch("out" to "activity-stale")).use { awaitStatus(it) }
+            assertTrue(noWav, noWav.startsWith("error="))
+            assertEquals("没带 wav 被拒绝后同样", listOf("keep.txt"), runDir.list()!!.sorted())
+        } finally {
+            runDir.deleteRecursively()
+        }
+    }
+
     @Test
     fun aMissingWavShowsOnlyTheExceptionTypeAndLeavesNoOutput() {
         DeviceEnv.requireInstalled()

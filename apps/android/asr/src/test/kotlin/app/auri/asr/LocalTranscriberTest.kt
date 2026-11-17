@@ -299,6 +299,45 @@ class LocalTranscriberTest {
     }
 
     @Test
+    fun `超过时长上限的音频在校验模型与创建引擎之前就失败 模型没装也先报时长`() {
+        // 时长只取决于音频和清单，再等也不会变短：不该为一个注定被拒的输入花一次校验与加载，
+        // 更不能让校验/加载的失败盖过更有用的“音频太长”
+        val model = TestModel.install(tmp.newFolder("m"))
+        assertTrue(model.modelFile().delete()) // 若先校验，结果会是 WAITING_MODEL
+
+        val result = transcriber(model).transcribe(audio(30001))
+
+        val failed = result.outcome as TranscriptionOutcome.Failed
+        assertEquals(ErrorCode.ASR_RESOURCE_LIMIT, failed.error!!.code)
+        assertEquals(0, factory.calls)
+        assertEquals(0L, result.metrics.verifyMs)
+        assertEquals(0L, result.metrics.engineLoadMs)
+        assertEquals(
+            "合同里 PERMANENT_ERROR 只能从 RUNNING 出发，所以先 RUN_STARTED",
+            steps(
+                TranscriptionEvent.RUN_STARTED to TranscriptionState.RUNNING,
+                TranscriptionEvent.PERMANENT_ERROR to TranscriptionState.FAILED,
+            ),
+            result.steps,
+        )
+    }
+
+    @Test
+    fun `模型完好时超长音频也不创建引擎 之后正常音频照常冷启动`() {
+        val model = TestModel.install(tmp.newFolder("m"))
+        val t = transcriber(model)
+
+        t.transcribe(audio(30001))
+        assertEquals(0, factory.calls)
+
+        val ok = t.transcribe(audio(1000))
+
+        assertTrue(ok.outcome is TranscriptionOutcome.Succeeded)
+        assertEquals("被拒的超长音频不能让转录器停在半初始化状态", 1, factory.calls)
+        assertEquals(40L, ok.metrics.engineLoadMs)
+    }
+
+    @Test
     fun `清单没有时长上限时不检查时长`() {
         val model = TestModel.install(tmp.newFolder("m"), maxDurationMs = "null")
 

@@ -16,7 +16,23 @@ import sys
 
 _PACKAGE = re.compile(r"^package\s+([\w.]+)", re.MULTILINE)
 _CLASS = re.compile(r"^class\s+(\w+)", re.MULTILINE)
-_COMMENTS = re.compile(r"/\*.*?\*/|//[^\n]*", re.DOTALL)
+# 一遍扫过去，按出现的先后认“字符串 / 字符 / 注释”：注释标记在字符串里（"files/*"）不算注释，@Test 写在字符串或注释里也不算测试。
+# 字符串与字符的内容被清空、注释换成空格，剩下的才去找 @Test。
+# shortcut: Kotlin 的块注释可以嵌套、字符串模板里可以再套字符串，这里都不处理；那样写会让 @Test 个数与方法数对不上而抛 ValueError。
+_NOISE = re.compile(
+    r'"""[\s\S]*?"""'  # 原始字符串
+    r'|"(?:[^"\\\n]|\\.)*"'  # 普通字符串
+    r"|'(?:[^'\\\n]|\\.)+'"  # 字符，如 '"'
+    r"|//[^\n]*"  # 行注释
+    r"|/\*[\s\S]*?\*/"  # 块注释
+)
+
+
+def _blank(match: "re.Match") -> str:
+    token = match.group(0)
+    if token.startswith("/"):
+        return " "
+    return '""' if token[0] == '"' else "''"
 # 注解可以带参数，参数里的字符串可以含括号：@Ignore("等设备")、@Throws(Exception::class)
 _ANNOTATION = r'@\w+(?:\((?:[^()"]|"(?:[^"\\]|\\.)*")*\))?'
 _TEST_FUN = re.compile(rf"@Test\b(?:\s*{_ANNOTATION})*\s*fun\s+(\w+)")
@@ -30,7 +46,7 @@ def expected_tests(src_dir) -> set:
     """源码里的每个 @Test，形如 `app.auri.android.EnginePinTest#方法名`。"""
     names = set()
     for path in sorted(pathlib.Path(src_dir).rglob("*.kt")):
-        text = _COMMENTS.sub(" ", path.read_text(encoding="utf-8"))
+        text = _NOISE.sub(_blank, path.read_text(encoding="utf-8"))
         methods = _TEST_FUN.findall(text)
         marks = len(_TEST_MARK.findall(text))
         if marks != len(methods):

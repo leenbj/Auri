@@ -8,7 +8,6 @@ import app.auri.asr.audio.WavReader
 import app.auri.asr.engine.AsrEngineFactory
 import app.auri.asr.manifest.ModelManifest
 import java.io.File
-import java.nio.file.Files
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
@@ -33,10 +32,10 @@ class FileTranscription(
     )
 
     fun run(request: Request): TranscriptionResult {
+        // 输出目录可能被复用：先清掉上一次的全套输出（连参数被拒绝的情形也一样），这次不论在哪一步失败，
+        // 目录里都不会躺着上一次的正文与报告被误当成这次的结果
+        clearOutputs(request.outDir, request.wav)
         require(request.warmRepeats >= 0) { "warmRepeats 不能是负数" }
-        // 输出目录可能被复用：先清掉上一次的全套输出，这次中途失败时才不会留着旧的正文与报告被误当成这次的结果
-        ContractOutput.clear(request.outDir)
-        Files.deleteIfExists(File(request.outDir, "run-report.json").toPath())
         val manifest = ModelManifest.parse(request.manifestJson)
         val audio = WavReader.read(request.wav)
 
@@ -79,15 +78,23 @@ class FileTranscription(
                 device = probe.device(),
             )
             ContractOutput.write(request.outDir, transcriber.capabilities, first)
-            File(request.outDir, "run-report.json").writeText(reportJson.encodeToString(report), Charsets.UTF_8)
+            File(request.outDir, REPORT_FILE).writeText(reportJson.encodeToString(report), Charsets.UTF_8)
             return first
         }
     }
 
-    private companion object {
-        fun TranscriptionState.engineRan() = this == TranscriptionState.SUCCEEDED || this == TranscriptionState.NO_SPEECH
+    companion object {
+        private const val REPORT_FILE = "run-report.json"
 
-        val reportJson = Json {
+        /**
+         * 清掉上一次留在 [outDir] 里的合同文件与运行报告。[input] 是这次要读的输入：它若就是其中之一，先拒绝而不是删掉它。
+         * 入口在做别的校验之前也该先调这个，免得参数被拒绝时旧结果还留着。
+         */
+        fun clearOutputs(outDir: File, input: File? = null) = ContractOutput.clear(outDir, input, listOf(REPORT_FILE))
+
+        private fun TranscriptionState.engineRan() = this == TranscriptionState.SUCCEEDED || this == TranscriptionState.NO_SPEECH
+
+        private val reportJson = Json {
             encodeDefaults = true
             explicitNulls = true // 读不到的读数要写 null，不能省略
             prettyPrint = true

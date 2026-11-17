@@ -322,6 +322,7 @@ class FileTranscriptionTest {
         assertEquals(TranscriptionState.FAILED, result.finalState)
         assertTrue(File(req.outDir, "error.json").readText(Charsets.UTF_8).contains("ASR_RESOURCE_LIMIT"))
         assertEquals("超长音频不能送进引擎", 0, engine.calls)
+        assertEquals("也不该为它创建（校验并加载）引擎", 0, factoryCalls)
     }
 
     @Test
@@ -347,5 +348,47 @@ class FileTranscriptionTest {
     @Test
     fun `热运行次数不能是负数`() {
         assertThrows(IllegalArgumentException::class.java) { transcription().run(request(warmRepeats = -1)) }
+    }
+
+    @Test
+    fun `参数被拒绝时 复用的输出目录里上一次的正文与报告同样被清掉`() {
+        // “这次失败了”不能和“目录里还躺着上一次成功的结果”同时成立，不管是在哪一步被拒绝的
+        val req = request(warmRepeats = -1)
+        leaveStaleOutputs(req.outDir)
+
+        assertThrows(IllegalArgumentException::class.java) { transcription().run(req) }
+
+        assertNoStaleOutputsButUnrelatedFileKept(req.outDir)
+    }
+
+    @Test
+    fun `输入文件恰好就是输出目录里将被清掉的文件时 先拒绝 不能把用户的输入删了`() {
+        val req = request()
+        req.outDir.mkdirs()
+        val input = File(req.outDir, "trace.json").also { writeWav(it) }
+        val before = input.readBytes()
+
+        assertThrows(IllegalArgumentException::class.java) {
+            transcription().run(FileTranscription.Request(req.manifestJson, req.modelDir, input, req.outDir))
+        }
+
+        assertTrue("输入还在", input.isFile)
+        assertTrue("内容没变", before.contentEquals(input.readBytes()))
+        assertEquals(0, factoryCalls)
+    }
+
+    @Test
+    fun `通过符号链接指向将被清掉的输出文件的输入也一样被拒绝`() {
+        val req = request()
+        req.outDir.mkdirs()
+        val target = File(req.outDir, "run-report.json").also { writeWav(it) }
+        val link = File(tmp.root, "alias.wav")
+        java.nio.file.Files.createSymbolicLink(link.toPath(), target.toPath())
+
+        assertThrows(IllegalArgumentException::class.java) {
+            transcription().run(FileTranscription.Request(req.manifestJson, req.modelDir, link, req.outDir))
+        }
+
+        assertTrue("链接指向的文件还在", target.isFile && target.length() > 44)
     }
 }

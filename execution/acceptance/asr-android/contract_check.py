@@ -86,6 +86,8 @@ STATE_RULES = {
     "WAITING_MODEL": (False, {"MODEL_NOT_INSTALLED", "MODEL_INTEGRITY_FAILED"}),
     "FAILED": (False, {"ASR_RESOURCE_LIMIT", None}),
 }
+# 本工具认识的错误码：文件里的错误码只有属于它才会被原样写进消息（见 _vocab）
+_KNOWN_CODES = frozenset(c for _, codes in STATE_RULES.values() for c in codes if c)
 
 text_sha256 = semantic_rules.text_sha256
 
@@ -130,7 +132,9 @@ def _load(dir_: pathlib.Path, name: str, problems: list[str], required: bool):
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (ValueError, UnicodeDecodeError) as e:
-        problems.append(f"{name}: 不是有效的 UTF-8 JSON（{e}）")
+        # 只说异常类型（和 JSON 的行列号）：UnicodeDecodeError 的消息里有出错的那个字节，不回显文件内容
+        where = f"，第 {e.lineno} 行第 {e.colno} 列" if isinstance(e, json.JSONDecodeError) else ""
+        problems.append(f"{name}: 不是有效的 UTF-8 JSON（{type(e).__name__}{where}）")
         return None
     if not isinstance(value, dict):
         problems.append(f"{name}: 顶层必须是 JSON 对象")  # 不回显内容：它可能就是正文
@@ -138,24 +142,34 @@ def _load(dir_: pathlib.Path, name: str, problems: list[str], required: bool):
     return value
 
 
+_NOT_ECHOED = "<不在合同取值里，不回显>"
+_STATES, _EVENTS = frozenset(_MACHINE["states"]), frozenset(_MACHINE["events"])
+
+
+def _vocab(value, allowed) -> str:
+    """来自输出文件的值，只有它是合同词表里的成员时才原样说出；否则不回显：它可能是被写错位置的正文。"""
+    return value if isinstance(value, str) and value in allowed else _NOT_ECHOED
+
+
 def _replay(trace: dict) -> tuple[list[str], str | None]:
-    """按合同转移表重放轨迹，返回问题与到达的终态。"""
+    """按合同转移表重放轨迹，返回问题与到达的终态。轨迹里的值只在属于合同词表时才写进消息（见 _vocab）。"""
     problems = []
     if trace.get("machine") != _MACHINE["machine"]:
-        problems.append(f"trace.json: machine 是 {trace.get('machine')!r}，应为 {_MACHINE['machine']!r}")
+        problems.append(f"trace.json: machine 不是合同要求的 {_MACHINE['machine']!r}（实际值不回显）")
     state = trace.get("initial_state")
     if state != _MACHINE["initial_state"]:
-        problems.append(f"trace.json: initial_state 是 {state!r}，合同要求 {_MACHINE['initial_state']!r}")
+        problems.append(f"trace.json: initial_state 不是合同要求的 {_MACHINE['initial_state']!r}（实际值不回显）")
     table = {(t["from"], t["event"]): t for t in _MACHINE["transitions"]}
     for number, step in enumerate(trace.get("steps", []), start=1):
         event = step.get("event")
         transition = table.get((state, event))
         if transition is None or transition["outcome"] != "transition":
-            problems.append(f"trace.json: 第 {number} 步，状态 {state} 不接受事件 {event}")
+            problems.append(f"trace.json: 第 {number} 步，状态 {_vocab(state, _STATES)} 不接受事件 {_vocab(event, _EVENTS)}")
             return problems, None
         if step.get("state_after") != transition["to"]:
             problems.append(
-                f"trace.json: 第 {number} 步，事件 {event} 应到达 {transition['to']}，轨迹写的是 {step.get('state_after')}"
+                f"trace.json: 第 {number} 步，事件 {event} 应到达 {transition['to']}，"
+                f"轨迹写的是 {_vocab(step.get('state_after'), _STATES)}"
             )
             return problems, None
         state = transition["to"]
@@ -202,10 +216,12 @@ def check_scenario(dir_: pathlib.Path, expectation: str) -> list[str]:
         problems.append("终态 SUCCEEDED 不应有 error.json")
     if state != "SUCCEEDED":
         code = None if error is None else error.get("code")
+        # 文件里的错误码只有属于本工具认识的合同取值时才原样说出（None 表示没有 error.json）
+        shown = repr(code) if code is None or (isinstance(code, str) and code in _KNOWN_CODES) else _NOT_ECHOED
         if code not in allowed_codes:
-            problems.append(f"终态 {state} 的错误码 {code!r} 不在允许的 {sorted(c for c in allowed_codes if c)} 里")
+            problems.append(f"终态 {state} 的错误码 {shown} 不在允许的 {sorted(c for c in allowed_codes if c)} 里")
         if expected_code is not None and code != expected_code:
-            reason = "但没有 error.json" if error is None else f"实际是 {code!r}"
+            reason = "但没有 error.json" if error is None else f"实际是 {shown}"
             problems.append(f"终态 {state} 期望错误码 {expected_code}，{reason}")
     if error is not None and handle is not None and error.get("operation_id") != handle.get("job_id"):
         problems.append("error.json: operation_id 必须等于 task-handle.json 的 job_id")
