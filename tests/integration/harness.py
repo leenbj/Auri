@@ -470,6 +470,15 @@ class World:
             self.device_token, [d.destination_id for d in destinations], **kwargs
         )
 
+    def revoke(self, destination: AgentDestination) -> None:
+        """The phone revokes a Destination over HTTP (`DELETE /v1/destinations/{id}`)."""
+        revoked = httpx.delete(
+            f"{self.gw.base_url}/v1/destinations/{destination.destination_id}",
+            headers={"Authorization": f"Bearer {self.device_token}"},
+            timeout=5.0,
+        )
+        assert revoked.status_code == 200, revoked.text
+
 
 @pytest.fixture
 def world(gateway: GatewayProcess) -> World:

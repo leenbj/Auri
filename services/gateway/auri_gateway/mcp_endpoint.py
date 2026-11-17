@@ -26,6 +26,7 @@ from mcp.types import (
     ToolAnnotations,
 )
 from starlette.datastructures import Headers
+from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import __version__
@@ -137,7 +138,12 @@ def _error(exc: GatewayError) -> CallToolResult:
 
 
 class _DestinationAuthGate:
-    """ASGI gate: authenticate the Destination credential before any MCP processing."""
+    """ASGI gate: authenticate the Destination credential before any MCP processing.
+
+    Only POST is served. The gateway never pushes to an Agent, so a GET (which the SDK would
+    answer with an event stream that stays open forever) gets a 405, as the MCP transport
+    allows. Authentication comes first, so an unauthenticated caller learns nothing else.
+    """
 
     def __init__(self, db_path: pathlib.Path, app: ASGIApp) -> None:
         self._db_path = db_path
@@ -148,6 +154,9 @@ class _DestinationAuthGate:
             self._db_path, Headers(scope=scope).get("authorization")
         )
         logger.info("mcp_authenticated destination_id=%s", destination.destination_id)
+        if scope["method"] != "POST":
+            await Response(status_code=405, headers={"Allow": "POST"})(scope, receive, send)
+            return
         scope[DESTINATION_SCOPE_KEY] = destination
         await self._app(scope, receive, send)
 
