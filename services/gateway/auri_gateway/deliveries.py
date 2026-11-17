@@ -10,13 +10,15 @@ import json
 import pathlib
 import secrets
 import sqlite3
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from .db import format_utc, open_connection, sha256_str, utc_now
 from .delivery_machine import (
     ACK,
     CLAIM,
+    LEASE_EXPIRED,
+    LEASED,
     NACK_PERMANENT,
     NACK_RETRYABLE,
     PENDING,
@@ -58,6 +60,7 @@ def claim_deliveries(
         conn.execute("BEGIN IMMEDIATE")
         try:
             now = utc_now()
+            _expire_due_leases(conn, destination, now)
             lease_expires_at = now + timedelta(seconds=lease_seconds)
             rows = conn.execute(
                 _PENDING_FOR_DESTINATION,
@@ -104,6 +107,7 @@ def renew_lease(
         conn.execute("BEGIN IMMEDIATE")
         try:
             now = utc_now()
+            _expire_due_leases(conn, destination, now)
             row = _load_owned_delivery(conn, destination, delivery_id)
             if not _holds_lease(row, lease_token):
                 raise _lease_lost()
@@ -140,6 +144,8 @@ def ack_delivery(
     try:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            now = utc_now()
+            _expire_due_leases(conn, destination, now)
             row = _load_owned_delivery(conn, destination, delivery_id)
             if not _holds_lease(row, lease_token):
                 raise _lease_lost()
@@ -149,7 +155,7 @@ def ack_delivery(
             duplicate = outcome.kind == "ignored"
             acknowledged_at = row["acknowledged_at"]
             if not duplicate:
-                acknowledged_at = format_utc(utc_now())
+                acknowledged_at = format_utc(now)
                 conn.execute(
                     """
                     UPDATE deliveries SET state = ?, acknowledged_at = ?, ack_note = ?
@@ -184,6 +190,8 @@ def nack_delivery(
     try:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            now = utc_now()
+            _expire_due_leases(conn, destination, now)
             row = _load_owned_delivery(conn, destination, delivery_id)
             if not _holds_lease(row, lease_token):
                 raise _lease_lost()
@@ -196,7 +204,7 @@ def nack_delivery(
                     UPDATE deliveries SET state = ?, rejected_at = ?, reject_reason = ?
                     WHERE delivery_id = ?
                     """,
-                    (outcome.state, format_utc(utc_now()), reason, delivery_id),
+                    (outcome.state, format_utc(now), reason, delivery_id),
                 )
             else:
                 conn.execute(
@@ -210,6 +218,30 @@ def nack_delivery(
     finally:
         conn.close()
     return {"delivery_id": delivery_id, "state": outcome.state}
+
+
+def _expire_due_leases(
+    conn: sqlite3.Connection, destination: AuthenticatedDestination, now: datetime
+) -> None:
+    """Apply LEASE_EXPIRED to every leased Delivery of the Destination whose lease ran out.
+
+    Called at the start of each operation, inside its transaction, so the stored state is
+    never older than the caller's request.
+    """
+    due = conn.execute(
+        """
+        SELECT delivery_id, state FROM deliveries
+        WHERE tenant_id = ? AND destination_id = ? AND state = ? AND lease_expires_at <= ?
+        """,
+        (destination.tenant_id, destination.destination_id, LEASED, format_utc(now)),
+    ).fetchall()
+    for row in due:
+        outcome = step(row["state"], LEASE_EXPIRED)
+        if outcome.kind == "transition":
+            conn.execute(
+                "UPDATE deliveries SET state = ? WHERE delivery_id = ?",
+                (outcome.state, row["delivery_id"]),
+            )
 
 
 def _load_owned_delivery(
