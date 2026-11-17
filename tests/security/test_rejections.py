@@ -23,6 +23,7 @@ if str(_INTEGRATION_DIR) not in sys.path:
 from harness import (
     FIXTURE_DIR,
     GatewayProcess,
+    McpAgent,
     assert_valid_contract,
     gateway,  # noqa: F401
     load_fixture,
@@ -379,3 +380,195 @@ def test_unhandled_500_returns_unified_error_without_leaking_internals(
     assert body["retryable"] is True
     for leaked in ("sqlite", "OperationalError", "no such table", "destinations", "Traceback", str(tmp_path)):
         assert leaked.lower() not in resp.text.lower()
+
+
+def test_non_origin_device_cannot_submit_or_delete_record(gateway: GatewayProcess) -> None:
+    origin = gateway.pair_device("Origin Phone")
+    other = gateway.pair_device("Other Phone")
+    origin_headers = {"Authorization": f"Bearer {origin['device_token']}"}
+    other_headers = {"Authorization": f"Bearer {other['device_token']}"}
+
+    dest = gateway.create_agent_destination(origin["device_token"], "Reader Agent")
+    agent = McpAgent(gateway.base_url, dest.credential)
+
+    record_id = str(uuid.uuid4())
+    original_text = "原始设备录下的口述。"
+    gateway.publish(
+        origin["device_token"],
+        [dest.destination_id],
+        record_id=record_id,
+        revision=1,
+        text=original_text,
+    )
+
+    # Non-origin device cannot submit the same or a new revision, even with matching content.
+    for rev, text in ((1, original_text), (2, "非原始设备提交的修订。")):
+        sub = make_submission(
+            record_id=record_id, revision=rev, text=text, destination_ids=[dest.destination_id]
+        )
+        resp = httpx.put(
+            f"{gateway.base_url}/v1/records/{record_id}/revisions/{rev}",
+            json=sub,
+            headers=other_headers,
+            timeout=5.0,
+        )
+        assert_contract_error(resp, expected_status=403, expected_code="RECORD_NOT_ORIGIN_DEVICE")
+
+    # Non-origin device cannot delete the record.
+    del_resp = httpx.delete(
+        f"{gateway.base_url}/v1/records/{record_id}",
+        headers=other_headers,
+        timeout=5.0,
+    )
+    assert_contract_error(del_resp, expected_status=403, expected_code="RECORD_NOT_ORIGIN_DEVICE")
+
+    # Record and its pending delivery remain intact; origin device can still publish & Agent can claim.
+    (claimed,) = agent.claim()["deliveries"]
+    assert claimed["record_id"] == record_id
+    assert claimed["text"] == original_text
+    agent.ack(claimed["delivery_id"], claimed["lease_token"])
+
+    rev2_resp = gateway.publish(
+        origin["device_token"],
+        [dest.destination_id],
+        record_id=record_id,
+        revision=2,
+        text="原始设备追加的修订。",
+        source="user_edit",
+    )
+    assert rev2_resp["revision"] == 2
+
+    # Origin device deletes the record; non-origin device still receives RECORD_NOT_ORIGIN_DEVICE.
+    ok_del = httpx.delete(
+        f"{gateway.base_url}/v1/records/{record_id}",
+        headers=origin_headers,
+        timeout=5.0,
+    )
+    assert ok_del.status_code == 200
+    del_after = httpx.delete(
+        f"{gateway.base_url}/v1/records/{record_id}",
+        headers=other_headers,
+        timeout=5.0,
+    )
+    assert_contract_error(del_after, expected_status=403, expected_code="RECORD_NOT_ORIGIN_DEVICE")
+
+
+def test_delete_record_rejects_bad_auth_bad_path_and_body_payloads(gateway: GatewayProcess) -> None:
+    paired = gateway.pair_device("Delete Auth Phone")
+    device_headers = {"Authorization": f"Bearer {paired['device_token']}"}
+    dest = gateway.create_agent_destination(paired["device_token"], "Agent")
+    dest_headers = {"Authorization": f"Bearer {dest.credential}"}
+    record_id = str(uuid.uuid4())
+
+    # Unauthenticated and Destination-credential callers are rejected with 401.
+    for headers in ({}, {"Authorization": "Bearer invalid-token"}, dest_headers):
+        resp = httpx.delete(
+            f"{gateway.base_url}/v1/records/{record_id}",
+            headers=headers,
+            timeout=5.0,
+        )
+        assert_contract_error(resp, expected_status=401, expected_code="GATEWAY_AUTH_INVALID")
+
+    # Uppercase UUID or non-UUID path parameter is rejected.
+    for bad_id in ("NOT-A-UUID", record_id.upper()):
+        resp = httpx.delete(
+            f"{gateway.base_url}/v1/records/{bad_id}",
+            headers=device_headers,
+            timeout=5.0,
+        )
+        assert_contract_error(resp, expected_status=422, expected_code="REQUEST_INVALID")
+
+    # Malformed JSON or non-empty body (such as spoofed tenant_id / device_id) is rejected.
+    bad_json = httpx.request(
+        "DELETE",
+        f"{gateway.base_url}/v1/records/{record_id}",
+        content=b"{not-json",
+        headers={**device_headers, "Content-Type": "application/json"},
+        timeout=5.0,
+    )
+    assert_contract_error(bad_json, expected_status=400, expected_code="REQUEST_INVALID")
+
+    for spoofed in ({"tenant_id": str(uuid.uuid4())}, {"origin_device_id": str(uuid.uuid4())}):
+        spoof_resp = httpx.request(
+            "DELETE",
+            f"{gateway.base_url}/v1/records/{record_id}",
+            json=spoofed,
+            headers=device_headers,
+            timeout=5.0,
+        )
+        assert_contract_error(spoof_resp, expected_status=422, expected_code="REQUEST_INVALID")
+
+
+def test_path_mismatch_non_canonical_revision_and_conflict_leave_no_side_effects(
+    gateway: GatewayProcess,
+) -> None:
+    paired = gateway.pair_device("Mismatch Phone")
+    headers = {"Authorization": f"Bearer {paired['device_token']}"}
+    dest = gateway.create_agent_destination(paired["device_token"], "Agent")
+    agent = McpAgent(gateway.base_url, dest.credential)
+
+    # Non-canonical revision path strings must be rejected even when body has matching integer.
+    sub_1 = make_submission(revision=1, destination_ids=[dest.destination_id])
+    for bad_rev in ("01", "1_0", "+1", "-1", "abc"):
+        resp = httpx.put(
+            f"{gateway.base_url}/v1/records/{sub_1['record_id']}/revisions/{bad_rev}",
+            json=sub_1,
+            headers=headers,
+            timeout=5.0,
+        )
+        assert_contract_error(resp, expected_status=422, expected_code="REQUEST_INVALID")
+
+    # Path/body mismatch on record_id or revision stores nothing at either path or body target.
+    other_record_id = str(uuid.uuid4())
+    mismatch_rec = httpx.put(
+        f"{gateway.base_url}/v1/records/{other_record_id}/revisions/1",
+        json=sub_1,
+        headers=headers,
+        timeout=5.0,
+    )
+    assert_contract_error(mismatch_rec, expected_status=422, expected_code="REQUEST_INVALID")
+
+    mismatch_rev = httpx.put(
+        f"{gateway.base_url}/v1/records/{sub_1['record_id']}/revisions/2",
+        json=sub_1,
+        headers=headers,
+        timeout=5.0,
+    )
+    assert_contract_error(mismatch_rev, expected_status=422, expected_code="REQUEST_INVALID")
+    assert agent.claim()["deliveries"] == []
+
+    # Now submit the valid matching request: duplicate=False proves nothing was stored earlier.
+    original_text = "不会被冲突覆盖的正文。"
+    valid_sub = make_submission(
+        record_id=sub_1["record_id"],
+        revision=1,
+        text=original_text,
+        destination_ids=[dest.destination_id],
+    )
+    ok = httpx.put(
+        f"{gateway.base_url}/v1/records/{valid_sub['record_id']}/revisions/1",
+        json=valid_sub,
+        headers=headers,
+        timeout=5.0,
+    )
+    assert ok.status_code == 200
+    assert ok.json()["duplicate"] is False
+
+    # Conflicting version submission returns RECORD_VERSION_CONFLICT and Agent still receives original text.
+    conflict_sub = make_submission(
+        record_id=valid_sub["record_id"],
+        revision=1,
+        text="试图覆盖的新正文。",
+        destination_ids=[dest.destination_id],
+    )
+    conflict_resp = httpx.put(
+        f"{gateway.base_url}/v1/records/{valid_sub['record_id']}/revisions/1",
+        json=conflict_sub,
+        headers=headers,
+        timeout=5.0,
+    )
+    assert_contract_error(conflict_resp, expected_status=409, expected_code="RECORD_VERSION_CONFLICT")
+
+    (claimed,) = agent.claim()["deliveries"]
+    assert claimed["text"] == original_text
+    assert claimed["text_sha256"] == valid_sub["content"]["text_sha256"]
