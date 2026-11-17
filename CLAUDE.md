@@ -38,8 +38,10 @@ PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway serve --data-dir /t
 PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway serve --data-dir /tmp/auri-gateway-data --host 127.0.0.1 --port 8080 --plaintext-loopback  # 仅本机开发回环明文
 PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway pair --data-dir /tmp/auri-gateway-data
 PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway renew-cert --data-dir /tmp/auri-gateway-data --validity-days 365
-.venv/bin/pytest tests/contract tests/integration tests/security
+.venv/bin/pytest tests/contract tests/integration tests/security   # 全部，约 2.5 分钟：租约到期测试必须真实等待（合同规定租约最短 10 秒）
 ```
+
+MCP 端点（`/mcp`，Agent 经 Destination 凭证领取并确认投递）使用官方 MCP Python SDK，版本精确锁定在 `services/gateway/requirements.txt`；升级 SDK 后必须重跑全部网关测试。
 
 证书有效期与续签运维说明见 `services/gateway/OPERATIONS.md`。
 
