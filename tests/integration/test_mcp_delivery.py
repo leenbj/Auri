@@ -6,6 +6,8 @@ Destination credential. Every request and response is validated against `contrac
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import pytest
@@ -153,3 +155,28 @@ def test_claim_honours_limit_and_lease_seconds_and_hands_out_the_oldest_first(
         lease = (parse_timestamp(delivery["lease_expires_at"]) - before).total_seconds()
         assert 290 <= lease <= 305
     assert [d["text"] for d in rest["deliveries"]] == texts[2:]
+
+
+def test_concurrent_claims_never_hand_out_the_same_delivery(world: World) -> None:
+    destination = world.destination()
+    published = [
+        world.publish(destination, text=f"并发口述 {index}")["deliveries"][0]["delivery_id"]
+        for index in range(5)
+    ]
+    claimers = 8
+    start_together = threading.Barrier(claimers)
+
+    def claim_when_everyone_is_ready(_: int) -> list[str]:
+        agent = world.agent(destination)
+        start_together.wait(timeout=10)
+        return [d["delivery_id"] for d in agent.claim(limit=2)["deliveries"]]
+
+    with ThreadPoolExecutor(max_workers=claimers) as pool:
+        handed_out = [
+            delivery_id
+            for batch in pool.map(claim_when_everyone_is_ready, range(claimers))
+            for delivery_id in batch
+        ]
+
+    # Every Delivery went to exactly one claimer: none twice, none lost.
+    assert sorted(handed_out) == sorted(published)
