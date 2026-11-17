@@ -230,7 +230,19 @@ def test_problem_messages_never_echo_text_hidden_inside_a_composite_instance(tmp
 
     problems = cc.check_scenario(dir_, "SUCCEEDED")
 
-    assert any("surprise" in p for p in problems), "多余字段必须被报告"
+    assert any("revision-content.json" in p and "未声明" in p for p in problems), "多余字段必须被报告"
+    assert not any("SECRET-DICTATION" in p for p in problems), problems
+    assert not any("surprise" in p for p in problems), "多余字段的名字也来自实例，不回显（打开 JSON 就能看到）"
+
+
+def test_problem_messages_never_echo_an_undeclared_field_whose_name_is_the_text(tmp_path):
+    """把正文误当成字段名写出去时，jsonschema 的 additionalProperties 默认消息会把这个名字原样印出来。"""
+    dir_ = make_scenario(tmp_path)
+    edit(dir_, "revision-content.json", lambda c: c.update({SECRET: 1}))
+
+    problems = cc.check_scenario(dir_, "SUCCEEDED")
+
+    assert any("未声明" in p for p in problems), "多余字段必须被报告"
     assert not any("SECRET-DICTATION" in p for p in problems), problems
 
 
@@ -244,14 +256,15 @@ def test_a_top_level_json_array_is_a_problem_not_a_crash_and_is_not_echoed(tmp_p
     assert not any("SECRET-DICTATION" in p for p in problems), problems
 
 
-def test_a_shown_offending_value_is_still_useful_for_short_non_text_fields(tmp_path):
-    """脱敏不能把诊断信息一并抹掉：枚举值不对时仍要说出是哪个值、允许哪些。"""
+def test_an_offending_value_is_not_echoed_but_the_field_and_the_allowed_values_are(tmp_path):
+    """脱敏不能把诊断信息一并抹掉，但出错的值本身来自实例，哪怕很短也可能是被写错位置的正文：只说字段和合同允许的值。"""
     dir_ = make_scenario(tmp_path)
-    edit(dir_, "revision-content.json", lambda c: c.update(execution_location="cloud"))
+    edit(dir_, "revision-content.json", lambda c: c.update(execution_location="bogus-location-xyz"))
 
     problems = cc.check_scenario(dir_, "SUCCEEDED")
 
-    assert any("execution_location" in p and "cloud" in p and "on_device" in p for p in problems), problems
+    assert any("execution_location" in p and "on_device" in p for p in problems), problems
+    assert not any("bogus-location-xyz" in p for p in problems), problems
 
 
 def test_text_longer_than_one_mib_of_utf8_is_reported_as_sr06_even_if_the_hash_is_right(tmp_path):

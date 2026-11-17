@@ -100,21 +100,16 @@ def _flatten(errors):
         yield from _flatten(error.context or [])
 
 
-# 这几类校验器的默认消息只含字段名、不含出错的值，可以原样输出
-_MESSAGE_WITHOUT_VALUES = {"required", "additionalProperties", "unevaluatedProperties"}
-_SHOWN_VALUE_MAX_CHARS = 64
-
-
 def _describe(error) -> str:
     """校验器的输出会被贴进报告和聊天记录，所以不能带转录正文：jsonschema 的默认消息会把出错的值原样放进去
-    （类型错误、超长、oneOf/anyOf 时甚至是整个对象）。这里只在值是短字符串、且路径不经过 text 时才说出它，
-    这样枚举写错时仍能看到是哪个值，正文却不会出现在任何一条问题里。"""
-    if error.validator in _MESSAGE_WITHOUT_VALUES:
-        return error.message
-    shown = ""
-    if isinstance(error.instance, str) and len(error.instance) <= _SHOWN_VALUE_MAX_CHARS and "text" not in error.absolute_path:
-        shown = f"，实际值 {error.instance!r}"
-    return f"违反 {error.validator} 约束（要求 {repr(error.validator_value)[:200]}{shown}）"
+    （类型错误、超长、oneOf/anyOf 时甚至是整个对象；additionalProperties 还会印出多余字段的名字）。
+    因此凡是来自实例的东西（值、多余字段的名字）一律不说，只说路径（调用方已给出）、违反的约束和合同里的要求；
+    要看具体值，打开那个 JSON 文件。"""
+    if error.validator == "required":
+        return error.message  # 只含 schema 里写死的字段名
+    if error.validator in ("additionalProperties", "unevaluatedProperties"):
+        return f"违反 {error.validator} 约束：出现了合同未声明的字段（字段名来自输出文件，不回显）"
+    return f"违反 {error.validator} 约束（要求 {repr(error.validator_value)[:200]}）"
 
 
 def schema_problems(name: str, schema_ref: str, instance) -> list[str]:

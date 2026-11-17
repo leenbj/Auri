@@ -8,12 +8,14 @@ import app.auri.asr.audio.WavReader
 import app.auri.asr.engine.AsrEngineFactory
 import app.auri.asr.manifest.ModelManifest
 import java.io.File
+import java.nio.file.Files
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 /**
  * “转录这个文件”：清单 → WAV → 本地转录 → 合同文件 + 运行报告。验收宿主与仪器测试走同一条路。
- * 输入先读完再写输出：清单或 WAV 有问题时抛异常，不留下半截输出目录。
+ * 输入先读完再写输出：清单或 WAV 有问题时抛异常，不留下半截输出目录；输出目录若是复用的，一开始就先清掉上一次的输出，
+ * 这样无论这次在哪一步失败，目录里都不会躺着上一次的正文与报告。
  */
 class FileTranscription(
     private val engineFactory: AsrEngineFactory,
@@ -32,8 +34,11 @@ class FileTranscription(
 
     fun run(request: Request): TranscriptionResult {
         require(request.warmRepeats >= 0) { "warmRepeats 不能是负数" }
+        // 输出目录可能被复用：先清掉上一次的全套输出，这次中途失败时才不会留着旧的正文与报告被误当成这次的结果
+        ContractOutput.clear(request.outDir)
+        Files.deleteIfExists(File(request.outDir, "run-report.json").toPath())
         val manifest = ModelManifest.parse(request.manifestJson)
-        val audio = WavReader.read(request.wav, maxWavBytes(manifest.limits.maxAudioDurationMs))
+        val audio = WavReader.read(request.wav)
 
         val peakBefore = probe.peakRssKb()
         val netBefore = probe.uidNetworkBytes()
@@ -79,22 +84,10 @@ class FileTranscription(
         }
     }
 
-    companion object {
-        /** 声明范围内数据量最大的 WAV：192 kHz、双声道、16 位 = 768000 字节/秒。 */
-        private const val WORST_CASE_BYTES_PER_SECOND = 192_000L * 2 * 2
-        private const val HEADER_SLACK_BYTES = 1L shl 20
+    private companion object {
+        fun TranscriptionState.engineRan() = this == TranscriptionState.SUCCEEDED || this == TranscriptionState.NO_SPEECH
 
-        /**
-         * 模型时长上限内最大的合法 WAV 有多大；比它还大的文件不用读就知道超限。没有上限或上限太大时用 [WavReader.DEFAULT_MAX_BYTES] 封顶。
-         */
-        internal fun maxWavBytes(maxAudioDurationMs: Long?): Long {
-            val seconds = maxAudioDurationMs?.let { minOf((it + 999) / 1000, 3_600L) } ?: return WavReader.DEFAULT_MAX_BYTES
-            return minOf(seconds * WORST_CASE_BYTES_PER_SECOND + HEADER_SLACK_BYTES, WavReader.DEFAULT_MAX_BYTES)
-        }
-
-        private fun TranscriptionState.engineRan() = this == TranscriptionState.SUCCEEDED || this == TranscriptionState.NO_SPEECH
-
-        private val reportJson = Json {
+        val reportJson = Json {
             encodeDefaults = true
             explicitNulls = true // 读不到的读数要写 null，不能省略
             prettyPrint = true

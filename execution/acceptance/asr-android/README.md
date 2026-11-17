@@ -18,8 +18,8 @@
 | `prepare_model.py` | 下载模型包到仓库外缓存 `~/.cache/auri/`，校验哈希，只解出清单列出的文件和示例音频；下载大小以清单为上限，先解到暂存目录、全部校验通过后才换掉旧的 |
 | `install_on_device.sh` | 把模型与示例音频放进应用私有目录（模拟器与真机共用）；先整份拷到设备上的暂存目录再换位，中途失败不会留下半份模型 |
 | `run_device_acceptance.sh` | 设备侧一键验收：构建 → 安装 → 仪器测试 → 三次冷启动基准 → 拉回输出 → 合同校验 → 汇总表 |
-| `check_instrumentation.py` | 读 `am instrument -r` 的原始输出，逐个核对源码里每个 `@Test` 都跑了且通过（缺跑、被忽略、假设不成立、没跑完都算失败），防止 `OK (N tests)` 掩盖“少跑了” |
-| `contract_check.py` | 用真实 `contracts/schemas/*.json`、语义规则 SR-01/SR-05/SR-06、转录状态机转移表校验 Kotlin 写出的 JSON；报错只描述违反了什么约束，不回显 `text` 等正文 |
+| `check_instrumentation.py` | 读 `am instrument -r` 的原始输出，逐个核对源码里每个 `@Test` 都跑了且通过（缺跑、被忽略、假设不成立、没跑完都算失败；日志里出现源码里找不到的测试也算问题；源码里的 `@Test` 数和解析出的测试方法数对不上时直接报错而不是悄悄少数），防止 `OK (N tests)` 掩盖“少跑了” |
+| `contract_check.py` | 用真实 `contracts/schemas/*.json`、语义规则 SR-01/SR-05/SR-06、转录状态机转移表校验 Kotlin 写出的 JSON；报错只说路径、违反的约束和合同里的要求，**不回显任何来自输出文件的值或多余字段的名字**（哪怕很短：它可能是写错位置的正文），要看具体值就打开那个 JSON |
 | `benchmark_summary.py` | 校验 `run-report.json`（RTF 定义、离线字节、峰值内存、计时必须为正、引擎信息不得是 `unavailable` 等），渲染 Markdown 结果表 |
 | `test_*.py` | 上面这些 Python 工具的测试（含变异验证，见第 5.1 节） |
 
@@ -46,7 +46,7 @@
 source ~/.config/auri/android-env.sh
 cd apps/android
 
-# JVM 单元测试（不需要设备）：:asr 109 个 + :app 23 个
+# JVM 单元测试（不需要设备）：:asr 109 个 + :app 25 个
 ./gradlew :asr:testDebugUnitTest :app:testDebugUnitTest
 
 # 构建 debug APK 与仪器测试 APK
@@ -99,7 +99,7 @@ avdmanager delete avd -n auri-t14-asr
    adb logcat -c
    adb shell am start -S -W -n app.auri.android/.TranscribeFileActivity \
      --es wav samples/zh.wav --es out phone-zh --ei warm_repeats 3
-   adb logcat -d -s AuriAsr:I      # 期望一行：state=SUCCEEDED rtf=… out=runs/phone-zh
+   adb logcat -d -s AuriAsr:I      # 期望两行：开头一行 start out=runs/phone-zh，结束一行 state=SUCCEEDED rtf=… out=runs/phone-zh
    adb shell run-as app.auri.android cat files/runs/phone-zh/run-report.json > phone-zh-run-report.json
    ```
    日志与界面只写状态和数字，不写转录正文；正文只在 `files/runs/phone-zh/revision-content.json`（私有目录里）。
@@ -129,17 +129,17 @@ avdmanager delete avd -n auri-t14-asr
 | 套件 | 命令 | 结果 |
 |---|---|---|
 | `:asr` JVM 单测 | `./gradlew :asr:testDebugUnitTest` | 109 通过，0 失败，0 跳过 |
-| `:app` JVM 单测 | `./gradlew :app:testDebugUnitTest` | 23 通过，0 失败，0 跳过 |
-| 仪器测试（API 35 arm64 模拟器，真引擎 + 真模型） | `run_device_acceptance.sh`（第 4 步） | `OK (23 tests)`，`check_instrumentation.py` 核对 23 个 `@Test` 全部跑到且通过：EnginePinTest 2、TestAudioTest 3、RealEngineTranscriptionTest 7、ModelRefusalOnDeviceTest 4、OfflineProofTest 3、TranscribeFileActivityTest 4 |
+| `:app` JVM 单测 | `./gradlew :app:testDebugUnitTest` | 25 通过，0 失败，0 跳过 |
+| 仪器测试（API 35 arm64 模拟器，真引擎 + 真模型） | `run_device_acceptance.sh`（第 4 步） | `OK (24 tests)`，`check_instrumentation.py` 核对 24 个 `@Test` 全部跑到且通过：EnginePinTest 2、TestAudioTest 3、RealEngineTranscriptionTest 7、ModelRefusalOnDeviceTest 4、OfflineProofTest 3、TranscribeFileActivityTest 5 |
 | 设备输出的合同校验 | 同上第 7 步 | `contract-out` 15 个场景 0 问题；`runs` 5 个场景 0 问题 |
-| Python 验收工具 | `.venv/bin/pytest execution/acceptance/asr-android` | 100 通过（`test_benchmark_summary` 22、`test_check_instrumentation` 12、`test_contract_check` 37、`test_contract_output` 3、`test_engine_pin_guard` 7、`test_install_on_device` 5、`test_prepare_model` 14） |
+| Python 验收工具 | `.venv/bin/pytest execution/acceptance/asr-android` | 116 通过（`test_benchmark_summary` 22、`test_check_instrumentation` 15、`test_contract_check` 38、`test_contract_output` 3、`test_engine_pin_guard` 7、`test_install_on_device` 8、`test_prepare_model` 23） |
 | 合同 / 集成 / 安全（全仓库） | `.venv/bin/pytest tests/contract tests/integration tests/security` | 492 通过，0 失败，0 跳过（189 秒；本票没有改动 `contracts/`、`tests/`、`services/`） |
 
 **变异验证**（证明测试真能失败；每次改完立即还原，已用 `diff` 核对）：
 - 设备：关掉加载器的哈希比对 → `oneFlippedByteInTheRealModelIsRefusedBeforeTheEngineIsTouched` 失败（实际终态是 `FAILED`：被篡改的模型进了引擎）；不真正打开飞行模式 → `transcriptionSucceedsInAirplaneModeWithoutAnyNetworkBytes` 以“飞行模式没有生效”失败；给应用加上 INTERNET 权限 → `theInstalledPackageRequestsNoInternetPermission` 与 `theKernelRefusesEveryNetworkSocketButStillAllowsLocalOnes` 两个失败（注意这时飞行模式那条仍然通过：单靠飞行模式不能证明不联网，所以才要三层证据）。
 - Python：`benchmark_summary.py` 六种变异（关掉 RTF 定义检查、允许非零网络字节、允许未知字段、允许峰值内存下降、忽略终态、把 KiB 当 1000）全部被抓；开发时还手工变异验证过 `contract_check.py`（5 种）与 `prepare_model.py`（3 种），全部被抓。
 - JVM：Kotlin 侧对 SR-01 用 UTF-16 算哈希的变异被 `test_contract_output.py` 抓到；合并清单里加 INTERNET 被 `NoNetworkManifestTest` 抓到。
-- 以上变异都是开发时手工做的，变异本身不入库（入库的是能抓住它们的测试）。提交前外部评审（`codex review`）之后新增的那批测试（读取上限、校验读取失败、`LinkageError`、热运行失败、Activity 重建、`check_instrumentation.py`、`install_on_device.sh`、下载封顶等）都是先看着它因正确的原因失败、再改绿，没有再逐个做变异。
+- 以上变异都是开发时手工做的，变异本身不入库（入库的是能抓住它们的测试）。提交前外部评审（`codex review`）之后新增的那批测试（读取上限、校验读取失败、`LinkageError`、热运行失败、Activity 重建、`check_instrumentation.py`、`install_on_device.sh`、下载封顶等）都是先看着它因正确的原因失败、再改绿，没有再逐个做变异；例外是 Activity 重建守卫（去掉守卫 → 重建测试失败）与 `EnginePinTest` 的固定提交格式检查（把固定提交清空 → 失败），这两处做过变异验证并已还原。
 
 ### 5.2 性能
 
@@ -149,12 +149,12 @@ avdmanager delete avd -n auri-t14-asr
 
 | 运行 | 音频 ms | 冷启动 ms（进程启动→首个结果） | 校验 ms | 引擎加载 ms | 推理 ms | RTF | 同引擎再推理 ms | VmHWM MiB | VmRSS MiB | 网络字节增量 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 冷启动 1 | 5592 | 1646 | 401 | 947 | 103 | 0.0184 | 103, 102, 101 | 493.1 | 491.3 | 0 |
-| 冷启动 2 | 5592 | 1653 | 424 | 911 | 104 | 0.0186 | 102, 101, 106 | 493.3 | 491.3 | 0 |
-| 冷启动 3 | 5592 | 1750 | 327 | 1039 | 105 | 0.0188 | 103, 103, 102 | 493.2 | 491.2 | 0 |
-| 中位数 | 5592 | 1653 | 401 | 947 | 104 | 0.0186 | — | 493.2 | 491.3 | — |
+| 冷启动 1 | 5592 | 1717 | 500 | 853 | 109 | 0.0195 | 106, 106, 107 | 493.1 | 491.2 | 0 |
+| 冷启动 2 | 5592 | 1603 | 370 | 950 | 104 | 0.0186 | 103, 103, 102 | 491.6 | 489.9 | 0 |
+| 冷启动 3 | 5592 | 1660 | 353 | 954 | 105 | 0.0188 | 103, 105, 105 | 493.1 | 491.2 | 0 |
+| 中位数 | 5592 | 1660 | 370 | 950 | 105 | 0.0188 | — | 493.1 | 491.2 | — |
 
-上表是提交前最后一次 `run_device_acceptance.sh`（23 个仪器测试全过）的结果。同一台模拟器上这套代码前后跑过好几次，四次的中位数冷启动在 1635–1901 ms、RTF 在 0.0186–0.0197 之间浮动，VmHWM 稳定在 492–493 MiB：**模拟器自身的波动约 ±10%**，所以这些数字只能用来看量级与有没有退化，不能当精确值。
+上表是提交前最后一次 `run_device_acceptance.sh`（24 个仪器测试全过）的结果。同一台模拟器上这套代码前后跑过好几次，各次的中位数冷启动在 1635–1901 ms、RTF 在 0.0186–0.0197 之间浮动，VmHWM 稳定在 492–493 MiB：**模拟器自身的波动约 ±10%**，所以这些数字只能用来看量级与有没有退化，不能当精确值。
 
 引擎 sherpa-onnx 2.0.1（ONNX Runtime 1.28.2，提交 `af2d8d81`），模型 `sensevoice-small-int8` `2024-07-17+7d1efa2138a6`。VmHWM/VmRSS 来自 `/proc/self/status`（进程历史峰值 / 当前驻留）。
 
@@ -164,7 +164,7 @@ avdmanager delete avd -n auri-t14-asr
 |---|---|---|---|---|---|
 | （待产品负责人填） | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` | `NOT_RUN` |
 
-**怎么读这些数字**：仪器测试进程里的 `run-report.json`（`files/contract-out/*`、`files/runs/activity-zh`）**不是基准**：那个进程在此之前已经加载过模型，`start_to_first_result_ms` 和 `vm_hwm_kb_before` 都被前面的测试污染了（最后一次实测 `activity-zh` 是 13358 ms、起步就已有约 497 MiB；冷进程 `bench-1` 是 1646 ms、起步约 131 MiB）。性能只看 `bench-*`（每个都是全新进程）。
+**怎么读这些数字**：仪器测试进程里的 `run-report.json`（`files/contract-out/*`、`files/runs/activity-zh`）**不是基准**：那个进程在此之前已经加载过模型，`start_to_first_result_ms` 和 `vm_hwm_kb_before` 都被前面的测试污染了（最后一次实测 `activity-zh` 是 13659 ms、起步就已有约 497 MiB；冷进程 `bench-1` 是 1717 ms、起步约 141 MiB）。性能只看 `bench-*`（每个都是全新进程）。
 
 ### 5.3 一次观察到的识别输出（E2，回归基线而非准确率）
 
@@ -192,13 +192,13 @@ avdmanager delete avd -n auri-t14-asr
 
 **限制 / 取舍**
 - 模型文件校验发生在加载时，校验通过到引擎真正读取之间存在同 UID 进程替换文件的窗口（TOCTOU）。模型放在应用私有目录，同 UID 的恶意进程不在本票的威胁模型内。
-- `TranscribeFileActivity` 在 `src/debug/` 里，且 `android:exported="true"`（`am start` 从 shell 启动非导出的 Activity 会被拒），因此**只存在于 debug 构建**，release 构建里没有。它只在本应用私有目录里读写；界面和日志只写状态、数字和异常类型，不写正文，输入路径不合法时也只显示异常类型。`--es out` 只接受以字母或数字开头的简单名字（`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`），带 `../` 之类的名字在写任何文件之前就被拒绝，日志里不回显它（只写 `(invalid)`）；合法的名字会出现在日志的 `out=runs/<名字>` 里，它受上面的正则约束，是调用方自己传的短字符串（`TranscribeFileActivityTest` 有测试）。入口还声明了 `android:permission="android.permission.DUMP"`，意图是只让 shell/system（以及同 UID 的仪器测试）启动它、第三方应用启动不了：**这一条只有静态证据**（合并后的清单里确有该声明；正向对照：shell 与仪器测试都能启动它），**“第三方应用确实被拒”的负向对照没有做成**（试过用 `su <uid>` 冒充第三方调用方，被系统的包名/UID 校验挡回，没有得出有效结论），所以不要把它当成已证实的访问控制，真正的保障是它只在 debug 构建里。Activity 被系统重建（旋转屏幕等）时不会再起第二次转录（`recreatingTheActivityDuringARunDoesNotStartASecondRun`，先看它因“出现两条结束记录”而失败，再修好）。输出目录被复用时，上一次留下的 `revision-content.json` / `error.json` 会先被清掉，不会出现“失败了正文还在”或“同时有成功与出错两种结论”。
+- `TranscribeFileActivity` 在 `src/debug/` 里，且 `android:exported="true"`（`am start` 从 shell 启动非导出的 Activity 会被拒），因此**只存在于 debug 构建**，release 构建里没有。它只在本应用私有目录里读写；界面和日志只写状态、数字和异常类型，不写正文，输入路径不合法时也只显示异常类型。`--es out` 只接受以字母或数字开头的简单名字（`[A-Za-z0-9][A-Za-z0-9._-]{0,63}`），带 `../` 之类的名字在写任何文件之前就被拒绝，日志里不回显它（只写 `(invalid)`，而字面量 `(invalid)` 本身也不是合法名字，不能拿它绕过检查）；合法的名字会出现在日志的 `start out=runs/<名字>`（开始时一行）与 `state=… out=runs/<名字>`（结束时一行）里，它受上面的正则约束，是调用方自己传的短字符串（`TranscribeFileActivityTest` 有测试）。入口还声明了 `android:permission="android.permission.DUMP"`，意图是只让 shell/system（以及同 UID 的仪器测试）启动它、第三方应用启动不了：**这一条只有静态证据**（合并后的清单里确有该声明；正向对照：shell 与仪器测试都能启动它），**“第三方应用确实被拒”的负向对照没有做成**（试过用 `su <uid>` 冒充第三方调用方，被系统的包名/UID 校验挡回，没有得出有效结论），所以不要把它当成已证实的访问控制，真正的保障是它只在 debug 构建里。Activity 被系统重建（旋转屏幕等）时不会再起第二次转录（`recreatingTheActivityDuringARunDoesNotStartASecondRun`：数日志里 `start out=runs/activity-recreate` 恰好一行；先看它因“出现两条结束记录”而失败再修好，去掉守卫的变异也被它抓到）。**限制**：进程被系统回收后 Activity 的恢复与旋转重建无法区分，此时界面只显示“Activity 已重建，没有重新开始；若进程曾被系统回收，上一次运行没有完成，请重新 `am start -S -W`”，**不会自动重跑**；这是调试入口，不是产品功能。输出目录被复用时，`FileTranscription.run` 一开始就清掉上一次的全套输出（`capabilities.json`、`task-handle.json`、`trace.json`、`revision-content.json`、`error.json`、`run-report.json`；目录里别的文件不动），所以无论这一次是成功、失败、WAV 不合法还是热运行出错，都不会出现“失败了正文还在”“同时有成功与出错两种结论”或“报告与正文不是同一次的”。
 - 引擎只用 CPU（provider `cpu`），线程数 2 是假设（`SherpaOnnxEngineFactory.DEFAULT_THREADS`），Ticket 15 评测后再定。
 - 单段音频最长 30 秒（清单 `limits.max_audio_duration_ms`），超过按 `FAILED` / `ASR_RESOURCE_LIMIT` 处理；长音频切分不在本票范围。
 - 仪器测试需要先装好模型与样例，缺了会**失败并说明怎么装**，不会跳过（跳过会把“没测”显示成“通过”）。
-- **WAV 读取有大小上限，防止一个超大/不是文件的输入把进程撑爆**：`WavReader` 只接受普通文件（目录、设备文件如 `/dev/zero` 一律按格式错误拒绝）；`FileTranscription` 按清单的 `limits.max_audio_duration_ms` 推出上限（最坏按 192 kHz 双声道 16 位算，再加 1 MiB 头部余量：30 秒 → 24,088,576 字节），超过的在读进内存之前就拒绝，不跑引擎、不写输出。检查大小与读取之间不是原子的（`shortcut:` 注释里写了），威胁模型只到“别让手滑的大文件拖垮进程”。
+- **WAV 读取有大小上限，防止一个超大/不是文件的输入把进程撑爆**：`WavReader` 只接受普通文件（目录、设备文件如 `/dev/zero` 一律按格式错误拒绝）；上限是固定的 64 MiB（`WavReader.DEFAULT_MAX_BYTES`），超过的在读进内存之前就按格式错误拒绝：不跑引擎、不写合同输出，只抛异常。≤ 64 MiB 的文件正常读进来，**时长超过清单上限（30 秒）的按合同走 `FAILED` / `ASR_RESOURCE_LIMIT`，不碰引擎**（`很大的超长音频也走时长超限的合同失败…`：192 kHz × 64 s 的文件仍是合同失败，而不是读文件时的格式错误）。曾经试过按清单时长推导上限，被外部评审找出三个边界缺陷（32 秒、192 kHz 双声道的超长文件拿不到合同里的时长错误；清单里极大的时长值会让上限的算术溢出；合法的大元数据块会撑爆预留的余量），所以改回一个平的上限。检查大小与读取之间不是原子的（`shortcut:` 注释里写了），威胁模型只到“别让手滑的大文件拖垮进程”。
 - **失败要响，不能静默变成“看起来正常”**：校验时读文件出错按 `MODEL_INTEGRITY_FAILED` 拒绝（`ModelRefusal.UNREADABLE`，消息里不带底层异常文本）；引擎原生库缺失/不匹配（`LinkageError`）按 `FAILED` 收尾而不是让进程崩掉，此时报告里引擎信息写 `unavailable`，`benchmark_summary.py` 不接受这样的报告；基准里的热运行只要有一次没跑完就整个基准报错，不再把它记成 0 ms。
-- **下载与安装脚本的取舍**：`prepare_model.py` 下载时以清单里的压缩包大小为上限（`curl --max-filesize`，对没声明长度的流式响应也生效，本机 curl 8.7.1 有测试证明；更老的 curl 若不生效，只剩下完之后的大小与 SHA-256 校验兜底），超限就删掉残片，不留给下次续传；解包先进暂存目录，模型与示例音频全部校验通过后才换掉旧的，失败的刷新不会弄坏已有缓存。`install_on_device.sh` 的模型/样例 id 与版本先按格式校验再拼进设备上的命令，先整份拷到设备暂存目录再换位；**没有加锁**，不要对同一台设备并发运行两份。
+- **下载与安装脚本的取舍**：`prepare_model.py` 下载时以清单里的压缩包大小为上限（`curl --max-filesize`，对没声明长度的流式响应也生效，本机 curl 8.7.1 有测试证明；更老的 curl 若不生效，只剩下完之后的大小与 SHA-256 校验兜底），超限就删掉残片，不留给下次续传；断点续传时给 curl 的上限要扣掉已有的 `.part`（否则每次续传都能再下一个完整上限，反复中断就能无限增长），已有的 `.part` 本身超限就丢掉重下；curl 的错误输出会被捕获并抹掉其中的完整 URL（含用户名密码、查询串）再显示；缓存里的 `downloads`、`models`、`models/<id>`、`samples` 目录如果是符号链接就拒绝运行（否则会写到缓存外面去）。解包先进暂存目录，模型与示例音频全部校验通过后才换掉旧的，失败的刷新不会弄坏已有缓存；换位失败时旧目录只剩 `.old` 一份的话，下一次运行**不会**把它当垃圾删掉，而是先还原（`.old` 只有在正式目录存在时才是垃圾）。`install_on_device.sh` 的模型/样例 id 与版本先按格式校验再拼进设备上的命令，先整份拷到设备暂存目录再换位，同样遵守“正式目录不在时不删 `.old`”（用会真实执行设备端脚本的假 adb 做了行为测试：全新安装、重装整份替换、换位中断后重跑能补完）；**没有加锁**，不要对同一台设备并发运行两份。
 
 **已知环境问题**
 - **macOS 上 adb 的服务端可能卡死在 USB 初始化（IOKit）**：现象是 `adb devices`/`adb start-server` 永远不返回，还会堆积 fork-server 进程。解决：`export ADB_LIBUSB=1`，并在一个常驻终端里手动起服务 `adb -L tcp:5037 server nodaemon`。`ADB_MDNS_OPENSCREEN=0` 没有用。本目录的脚本默认已导出 `ADB_LIBUSB=1`。
@@ -224,7 +224,7 @@ avdmanager delete avd -n auri-t14-asr
 5. **ASR 结果用 Revision 的 `content` 类型**承载（`source=ASR`、`execution_location=on_device`、引擎与模型字段），因为合同 1.1 没有独立的“转录结果”类型（见第 10 节）。`confidence` 为 `null`、`segments` 为空：当前引擎配置不给时间戳。
 6. **冷启动基准取三次，中位数**；样例用 `zh.wav`；`warm_repeats=3`。
 7. 用户规则里的“TDD 接缝需用户确认”无法确认，下面列出我选的接缝。
-8. **WAV 大小上限**：清单没给时长上限就用 64 MiB；给了就按“最坏格式（192 kHz 双声道 16 位）× 时长（向上取整到秒，最多按 3600 秒）+ 1 MiB”推出，且不超过 64 MiB。这是我选的保守值，需求里没有这个数。
+8. **WAV 大小上限**：固定 64 MiB（`WavReader.DEFAULT_MAX_BYTES`），与清单无关；时长是否超限另由清单的 `limits.max_audio_duration_ms` 判定。这是我选的保守值，需求里没有这个数；真实录音片段（≤ 30 秒的 16 kHz/48 kHz 单声道）离它很远。
 9. **T-026 不在本票做**：本票的清单没有要求 VAD，Ticket 18 负责“静音过滤、无语音与时长上限”；所以我没有在 `:asr` 里加能量门限之类的临时闸门（那会替后面的设计做决定），只把缺口如实记录并钉成测试。
 
 TDD 接缝（真实实现在设备上、假实现在 JVM 里）：

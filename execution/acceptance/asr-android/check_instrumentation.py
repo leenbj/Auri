@@ -6,8 +6,9 @@
 
 用法：python check_instrumentation.py <instrumentation.log> <androidTest 源码目录>
 有问题就逐条打印并以 1 退出；参数不对退出 2。
-shortcut: 靠正则读 Kotlin 源码（每个文件一个顶层类、@Test 紧跟 fun）；写法变了要同步改这里，
-测试里钉着真实源码目录的几个关键测试，读不到时会失败而不是悄悄放行。
+shortcut: 靠正则读 Kotlin 源码（每个文件一个顶层类；@Test 与 fun 之间只许有空白与别的注解）。读不懂的写法不会被悄悄丢掉：
+@Test 的个数对不上解析出的方法数就抛 ValueError；日志里出现源码里没有的测试也算问题。
+测试里还钉着真实源码目录的几个关键测试，读不到时会失败而不是悄悄放行。
 """
 import pathlib
 import re
@@ -15,7 +16,11 @@ import sys
 
 _PACKAGE = re.compile(r"^package\s+([\w.]+)", re.MULTILINE)
 _CLASS = re.compile(r"^class\s+(\w+)", re.MULTILINE)
-_TEST_FUN = re.compile(r"@Test\s+fun\s+(\w+)")
+_COMMENTS = re.compile(r"/\*.*?\*/|//[^\n]*", re.DOTALL)
+# 注解可以带参数，参数里的字符串可以含括号：@Ignore("等设备")、@Throws(Exception::class)
+_ANNOTATION = r'@\w+(?:\((?:[^()"]|"(?:[^"\\]|\\.)*")*\))?'
+_TEST_FUN = re.compile(rf"@Test\b(?:\s*{_ANNOTATION})*\s*fun\s+(\w+)")
+_TEST_MARK = re.compile(r"@Test\b")
 
 # am instrument -r 的状态码（android.test.InstrumentationTestRunner / AndroidJUnitRunner）
 _BAD = {-1: "出错", -2: "失败", -3: "被忽略", -4: "假设失败（等于跳过）"}
@@ -25,8 +30,11 @@ def expected_tests(src_dir) -> set:
     """源码里的每个 @Test，形如 `app.auri.android.EnginePinTest#方法名`。"""
     names = set()
     for path in sorted(pathlib.Path(src_dir).rglob("*.kt")):
-        text = path.read_text(encoding="utf-8")
+        text = _COMMENTS.sub(" ", path.read_text(encoding="utf-8"))
         methods = _TEST_FUN.findall(text)
+        marks = len(_TEST_MARK.findall(text))
+        if marks != len(methods):
+            raise ValueError(f"{path.name} 里有 {marks} 个 @Test，只读出 {len(methods)} 个方法名：写法超出了本脚本能读的范围，不能悄悄漏掉")
         if not methods:
             continue
         package, cls = _PACKAGE.search(text), _CLASS.search(text)
@@ -68,6 +76,9 @@ def check(log: str, src_dir) -> list:
             problems.append(f"{name}: {_BAD[bad]}")
         elif 0 not in codes:
             problems.append(f"{name}: 只有开始记录，没有结束记录（进程中途崩溃？）")
+    for name in sorted(set(seen) - expected):
+        detail = next((_BAD[c] for c in seen[name] if c in _BAD), "有记录")
+        problems.append(f"{name}: 日志里有，源码里找不到这个测试（{detail}）：读源码漏了它，或设备上装的是旧版测试 APK")
     return problems
 
 

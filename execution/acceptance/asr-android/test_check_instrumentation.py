@@ -69,6 +69,47 @@ def test_expected_tests_are_read_from_the_sources_including_one_line_and_split_a
     }
 
 
+def test_a_test_with_another_annotation_between_test_and_fun_is_still_expected(tmp_path):
+    """@Ignore 单独写一行是合法写法：方法若因此从期望里消失，日志里的“被忽略”也就没人看了。"""
+    src = tmp_path / "androidTest"
+    src.mkdir()
+    (src / "GammaTest.kt").write_text(
+        'package app.auri.android\n\nclass GammaTest {\n'
+        '    @Test\n    @Ignore("等设备")\n    fun parked() {}\n\n'
+        '    @Test @Throws(Exception::class) fun risky() {}\n\n'
+        '    @Test // 行尾注释\n    fun commented() {}\n'
+        '}\n',
+        encoding="utf-8",
+    )
+
+    assert ci.expected_tests(src) == {f"{PKG}.GammaTest#parked", f"{PKG}.GammaTest#risky", f"{PKG}.GammaTest#commented"}
+    log = status_block("GammaTest", "parked", 1) + status_block("GammaTest", "parked", -3) \
+        + passed("GammaTest", "risky") + passed("GammaTest", "commented")
+    assert any("GammaTest#parked" in p and "忽略" in p for p in ci.check(log, src))
+
+
+def test_a_test_annotation_the_parser_cannot_follow_fails_loudly_instead_of_being_dropped(tmp_path):
+    src = tmp_path / "androidTest"
+    src.mkdir()
+    (src / "WeirdTest.kt").write_text(
+        'package app.auri.android\n\nclass WeirdTest {\n    @Test\n    private val notAFunction = 1\n}\n', encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="WeirdTest"):
+        ci.expected_tests(src)
+
+
+def test_a_test_in_the_log_that_the_sources_do_not_have_is_a_problem(sources):
+    """源码解析漏了它，或设备上装的是旧版测试 APK：无论哪种，“全部通过”都不可信。"""
+    extra = passed("AlphaTest", "first") + passed("AlphaTest", "second") + passed("BetaTest", "third") \
+        + passed("GhostTest", "appearsOnlyInTheLog") + status_block("GhostTest", "ignoredGhost", 1) + status_block("GhostTest", "ignoredGhost", -3)
+
+    problems = ci.check(extra, sources)
+
+    assert any("GhostTest#appearsOnlyInTheLog" in p and "源码里找不到" in p for p in problems), problems
+    assert any("GhostTest#ignoredGhost" in p and "忽略" in p for p in problems), problems
+
+
 def test_a_test_missing_from_the_log_is_reported_by_name(sources):
     log = passed("AlphaTest", "first") + passed("BetaTest", "third") + "\nOK (2 tests)\n"
 

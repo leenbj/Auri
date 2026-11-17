@@ -32,11 +32,42 @@ def manifest(model_id: str = "test-model", model_version: str = "v1") -> dict:
     }
 
 
-def run_script(tmp_path: pathlib.Path, manifest_value: dict, *, cache_dirs=("test-model", "v1")):
+# 真正执行设备脚本的假 adb：“设备”是本地目录。/data/local/tmp 映射到 $FAKE_TMP；
+# run-as 在 $FAKE_APP（应用私有目录）里用 sh 执行标准输入里的命令，$FAKE_SHIM 排在 PATH 最前面，可用来让某条命令失败。
+FAKE_ADB_EXECUTING = r"""#!/usr/bin/env bash
+map() { printf '%s\n' "${1/\/data\/local\/tmp/$FAKE_TMP}"; }
+case "$1" in
+  get-state) echo device ;;
+  push) dest="$(map "$3")"; mkdir -p "$dest"; cp -R "$2"/. "$dest"/ ;;
+  shell)
+    shift
+    case "$1" in
+      pm) exit 0 ;;
+      rm) shift 2; for p in "$@"; do rm -rf "$(map "$p")"; done ;;
+      run-as)
+        shift 2
+        cd "$FAKE_APP"
+        if [ "$1" = sh ]; then
+          sed "s#/data/local/tmp#$FAKE_TMP#g" | PATH="$FAKE_SHIM:$PATH" sh
+        else
+          "$@"
+        fi ;;
+    esac ;;
+esac
+"""
+
+# 让“把暂存目录换进正式位置”这一步失败，模拟换到一半被打断
+FAILING_STAGE_MV = """#!/bin/sh
+case "$1" in *.install-*) echo "mv: 模拟失败" >&2; exit 1 ;; esac
+exec /bin/mv "$@"
+"""
+
+
+def run_script(tmp_path: pathlib.Path, manifest_value: dict, *, cache_dirs=("test-model", "v1"), fake_adb=FAKE_ADB, extra_env=None):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     adb = bin_dir / "adb"
-    adb.write_text(FAKE_ADB, encoding="utf-8")
+    adb.write_text(fake_adb, encoding="utf-8")
     adb.chmod(adb.stat().st_mode | stat.S_IXUSR)
     cache = tmp_path / "cache"
     model_dir = cache.joinpath("models", *cache_dirs)
@@ -48,9 +79,34 @@ def run_script(tmp_path: pathlib.Path, manifest_value: dict, *, cache_dirs=("tes
     path = tmp_path / "m.manifest.json"
     path.write_text(json.dumps(manifest_value), encoding="utf-8")
     log = tmp_path / "adb.log"
-    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "AURI_CACHE_DIR": str(cache), "ADB_LOG": str(log)}
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "AURI_CACHE_DIR": str(cache), "ADB_LOG": str(log), **(extra_env or {})}
     result = subprocess.run(["bash", str(SCRIPT), str(path)], env=env, capture_output=True, text=True, timeout=60)
     return result, (log.read_text(encoding="utf-8") if log.exists() else "")
+
+
+def run_on_fake_device(tmp_path: pathlib.Path, app: pathlib.Path, *, fail_stage_mv: bool = False):
+    """真的执行设备脚本；app 是“设备”上应用私有目录的本地替身（里面的 files/ 可以事先摆好旧状态）。"""
+    shim = tmp_path / "shim"
+    shim.mkdir(parents=True)
+    if fail_stage_mv:
+        (shim / "mv").write_text(FAILING_STAGE_MV, encoding="utf-8")
+        (shim / "mv").chmod(0o755)
+    device_tmp = tmp_path / "devtmp"
+    device_tmp.mkdir()
+    (app / "files").mkdir(parents=True, exist_ok=True)
+    env = {"FAKE_APP": str(app), "FAKE_TMP": str(device_tmp), "FAKE_SHIM": str(shim)}
+    result, _ = run_script(tmp_path, manifest(), fake_adb=FAKE_ADB_EXECUTING, extra_env=env)
+    return result
+
+
+def write_app_file(app: pathlib.Path, relative: str, text: str) -> None:
+    path = app / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def leftovers(app: pathlib.Path) -> list:
+    return sorted(str(p.relative_to(app)) for p in (app / "files").rglob("*") if ".install-" in p.name or p.name.endswith(".old"))
 
 
 def device_script(log: str) -> str:
@@ -104,3 +160,46 @@ def test_each_run_uses_its_own_staging_directories(tmp_path):
     targets = [line.split()[-1] for line in log.splitlines() if line.startswith("ARGS: push")]
     assert len(targets) == 2
     assert all(re.fullmatch(r"/data/local/tmp/auri-(model|samples)-\d+", t) for t in targets), targets
+
+
+def test_a_fresh_install_puts_model_and_samples_in_place_and_leaves_no_staging_behind(tmp_path):
+    app = tmp_path / "app"
+
+    result = run_on_fake_device(tmp_path, app)
+
+    assert result.returncode == 0, result.stderr
+    assert (app / "files/models/test-model/v1/weights/model.onnx").read_bytes() == b"x"
+    assert (app / "files/samples/zh.wav").read_bytes() == b"RIFF"
+    assert leftovers(app) == []
+
+
+def test_reinstalling_replaces_the_previous_model_and_samples_completely(tmp_path):
+    app = tmp_path / "app"
+    write_app_file(app, "files/models/test-model/v1/weights/model.onnx", "OLD-MODEL")
+    write_app_file(app, "files/models/test-model/v1/stale-extra.bin", "OLD-EXTRA")
+    write_app_file(app, "files/samples/old.wav", "OLD-WAV")
+
+    result = run_on_fake_device(tmp_path, app)
+
+    assert result.returncode == 0, result.stderr
+    assert (app / "files/models/test-model/v1/weights/model.onnx").read_bytes() == b"x"
+    assert not (app / "files/models/test-model/v1/stale-extra.bin").exists(), "整个目录换新，旧版多出来的文件不留"
+    assert sorted(p.name for p in (app / "files/samples").iterdir()) == ["zh.wav"]
+    assert leftovers(app) == []
+
+
+def test_an_interrupted_swap_keeps_the_only_copy_of_the_old_model_and_a_retry_finishes_the_job(tmp_path):
+    """上次换到一半被打断：正式目录不在，旧模型只剩 .old 这一份。再运行时（哪怕这次又失败）都不能先把它删了。"""
+    app = tmp_path / "app"
+    write_app_file(app, "files/models/test-model/v1.old/weights/model.onnx", "ONLY-COPY")
+
+    failed = run_on_fake_device(tmp_path / "attempt1", app, fail_stage_mv=True)
+
+    assert failed.returncode != 0, "把暂存目录换进正式位置失败，脚本必须以非零退出"
+    assert (app / "files/models/test-model/v1.old/weights/model.onnx").read_text() == "ONLY-COPY", "旧模型仅剩的一份被删了"
+
+    retried = run_on_fake_device(tmp_path / "attempt2", app)
+
+    assert retried.returncode == 0, retried.stderr
+    assert (app / "files/models/test-model/v1/weights/model.onnx").read_bytes() == b"x"
+    assert leftovers(app) == [], "换成功之后 .old 才可以清掉"

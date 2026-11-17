@@ -17,11 +17,17 @@ import kotlinx.serialization.Serializable
  * 引擎内部失败在合同里没有错误码（见 README 的合同缺口），那种情况只有轨迹、没有 error.json。
  */
 object ContractOutput {
+    private val FILE_NAMES = listOf("capabilities.json", "task-handle.json", "trace.json", "revision-content.json", "error.json")
+
+    /**
+     * 清掉本对象写过的文件（目录里别的东西不动）。目录可能被复用：免得口述正文在失败之后还躺在目录里，
+     * 被当成这一次的结果，或者一个目录里同时有“成功”与“出错”两种结论。deleteIfExists 删不掉就抛异常，不静默留着。
+     */
+    fun clear(dir: File) = FILE_NAMES.forEach { Files.deleteIfExists(File(dir, it).toPath()) }
+
     fun write(dir: File, capabilities: AsrCapabilities, result: TranscriptionResult) {
         dir.mkdirs()
-        // 目录可能被复用：先清掉上一次留下的、互斥的结果文件，免得口述正文在失败之后还躺在目录里，
-        // 或者一个目录里同时有“成功”与“出错”两种结论。deleteIfExists 删不掉就抛异常，不静默留着。
-        listOf("revision-content.json", "error.json").forEach { Files.deleteIfExists(File(dir, it).toPath()) }
+        clear(dir)
         File(dir, "capabilities.json").writeUtf8(ContractJson.encode(capabilities))
         File(dir, "task-handle.json").writeUtf8(ContractJson.encode(result.job))
         File(dir, "trace.json").writeUtf8(ContractJson.encode(trace(result)))

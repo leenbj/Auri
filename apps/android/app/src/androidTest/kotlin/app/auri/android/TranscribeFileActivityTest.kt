@@ -80,11 +80,23 @@ class TranscribeFileActivityTest {
                 if (System.nanoTime() > deadline) fail("第一次运行一直没有写出报告")
                 Thread.sleep(250)
             }
-            Thread.sleep(8_000) // 再等一会儿，让多余的并发运行有机会把自己暴露在日志里
         }
 
-        val finished = DeviceEnv.shell("logcat -d -s AuriAsr:I").lines().count { it.contains("out=runs/activity-recreate") }
-        assertEquals("同一个 Intent 只应运行一次，日志里出现了 $finished 条结束记录", 1, finished)
+        // 数“开始”而不是“结束”：多出来的那次运行在重建的那一刻就会写下开始记录，不取决于它多久才跑完
+        val started = DeviceEnv.shell("logcat -d -s AuriAsr:I").lines().count { it.contains("start out=runs/activity-recreate") }
+        assertEquals("同一个 Intent 只应启动一次转录，日志里出现了 $started 条开始记录", 1, started)
+    }
+
+    /** 不合法名字在日志里用 (invalid) 代替；传进来的名字恰好就是 (invalid) 时，不能因为和替身同名而被放行。 */
+    @Test
+    fun theLiteralPlaceholderTextIsNotAValidOutputNameEither() {
+        DeviceEnv.requireInstalled("zh")
+        val placeholderDir = File(DeviceEnv.target.filesDir, "runs/(invalid)").also { it.deleteRecursively() }
+
+        val status = ActivityScenario.launch<TranscribeFileActivity>(launch("wav" to "samples/zh.wav", "out" to "(invalid)")).use { awaitStatus(it) }
+
+        assertTrue(status, status.startsWith("error=IllegalArgumentException"))
+        assertFalse("(invalid) 不是合法的输出名，不能被当成目录写出", placeholderDir.exists())
     }
 
     @Test

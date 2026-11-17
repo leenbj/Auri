@@ -38,8 +38,9 @@ wait_for_log_line() {
   local pattern="$1" timeout_s="$2" waited=0 log
   while true; do
     log="$(adb logcat -d -s AuriAsr:I | tr -d '\r')"
-    if grep -q -- "$pattern" <<<"$log"; then
-      grep -- "$pattern" <<<"$log" | tail -1 | sed 's/.*AuriAsr *: *//'
+    # 只认“结果行”（state=… 或 error=…）：入口在转录开始时还会写一行 start out=…，它不是结果
+    if grep -q -E -- "(state|error)=.*$pattern" <<<"$log"; then
+      grep -E -- "(state|error)=.*$pattern" <<<"$log" | tail -1 | sed 's/.*AuriAsr *: *//'
       return 0
     fi
     sleep 1

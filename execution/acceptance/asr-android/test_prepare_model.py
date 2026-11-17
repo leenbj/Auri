@@ -3,11 +3,13 @@
 用的是现场造的小 tar.bz2 与清单，下载走本机的 http.server：不联网、不碰真实的 163 MB 模型包。
 真实模型包的校验在首次准备时由同一份代码完成（README 记录了结果）。
 """
+import errno
 import functools
 import hashlib
 import http.server
 import io
 import json
+import os
 import pathlib
 import tarfile
 import threading
@@ -270,6 +272,151 @@ def test_a_stream_without_declared_length_is_cut_off_at_the_manifest_size(tmp_pa
     assert "下载失败" in str(refused.value), str(refused.value)
     assert Endless.sent < 16 * 1024 * 1024, f"应在清单大小（{len(archive)} 字节）附近就掐断，实际已发送 {Endless.sent} 字节"
     assert not list((cache / "downloads").glob("*")), "超限的残片不能留在缓存里被续传"
+
+
+def test_curl_error_output_that_echoes_the_url_is_scrubbed_of_credentials(tmp_path, monkeypatch, capfd):
+    """curl 遇到范围语法等错误会把完整 URL（含口令与查询串）原样打到它自己的 stderr：只脱敏脚本自己的输出不够。
+    用一个假 curl 稳定地复现“把 URL 原样回显”，并用 capfd 抓子进程写到文件描述符上的输出。"""
+    fake_bin = tmp_path / "fakebin"
+    fake_bin.mkdir()
+    fake_curl = fake_bin / "curl"
+    fake_curl.write_text('#!/bin/sh\nfor last; do :; done\necho "curl: (3) bad range in URL position 9:" >&2\necho "$last" >&2\nexit 3\n')
+    fake_curl.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+    archive = build_archive(GOOD_MEMBERS)
+    manifest = write_manifest(tmp_path, make_manifest(archive, "http://user:s3cr3t-pass@127.0.0.1:9/p.tar.bz2?token=TOK3N-VALUE"))
+
+    with pytest.raises(SystemExit) as refused:
+        prepare_model.prepare(manifest, tmp_path / "cache", retries=0)
+
+    seen = capfd.readouterr()
+    everything = str(refused.value) + seen.out + seen.err
+    assert "s3cr3t-pass" not in everything and "TOK3N-VALUE" not in everything, everything
+    assert "下载失败" in everything
+    assert "127.0.0.1" in everything, "主机与路径仍要给出，方便排查"
+
+
+class Ranged(http.server.BaseHTTPRequestHandler):
+    """支持 Range 的服务器：文件总长 total，续传时只发剩下的部分。"""
+
+    total = 0
+
+    def do_GET(self):
+        start = int(self.headers.get("Range", "bytes=0-").split("=")[1].split("-")[0])
+        body = b"\0" * (self.total - start)
+        self.send_response(206 if start else 200)
+        if start:
+            self.send_header("Content-Range", f"bytes {start}-{self.total - 1}/{self.total}")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+def test_a_resumed_download_may_only_fetch_what_is_left_under_the_manifest_size(tmp_path):
+    """-C - 续传时 --max-filesize 数的是这一次要下的字节数：不扣掉已有的残片，反复中断就能把总量撑过清单大小。"""
+    archive = build_archive(GOOD_MEMBERS)
+    assert len(archive) > 200
+    already = len(archive) - 10  # 残片只差 10 字节就满了
+    cache = tmp_path / "cache"
+    (cache / "downloads").mkdir(parents=True)
+    (cache / "downloads" / "pkg.tar.bz2.part").write_bytes(b"\0" * already)
+    handler = type("Resumable", (Ranged,), {"total": already + 100})  # 续传还要发 100 字节：超出剩余的 10，但不超过整包大小
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        manifest = write_manifest(tmp_path, make_manifest(archive, f"http://127.0.0.1:{server.server_address[1]}/pkg.tar.bz2"))
+
+        with pytest.raises(SystemExit) as refused:
+            prepare_model.prepare(manifest, cache, retries=0)
+    finally:
+        server.shutdown()
+
+    assert "下载失败" in str(refused.value), str(refused.value)
+    assert not list((cache / "downloads").glob("*")), "超限的残片不能留着被下次续传"
+
+
+def test_a_leftover_part_file_larger_than_the_manifest_size_is_discarded_and_the_download_restarts(tmp_path, serve):
+    """比整个压缩包还大的残片不可能是这个包的前半截：删掉从头下，而不是带着它去续传（服务器不支持 Range 就卡死在那里）。"""
+    www, base = serve
+    archive = build_archive(GOOD_MEMBERS)
+    (www / "pkg.tar.bz2").write_bytes(archive)
+    cache = tmp_path / "cache"
+    (cache / "downloads").mkdir(parents=True)
+    (cache / "downloads" / "pkg.tar.bz2.part").write_bytes(b"\0" * (len(archive) + 50))
+
+    model_dir = prepare_model.prepare(write_manifest(tmp_path, make_manifest(archive, f"{base}/pkg.tar.bz2")), cache)
+
+    assert (model_dir / "tokens.txt").read_bytes() == TOKENS
+
+
+@pytest.mark.parametrize("link_name", ["downloads", "models", "models/test-model", "samples"])
+def test_a_symlinked_cache_subdirectory_is_refused_instead_of_followed(tmp_path, serve, link_name):
+    """缓存里的 downloads、models、samples 若是符号链接，往里写就等于写到缓存之外：拒绝并说明，不跟随。"""
+    www, base = serve
+    archive = build_archive(GOOD_MEMBERS)
+    (www / "pkg.tar.bz2").write_bytes(archive)
+    cache = tmp_path / "cache"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = cache / link_name
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(SystemExit) as refused:
+        prepare_model.prepare(write_manifest(tmp_path, make_manifest(archive, f"{base}/pkg.tar.bz2")), cache)
+
+    assert "符号链接" in str(refused.value), str(refused.value)
+    assert list(outside.iterdir()) == [], "不能往符号链接指向的目录里写任何东西"
+
+
+def test_replacing_a_directory_never_deletes_the_only_remaining_copy_of_the_old_one(tmp_path, monkeypatch):
+    """上次换到一半被打断时，旧目录只剩 .old 这一份：重试若先删 .old 再换入，换入再失败旧模型就彻底没了。"""
+    destination = tmp_path / "models" / "v1"
+    only_copy = tmp_path / "models" / "v1.old"
+    only_copy.mkdir(parents=True)
+    (only_copy / "weights").write_text("ONLY-COPY")
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "weights").write_text("NEW")
+    real_replace = pathlib.Path.replace
+
+    def failing_replace(self, target):
+        if self == staged:
+            raise OSError(errno.EXDEV, "跨文件系统，换入失败")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(pathlib.Path, "replace", failing_replace)
+
+    with pytest.raises(OSError):
+        prepare_model._replace_dir(staged, destination)
+
+    assert (destination / "weights").read_text() == "ONLY-COPY", "换入失败后旧目录必须原样回到原位"
+
+
+def test_a_failed_swap_puts_the_previous_directory_back(tmp_path, monkeypatch):
+    destination = tmp_path / "models" / "v1"
+    destination.mkdir(parents=True)
+    (destination / "weights").write_text("OLD")
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "weights").write_text("NEW")
+    real_replace = pathlib.Path.replace
+
+    def failing_replace(self, target):
+        if self == staged:
+            raise OSError(errno.EXDEV, "跨文件系统，换入失败")
+        return real_replace(self, target)
+
+    monkeypatch.setattr(pathlib.Path, "replace", failing_replace)
+
+    with pytest.raises(OSError):
+        prepare_model._replace_dir(staged, destination)
+
+    assert (destination / "weights").read_text() == "OLD"
+    assert not (tmp_path / "models" / "v1.old").exists(), "放回去之后不留 .old"
 
 
 def test_rejects_a_manifest_that_is_missing_required_fields(tmp_path):

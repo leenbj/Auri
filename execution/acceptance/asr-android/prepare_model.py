@@ -82,37 +82,68 @@ def _display_url(url: str) -> str:
     return f"{parts.scheme}://{parts.netloc.rpartition('@')[2]}{parts.path}"
 
 
+def _scrub(text: str, url: str) -> str:
+    """curl 自己的错误输出有时会原样带上完整 URL（比如范围语法错误）：换成脱敏后的形式，再抹掉口令与查询串。"""
+    parts = urlsplit(url)
+    text = text.replace(url, _display_url(url))
+    for secret in (parts.netloc.rpartition("@")[0], parts.query, parts.fragment):
+        if secret:
+            text = text.replace(secret, "***")
+    return text
+
+
 def _download(url: str, archive_path: pathlib.Path, retries: int, max_bytes: int) -> None:
     part = archive_path.with_name(archive_path.name + ".part")
     archive_path.parent.mkdir(parents=True, exist_ok=True)
-    # --max-filesize：声明的长度超过清单里的压缩包大小就不下载；没声明长度的流式响应，curl 8.7.1 也会在超出时掐断
-    # （test_a_stream_without_declared_length_is_cut_off_at_the_manifest_size 在本机实测）。
-    # shortcut: 更老的 curl 若不对流式响应执行这个限制，就只剩下完之后的大小与 SHA-256 校验兜底。
-    command = [
-        "curl", "-L", "--fail", "--silent", "--show-error", "-C", "-", "--retry", str(retries), "--retry-delay", "2",
-        "--max-filesize", str(max_bytes), "-o", str(part), url,
-    ]
+    have = part.stat().st_size if part.exists() else 0
+    if have > max_bytes:  # 比整个压缩包还大的残片不可能是它的前半截：从头下，别带着它去续传
+        part.unlink()
+        have = 0
     shown = _display_url(url)
     print(f"下载 {shown}", flush=True)
-    code = subprocess.run(command).returncode
-    if code == 63:  # curl: Maximum file size exceeded
-        part.unlink(missing_ok=True)  # 超限的残片不能留着：下次 -C - 会接着它续传
-        die(f"下载失败：{shown} 的大小超过清单里的压缩包大小（{max_bytes} 字节），已中止")
-    if code != 0:
-        die(f"下载失败：{shown}（已下载的部分保留在 {part}，重跑会续传）")
+    if have < max_bytes:  # 恰好等于清单大小时残片已经是完整的一份，直接交给后面的哈希校验
+        # --max-filesize 数的是“这一次要下载的字节数”：续传时要扣掉已有的残片，否则反复中断能把总量撑过清单大小。
+        # 声明的长度超限就不下载；没声明长度的流式响应，curl 8.7.1 也会在超出时掐断
+        # （test_a_stream_without_declared_length_is_cut_off_at_the_manifest_size 在本机实测）。
+        # shortcut: 更老的 curl 若不对流式响应执行这个限制，就只剩下完之后的大小与 SHA-256 校验兜底。
+        command = [
+            "curl", "-L", "--fail", "--silent", "--show-error", "-C", "-", "--retry", str(retries), "--retry-delay", "2",
+            "--max-filesize", str(max_bytes - have), "-o", str(part), url,
+        ]
+        # curl 的 stderr 要接过来脱敏再给人看：它的错误信息可能原样带着完整 URL（含口令与查询串）
+        run = subprocess.run(command, stderr=subprocess.PIPE, text=True, errors="replace")
+        if run.returncode == 63:  # curl: Maximum file size exceeded
+            part.unlink(missing_ok=True)  # 超限的残片不能留着：下次 -C - 会接着它续传
+            die(f"下载失败：{shown} 的大小超过清单里的压缩包大小（{max_bytes} 字节），已中止")
+        if run.returncode != 0:
+            detail = _scrub(run.stderr, url).strip()
+            die(f"下载失败：{shown}{'：' + detail if detail else ''}（已下载的部分保留在 {part}，重跑会续传）")
     part.replace(archive_path)
 
 
+def _refuse_symlink(path: pathlib.Path) -> None:
+    if path.is_symlink():
+        die(f"缓存里的 {path} 是符号链接，不跟随它写文件：把它删掉，或用 --cache-dir 直接指向真实目录")
+
+
 def _replace_dir(staged: pathlib.Path, destination: pathlib.Path) -> None:
-    """用暂存好的目录换掉旧目录。旧目录先改名后删，所以换的过程出错时旧目录还在。"""
+    """用暂存好的目录换掉旧目录。旧目录先改名后删；换入失败就把它放回去。
+    上次换到一半被打断时旧目录只剩 .old 这一份：重试先把它放回原位，绝不能先删 .old。"""
     destination.parent.mkdir(parents=True, exist_ok=True)
     old = destination.with_name(destination.name + ".old")
+    if old.exists() and not destination.exists():
+        old.replace(destination)
     shutil.rmtree(old, ignore_errors=True)
     if destination.is_symlink():
         destination.unlink()
     elif destination.exists():
         destination.replace(old)
-    staged.replace(destination)
+    try:
+        staged.replace(destination)
+    except OSError:
+        if old.exists() and not destination.exists():
+            old.replace(destination)
+        raise
     shutil.rmtree(old, ignore_errors=True)
 
 
@@ -169,6 +200,8 @@ def _extract(archive_path: pathlib.Path, manifest: dict, cache_dir: pathlib.Path
 def prepare(manifest_path: pathlib.Path, cache_dir: pathlib.Path, retries: int = 5) -> pathlib.Path:
     manifest = load_manifest(pathlib.Path(manifest_path))
     archive = manifest["archive"]
+    for sub in ("downloads", "models", f"models/{manifest['model_id']}", "samples"):
+        _refuse_symlink(pathlib.Path(cache_dir) / sub)  # 缓存根目录本身可以是链接（用户自己的选择），里面的子目录不行
     archive_path = pathlib.Path(cache_dir) / "downloads" / pathlib.PurePosixPath(urlparse(archive["url"]).path).name
 
     if archive_path.exists() and not _verify_archive(archive_path, archive):

@@ -55,7 +55,9 @@ mkdir -p $STAGE/models $STAGE/samples
 cp -R $REMOTE_MODEL/. $STAGE/models/
 cp -R $REMOTE_SAMPLES/. $STAGE/samples/
 mkdir -p files/models/$MODEL_ID
-rm -rf files/models/$MODEL_ID/$MODEL_VERSION.old files/samples.old
+# .old 只有在对应的正式目录还在时才是垃圾；正式目录不在、.old 在，是上次换到一半被打断，它是旧的唯一一份，不能删
+[ ! -e files/models/$MODEL_ID/$MODEL_VERSION ] || rm -rf files/models/$MODEL_ID/$MODEL_VERSION.old
+[ ! -e files/samples ] || rm -rf files/samples.old
 [ ! -e files/models/$MODEL_ID/$MODEL_VERSION ] || mv files/models/$MODEL_ID/$MODEL_VERSION files/models/$MODEL_ID/$MODEL_VERSION.old
 mv $STAGE/models files/models/$MODEL_ID/$MODEL_VERSION
 [ ! -e files/samples ] || mv files/samples files/samples.old

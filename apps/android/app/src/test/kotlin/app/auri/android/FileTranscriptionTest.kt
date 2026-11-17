@@ -110,8 +110,9 @@ class FileTranscriptionTest {
     }
 
     private fun writeWav(file: File, ms: Int = 1000, rate: Int = 16000) {
-        val pcm = ByteBuffer.allocate(rate * ms / 1000 * 2).order(ByteOrder.LITTLE_ENDIAN)
-        repeat(rate * ms / 1000) { pcm.putShort((it % 40).toShort()) }
+        val frames = (rate.toLong() * ms / 1000).toInt() // 先转 Long 再乘：192 kHz × 64 s 的 Int 乘积会溢出
+        val pcm = ByteBuffer.allocate(frames * 2).order(ByteOrder.LITTLE_ENDIAN)
+        repeat(frames) { pcm.putShort((it % 40).toShort()) }
         val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN)
         header.put("RIFF".toByteArray()).putInt(36 + pcm.capacity()).put("WAVE".toByteArray())
         header.put("fmt ".toByteArray()).putInt(16).putShort(1).putShort(1).putInt(rate).putInt(rate * 2).putShort(2).putShort(16)
@@ -227,6 +228,42 @@ class FileTranscriptionTest {
         assertFalse("没有可信的基准就不留报告", req.outDir.exists())
     }
 
+    /** 上一次成功运行留下的全套输出，外加一个不属于本程序的文件。 */
+    private fun leaveStaleOutputs(outDir: File) {
+        outDir.mkdirs()
+        listOf("revision-content.json", "error.json", "capabilities.json", "task-handle.json", "trace.json", "run-report.json")
+            .forEach { File(outDir, it).writeText("STALE-$it", Charsets.UTF_8) }
+        File(outDir, "keep.txt").writeText("不是本程序写的文件", Charsets.UTF_8)
+    }
+
+    private fun assertNoStaleOutputsButUnrelatedFileKept(outDir: File) {
+        val leftovers = outDir.listFiles()!!.filter { it.readText(Charsets.UTF_8).startsWith("STALE-") }.map { it.name }
+        assertEquals("上一次的正文与报告不能在这次失败之后还躺着，被当成这次的结果", emptyList<String>(), leftovers)
+        assertTrue("只清本程序写的文件，目录里别的东西不动", File(outDir, "keep.txt").isFile)
+    }
+
+    @Test
+    fun `热运行失败时 复用的输出目录里上一次的正文与报告被清掉`() {
+        engine.failOnCall = 3
+        val req = request(warmRepeats = 2)
+        leaveStaleOutputs(req.outDir)
+
+        assertThrows(IllegalStateException::class.java) { transcription().run(req) }
+
+        assertNoStaleOutputsButUnrelatedFileKept(req.outDir)
+    }
+
+    @Test
+    fun `WAV 不合法时 复用的输出目录里上一次的正文与报告也被清掉`() {
+        val req = request()
+        req.wav.writeText("这不是 WAV")
+        leaveStaleOutputs(req.outDir)
+
+        assertThrows(WavFormatException::class.java) { transcription().run(req) }
+
+        assertNoStaleOutputsButUnrelatedFileKept(req.outDir)
+    }
+
     @Test
     fun `原生库加载失败时报告里的引擎信息写 unavailable 而不是让整次运行崩溃`() {
         probe.engineInfoFailure = UnsatisfiedLinkError("no libsherpa-onnx-jni.so")
@@ -275,18 +312,22 @@ class FileTranscriptionTest {
     }
 
     @Test
-    fun `读进内存的 WAV 大小上限由清单的时长上限推出 并且有绝对封顶`() {
-        // 30 s × 192 kHz × 2 声道 × 2 字节 = 23040000，再加 1 MiB 头部余量：声明范围内最大的合法文件也装得下
-        assertEquals(24_088_576L, FileTranscription.maxWavBytes(30_000))
-        assertEquals(1_816_576L, FileTranscription.maxWavBytes(1)) // 不足一秒按一秒算
-        assertEquals(WavReader.DEFAULT_MAX_BYTES, FileTranscription.maxWavBytes(null))
-        assertEquals("时长上限再大也不能让宿主去读 GB 级文件", WavReader.DEFAULT_MAX_BYTES, FileTranscription.maxWavBytes(10_000_000_000L))
+    fun `很大的超长音频也走时长超限的合同失败 而不是在读文件时就按格式错误抛出`() {
+        // 192 kHz × 64 s 的 16 位单声道 = 24.6 MB：体积不小，但它是一份合法的、只是太长的音频，结局应与别的超长音频一致
+        val req = request()
+        writeWav(req.wav, ms = 64_000, rate = 192_000)
+
+        val result = transcription().run(req)
+
+        assertEquals(TranscriptionState.FAILED, result.finalState)
+        assertTrue(File(req.outDir, "error.json").readText(Charsets.UTF_8).contains("ASR_RESOURCE_LIMIT"))
+        assertEquals("超长音频不能送进引擎", 0, engine.calls)
     }
 
     @Test
-    fun `超过上限的大文件在读进内存之前就被拒绝 不碰引擎也不留输出`() {
+    fun `超过读取上限的大文件在读进内存之前就被拒绝 不碰引擎也不留输出`() {
         val req = request()
-        RandomAccessFile(req.wav, "rw").use { it.setLength(25_000_000L) } // 比 30 s 清单能装的最大 WAV 还大
+        RandomAccessFile(req.wav, "rw").use { it.setLength(WavReader.DEFAULT_MAX_BYTES + 1) } // 稀疏文件，不占磁盘
 
         val e = assertThrows(WavFormatException::class.java) { transcription().run(req) }
 
