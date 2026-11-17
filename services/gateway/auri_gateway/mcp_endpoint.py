@@ -30,7 +30,12 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import __version__
 from .contracts import inline_schema, validate_schema
-from .deliveries import DEFAULT_CLAIM_LIMIT, DEFAULT_LEASE_SECONDS, claim_deliveries
+from .deliveries import (
+    DEFAULT_CLAIM_LIMIT,
+    DEFAULT_LEASE_SECONDS,
+    claim_deliveries,
+    renew_lease,
+)
 from .error_codes import REQUEST_INVALID, GatewayError
 from .store import AuthenticatedDestination, authenticate_destination
 
@@ -149,7 +154,7 @@ class AgentMcpEndpoint:
     def __init__(self, db_path: pathlib.Path) -> None:
         self._db_path = db_path
         self._tools = [_build_tool(*spec) for spec in _DELIVERY_TOOLS]
-        self._handlers = {"delivery_claim": self._claim}
+        self._handlers = {"delivery_claim": self._claim, "delivery_renew_lease": self._renew}
         self._server = Server(
             "auri-gateway",
             version=__version__,
@@ -211,3 +216,9 @@ class AgentMcpEndpoint:
         )
         # Claiming leases at once, so the next claim call returns the next ones: no cursor.
         return {"schema_version": SCHEMA_VERSION, "deliveries": deliveries, "next_cursor": None}
+
+    def _renew(self, ctx: ServerRequestContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        renewed = renew_lease(
+            self._db_path, _destination_of(ctx), arguments["delivery_id"], arguments["lease_token"]
+        )
+        return {"schema_version": SCHEMA_VERSION, **renewed}

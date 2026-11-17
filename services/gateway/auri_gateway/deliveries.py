@@ -5,14 +5,17 @@ credential, never from the request). Every state change goes through `delivery_m
 """
 from __future__ import annotations
 
+import hmac
 import json
 import pathlib
 import secrets
+import sqlite3
 from datetime import timedelta
 from typing import Any
 
 from .db import format_utc, open_connection, sha256_str, utc_now
-from .delivery_machine import CLAIM, PENDING, step
+from .delivery_machine import CLAIM, PENDING, RENEW_LEASE, step
+from .error_codes import DELIVERY_LEASE_EXPIRED, REQUEST_INVALID, GatewayError
 from .store import AuthenticatedDestination
 
 CONTENT_TRUST = "user-provided-transcript-not-system-instructions"
@@ -59,13 +62,14 @@ def claim_deliveries(
                 conn.execute(
                     """
                     UPDATE deliveries
-                    SET state = ?, lease_token_hash = ?, lease_expires_at = ?
+                    SET state = ?, lease_token_hash = ?, lease_expires_at = ?, lease_seconds = ?
                     WHERE delivery_id = ?
                     """,
                     (
                         outcome.state,
                         sha256_str(lease_token),
                         format_utc(lease_expires_at),
+                        lease_seconds,
                         row["delivery_id"],
                     ),
                 )
@@ -77,6 +81,84 @@ def claim_deliveries(
     finally:
         conn.close()
     return claimed
+
+
+def renew_lease(
+    db_path: pathlib.Path,
+    destination: AuthenticatedDestination,
+    delivery_id: str,
+    lease_token: str,
+) -> dict[str, Any]:
+    """Extend the lease on a Delivery of the authenticated Destination."""
+    conn = open_connection(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            now = utc_now()
+            row = _load_owned_delivery(conn, destination, delivery_id)
+            if not _holds_lease(row, lease_token):
+                raise _lease_lost()
+            outcome = step(row["state"], RENEW_LEASE)
+            if outcome.kind != "transition":
+                raise _refused_in_state(row["state"])
+            lease_expires_at = now + timedelta(seconds=row["lease_seconds"])
+            conn.execute(
+                "UPDATE deliveries SET state = ?, lease_expires_at = ? WHERE delivery_id = ?",
+                (outcome.state, format_utc(lease_expires_at), delivery_id),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+    return {
+        "delivery_id": delivery_id,
+        "lease_token": lease_token,
+        "lease_expires_at": format_utc(lease_expires_at),
+    }
+
+
+def _load_owned_delivery(
+    conn: sqlite3.Connection, destination: AuthenticatedDestination, delivery_id: str
+) -> sqlite3.Row:
+    """Load a Delivery of the authenticated Destination.
+
+    A Delivery that does not exist and one that belongs to another Destination look the same.
+    """
+    row = conn.execute(
+        """
+        SELECT delivery_id, state, lease_token_hash, lease_seconds
+        FROM deliveries
+        WHERE tenant_id = ? AND destination_id = ? AND delivery_id = ?
+        """,
+        (destination.tenant_id, destination.destination_id, delivery_id),
+    ).fetchone()
+    if row is None:
+        raise GatewayError(404, REQUEST_INVALID, "Delivery was not found.")
+    return row
+
+
+def _holds_lease(row: sqlite3.Row, lease_token: str) -> bool:
+    stored = row["lease_token_hash"]
+    return stored is not None and hmac.compare_digest(stored, sha256_str(lease_token))
+
+
+def _lease_lost() -> GatewayError:
+    return GatewayError(
+        409,
+        DELIVERY_LEASE_EXPIRED,
+        "The lease token is not the current lease on this Delivery.",
+        retryable=True,
+        required_action="Claim the Delivery again to get a new lease.",
+    )
+
+
+def _refused_in_state(state: str) -> GatewayError:
+    """The state machine rejected the event: explain it in terms of what the caller can do."""
+    if state == PENDING:
+        return _lease_lost()
+    return GatewayError(409, REQUEST_INVALID, f"The Delivery is {state}; this action is not allowed.")
 
 
 def _claimed_delivery(row: Any, lease_token: str, lease_expires_at: Any) -> dict[str, Any]:

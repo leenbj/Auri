@@ -91,20 +91,26 @@ def test_cli_migrate_initializes_database_and_supports_future_migrations(
             existing_sql.read_text(encoding="utf-8"),
             encoding="utf-8",
         )
-    (migrations_dir / "0003_future_placeholder.sql").write_text(
+    # The placeholder is a migration that does not exist yet: it takes the next free number
+    # after the real ones, so adding a real migration never collides with it.
+    future_version = (
+        max(int(sql.name.split("_", 1)[0]) for sql in real_migrations_dir.glob("*.sql")) + 1
+    )
+    future_name = f"{future_version:04d}_future_placeholder.sql"
+    (migrations_dir / future_name).write_text(
         "CREATE TABLE IF NOT EXISTS sample_future_table (id TEXT PRIMARY KEY);\n",
         encoding="utf-8",
     )
 
     with open_connection(db_path) as conn:
         applied = apply_migrations(conn, migrations_dir=migrations_dir)
-        assert applied == [(3, "0003_future_placeholder.sql")]
+        assert applied == [(future_version, future_name)]
         assert apply_migrations(conn, migrations_dir=migrations_dir) == []
         versions = [
             row[0]
             for row in conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()
         ]
-        assert versions == [1, 2, 3]
+        assert versions == list(range(1, future_version + 1))
         tables = {
             row[0]
             for row in conn.execute(

@@ -180,3 +180,46 @@ def test_concurrent_claims_never_hand_out_the_same_delivery(world: World) -> Non
 
     # Every Delivery went to exactly one claimer: none twice, none lost.
     assert sorted(handed_out) == sorted(published)
+
+
+def test_renew_extends_the_lease_the_agent_holds_and_keeps_its_token(world: World) -> None:
+    destination = world.destination()
+    world.publish(destination)
+    agent = world.agent(destination)
+    (delivery,) = agent.claim()["deliveries"]
+
+    renewed = agent.renew(delivery["delivery_id"], delivery["lease_token"])
+
+    assert renewed["delivery_id"] == delivery["delivery_id"]
+    assert renewed["lease_token"] == delivery["lease_token"]
+    assert parse_timestamp(renewed["lease_expires_at"]) > parse_timestamp(
+        delivery["lease_expires_at"]
+    )
+
+
+def test_renew_grants_the_lease_length_that_was_claimed_not_the_default(world: World) -> None:
+    destination = world.destination()
+    world.publish(destination)
+    agent = world.agent(destination)
+    (delivery,) = agent.claim(lease_seconds=300)["deliveries"]
+    before = datetime.now(timezone.utc)
+
+    renewed = agent.renew(delivery["delivery_id"], delivery["lease_token"])
+
+    granted = (parse_timestamp(renewed["lease_expires_at"]) - before).total_seconds()
+    assert 290 <= granted <= 305, "renewing must not shrink a 300 second lease to the 120 second default"
+
+
+def test_renew_with_a_token_that_is_not_the_current_lease_is_refused(world: World) -> None:
+    destination = world.destination()
+    world.publish(destination)
+    agent = world.agent(destination)
+    (delivery,) = agent.claim()["deliveries"]
+
+    error = agent.call_error(
+        "delivery_renew_lease",
+        {"delivery_id": delivery["delivery_id"], "lease_token": "not-the-lease-token-0000"},
+    )
+
+    assert error["code"] == "DELIVERY_LEASE_EXPIRED"
+    assert error["retryable"] is True
