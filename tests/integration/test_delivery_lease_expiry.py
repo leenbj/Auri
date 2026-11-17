@@ -16,6 +16,11 @@ import pytest
 from harness import AgentDestination, GatewayProcess, World
 
 LEASE_SECONDS = 10  # the shortest lease the contract allows
+# The `renewed` Delivery has a longer lease and is renewed 6 s before it would end, so it is
+# still held 6 s after the original expiry: the test process may stall for about 5 s at either
+# end of that window before these tests become unreliable.
+RENEWED_LEASE_SECONDS = 12
+RENEW_BEFORE_EXPIRY = timedelta(seconds=6)
 ROLES = (
     "renewed",
     "ack_late",
@@ -59,7 +64,7 @@ def aged(tmp_path_factory: pytest.TempPathFactory):
         # `renewed` takes its lease last, so its original expiry is the latest of all.
         for role in (*ROLES[1:], ROLES[0]):
             (deliveries[role],) = world.agent(destinations[role]).claim(
-                lease_seconds=LEASE_SECONDS
+                lease_seconds=RENEWED_LEASE_SECONDS if role == "renewed" else LEASE_SECONDS
             )["deliveries"]
 
         first_ack = world.agent(destinations["acknowledged"]).ack(
@@ -67,11 +72,11 @@ def aged(tmp_path_factory: pytest.TempPathFactory):
         )
 
         original_expiry = parse_timestamp(deliveries["renewed"]["lease_expires_at"])
-        wait_until(original_expiry - timedelta(seconds=2))
+        wait_until(original_expiry - RENEW_BEFORE_EXPIRY)
         renewed = world.agent(destinations["renewed"]).renew(
             deliveries["renewed"]["delivery_id"], deliveries["renewed"]["lease_token"]
         )
-        assert parse_timestamp(renewed["lease_expires_at"]) > original_expiry + timedelta(seconds=5)
+        assert parse_timestamp(renewed["lease_expires_at"]) > original_expiry + timedelta(seconds=4)
 
         wait_until(original_expiry + timedelta(seconds=0.3))  # now every original lease is over
         yield AgedLeases(world, destinations, deliveries, first_ack)
