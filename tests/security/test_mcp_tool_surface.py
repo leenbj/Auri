@@ -77,6 +77,18 @@ def test_calling_a_tool_that_is_not_offered_is_a_protocol_error(world: World, na
     assert refused.value.code == INVALID_PARAMS
 
 
+def test_only_the_tool_that_can_reject_a_delivery_for_good_is_marked_possibly_destructive(
+    world: World,
+) -> None:
+    # Hosts use this hint to decide how to ask for approval. A permanent nack cannot be undone;
+    # claiming, renewing and acknowledging only add to what the gateway already knows.
+    tools = {tool.name: tool for tool in world.agent(world.destination()).list_tools()}
+
+    assert tools["delivery_nack"].annotations.destructive_hint is True
+    for name in ("delivery_claim", "delivery_renew_lease", "delivery_ack"):
+        assert tools[name].annotations.destructive_hint is False, name
+
+
 def test_an_action_request_delivery_does_not_give_its_destination_any_extra_tool(
     world: World,
 ) -> None:

@@ -485,6 +485,20 @@ class World:
             self.device_token, [d.destination_id for d in destinations], **kwargs
         )
 
+    def rotate_credential(self, destination: AgentDestination) -> AgentDestination:
+        """The phone issues a new credential; the previous one stops working at once."""
+        issued = httpx.post(
+            f"{self.gw.base_url}/v1/destinations/{destination.destination_id}/credential",
+            headers={"Authorization": f"Bearer {self.device_token}"},
+            timeout=5.0,
+        )
+        assert issued.status_code == 200, issued.text
+        assert_valid_contract("destination.schema.json#/$defs/credential_response", issued.json())
+        assert issued.json()["replaced_previous"] is True
+        return AgentDestination(
+            destination.destination_id, issued.json()["credential"], destination.display_name
+        )
+
     def revoke(self, destination: AgentDestination) -> None:
         """The phone revokes a Destination over HTTP (`DELETE /v1/destinations/{id}`)."""
         revoked = httpx.delete(

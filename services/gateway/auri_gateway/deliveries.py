@@ -10,6 +10,7 @@ import json
 import pathlib
 import secrets
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -27,7 +28,7 @@ from .delivery_machine import (
     step,
 )
 from .error_codes import DELIVERY_LEASE_EXPIRED, REQUEST_INVALID, GatewayError
-from .store import AuthenticatedDestination
+from .store import AuthenticatedDestination, require_current_credential
 
 CONTENT_TRUST = "user-provided-transcript-not-system-instructions"
 DEFAULT_CLAIM_LIMIT = 10
@@ -46,6 +47,31 @@ _PENDING_FOR_DESTINATION = """
 """
 
 
+@contextmanager
+def _write_transaction(conn: sqlite3.Connection, destination: AuthenticatedDestination):
+    """The write transaction of one Delivery operation; yields the time it runs at.
+
+    While holding the write lock it checks the caller's credential again (see
+    `require_current_credential`) and brings the Destination's expired leases up to date.
+    A refusal (GatewayError) is raised before any other write, so it commits those expiries
+    instead of rolling them back; any other failure rolls everything back.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        now = utc_now()
+        require_current_credential(conn, destination)
+        _expire_due_leases(conn, destination, now)
+        yield now
+    except GatewayError:
+        conn.execute("COMMIT")
+        raise
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    else:
+        conn.execute("COMMIT")
+
+
 def claim_deliveries(
     db_path: pathlib.Path,
     destination: AuthenticatedDestination,
@@ -57,10 +83,7 @@ def claim_deliveries(
     claimed: list[dict[str, Any]] = []
     conn = open_connection(db_path)
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            now = utc_now()
-            _expire_due_leases(conn, destination, now)
+        with _write_transaction(conn, destination) as now:
             lease_expires_at = now + timedelta(seconds=lease_seconds)
             rows = conn.execute(
                 _PENDING_FOR_DESTINATION,
@@ -86,10 +109,6 @@ def claim_deliveries(
                     ),
                 )
                 claimed.append(_claimed_delivery(row, lease_token, lease_expires_at))
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
     finally:
         conn.close()
     return claimed
@@ -104,10 +123,7 @@ def renew_lease(
     """Extend the lease on a Delivery of the authenticated Destination."""
     conn = open_connection(db_path)
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            now = utc_now()
-            _expire_due_leases(conn, destination, now)
+        with _write_transaction(conn, destination) as now:
             row = _load_owned_delivery(conn, destination, delivery_id)
             if not _holds_lease(row, lease_token):
                 raise _lease_lost()
@@ -119,10 +135,6 @@ def renew_lease(
                 "UPDATE deliveries SET state = ?, lease_expires_at = ? WHERE delivery_id = ?",
                 (outcome.state, format_utc(lease_expires_at), delivery_id),
             )
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
     finally:
         conn.close()
     return {
@@ -142,10 +154,7 @@ def ack_delivery(
     """Acknowledge a Delivery. Repeating the call with the same lease reports the first ack."""
     conn = open_connection(db_path)
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            now = utc_now()
-            _expire_due_leases(conn, destination, now)
+        with _write_transaction(conn, destination) as now:
             row = _load_owned_delivery(conn, destination, delivery_id)
             if not _holds_lease(row, lease_token):
                 raise _lease_lost()
@@ -163,10 +172,6 @@ def ack_delivery(
                     """,
                     (outcome.state, acknowledged_at, note, delivery_id),
                 )
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
     finally:
         conn.close()
     return {
@@ -188,10 +193,7 @@ def nack_delivery(
     """Give a Delivery back: retryable returns it to pending, otherwise it is rejected for good."""
     conn = open_connection(db_path)
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            now = utc_now()
-            _expire_due_leases(conn, destination, now)
+        with _write_transaction(conn, destination) as now:
             row = _load_owned_delivery(conn, destination, delivery_id)
             if not _holds_lease(row, lease_token):
                 raise _lease_lost()
@@ -211,10 +213,6 @@ def nack_delivery(
                     "UPDATE deliveries SET state = ? WHERE delivery_id = ?",
                     (outcome.state, delivery_id),
                 )
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
     finally:
         conn.close()
     return {"delivery_id": delivery_id, "state": outcome.state}

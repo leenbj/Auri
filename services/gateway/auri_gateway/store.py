@@ -33,6 +33,7 @@ class AuthenticatedDestination:
     destination_id: str
     tenant_id: str
     allowed_intents: tuple[str, ...]
+    credential_hash: str  # the credential presented; write operations check it is still current
 
 
 def issue_pairing_code(data_dir: pathlib.Path, *, ttl_seconds: int = 300) -> dict[str, Any]:
@@ -252,16 +253,42 @@ def authenticate_destination(
             required_action="Issue a new credential for this destination.",
         )
     if row["cred_revoked_at"] is not None or row["dest_revoked_at"] is not None:
-        raise GatewayError(
-            401,
-            GATEWAY_AUTH_REVOKED,
-            "Destination credential has been revoked or rotated.",
-            required_action="Use the latest credential or re-create the destination.",
-        )
+        raise _credential_revoked()
     return AuthenticatedDestination(
         destination_id=row["destination_id"],
         tenant_id=row["tenant_id"],
         allowed_intents=tuple(json.loads(row["allowed_intents_json"])),
+        credential_hash=token_hash,
+    )
+
+
+def require_current_credential(conn: Any, destination: AuthenticatedDestination) -> None:
+    """Check again, inside the caller's write transaction, that the credential is still valid.
+
+    `authenticate_destination` ran when the request's headers arrived. The credential may have
+    been rotated or the Destination revoked since, so every operation that writes calls this
+    while it holds the write lock: rotation and revocation are writes too, so the two are ordered.
+    """
+    row = conn.execute(
+        """
+        SELECT c.revoked_at AS cred_revoked_at, d.revoked_at AS dest_revoked_at
+        FROM destination_credentials AS c
+        JOIN destinations AS d
+          ON d.tenant_id = c.tenant_id AND d.destination_id = c.destination_id
+        WHERE c.token_hash = ? AND c.tenant_id = ? AND c.destination_id = ?
+        """,
+        (destination.credential_hash, destination.tenant_id, destination.destination_id),
+    ).fetchone()
+    if row is None or row["cred_revoked_at"] is not None or row["dest_revoked_at"] is not None:
+        raise _credential_revoked()
+
+
+def _credential_revoked() -> GatewayError:
+    return GatewayError(
+        401,
+        GATEWAY_AUTH_REVOKED,
+        "Destination credential has been revoked or rotated.",
+        required_action="Use the latest credential or re-create the destination.",
     )
 
 
