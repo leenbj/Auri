@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.auri.invalid/1.0/common.schema.json",
+  "$id": "https://contracts.auri.invalid/1.1/common.schema.json",
   "title": "Auri 合同公共定义",
   "description": "被其他 schema 引用的标识、时间、哈希与枚举。命名以 GLOSSARY.md 为准。",
   "$defs": {
     "schema_version": {
-      "const": "1.0"
+      "const": "1.1"
     },
     "uuid": {
       "description": "小写 UUID 字符串。",
@@ -141,7 +141,10 @@
         "ASR_NO_SPEECH",
         "GATEWAY_UNREACHABLE",
         "GATEWAY_AUTH_REVOKED",
+        "GATEWAY_AUTH_INVALID",
         "GATEWAY_KEY_MISMATCH",
+        "PAIRING_CODE_INVALID",
+        "REQUEST_INVALID",
         "RECORD_VERSION_CONFLICT",
         "RECORD_NOT_ORIGIN_DEVICE",
         "RECORD_DELETED",

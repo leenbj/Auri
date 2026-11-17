@@ -7,7 +7,7 @@
     "keyword": "required"
   },
   "instance": {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "display_name": "写作助手",
     "allowed_intents": [
       "context"

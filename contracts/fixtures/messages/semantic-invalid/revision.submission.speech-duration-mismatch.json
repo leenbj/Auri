@@ -4,7 +4,7 @@
   "rejected_because": "speech_duration_ms 必须等于各语音片段时长之和。",
   "rule": "SR-04",
   "instance": {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
     "revision": 1,
     "capture": {

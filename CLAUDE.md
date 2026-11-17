@@ -5,13 +5,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 项目现状
 
 截至 2026-11-15，仓库里有文档、目录骨架、一个 iOS 探针和已冻结的数据合同（含合同测试），还没有产品代码和网关代码。目前唯一的测试命令是合同测试，见下文“命令”一节：
-- `VoiceBridge_PRD_Agent_Ready_v1.0.md`：需求基线（约 1580 行），v1.3 已同步 ADR-0015 至 0020 与 DEV-002 的合同冻结结论。
+- `VoiceBridge_PRD_Agent_Ready_v1.0.md`：需求基线（约 1580 行），v1.4 已同步 ADR-0015 至 0020、DEV-002 的合同冻结结论及合同 1.1 错误码补充。
 - `GLOSSARY.md`：领域术语表，**命名以它为准**（Recording / Record / Revision / Destination / Delivery 等）。
 - `docs/adr/`：已决策记录。文件编号沿用 PRD 第 28 章的 ADR 编号（0002、0008、0009），PRD 之外的新决策从 0013 起编（目前有 0013 至 0020）。
 
 - `execution/baseline/README.md`：DEV-001 的基线记录（2026-10-20，开发机与三端工具链状态）。其中“网关主机需公网域名与 TLS”一项已被 ADR-0018 取代。
 - `execution/p0-spikes/ios-probe/`：DEV-004 的 iOS 探针（Swift，一次性代码，不是产品代码）。构建、装机、取日志的命令见该目录的 `README.md`，需要 macOS、Xcode 和 XcodeGen 2.46.0；实测结论在 `results/`，原始日志不入库。
-- `contracts/`：DEV-002 冻结的数据合同（版本 1.0）。`schemas/` 是 JSON Schema，`fixtures/` 是有效/无效样本、哈希测试向量和四个状态机的转移表与事件序列样本。**字段名、枚举值和状态机规则以这里为准**，说明见 `contracts/README.md`。
+- `contracts/`：数据合同（当前版本 1.1；初始 1.0 由 DEV-002 冻结，1.1 新增三个网关错误码）。`schemas/` 是 JSON Schema，`fixtures/` 是有效/无效样本、哈希测试向量和四个状态机的转移表与事件序列样本。**字段名、枚举值和状态机规则以这里为准**，说明见 `contracts/README.md`。
 - `tests/contract/`：合同测试（pytest）。
 - `apps/`、`core/`、`services/`、`packages/` 以及 `tests/` 的其他子目录目前只有 `.gitkeep`。
 

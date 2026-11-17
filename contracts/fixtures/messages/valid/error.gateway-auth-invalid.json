@@ -1,0 +1,13 @@
+{
+  "schema": "error.schema.json",
+  "expect": "valid",
+  "description": "请求缺少凭证或凭证未被识别。",
+  "instance": {
+    "schema_version": "1.1",
+    "code": "GATEWAY_AUTH_INVALID",
+    "message": "缺少凭证或凭证无效，网关已拒绝请求。",
+    "retryable": false,
+    "required_action": "检查设备或 Destination 凭证，必要时重新配对或重新签发。",
+    "operation_id": null
+  }
+}

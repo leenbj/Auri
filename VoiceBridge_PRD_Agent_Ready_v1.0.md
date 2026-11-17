@@ -680,7 +680,10 @@ DEV-002 冻结后的补充：删除只到 Record 一级，Revision 没有“已�
 | ASR_NO_SPEECH | 有效音频未检测到语音 | 保存记录，不制造文本。 |
 | GATEWAY_UNREACHABLE | 网关/网络不可达 | 本地 outbox 保留并退避。 |
 | GATEWAY_AUTH_REVOKED | 设备或 Agent 凭证被撤销 | 停止传输，要求重新授权。 |
+| GATEWAY_AUTH_INVALID | 请求缺少凭证，或凭证未被网关识别 | 拒绝请求，不重试；检查或重新配对/签发凭证。 |
 | GATEWAY_KEY_MISMATCH | 网关公钥与配对时记下的指纹不符 | 拒绝连接，不提供“忽略并继续”；要求重新配对。（ADR-0018） |
+| PAIRING_CODE_INVALID | 配对码未知、已过期或已被使用（统一使用此码，不暴露具体原因） | 拒绝配对，不重试；提示在网关重新生成配对码。 |
+| REQUEST_INVALID | 请求体不符合 schema、违反语义规则（SR-01 至 SR-06），或夹带须由认证得出的身份字段（如 `tenant_id`） | 拒绝请求，不重试；不修改服务端状态，由调用方修正请求。 |
 | RECORD_VERSION_CONFLICT | 幂等键相同但内容不同 | 拒绝覆盖，需版本处理。 |
 | RECORD_NOT_ORIGIN_DEVICE | 提交或删除请求来自不是录下该 Record 的设备 | 拒绝，不重试。（ADR-0020） |
 | RECORD_DELETED | 向已有删除墓碑的 Record 提交 | 拒绝，不重试；手机丢弃对应的待同步任务。 |
@@ -1565,5 +1568,6 @@ T-017 的声音对照不能单独取代系统路由证据。物理测试应分�
 | 1.1 | 2026-10-20 | 产品定名 Auri 并建立 `GLOSSARY.md`；新增 ADR-002/008/009/0013；`TranscriptRevision`→`Revision`、`transcripts:read`→`records:read`；MCP 工具名改为 `record_*`/`delivery_*`；同步表 `ACKED`→`STORED`；补设备配对与 Destination 管理接口草案；录音时长、音频保留、自动发送、FINALIZING 期间 START 的默认值；确定验收宿主为 Hermes + Claude Code。 |
 | 1.2 | 2026-11-15 | 同步产品负责人的新要求：Handy 只作流程参考（ADR-0015）；VAD 只在会话内过滤静音（ADR-0016）；qwen3-asr-1.7b 列为默认本地模型候选（ADR-0017）；网关只在局域网、自签证书加指纹绑定、V1 不做手机直连 MCP（ADR-0018，取代 ADR-008 的公网域名部分）；V1 只做本地转录，DEV-011/012 推迟（ADR-0019）；第 28 章补登 ADR-0014 至 0019。 |
 | 1.3 | 2026-11-15 | DEV-002 合同冻结：新增 `contracts/schemas/`、`contracts/fixtures/` 与 `tests/contract/`；投递状态 `ACKED`→`ACKNOWLEDGED`；Revision 状态去掉 `DELETED`；同步状态新增 `WAITING_GATEWAY`；补 `BLOCKED` 的离开规则；请求体 `transcript`→`content`、`transcript_hash`→`text_sha256`，新增 `end_reason`、两个时长与 `speech_segments`；新增错误码 `GATEWAY_KEY_MISMATCH`、`RECORD_NOT_ORIGIN_DEVICE`、`RECORD_DELETED`；新增 ADR-0020，修订 ADR-009、ADR-0018；第 17.1 节八个原生适配器类型随后补齐（`adapter.schema.json`）。 |
+| 1.4 | 2026-11-16 | 数据合同由 `1.0` 升至 `1.1`（产品负责人 2026-11-16 批准）：在 `common.schema.json#/$defs/error_code` 与第 14 章新增 `GATEWAY_AUTH_INVALID`、`REQUEST_INVALID`、`PAIRING_CODE_INVALID` 三个错误码，同步提升 `schema_version` 至 `1.1` 并补齐有效错误样本。 |
 
 **最终原则：优先证明“耳机真的能控制、声音真的来自耳机、文字真的被正确交付”，再扩展界面和智能功能。平台不允许的能力必须诚实呈现，不能靠隐蔽录音或虚假成功补齐。**

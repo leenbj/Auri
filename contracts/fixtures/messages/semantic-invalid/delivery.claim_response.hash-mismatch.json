@@ -4,7 +4,7 @@
   "rejected_because": "text_sha256 与正文不符。",
   "rule": "SR-01",
   "instance": {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "next_cursor": null,
     "deliveries": [
       {

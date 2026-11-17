@@ -7,7 +7,7 @@
     "keyword": "minItems"
   },
   "instance": {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "display_name": "写作助手",
     "send_mode": "auto_send",
     "allowed_intents": []

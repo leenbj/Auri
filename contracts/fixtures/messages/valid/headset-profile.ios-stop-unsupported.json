@@ -3,7 +3,7 @@
   "expect": "valid",
   "description": "iOS 录音中耳机按键停止为 UNSUPPORTED（ADR-0014 的 E3 结论），其余能力仍是 NOT_TESTED。",
   "instance": {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "profile_id": "fixture-freeclip2-ios",
     "profile_version": 1,
     "manufacturer_hint": "HUAWEI",

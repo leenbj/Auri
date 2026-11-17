@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.auri.invalid/1.0/adapter.schema.json",
+  "$id": "https://contracts.auri.invalid/1.1/adapter.schema.json",
   "title": "原生适配器类型",
   "description": "PRD 第 17.1 节。三端原生层与共享层之间传递的八个类型的跨平台语义。它们在进程内传递，不是网络消息，因此不带 schema_version。原生层与共享层都要校验，不信任另一端已经检查。",
   "$defs": {
