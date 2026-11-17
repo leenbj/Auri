@@ -1,0 +1,11 @@
+{
+  "modelVersion": "6.0.1",
+  "name": "auriprobeharmonyos",
+  "version": "0.0.1",
+  "description": "Auri P0 HarmonyOS NEXT control/route/background/mDNS probe (throwaway spike, not product code).",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dependencies": {},
+  "devDependencies": {}
+}

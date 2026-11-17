@@ -43,6 +43,22 @@ PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway renew-cert --data-d
 
 证书有效期与续签运维说明见 `services/gateway/OPERATIONS.md`。
 
+鸿蒙探针（DEV-003，工程位于 `execution/p0-spikes/harmonyos-probe/`）：
+
+```bash
+# 离线纯逻辑单元测试（Node >= 24，E2 证据，不能证明真机蓝牙/后台行为）
+(cd execution/p0-spikes/harmonyos-probe && node --import ./tests/resolve-ts.mjs --test tests/*.test.ts)
+
+# 原始真机日志脱敏
+(cd execution/p0-spikes/harmonyos-probe && node --import ./tests/resolve-ts.mjs ./tools/redact-log.mjs results/raw/probe-log.jsonl results/raw/sanitized-probe-log.jsonl)
+
+# Mac 上用 DevEco Studio 6.0.1 工具链构建与装机（需先在 IDE 配好自动调试签名）
+(cd execution/p0-spikes/harmonyos-probe && hvigorw assembleHap -p buildMode=debug --no-daemon)
+hdc install execution/p0-spikes/harmonyos-probe/entry/build/default/outputs/default/entry-default-signed.hap
+hdc shell aa start -a EntryAbility -b app.auri.probe.harmonyos
+```
+
+
 改了 `contracts/` 下的任何文件都要跑一遍。不得通过改样本的期望或删无效样本让测试通过；改 schema、状态机或语义规则的流程见 `contracts/README.md` 的“修改规则”。
 
 ## 产品与已决前提
