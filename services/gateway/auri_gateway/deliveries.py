@@ -14,7 +14,16 @@ from datetime import timedelta
 from typing import Any
 
 from .db import format_utc, open_connection, sha256_str, utc_now
-from .delivery_machine import ACK, CLAIM, PENDING, RENEW_LEASE, step
+from .delivery_machine import (
+    ACK,
+    CLAIM,
+    NACK_PERMANENT,
+    NACK_RETRYABLE,
+    PENDING,
+    REJECTED,
+    RENEW_LEASE,
+    step,
+)
 from .error_codes import DELIVERY_LEASE_EXPIRED, REQUEST_INVALID, GatewayError
 from .store import AuthenticatedDestination
 
@@ -160,6 +169,47 @@ def ack_delivery(
         "acknowledged_at": acknowledged_at,
         "duplicate": duplicate,
     }
+
+
+def nack_delivery(
+    db_path: pathlib.Path,
+    destination: AuthenticatedDestination,
+    delivery_id: str,
+    lease_token: str,
+    reason: str,
+    retryable: bool,
+) -> dict[str, Any]:
+    """Give a Delivery back: retryable returns it to pending, otherwise it is rejected for good."""
+    conn = open_connection(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = _load_owned_delivery(conn, destination, delivery_id)
+            if not _holds_lease(row, lease_token):
+                raise _lease_lost()
+            outcome = step(row["state"], NACK_RETRYABLE if retryable else NACK_PERMANENT)
+            if outcome.kind != "transition":
+                raise _refused_in_state(row["state"])
+            if outcome.state == REJECTED:
+                conn.execute(
+                    """
+                    UPDATE deliveries SET state = ?, rejected_at = ?, reject_reason = ?
+                    WHERE delivery_id = ?
+                    """,
+                    (outcome.state, format_utc(utc_now()), reason, delivery_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE deliveries SET state = ? WHERE delivery_id = ?",
+                    (outcome.state, delivery_id),
+                )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+    return {"delivery_id": delivery_id, "state": outcome.state}
 
 
 def _load_owned_delivery(

@@ -35,6 +35,7 @@ from .deliveries import (
     DEFAULT_LEASE_SECONDS,
     ack_delivery,
     claim_deliveries,
+    nack_delivery,
     renew_lease,
 )
 from .error_codes import REQUEST_INVALID, GatewayError
@@ -159,6 +160,7 @@ class AgentMcpEndpoint:
             "delivery_claim": self._claim,
             "delivery_renew_lease": self._renew,
             "delivery_ack": self._ack,
+            "delivery_nack": self._nack,
         }
         self._server = Server(
             "auri-gateway",
@@ -237,3 +239,14 @@ class AgentMcpEndpoint:
             arguments.get("note"),
         )
         return {"schema_version": SCHEMA_VERSION, **acknowledged}
+
+    def _nack(self, ctx: ServerRequestContext, arguments: dict[str, Any]) -> dict[str, Any]:
+        nacked = nack_delivery(
+            self._db_path,
+            _destination_of(ctx),
+            arguments["delivery_id"],
+            arguments["lease_token"],
+            arguments["reason"],
+            arguments["retryable"],
+        )
+        return {"schema_version": SCHEMA_VERSION, **nacked}

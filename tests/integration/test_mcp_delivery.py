@@ -278,3 +278,77 @@ def test_ack_with_a_token_that_is_not_the_current_lease_is_refused_and_changes_n
     assert error["retryable"] is True
     # The refused call changed nothing: the real lease holder can still acknowledge.
     assert agent.ack(delivery["delivery_id"], delivery["lease_token"])["duplicate"] is False
+
+
+def test_a_retryable_nack_puts_the_delivery_back_to_pending_for_another_claim(
+    world: World,
+) -> None:
+    destination = world.destination()
+    world.publish(destination)
+    agent = world.agent(destination)
+    (first,) = agent.claim()["deliveries"]
+
+    nacked = agent.nack(first["delivery_id"], first["lease_token"], retryable=True)
+    (second,) = agent.claim()["deliveries"]
+
+    assert nacked == {
+        "schema_version": "1.1",
+        "delivery_id": first["delivery_id"],
+        "state": "PENDING",
+    }
+    assert second["delivery_id"] == first["delivery_id"], "the same Delivery comes back"
+    assert second["lease_token"] != first["lease_token"], "with a fresh lease"
+    stale = agent.call_error(
+        "delivery_ack",
+        {"delivery_id": first["delivery_id"], "lease_token": first["lease_token"]},
+    )
+    assert stale["code"] == "DELIVERY_LEASE_EXPIRED"
+
+
+def test_a_permanent_nack_rejects_the_delivery_and_it_is_never_redelivered(
+    world: World,
+) -> None:
+    # Contract scenario `nack-retryable-then-permanent`, as far as the Agent can drive it.
+    destination = world.destination()
+    world.publish(destination)
+    agent = world.agent(destination)
+    (first,) = agent.claim()["deliveries"]
+    agent.nack(first["delivery_id"], first["lease_token"], retryable=True)
+    (second,) = agent.claim()["deliveries"]
+
+    rejected = agent.nack(
+        second["delivery_id"], second["lease_token"], retryable=False, reason="不接受这类内容。"
+    )
+
+    assert rejected["state"] == "REJECTED"
+    assert agent.claim()["deliveries"] == []
+    after = agent.call_error(
+        "delivery_ack",
+        {"delivery_id": second["delivery_id"], "lease_token": second["lease_token"]},
+    )
+    assert after["code"] == "REQUEST_INVALID"
+    assert after["retryable"] is False
+
+
+def test_nack_with_a_token_that_is_not_the_current_lease_is_refused_and_changes_nothing(
+    world: World,
+) -> None:
+    destination = world.destination()
+    world.publish(destination)
+    agent = world.agent(destination)
+    (delivery,) = agent.claim()["deliveries"]
+
+    error = agent.call_error(
+        "delivery_nack",
+        {
+            "delivery_id": delivery["delivery_id"],
+            "lease_token": "not-the-lease-token-0000",
+            "reason": "不是持有人",
+            "retryable": False,
+        },
+    )
+
+    assert error["code"] == "DELIVERY_LEASE_EXPIRED"
+    # Still leased to the real holder: not handed out again, and the holder can still ack it.
+    assert agent.claim()["deliveries"] == []
+    assert agent.ack(delivery["delivery_id"], delivery["lease_token"])["duplicate"] is False
