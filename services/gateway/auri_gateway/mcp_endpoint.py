@@ -29,8 +29,9 @@ from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import __version__
-from .contracts import inline_schema
+from .contracts import inline_schema, validate_schema
 from .deliveries import DEFAULT_CLAIM_LIMIT, DEFAULT_LEASE_SECONDS, claim_deliveries
+from .error_codes import REQUEST_INVALID, GatewayError
 from .store import AuthenticatedDestination, authenticate_destination
 
 logger = logging.getLogger("auri_gateway")
@@ -81,6 +82,9 @@ _DELIVERY_TOOLS = (
 )
 
 
+_REQUEST_DEFS = {name: request_def for name, request_def, *_ in _DELIVERY_TOOLS}
+
+
 def _build_tool(
     name: str, request_def: str, response_def: str, idempotent: bool, description: str
 ) -> Tool:
@@ -109,6 +113,17 @@ def _destination_of(ctx: ServerRequestContext) -> AuthenticatedDestination:
 
 def _ok(payload: dict[str, Any]) -> CallToolResult:
     return CallToolResult(
+        content=[TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))],
+        structured_content=payload,
+    )
+
+
+def _error(exc: GatewayError) -> CallToolResult:
+    """A tool failure carries the unified error structure; it never looks like an empty result."""
+    payload = exc.to_payload()
+    logger.info("mcp_tool_rejected code=%s", exc.code)
+    return CallToolResult(
+        is_error=True,
         content=[TextContent(type="text", text=json.dumps(payload, ensure_ascii=False))],
         structured_content=payload,
     )
@@ -170,7 +185,22 @@ class AgentMcpEndpoint:
         handler = self._handlers.get(params.name)
         if handler is None:
             raise MCPError(INVALID_PARAMS, f"Unknown tool: {params.name}")
-        return _ok(handler(ctx, params.arguments or {}))
+        arguments = params.arguments or {}
+        # The SDK only advertises the input schema; it does not enforce it. Enforcing the
+        # contract here is what rejects self-reported identity fields.
+        problems = validate_schema(f"delivery.schema.json#/$defs/{_REQUEST_DEFS[params.name]}", arguments)
+        if problems:
+            return _error(
+                GatewayError(
+                    422,
+                    REQUEST_INVALID,
+                    f"Tool arguments failed schema validation: {', '.join(problems)}",
+                )
+            )
+        try:
+            return _ok(handler(ctx, arguments))
+        except GatewayError as exc:
+            return _error(exc)
 
     def _claim(self, ctx: ServerRequestContext, arguments: dict[str, Any]) -> dict[str, Any]:
         deliveries = claim_deliveries(
