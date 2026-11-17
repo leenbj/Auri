@@ -7,7 +7,7 @@
     "keyword": "minLength"
   },
   "instance": {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "gateway_id": "fa1b98ec-1bfb-53b3-85a3-4d36b680fe6e",
     "device_id": "ef7b1358-df31-520f-90f3-d98fc5173b46",
     "device_token": "short",

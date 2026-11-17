@@ -29,3 +29,20 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.auri.probe.ios
+        ENABLE_TESTABILITY: "YES"
+    scheme:
+      testTargets:
+        - AuriProbeIOSTests
+  AuriProbeIOSTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - Tests
+    dependencies:
+      - target: AuriProbeIOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.auri.probe.ios.tests
+        GENERATE_INFOPLIST_FILE: "YES"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/AuriProbeIOS.app/AuriProbeIOS"
+        BUNDLE_LOADER: "$(TEST_HOST)"

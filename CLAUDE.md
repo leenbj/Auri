@@ -4,18 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目现状
 
-截至 2026-11-15，仓库里有文档、目录骨架、一个 iOS 探针和已冻结的数据合同（含合同测试），还没有产品代码和网关代码。目前唯一的测试命令是合同测试，见下文“命令”一节：
-- `VoiceBridge_PRD_Agent_Ready_v1.0.md`：需求基线（约 1580 行），v1.3 已同步 ADR-0015 至 0020 与 DEV-002 的合同冻结结论。
+截至 2026-11-17，仓库里已有文档、目录骨架、已冻结的数据合同（1.1）、三端 P0 探针源码（均未在移动端构建工具链下编译），以及 Gateway 服务端实现与合同/集成/安全测试；移动端产品代码（`apps/`、`core/`）尚未开始。测试命令见下文“命令”一节，完整测试命令为 `.venv/bin/pytest tests/contract tests/integration tests/security`：
+- `VoiceBridge_PRD_Agent_Ready_v1.0.md`：需求基线（约 1580 行），v1.4 已同步 ADR-0015 至 0020、DEV-002 的合同冻结结论及合同 1.1 错误码补充。
 - `GLOSSARY.md`：领域术语表，**命名以它为准**（Recording / Record / Revision / Destination / Delivery 等）。
-- `docs/adr/`：已决策记录。文件编号沿用 PRD 第 28 章的 ADR 编号（0002、0008、0009），PRD 之外的新决策从 0013 起编（目前有 0013 至 0020）。
-
+- `docs/adr/`：已决策记录。文件编号沿用 PRD 第 28 章的 ADR 编号（0002、0008、0009），PRD 之外的新决策从 0013 起编（目前有 0013 至 0021，其中 0013–0020 为 `accepted`，0021 为 `proposed`）。
+- `docs/research/asr-candidates.md`：本地转录候选模型核实报告（E1 调研结论与第一轮真机评测名单）。
 - `execution/baseline/README.md`：DEV-001 的基线记录（2026-10-20，开发机与三端工具链状态）。其中“网关主机需公网域名与 TLS”一项已被 ADR-0018 取代。
-- `execution/p0-spikes/ios-probe/`：DEV-004 的 iOS 探针（Swift，一次性代码，不是产品代码）。构建、装机、取日志的命令见该目录的 `README.md`，需要 macOS、Xcode 和 XcodeGen 2.46.0；实测结论在 `results/`，原始日志不入库。
-- `contracts/`：DEV-002 冻结的数据合同（版本 1.0）。`schemas/` 是 JSON Schema，`fixtures/` 是有效/无效样本、哈希测试向量和四个状态机的转移表与事件序列样本。**字段名、枚举值和状态机规则以这里为准**，说明见 `contracts/README.md`。
-- `tests/contract/`：合同测试（pytest）。
-- `apps/`、`core/`、`services/`、`packages/` 以及 `tests/` 的其他子目录目前只有 `.gitkeep`。
+- `execution/p0-spikes/{android,harmonyos,ios}-probe/`：三端一次性 P0 探针源码（不是产品代码），当前在对应原生工具链下均**尚未编译**（`ios-probe` 另有 `results/2026-10-20-freeclip2-iphone-air.md` 早期实测记录，新版音量往返停止复测待编译运行；`android-probe` 与 `harmonyos-probe` 尚无真机实测结果）。构建、离线单测、装机、取日志命令见各目录 `README.md` 及下文“命令”一节；实测结论放各自 `results/`，原始日志不入库。
+- `contracts/`：数据合同（当前版本 `1.1`；初始 1.0 由 DEV-002 冻结，1.1 新增三个网关错误码：`GATEWAY_AUTH_INVALID`、`REQUEST_INVALID`、`PAIRING_CODE_INVALID`）。`schemas/` 是 JSON Schema，`fixtures/` 是有效/无效样本、哈希测试向量和四个状态机的转移表与事件序列样本。**字段名、枚举值和状态机规则以这里为准**，说明见 `contracts/README.md`。
+- `services/gateway/`：Gateway 服务端代码（Python + 官方 MCP SDK + SQLite，含配对与设备认证、Destination 与凭证管理、Revision 幂等入库、Delivery 状态机与 MCP 租约投递、局域网自签 TLS 与 mDNS 广播，运维说明见 `services/gateway/OPERATIONS.md`）。
+- `tests/`：`tests/contract/`（合同测试）、`tests/integration/`（Gateway 黑盒集成测试）、`tests/security/`（安全与拒收测试），三目录合并执行为 `.venv/bin/pytest tests/contract tests/integration tests/security`；`tests/hardware/`、`tests/asr-benchmarks/` 目前只有 `.gitkeep`。
+- `apps/`、`core/`、`services/asr-proxy/`、`services/dispatcher/`、`packages/` 目前只有 `.gitkeep`。
 
-任务进度：DEV-001（仓库基线）已完成；DEV-004（iOS 探针）已跑过 FreeClip 2 × iPhone Air，结论见 ADR-0014，遗留音量手势停止的设计与复测。DEV-002（合同冻结）已完成：网关与 MCP 消息、Headset Profile、八个原生适配器类型和四个状态机。V1 的规格在 `docs/spec/auri-v1-spec.md`。尚未开始：DEV-003（鸿蒙探针）、DEV-005（Android 探针）、网关。DEV-011/012（云端转录）已推迟到 V1 之后（ADR-0019）。新增工具链命令后请补充到本文件。
+任务进度：DEV-001（仓库基线）与 DEV-002（合同冻结 1.1）已完成；V1 的规格在 `docs/spec/auri-v1-spec.md`。Gateway 已完成核心骨架（Ticket 01–03、06）；三端 P0 探针代码（DEV-003 鸿蒙、DEV-004 iOS 音量手势复测、DEV-005 Android）与 ASR 候选模型核实（Ticket 13）已入库但探针均未编译或真机复测；移动端产品代码与 Gateway 只读/删除扩展（Ticket 04+）尚未开始。DEV-011/012（云端转录）已推迟到 V1 之后（ADR-0019）。新增工具链命令后请补充到本文件。
 
 工具链与账号：iOS 只能在 macOS 上构建；Apple 目前是免费个人团队签名，鸿蒙签名证书尚未申请，P0 探针先用免费签名，付费账号在 P5 分发前再办。DevEco Studio 与 Android SDK 在基线记录时均未安装，开工前先核对当前机器的实际情况。
 
@@ -28,6 +29,59 @@ python3 -m venv .venv
 .venv/bin/pip install -r tests/contract/requirements.txt
 .venv/bin/pytest tests/contract                              # 全部
 .venv/bin/pytest tests/contract/test_state_machines.py -k capture   # 单个状态机
+```
+
+网关与集成/安全测试（在仓库根目录执行，依赖版本固定在 `services/gateway/requirements.txt` 与 `tests/integration/requirements.txt`）：
+
+```bash
+.venv/bin/pip install -r services/gateway/requirements.txt -r tests/integration/requirements.txt
+PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway serve --data-dir /tmp/auri-gateway-data --port 8443
+PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway serve --data-dir /tmp/auri-gateway-data --host 127.0.0.1 --port 8080 --plaintext-loopback  # 仅本机开发回环明文
+PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway pair --data-dir /tmp/auri-gateway-data
+PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway renew-cert --data-dir /tmp/auri-gateway-data --validity-days 365
+.venv/bin/pytest tests/contract tests/integration tests/security   # 全部，约 2.5 分钟：租约到期测试必须真实等待（合同规定租约最短 10 秒）
+```
+
+MCP 端点（`/mcp`，Agent 经 Destination 凭证领取并确认投递）使用官方 MCP Python SDK，版本精确锁定在 `services/gateway/requirements.txt`；升级 SDK 后必须重跑全部网关测试。
+
+证书有效期与续签运维说明见 `services/gateway/OPERATIONS.md`。
+
+iOS 探针离线单测（macOS + XcodeGen 2.46.0 + Xcode 27.1）与探针日志汇总（跨平台 Python）：
+
+```bash
+# macOS：生成工程并跑离线单测（E2）
+cd execution/p0-spikes/ios-probe && xcodegen generate --spec project.yml --project .
+xcodebuild test -project execution/p0-spikes/ios-probe/AuriProbeIOS.xcodeproj -scheme AuriProbeIOS -destination 'platform=iOS Simulator,name=iPhone 16'
+
+# 日志汇总脚本单测（Linux / macOS 均可）与原始日志汇总
+.venv/bin/pytest execution/p0-spikes/ios-probe/scripts/test_summarize_log.py
+python3 execution/p0-spikes/ios-probe/scripts/summarize_log.py execution/p0-spikes/ios-probe/results/raw/probe-log.jsonl
+```
+
+Android 探针（在 `execution/p0-spikes/android-probe/` 下执行，需 JDK 17 与 Android SDK 35 + `adb`；详情见该目录 `README.md`）：
+
+```bash
+cd execution/p0-spikes/android-probe
+./gradlew test                                                       # 离线 JVM 单测（仅 E2）
+./gradlew assembleDebug                                              # 构建 Debug APK
+adb install -r app/build/outputs/apk/debug/app-debug.apk             # 装机
+adb shell am start -n app.auri.probe.android/app.auri.probe.MainActivity
+adb shell run-as app.auri.probe.android cat files/probe-log.jsonl > results/raw/probe-log.jsonl
+```
+
+鸿蒙探针（DEV-003，工程位于 `execution/p0-spikes/harmonyos-probe/`）：
+
+```bash
+# 离线纯逻辑单元测试（Node >= 24，E2 证据，不能证明真机蓝牙/后台行为）
+(cd execution/p0-spikes/harmonyos-probe && node --import ./tests/resolve-ts.mjs --test tests/*.test.ts)
+
+# 原始真机日志脱敏
+(cd execution/p0-spikes/harmonyos-probe && node --import ./tests/resolve-ts.mjs ./tools/redact-log.mjs results/raw/probe-log.jsonl results/raw/sanitized-probe-log.jsonl)
+
+# Mac 上用 DevEco Studio 6.0.1 工具链构建与装机（需先在 IDE 配好自动调试签名）
+(cd execution/p0-spikes/harmonyos-probe && hvigorw assembleHap -p buildMode=debug --no-daemon)
+hdc install execution/p0-spikes/harmonyos-probe/entry/build/default/outputs/default/entry-default-signed.hap
+hdc shell aa start -a EntryAbility -b app.auri.probe.harmonyos
 ```
 
 改了 `contracts/` 下的任何文件都要跑一遍。不得通过改样本的期望或删无效样本让测试通过；改 schema、状态机或语义规则的流程见 `contracts/README.md` 的“修改规则”。

@@ -1,0 +1,20 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Auri HarmonyOS NEXT P0 control, route, background and mDNS probe"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Auri Probe Ability"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Auri Probe"
+    },
+    {
+      "name": "reason_microphone",
+      "value": "探针需要通过蓝牙耳机麦克风验证真实输入路由，音频仅保存在本机沙盒"
+    }
+  ]
+}

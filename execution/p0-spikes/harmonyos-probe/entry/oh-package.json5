@@ -1,0 +1,9 @@
+{
+  "name": "entry",
+  "version": "0.0.1",
+  "description": "Auri HarmonyOS NEXT P0 probe entry module.",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dependencies": {}
+}

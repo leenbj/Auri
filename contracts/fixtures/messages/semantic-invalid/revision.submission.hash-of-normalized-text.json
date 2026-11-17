@@ -4,7 +4,7 @@
   "rejected_because": "正文是 NFD 形式，哈希却按 NFC 形式计算；哈希不做任何字符规范化。",
   "rule": "SR-01",
   "instance": {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
     "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
     "revision": 1,
     "capture": {

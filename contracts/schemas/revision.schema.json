@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.auri.invalid/1.0/revision.schema.json",
+  "$id": "https://contracts.auri.invalid/1.1/revision.schema.json",
   "title": "Revision 的提交、入库结果与 Record 删除",
   "description": "手机与网关之间的 HTTP 请求体和响应体。tenant_id 不出现在任何请求体里，只由认证结果得出（ADR-0013）。",
   "$defs": {

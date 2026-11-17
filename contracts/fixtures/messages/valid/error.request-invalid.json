@@ -1,0 +1,13 @@
+{
+  "schema": "error.schema.json",
+  "expect": "valid",
+  "description": "请求体不符合 schema、违反语义规则或夹带身份字段。",
+  "instance": {
+    "schema_version": "1.1",
+    "code": "REQUEST_INVALID",
+    "message": "请求体不符合数据合同或违反语义规则，已拒绝处理。",
+    "retryable": false,
+    "required_action": null,
+    "operation_id": "8b3c1d2e-4f5a-4b6c-8d7e-9f0a1b2c3d4e"
+  }
+}

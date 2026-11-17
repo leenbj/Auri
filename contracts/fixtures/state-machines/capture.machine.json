@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "machine": "capture",
   "description": "采集状态机（PRD 第 12.1、12.2 节）。命令串行处理；迟到的旧回调不在转移表里，一律被拒绝。",
   "initial_state": "DISARMED",

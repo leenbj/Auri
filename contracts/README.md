@@ -1,6 +1,6 @@
 # contracts：三端与网关共用的数据合同
 
-DEV-002 的产物，合同版本 `1.0`，冻结于 2026-11-15。三端（ArkTS / Swift / Kotlin）和网关（Python）都以这里的文件为准；命名以仓库根目录的 `GLOSSARY.md` 为准。
+DEV-002 的产物，当前合同版本 `1.1`（1.0 冻结于 2026-11-15；1.1 于 2026-11-16 经产品负责人批准，在 `common.schema.json#/$defs/error_code` 新增 `GATEWAY_AUTH_INVALID`、`REQUEST_INVALID`、`PAIRING_CODE_INVALID`）。三端（ArkTS / Swift / Kotlin）和网关（Python）都以这里的文件为准；命名以仓库根目录的 `GLOSSARY.md` 为准。
 
 ## 目录
 
