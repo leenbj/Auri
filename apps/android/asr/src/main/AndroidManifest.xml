@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 转录路径不联网：这里不声明任何权限（尤其是 INTERNET），由测试在合并后的清单上断言。 -->
+<manifest />

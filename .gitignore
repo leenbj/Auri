@@ -49,3 +49,13 @@ execution/**/raw/
 execution/p0-spikes/ios-probe/*.xcodeproj/
 execution/p0-spikes/ios-probe/Info.plist
 execution/p0-spikes/ios-probe/results/raw/
+
+# apps/android（Ticket 14）：Kotlin 会话文件、安装包、引擎 AAR 与模型压缩包不入库
+# AAR 与模型缓存放在仓库外的 ~/.cache/auri/，哈希记录在 apps/android/engine/ 与模型清单里
+.kotlin/
+.cxx/
+captures/
+*.apk
+*.aab
+*.aar
+*.tar.bz2

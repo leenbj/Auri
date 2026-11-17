@@ -83,6 +83,21 @@ adb shell am start -n app.auri.probe.android/app.auri.probe.MainActivity
 adb shell run-as app.auri.probe.android cat files/probe-log.jsonl > results/raw/probe-log.jsonl
 ```
 
+Android 本地转录（Ticket 14，工程位于 `apps/android/`，需先 `source ~/.config/auri/android-env.sh`；AAR、模型、示例音频缓存在仓库外 `~/.cache/auri/`，不入库；真机步骤与结果见 `execution/acceptance/asr-android/README.md`）：
+
+```bash
+cd apps/android
+./gradlew :asr:testDebugUnitTest :app:testDebugUnitTest              # JVM 单测（112 + 28），不需要设备
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest           # 构建会校验引擎 AAR 的大小与 SHA-256，不符即失败
+cd ../..
+.venv/bin/pytest execution/acceptance/asr-android                    # Python 验收工具与合同输出校验（会调用 Gradle，需要 JAVA_HOME）
+.venv/bin/python execution/acceptance/asr-android/prepare_model.py   # 下载并校验模型包与示例音频到 ~/.cache/auri/
+export ADB_LIBUSB=1                                                  # macOS：adb 服务端可能卡在 IOKit，必须设置
+execution/acceptance/asr-android/install_on_device.sh                # 把模型放进已安装 debug 应用的私有目录
+execution/acceptance/asr-android/run_device_acceptance.sh            # 设备（模拟器/真机）一键验收：仪器测试（check_instrumentation.py 逐个核对 @Test 都跑了）+ 三次冷启动基准 + 合同校验
+adb shell am start -S -W -n app.auri.android/.TranscribeFileActivity --es wav samples/zh.wav --es out NAME --ei warm_repeats 3   # 转录一个文件；必须带 -S
+```
+
 鸿蒙探针（DEV-003，工程位于 `execution/p0-spikes/harmonyos-probe/`）：
 
 ```bash

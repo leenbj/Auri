@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 本模块只是 Ticket 14 的宿主：不声明任何权限（尤其是 INTERNET）。真正的录音界面是 Ticket 16。 -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:allowBackup="false"
+        android:label="Auri"
+        android:supportsRtl="true" />
+</manifest>
