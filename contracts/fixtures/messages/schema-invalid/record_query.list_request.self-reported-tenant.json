@@ -1,0 +1,12 @@
+{
+  "schema": "record_query.schema.json#/$defs/list_request",
+  "expect": "schema_invalid",
+  "rejected_because": "不能靠自报 tenant_id 列出别人的内容。",
+  "expect_error": {
+    "path": "",
+    "keyword": "additionalProperties"
+  },
+  "instance": {
+    "tenant_id": "e5f095ca-50ab-5e82-89a8-2b228497c234"
+  }
+}

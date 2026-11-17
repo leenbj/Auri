@@ -1,0 +1,13 @@
+{
+  "schema": "record_query.schema.json#/$defs/search_request",
+  "expect": "schema_invalid",
+  "rejected_because": "不能靠自报 agent_id 搜索别的 Agent 的 Record。",
+  "expect_error": {
+    "path": "",
+    "keyword": "additionalProperties"
+  },
+  "instance": {
+    "query": "记忆模块",
+    "agent_id": "hermes-other"
+  }
+}

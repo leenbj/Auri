@@ -1,0 +1,12 @@
+{
+  "schema": "record_query.schema.json#/$defs/get_request",
+  "expect": "schema_invalid",
+  "rejected_because": "record_get 必须提供 record_id。",
+  "expect_error": {
+    "path": "",
+    "keyword": "required"
+  },
+  "instance": {
+    "revision": 1
+  }
+}

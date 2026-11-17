@@ -1,0 +1,8 @@
+{
+  "schema": "gateway.schema.json#/$defs/health_response",
+  "expect": "valid",
+  "description": "存活检查最小响应，不含正文、密钥或内部拓扑。",
+  "instance": {
+    "status": "ok"
+  }
+}

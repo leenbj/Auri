@@ -320,17 +320,14 @@ class ToolOutcome(NamedTuple):
     text: str
 
 
-_DELIVERY_REQUEST_REFS = {
-    "delivery_claim": "claim_request",
-    "delivery_renew_lease": "renew_request",
-    "delivery_ack": "ack_request",
-    "delivery_nack": "nack_request",
-}
-_DELIVERY_RESPONSE_REFS = {
-    "delivery_claim": "claim_response",
-    "delivery_renew_lease": "renew_response",
-    "delivery_ack": "ack_response",
-    "delivery_nack": "nack_response",
+_TOOL_SCHEMAS = {
+    "delivery_claim": ("delivery.schema.json#/$defs/claim_request", "delivery.schema.json#/$defs/claim_response"),
+    "delivery_renew_lease": ("delivery.schema.json#/$defs/renew_request", "delivery.schema.json#/$defs/renew_response"),
+    "delivery_ack": ("delivery.schema.json#/$defs/ack_request", "delivery.schema.json#/$defs/ack_response"),
+    "delivery_nack": ("delivery.schema.json#/$defs/nack_request", "delivery.schema.json#/$defs/nack_response"),
+    "record_list": ("record_query.schema.json#/$defs/list_request", "record_query.schema.json#/$defs/list_response"),
+    "record_get": ("record_query.schema.json#/$defs/get_request", "record_query.schema.json#/$defs/get_response"),
+    "record_search": ("record_query.schema.json#/$defs/search_request", "record_query.schema.json#/$defs/search_response"),
 }
 
 
@@ -397,12 +394,11 @@ class McpAgent:
 
     def call_ok(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """Call a contract-valid request; the response must be a contract-valid success."""
-        assert_valid_contract(f"delivery.schema.json#/$defs/{_DELIVERY_REQUEST_REFS[name]}", arguments)
+        req_schema, resp_schema = _TOOL_SCHEMAS[name]
+        assert_valid_contract(req_schema, arguments)
         outcome = self.call(name, arguments)
         assert not outcome.is_error, outcome.payload
-        assert_valid_contract(
-            f"delivery.schema.json#/$defs/{_DELIVERY_RESPONSE_REFS[name]}", outcome.payload
-        )
+        assert_valid_contract(resp_schema, outcome.payload)
         return outcome.payload
 
     def call_error(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -438,6 +434,15 @@ class McpAgent:
                 "retryable": retryable,
             },
         )
+
+    def record_list(self, **arguments: Any) -> dict[str, Any]:
+        return self.call_ok("record_list", arguments)
+
+    def record_get(self, record_id: str, **arguments: Any) -> dict[str, Any]:
+        return self.call_ok("record_get", {"record_id": record_id, **arguments})
+
+    def record_search(self, query: str, **arguments: Any) -> dict[str, Any]:
+        return self.call_ok("record_search", {"query": query, **arguments})
 
 
 def make_redeem_request(

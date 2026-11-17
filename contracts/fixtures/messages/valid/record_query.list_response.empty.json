@@ -1,0 +1,10 @@
+{
+  "schema": "record_query.schema.json#/$defs/list_response",
+  "expect": "valid",
+  "description": "当前 Destination 尚无授权 Record 时返回正常空列表。",
+  "instance": {
+    "schema_version": "1.1",
+    "records": [],
+    "next_cursor": null
+  }
+}

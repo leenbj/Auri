@@ -1,0 +1,12 @@
+{
+  "schema": "record_query.schema.json#/$defs/search_request",
+  "expect": "schema_invalid",
+  "rejected_because": "搜索关键词不能为空字符串。",
+  "expect_error": {
+    "path": "/query",
+    "keyword": "minLength"
+  },
+  "instance": {
+    "query": ""
+  }
+}

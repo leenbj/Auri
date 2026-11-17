@@ -1,0 +1,22 @@
+{
+  "schema": "gateway.schema.json#/$defs/operation_response",
+  "expect": "schema_invalid",
+  "rejected_because": "操作查询响应不得回传口述正文或密钥。",
+  "expect_error": {
+    "path": "",
+    "keyword": "additionalProperties"
+  },
+  "instance": {
+    "schema_version": "1.1",
+    "operation_id": "f248f8a6-694e-52a8-8aaf-76e5a7625808",
+    "operation_type": "revision_store",
+    "status": "succeeded",
+    "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
+    "revision": 1,
+    "text_sha256": "d0d776b5f83facd57fa2b9ecd4e39984745e516a4c4de0495cdb71acc28f56ec",
+    "stored_at": "2026-11-15T02:31:02Z",
+    "superseded_revisions": [],
+    "deliveries": [],
+    "text": "不应该出现在操作查询里的正文"
+  }
+}

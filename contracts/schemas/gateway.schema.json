@@ -1,0 +1,223 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.auri.invalid/1.1/gateway.schema.json",
+  "title": "网关存活检查、能力、操作与 Record 状态查询",
+  "description": "PRD 第 17.2 节。GET /health 不带认证；GET /v1/capabilities、GET /v1/operations/{operation_id} 与 GET /v1/records/{record_id}/status 要求设备令牌认证，且不返回正文、密钥或内部拓扑。",
+  "$defs": {
+    "health_response": {
+      "title": "GET /health 的响应体",
+      "description": "存活检查。不返回正文、密钥或内部拓扑。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": { "const": "ok" }
+      }
+    },
+    "capabilities_response": {
+      "title": "GET /v1/capabilities 的响应体",
+      "description": "需要设备令牌认证；返回网关支持的 schema 版本、功能开关与服务端限制，不代替 MCP 自身版本机制。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "gateway_version",
+        "supported_schema_versions",
+        "features",
+        "limits"
+      ],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "gateway_version": { "type": "string", "minLength": 1, "maxLength": 64 },
+        "supported_schema_versions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 16 }
+        },
+        "features": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "cloud_asr",
+            "record_read_tools",
+            "delivery_tools",
+            "mdns_discovery",
+            "lan_only_tls"
+          ],
+          "properties": {
+            "cloud_asr": { "const": false },
+            "record_read_tools": { "type": "boolean" },
+            "delivery_tools": { "type": "boolean" },
+            "mdns_discovery": { "type": "boolean" },
+            "lan_only_tls": { "type": "boolean" }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "max_text_bytes",
+            "max_destinations_per_publication",
+            "record_list_default_limit",
+            "record_list_max_limit",
+            "record_search_default_limit",
+            "record_search_max_limit",
+            "delivery_claim_default_limit",
+            "delivery_claim_max_limit",
+            "delivery_lease_default_seconds",
+            "delivery_lease_min_seconds",
+            "delivery_lease_max_seconds",
+            "pairing_ttl_max_seconds"
+          ],
+          "properties": {
+            "max_text_bytes": { "type": "integer", "minimum": 1 },
+            "max_destinations_per_publication": { "type": "integer", "minimum": 1 },
+            "record_list_default_limit": { "type": "integer", "minimum": 1 },
+            "record_list_max_limit": { "type": "integer", "minimum": 1 },
+            "record_search_default_limit": { "type": "integer", "minimum": 1 },
+            "record_search_max_limit": { "type": "integer", "minimum": 1 },
+            "delivery_claim_default_limit": { "type": "integer", "minimum": 1 },
+            "delivery_claim_max_limit": { "type": "integer", "minimum": 1 },
+            "delivery_lease_default_seconds": { "type": "integer", "minimum": 1 },
+            "delivery_lease_min_seconds": { "type": "integer", "minimum": 1 },
+            "delivery_lease_max_seconds": { "type": "integer", "minimum": 1 },
+            "pairing_ttl_max_seconds": { "type": "integer", "minimum": 1 }
+          }
+        }
+      }
+    },
+    "operation_delivery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["delivery_id", "destination_id", "revision", "state"],
+      "properties": {
+        "delivery_id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "destination_id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "revision": { "$ref": "common.schema.json#/$defs/revision_number" },
+        "state": { "$ref": "common.schema.json#/$defs/delivery_state" }
+      }
+    },
+    "operation_response": {
+      "title": "GET /v1/operations/{operation_id} 的响应体",
+      "description": "手机在提交结果不确定时按操作标识查询真实入库结果；只允许所属设备查询。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "operation_id",
+        "operation_type",
+        "status",
+        "record_id",
+        "revision",
+        "text_sha256",
+        "stored_at",
+        "superseded_revisions",
+        "deliveries"
+      ],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "operation_id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "operation_type": { "const": "revision_store" },
+        "status": { "const": "succeeded" },
+        "record_id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "revision": { "$ref": "common.schema.json#/$defs/revision_number" },
+        "text_sha256": { "$ref": "common.schema.json#/$defs/sha256_hex" },
+        "stored_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "superseded_revisions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "common.schema.json#/$defs/revision_number" }
+        },
+        "deliveries": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/operation_delivery" }
+        }
+      }
+    },
+    "revision_status_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "state", "text_sha256", "stored_at", "intent"],
+      "properties": {
+        "revision": { "$ref": "common.schema.json#/$defs/revision_number" },
+        "state": { "$ref": "common.schema.json#/$defs/revision_state" },
+        "text_sha256": { "$ref": "common.schema.json#/$defs/sha256_hex" },
+        "stored_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "intent": { "$ref": "common.schema.json#/$defs/intent" }
+      }
+    },
+    "destination_delivery_status": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "destination_id",
+        "destination_display_name",
+        "delivery_id",
+        "revision",
+        "delivery_state",
+        "stored_at",
+        "lease_expires_at",
+        "acknowledged_at",
+        "rejected_at",
+        "cancelled_at"
+      ],
+      "properties": {
+        "destination_id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "destination_display_name": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "delivery_id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "revision": { "$ref": "common.schema.json#/$defs/revision_number" },
+        "delivery_state": { "$ref": "common.schema.json#/$defs/delivery_state" },
+        "stored_at": { "$ref": "common.schema.json#/$defs/timestamp" },
+        "lease_expires_at": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/timestamp" }, { "type": "null" }]
+        },
+        "acknowledged_at": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/timestamp" }, { "type": "null" }]
+        },
+        "rejected_at": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/timestamp" }, { "type": "null" }]
+        },
+        "cancelled_at": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/timestamp" }, { "type": "null" }]
+        }
+      }
+    },
+    "record_status_response": {
+      "title": "GET /v1/records/{record_id}/status 的响应体",
+      "description": "查询一条 Record 在各 Destination 上的投递状态（PENDING=已入库、LEASED=已领取、ACKNOWLEDGED=已确认等），按认证租户过滤，不返回正文。",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "record_id",
+        "origin_device_id",
+        "deleted",
+        "deleted_at",
+        "latest_revision",
+        "revisions",
+        "destinations"
+      ],
+      "properties": {
+        "schema_version": { "$ref": "common.schema.json#/$defs/schema_version" },
+        "record_id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "origin_device_id": { "$ref": "common.schema.json#/$defs/uuid" },
+        "deleted": { "type": "boolean" },
+        "deleted_at": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/timestamp" }, { "type": "null" }]
+        },
+        "latest_revision": {
+          "oneOf": [{ "$ref": "common.schema.json#/$defs/revision_number" }, { "type": "null" }]
+        },
+        "revisions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/revision_status_summary" }
+        },
+        "destinations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/destination_delivery_status" }
+        }
+      }
+    }
+  }
+}
