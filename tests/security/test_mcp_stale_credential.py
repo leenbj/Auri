@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import pathlib
 import sys
-import time
 from collections.abc import Callable
 
 import httpx
@@ -28,17 +27,22 @@ CLAIM_CALL = {
     "method": "tools/call",
     "params": {"name": "delivery_claim", "arguments": {}},
 }
-HEADERS_ARRIVE_FIRST_SECONDS = 0.5  # the gateway authenticates as soon as the headers are in
 
 
 def claim_with_body_held_back(
-    world: World, credential: str, meanwhile: Callable[[], None]
+    world: World, destination: AgentDestination, meanwhile: Callable[[], None]
 ) -> httpx.Response:
-    """POST a delivery_claim whose body is only sent after `meanwhile` ran (headers go out first)."""
+    """POST a delivery_claim whose body is only sent after `meanwhile` ran (headers go out first).
+
+    `meanwhile` runs once the gateway has logged that the request passed authentication, so the
+    credential is certainly still valid when the request starts and changes only afterwards.
+    """
     payload = json.dumps(CLAIM_CALL).encode()
+    authenticated = f"mcp_authenticated destination_id={destination.destination_id}"
+    before = world.gw.count_output(authenticated)
 
     def body():
-        time.sleep(HEADERS_ARRIVE_FIRST_SECONDS)
+        world.gw.wait_for_output(authenticated, occurrences=before + 1)
         meanwhile()
         yield payload
 
@@ -46,7 +50,7 @@ def claim_with_body_held_back(
         f"{world.gw.base_url}/mcp",
         content=body(),
         headers={
-            "Authorization": f"Bearer {credential}",
+            "Authorization": f"Bearer {destination.credential}",
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
         },
@@ -55,9 +59,11 @@ def claim_with_body_held_back(
 
 
 def refusal_code(response: httpx.Response) -> str:
-    """The unified error code of a refused request, whether refused at the door or inside the tool."""
-    if response.status_code == 401:
-        return response.json()["code"]
+    """The unified error code of a tool call that was refused after it had been accepted.
+
+    The request passed the door while its credential was valid, so the refusal has to come from
+    the check inside the tool, as an error result (HTTP 200), not from a 401 at the door.
+    """
     assert response.status_code == 200, response.text
     result = response.json()["result"]
     assert result["isError"] is True, result
@@ -69,7 +75,7 @@ def test_a_request_held_back_works_when_nothing_changes_meanwhile(world: World) 
     destination = world.destination()
     world.publish(destination)
 
-    response = claim_with_body_held_back(world, destination.credential, lambda: None)
+    response = claim_with_body_held_back(world, destination, lambda: None)
 
     assert response.status_code == 200, response.text
     result = response.json()["result"]
@@ -83,9 +89,7 @@ def test_a_credential_rotated_while_the_body_is_held_back_cannot_claim(world: Wo
     rotated: list[AgentDestination] = []
 
     response = claim_with_body_held_back(
-        world,
-        destination.credential,
-        lambda: rotated.append(world.rotate_credential(destination)),
+        world, destination, lambda: rotated.append(world.rotate_credential(destination))
     )
 
     assert refusal_code(response) == "GATEWAY_AUTH_REVOKED"
@@ -98,8 +102,6 @@ def test_a_destination_revoked_while_the_body_is_held_back_cannot_claim(world: W
     destination = world.destination()
     world.publish(destination)
 
-    response = claim_with_body_held_back(
-        world, destination.credential, lambda: world.revoke(destination)
-    )
+    response = claim_with_body_held_back(world, destination, lambda: world.revoke(destination))
 
     assert refusal_code(response) == "GATEWAY_AUTH_REVOKED"

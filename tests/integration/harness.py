@@ -10,6 +10,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -94,6 +95,9 @@ class GatewayProcess:
         self.base_url = f"{scheme}://{connect_host}:{self.port}"
         self._connect_host = connect_host
         self._proc: subprocess.Popen[str] | None = None
+        self._collected: dict[str, list[str]] = {"stdout": [], "stderr": []}
+        self._readers: list[threading.Thread] = []
+        self._output_changed = threading.Condition()
 
     def start(self, timeout_seconds: float = 10.0) -> None:
         cmd = [
@@ -122,12 +126,23 @@ class GatewayProcess:
             stderr=subprocess.PIPE,
             text=True,
         )
+        # Drain both pipes while the gateway runs: a full pipe would block it on its next log line.
+        self._collected = {"stdout": [], "stderr": []}
+        self._readers = [
+            threading.Thread(target=self._drain, args=(name, stream), daemon=True)
+            for name, stream in (("stdout", self._proc.stdout), ("stderr", self._proc.stderr))
+        ]
+        for reader in self._readers:
+            reader.start()
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
             if self._proc.poll() is not None:
-                stdout, stderr = self._proc.communicate(timeout=2)
+                self._proc.wait(timeout=2)
+                for reader in self._readers:
+                    reader.join(timeout=2)
                 raise RuntimeError(
-                    f"Gateway exited prematurely ({self._proc.returncode}): stdout={stdout!r} stderr={stderr!r}"
+                    f"Gateway exited prematurely ({self._proc.returncode}): "
+                    f"stdout={self._joined('stdout')!r} stderr={self._joined('stderr')!r}"
                 )
             try:
                 if self.tls:
@@ -155,14 +170,39 @@ class GatewayProcess:
         if self._proc.poll() is None:
             self._proc.terminate()
             try:
-                stdout, stderr = self._proc.communicate(timeout=5)
+                self._proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self._proc.kill()
-                stdout, stderr = self._proc.communicate(timeout=5)
-        else:
-            stdout, stderr = self._proc.communicate(timeout=2)
+                self._proc.wait(timeout=5)
+        for reader in self._readers:
+            reader.join(timeout=5)
         self._proc = None
-        return stdout, stderr
+        return self._joined("stdout"), self._joined("stderr")
+
+    def _drain(self, name: str, stream: Any) -> None:
+        for line in stream:
+            with self._output_changed:
+                self._collected[name].append(line)
+                self._output_changed.notify_all()
+
+    def _joined(self, name: str) -> str:
+        with self._output_changed:
+            return "".join(self._collected[name])
+
+    def count_output(self, text: str) -> int:
+        """How many times the gateway has written `text` so far (stdout and stderr together)."""
+        with self._output_changed:
+            return sum(line.count(text) for lines in self._collected.values() for line in lines)
+
+    def wait_for_output(self, text: str, *, occurrences: int, timeout: float = 10.0) -> None:
+        """Block until the gateway has written `text` at least `occurrences` times in total."""
+        deadline = time.monotonic() + timeout
+        with self._output_changed:
+            while self.count_output(text) < occurrences:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(f"the gateway never wrote {text!r} {occurrences} time(s)")
+                self._output_changed.wait(remaining)
 
     def run_cli(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(

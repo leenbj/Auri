@@ -13,12 +13,13 @@ from typing import NamedTuple
 
 import pytest
 
-from harness import AgentDestination, GatewayProcess, World
+from harness import AgentDestination, GatewayProcess, ToolOutcome, World, assert_valid_contract
 
 LEASE_SECONDS = 10  # the shortest lease the contract allows
 # The `renewed` Delivery has a longer lease and is renewed 6 s before it would end, so it is
-# still held 6 s after the original expiry: the test process may stall for about 5 s at either
-# end of that window before these tests become unreliable.
+# still held 6 s after the original expiry. The fixture renews it and acknowledges it right after
+# the original expiry, so the test process may stall for about 5 s at either step before this
+# becomes unreliable; no test depends on the order the tests run in.
 RENEWED_LEASE_SECONDS = 12
 RENEW_BEFORE_EXPIRY = timedelta(seconds=6)
 ROLES = (
@@ -48,6 +49,7 @@ class AgedLeases(NamedTuple):
     destinations: dict[str, AgentDestination]
     deliveries: dict[str, dict]  # the Delivery each role claimed, with the token it holds
     first_ack: dict  # the response to the acknowledgement made while the lease was still valid
+    renewed_ack: ToolOutcome  # the acknowledgement of the renewed lease, sent after the original expiry
 
 
 @pytest.fixture(scope="module")
@@ -79,18 +81,22 @@ def aged(tmp_path_factory: pytest.TempPathFactory):
         assert parse_timestamp(renewed["lease_expires_at"]) > original_expiry + timedelta(seconds=4)
 
         wait_until(original_expiry + timedelta(seconds=0.3))  # now every original lease is over
-        yield AgedLeases(world, destinations, deliveries, first_ack)
+        held = deliveries["renewed"]
+        renewed_ack = world.agent(destinations["renewed"]).call(
+            "delivery_ack", {"delivery_id": held["delivery_id"], "lease_token": held["lease_token"]}
+        )
+        yield AgedLeases(world, destinations, deliveries, first_ack, renewed_ack)
     finally:
         gateway.stop()
 
 
 def test_a_renewed_lease_outlives_its_original_expiry(aged: AgedLeases) -> None:
-    held = aged.deliveries["renewed"]
-    agent = aged.world.agent(aged.destinations["renewed"])
+    # The acknowledgement was sent by the fixture right after the original lease had run out.
+    outcome = aged.renewed_ack
 
-    acked = agent.ack(held["delivery_id"], held["lease_token"])
-
-    assert acked["duplicate"] is False
+    assert not outcome.is_error, outcome.payload
+    assert_valid_contract("delivery.schema.json#/$defs/ack_response", outcome.payload)
+    assert outcome.payload["duplicate"] is False
 
 
 def test_ack_after_the_lease_expired_is_refused_with_the_lease_expired_error(
