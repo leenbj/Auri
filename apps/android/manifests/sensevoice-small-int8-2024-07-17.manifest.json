@@ -1,0 +1,40 @@
+{
+  "manifest_version": 1,
+  "model_id": "sensevoice-small-int8",
+  "model_version": "2024-07-17+7d1efa2138a6",
+  "family": "sense_voice",
+  "languages": ["zh", "en", "ja", "ko", "yue"],
+  "sample_rate_hz": 16000,
+  "limits": {
+    "max_audio_duration_ms": 30000
+  },
+  "engine": {
+    "name": "sherpa-onnx",
+    "version_range": "==2.0.1"
+  },
+  "license": {
+    "name": "FunASR Model Open Source License v1.1",
+    "source_url": "https://github.com/modelscope/FunASR/blob/58830eca4012644aac0c3218c3ccc7d98f003fda/MODEL_LICENSE",
+    "redistribution": "unconfirmed",
+    "note": "许可方没有给出最终确认（docs/research/asr-candidates.md 第 3.3 节、冲突 C1）。只用于本机评测与验收，不随应用分发；能否成为随包默认模型由 Ticket 15 与产品负责人裁定。"
+  },
+  "archive": {
+    "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2",
+    "size_bytes": 163002883,
+    "sha256": "7d1efa2138a65b0b488df37f8b89e3d91a60676e416f515b952358d83dfd347e"
+  },
+  "files": [
+    {
+      "role": "model",
+      "path": "model.int8.onnx",
+      "size_bytes": 239233841,
+      "sha256": "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51"
+    },
+    {
+      "role": "tokens",
+      "path": "tokens.txt",
+      "size_bytes": 315894,
+      "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc"
+    }
+  ]
+}

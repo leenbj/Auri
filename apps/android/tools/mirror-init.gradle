@@ -1,0 +1,15 @@
+// 可选：慢网络下让 Gradle 先从阿里云镜像取 Maven 构件，取不到再回退到 settings.gradle.kts 里声明的官方仓库。
+// 默认不启用；需要时显式传入：  ./gradlew -I tools/mirror-init.gradle <任务>
+// 信任说明：镜像是第三方，版本由 gradle/libs.versions.toml 精确固定，但构件字节没有做 Gradle 依赖校验；
+// 引擎 AAR 不走镜像（它只来自 verifySherpaAar 校验过的本地副本），模型也按 SHA-256 校验。
+beforeSettings { settings ->
+    settings.pluginManagement.repositories {
+        maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
+        maven { url = uri("https://maven.aliyun.com/repository/google") }
+        maven { url = uri("https://maven.aliyun.com/repository/public") }
+    }
+    settings.dependencyResolutionManagement.repositories {
+        maven { url = uri("https://maven.aliyun.com/repository/google") }
+        maven { url = uri("https://maven.aliyun.com/repository/public") }
+    }
+}

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  “转录这个文件”入口，只存在于 debug 构建（不进发布包）。
+  必须导出：实测 adb shell 的 am start 启动不了未导出的 Activity（uid 2000 被拒，SecurityException）。
+  风险与限度：别的应用也能启动它，但它只读本应用有权限读的路径、只写本应用私有目录，界面与日志不含转录正文；
+  真正的产品界面（Ticket 16）不会带这个入口。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <activity
+            android:name="app.auri.android.TranscribeFileActivity"
+            android:exported="true"
+            android:label="Auri 转录验收" />
+    </application>
+</manifest>
