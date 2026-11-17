@@ -30,6 +30,15 @@ python3 -m venv .venv
 .venv/bin/pytest tests/contract/test_state_machines.py -k capture   # 单个状态机
 ```
 
+网关与集成/安全测试（在仓库根目录执行，依赖版本固定在 `services/gateway/requirements.txt` 与 `tests/integration/requirements.txt`）：
+
+```bash
+.venv/bin/pip install -r services/gateway/requirements.txt -r tests/integration/requirements.txt
+PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway serve --data-dir /tmp/auri-gateway-data --host 127.0.0.1 --port 8080
+PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway pair --data-dir /tmp/auri-gateway-data
+.venv/bin/pytest tests/contract tests/integration tests/security
+```
+
 改了 `contracts/` 下的任何文件都要跑一遍。不得通过改样本的期望或删无效样本让测试通过；改 schema、状态机或语义规则的流程见 `contracts/README.md` 的“修改规则”。
 
 ## 产品与已决前提
