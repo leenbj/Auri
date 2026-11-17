@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import sqlite3
 import sys
 import time
 import uuid
@@ -328,3 +329,53 @@ def test_semantic_rule_sr06_over_1mib_utf8_bytes_rejected(gateway: GatewayProces
     )
     assert ok.status_code == 200
     assert ok.json()["duplicate"] is False
+
+
+def test_unknown_route_404_returns_unified_error(gateway: GatewayProcess) -> None:
+    for method, path in (("GET", "/v1/does-not-exist"), ("POST", "/unknown")):
+        resp = httpx.request(method, f"{gateway.base_url}{path}", timeout=5.0)
+        assert_contract_error(resp, expected_status=404, expected_code="REQUEST_INVALID")
+
+
+def test_method_not_allowed_405_returns_unified_error(gateway: GatewayProcess) -> None:
+    resp_health = httpx.post(f"{gateway.base_url}/health", timeout=5.0)
+    assert_contract_error(resp_health, expected_status=405, expected_code="REQUEST_INVALID")
+    assert "GET" in resp_health.headers.get("allow", "")
+
+    resp_redeem = httpx.delete(f"{gateway.base_url}/v1/pairing/redeem", timeout=5.0)
+    assert_contract_error(resp_redeem, expected_status=405, expected_code="REQUEST_INVALID")
+    assert "POST" in resp_redeem.headers.get("allow", "")
+
+    paired = gateway.pair_device("MCP 405 Phone")
+    dest = gateway.create_agent_destination(paired["device_token"], "MCP 405 Agent")
+    resp_mcp = httpx.get(
+        f"{gateway.base_url}/mcp",
+        headers={"Authorization": f"Bearer {dest.credential}", "Accept": "text/event-stream"},
+        timeout=5.0,
+    )
+    assert_contract_error(resp_mcp, expected_status=405, expected_code="REQUEST_INVALID")
+    assert "POST" in resp_mcp.headers.get("allow", "")
+
+
+def test_unhandled_500_returns_unified_error_without_leaking_internals(
+    tmp_path: pathlib.Path,
+) -> None:
+    gw = GatewayProcess(tmp_path / "unhandled-500")
+    gw.start()
+    try:
+        paired = gw.pair_device("Error Isolation Phone")
+        headers = {"Authorization": f"Bearer {paired['device_token']}"}
+        with sqlite3.connect(gw.data_dir / "gateway.db") as conn:
+            conn.execute("DROP TABLE destinations")
+
+        resp = httpx.get(f"{gw.base_url}/v1/destinations", headers=headers, timeout=5.0)
+    finally:
+        gw.stop()
+
+    assert resp.status_code == 500, resp.text
+    body = resp.json()
+    assert_valid_contract("error.schema.json", body)
+    assert body["code"] == "GATEWAY_UNREACHABLE"
+    assert body["retryable"] is True
+    for leaked in ("sqlite", "OperationalError", "no such table", "destinations", "Traceback", str(tmp_path)):
+        assert leaked.lower() not in resp.text.lower()

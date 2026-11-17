@@ -7,13 +7,14 @@ import pathlib
 from typing import Any
 
 from starlette.applications import Starlette
+from starlette.exceptions import HTTPException
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from .contracts import UUID_RE, check_revision_semantic_rules, validate_schema
 from .db import ensure_gateway_initialized
-from .error_codes import REQUEST_INVALID, GatewayError
+from .error_codes import GATEWAY_UNREACHABLE, REQUEST_INVALID, GatewayError, build_error_payload
 from .mcp_endpoint import AgentMcpEndpoint
 from .store import (
     authenticate_device,
@@ -197,6 +198,35 @@ def create_app(data_dir: pathlib.Path) -> Starlette:
         logger.info("request_rejected status=%s code=%s", exc.status_code, exc.code)
         return JSONResponse(exc.to_payload(), status_code=exc.status_code)
 
+    async def http_exception_handler(_request: Request, exc: HTTPException) -> Response:
+        if exc.status_code in {204, 304}:
+            return Response(status_code=exc.status_code, headers=exc.headers)
+        if exc.status_code == 404:
+            code, message, retryable = REQUEST_INVALID, "Resource not found.", False
+        elif exc.status_code == 405:
+            code, message, retryable = REQUEST_INVALID, "Method not allowed.", False
+        elif exc.status_code >= 500:
+            code, message, retryable = GATEWAY_UNREACHABLE, "Internal gateway error.", True
+        else:
+            code, message, retryable = REQUEST_INVALID, "Request is invalid.", False
+        logger.info("http_exception status=%s code=%s", exc.status_code, code)
+        return JSONResponse(
+            build_error_payload(code, message, retryable=retryable),
+            status_code=exc.status_code,
+            headers=exc.headers,
+        )
+
+    async def unhandled_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
+        logger.exception("unhandled_gateway_error", exc_info=exc)
+        return JSONResponse(
+            build_error_payload(
+                GATEWAY_UNREACHABLE,
+                "Internal gateway error.",
+                retryable=True,
+            ),
+            status_code=500,
+        )
+
     routes = [
         Route("/health", health, methods=["GET"]),
         Route("/v1/pairing/redeem", pairing_redeem, methods=["POST"]),
@@ -217,7 +247,13 @@ def create_app(data_dir: pathlib.Path) -> Starlette:
         Route("/mcp", endpoint=mcp_endpoint.asgi_app()),
     ]
     return Starlette(
+        debug=False,
         routes=routes,
-        exception_handlers={GatewayError: gateway_error_handler},
+        exception_handlers={
+            GatewayError: gateway_error_handler,
+            HTTPException: http_exception_handler,
+            500: unhandled_exception_handler,
+            Exception: unhandled_exception_handler,
+        },
         lifespan=mcp_endpoint.lifespan,
     )

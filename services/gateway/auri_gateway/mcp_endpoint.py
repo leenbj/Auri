@@ -26,7 +26,7 @@ from mcp.types import (
     ToolAnnotations,
 )
 from starlette.datastructures import Headers
-from starlette.responses import Response
+from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import __version__
@@ -39,7 +39,7 @@ from .deliveries import (
     nack_delivery,
     renew_lease,
 )
-from .error_codes import REQUEST_INVALID, GatewayError
+from .error_codes import GATEWAY_UNREACHABLE, REQUEST_INVALID, GatewayError, build_error_payload
 from .store import AuthenticatedDestination, authenticate_destination
 
 logger = logging.getLogger("auri_gateway")
@@ -166,7 +166,11 @@ class _DestinationAuthGate:
         )
         logger.info("mcp_authenticated destination_id=%s", destination.destination_id)
         if scope["method"] != "POST":
-            await Response(status_code=405, headers={"Allow": "POST"})(scope, receive, send)
+            await JSONResponse(
+                build_error_payload(REQUEST_INVALID, "Method not allowed."),
+                status_code=405,
+                headers={"Allow": "POST"},
+            )(scope, receive, send)
             return
         scope[DESTINATION_SCOPE_KEY] = destination
         await self._app(scope, receive, send)
@@ -233,6 +237,16 @@ class AgentMcpEndpoint:
             return _ok(handler(ctx, arguments))
         except GatewayError as exc:
             return _error(exc)
+        except Exception as exc:
+            logger.exception("unhandled_mcp_tool_error tool=%s", params.name, exc_info=exc)
+            return _error(
+                GatewayError(
+                    500,
+                    GATEWAY_UNREACHABLE,
+                    "Internal gateway error.",
+                    retryable=True,
+                )
+            )
 
     def _claim(self, ctx: ServerRequestContext, arguments: dict[str, Any]) -> dict[str, Any]:
         deliveries = claim_deliveries(
