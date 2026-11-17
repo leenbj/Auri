@@ -1,6 +1,6 @@
-# Auri Gateway 局域网传输与证书运维说明
+# Auri Gateway 运维说明
 
-本说明涵盖 Gateway 自签 TLS 证书的有效期、续签步骤、局域网监听规则及 mDNS 发现行为（依据 ADR-0018）。
+本说明涵盖 Gateway 的日常运维命令、自签 TLS 证书管理（依据 ADR-0018）、设备与凭证管理、丢失设备记录清理、在线备份与恢复，以及数据库安全升级流程。
 
 ## 1. 密钥与证书文件
 
@@ -60,3 +60,77 @@ PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway serve --data-dir <d
 - **依赖 mDNS 自动回退（无需重新配对，推荐）**：确保在新的网络环境下重启 Gateway `serve`（默认开启 mDNS，不要加 `--no-mdns`），使 Gateway 绑定新局域网 IP 并广播最新地址。已配对客户端在原 `addresses` 不可达时会自动通过 mDNS 查找 Gateway，并在核对不变的 `public_key_sha256` 指纹后继续连接（iOS 需已授予“本地网络”权限）。
 - **在 mDNS 不可用时重新配对**：若启动时使用了 `--no-mdns`、当前路由器/局域网拦截了 mDNS 多播、或客户端平台本身不支持 mDNS（依 ADR-0018 退回仅使用已记录地址），则必须先在新网络下重启 Gateway，再重新运行 `pair`（必要时配合 `--host <当前局域网IP>`）生成新的配对二维码并重新配对。
 - 说明：客户端校验的是私钥对应的公钥指纹（`public_key_sha256`），只要未更换 `gateway.key.pem`，IP 变化本身不需要重新生成私钥；若希望证书 SAN 列表也同步包含新 IP，可执行一次 `renew-cert` 后重启 Gateway。
+
+## 5. 设备与凭证管理
+
+以下命令行工具直接操作持久化数据目录 `<data_dir>`（可附加 `--json` 输出结构化 JSON），输出只包含标识、名称、状态和时间戳，**绝不输出**设备令牌、Destination 凭证或其哈希、或任何 Record 正文。
+
+### 列出已配对设备与创建的凭证
+
+```bash
+PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway list-devices --data-dir <data_dir>
+```
+
+按配对时间列出每台已配对设备（`active` / `revoked`），以及该设备曾经签发过的每条 Destination 凭证（`credential_id`、`destination_id`、名称、状态与时间戳）。
+
+### 吊销设备或单个凭证
+
+- **吊销设备**（手机丢失或淘汰时使用）：
+
+```bash
+PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway revoke-device --data-dir <data_dir> --device-id <device_id>
+```
+
+被吊销的设备令牌在下次请求时会被立即拒绝（HTTP 401 `GATEWAY_AUTH_REVOKED`）。依据 ADR-008 与工单约定，**吊销设备不会自动吊销它创建过的 Destination 凭证**，仍在合法运行中的 Agent 不受影响。
+
+- **吊销单个凭证**（仅撤回某一条 Agent 凭证，不影响设备或 Destination 本身）：
+
+```bash
+PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway revoke-credential --data-dir <data_dir> --credential-id <credential_id>
+```
+
+该凭证在下次访问 `/mcp` 时会被拒绝（`GATEWAY_AUTH_REVOKED`）；设备仍可为同一 Destination 重新签发新凭证。
+
+### 清理已吊销设备名下的 Record
+
+```bash
+PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway delete-device-records --data-dir <data_dir> --device-id <device_id>
+```
+
+- 仅允许对**已吊销**（`revoked`）的设备执行；对活跃设备执行会被拒绝。
+- 删除语义与设备自己调用 `DELETE /v1/records/{record_id}` 完全一致（共用同一套墓碑与投递取消逻辑）：为每条尚未删除的 Record 写下永久墓碑、取消所有未完成的投递（`PENDING` / `LEASED` → `CANCELLED`），并**保留**已确认（`ACKNOWLEDGED`）或已永久拒收（`REJECTED`）的历史投递。重复执行是幂等的。
+
+## 6. 备份与恢复
+
+### 在线备份（支持 Gateway 运行中执行）
+
+```bash
+PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway backup --data-dir <data_dir> --output <backup.tar.gz>
+```
+
+- 通过 SQLite 在线备份 API（`sqlite3.Connection.backup`）生成一致性快照，即使 `serve` 正在运行且处于 WAL 模式也能安全备份，不使用危险的直接文件拷贝。
+- 归档内包含 `manifest.json`（含各文件 SHA-256 校验和）、一致性 `gateway.db`，以及恢复运行所需的密钥文件（若存在）：`tls/gateway.key.pem`、`tls/gateway.cert.pem` 与分页游标密钥 `cursor.key`（不打包瞬态 `runtime.json`）。
+- 生成的备份文件包含私密密钥材料与凭证哈希，权限严格限制为 `0600`（仅属主可读写）。
+
+### 恢复到新的空目录
+
+```bash
+PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway restore --backup <backup.tar.gz> --data-dir <new_empty_data_dir>
+```
+
+- 目标目录必须为空或尚不存在；若目录非空则拒绝恢复，避免误覆盖现有数据。
+- 恢复前会校验归档路径安全性、各文件 SHA-256 校验和及 SQLite `PRAGMA integrity_check`，并恢复安全文件权限（`gateway.db`、`cursor.key`、`tls/gateway.key.pem` 均为 `0600`）。
+- 恢复后用 `serve --data-dir <new_empty_data_dir>` 启动即可继续服务：TLS 公钥指纹、已配对设备令牌、Destination 凭证哈希、Record 墓碑与 Delivery 状态均保持完整可用。
+
+## 7. 升级与自动迁移机制
+
+启动 `serve` 或显式执行 `migrate` 时，Gateway 会检查 `<data_dir>/gateway.db` 中 `schema_migrations` 记录的已应用版本，自动应用所有更高编号的 SQL 迁移脚本：
+
+```bash
+PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway migrate --data-dir <data_dir>
+```
+
+### 为何采用“先在副本上迁移验证、成功后再原子替换”的策略
+
+- **设计选择**：当检测到存在待执行的迁移时，Gateway 不会直接改写在线的 `gateway.db`，而是先通过 SQLite 在线备份 API 将原库（连同已提交的 WAL 帧）完整复制到同目录下的临时副本，在副本的事务内依次执行全部待迁移 SQL，并运行 `PRAGMA integrity_check` 校验；**只有全部迁移与完整性校验均通过后**，才会在排空原库 WAL 后以 `os.replace` 原子替换 `gateway.db`。
+- **相比纯原地事务的优势**：SQLite 中部分语句（或跨多个迁移文件的组合变更、外键/索引重建以及 WAL 边车文件状态）在原地失败时容易留下中间副作用或 WAL 污染；在副本上试运行并验证通过后再替换，能够保证**只要任何一步迁移失败，原始 `gateway.db` 及其数据字节完全不被触碰**，同时 Gateway 明确拒绝启动并向标准错误输出清晰原因，排查后可安全修复并重试。

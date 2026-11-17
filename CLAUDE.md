@@ -39,6 +39,13 @@ PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway serve --data-dir /t
 PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway serve --data-dir /tmp/auri-gateway-data --host 127.0.0.1 --port 8080 --plaintext-loopback  # 仅本机开发回环明文
 PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway pair --data-dir /tmp/auri-gateway-data
 PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway renew-cert --data-dir /tmp/auri-gateway-data --validity-days 365
+PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway migrate --data-dir /tmp/auri-gateway-data
+PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway list-devices --data-dir /tmp/auri-gateway-data
+PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway revoke-device --data-dir /tmp/auri-gateway-data --device-id <device_id>
+PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway revoke-credential --data-dir /tmp/auri-gateway-data --credential-id <credential_id>
+PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway delete-device-records --data-dir /tmp/auri-gateway-data --device-id <device_id>
+PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway backup --data-dir /tmp/auri-gateway-data --output /tmp/auri-gateway-backup.tar.gz
+PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway restore --backup /tmp/auri-gateway-backup.tar.gz --data-dir /tmp/auri-gateway-restored
 .venv/bin/pytest tests/contract tests/integration tests/security   # 全部，约 2.5 分钟：租约到期测试必须真实等待（合同规定租约最短 10 秒）
 ```
 

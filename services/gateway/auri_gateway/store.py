@@ -9,7 +9,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from .db import ensure_gateway_initialized, format_utc, open_connection, parse_utc, sha256_str, utc_now
+from .db import (
+    db_path_for,
+    ensure_gateway_initialized,
+    format_utc,
+    open_connection,
+    parse_utc,
+    sha256_str,
+    utc_now,
+)
 from .delivery_machine import (
     ACKNOWLEDGED,
     DESTINATION_REVOKED,
@@ -942,6 +950,131 @@ def revoke_destination(
         conn.close()
 
 
+def _delete_record_in_tx(
+    conn: Any,
+    *,
+    tenant_id: str,
+    record_id: str,
+    expected_origin_device_id: str,
+    deleted_by_device_id: str | None,
+    now_iso: str,
+) -> tuple[dict[str, Any], bool]:
+    """Plant a deletion tombstone and cancel open Deliveries inside an open write transaction.
+
+    Returns `(result_payload, newly_deleted)`.
+    """
+    row = conn.execute(
+        """
+        SELECT origin_device_id, deleted_at, delete_cancelled_delivery_ids_json
+        FROM records
+        WHERE tenant_id = ? AND record_id = ?
+        """,
+        (tenant_id, record_id),
+    ).fetchone()
+
+    if row is not None:
+        if row["origin_device_id"] != expected_origin_device_id:
+            raise GatewayError(
+                403,
+                RECORD_NOT_ORIGIN_DEVICE,
+                "Only the device that created this record may delete it.",
+            )
+        if row["deleted_at"] is not None:
+            cancelled_ids = json.loads(row["delete_cancelled_delivery_ids_json"] or "[]")
+            return (
+                {
+                    "schema_version": "1.1",
+                    "record_id": record_id,
+                    "deleted_at": row["deleted_at"],
+                    "cancelled_delivery_ids": cancelled_ids,
+                },
+                False,
+            )
+    else:
+        conn.execute(
+            """
+            INSERT INTO records (
+                tenant_id, record_id, origin_device_id, created_at,
+                deleted_at, deleted_by_device_id, delete_cancelled_delivery_ids_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                tenant_id,
+                record_id,
+                expected_origin_device_id,
+                now_iso,
+                now_iso,
+                deleted_by_device_id,
+                "[]",
+            ),
+        )
+        return (
+            {
+                "schema_version": "1.1",
+                "record_id": record_id,
+                "deleted_at": now_iso,
+                "cancelled_delivery_ids": [],
+            },
+            True,
+        )
+
+    delivery_rows = conn.execute(
+        """
+        SELECT delivery_id, state
+        FROM deliveries
+        WHERE tenant_id = ? AND record_id = ?
+        ORDER BY created_at ASC, delivery_id ASC
+        """,
+        (tenant_id, record_id),
+    ).fetchall()
+
+    cancelled_delivery_ids: list[str] = []
+    for delivery_row in delivery_rows:
+        outcome = step(delivery_row["state"], DELIVERY_RECORD_DELETED)
+        if outcome.kind != "transition":
+            continue
+        # Preserve lease_token_hash on LEASED->CANCELLED so the current lease holder gets a
+        # non-retryable state rejection rather than a retryable DELIVERY_LEASE_EXPIRED.
+        clear_token_sql = ", lease_token_hash = NULL" if delivery_row["state"] == PENDING else ""
+        conn.execute(
+            f"""
+            UPDATE deliveries
+            SET state = ?,
+                cancelled_at = ?,
+                lease_expires_at = NULL{clear_token_sql}
+            WHERE delivery_id = ?
+            """,
+            (outcome.state, now_iso, delivery_row["delivery_id"]),
+        )
+        cancelled_delivery_ids.append(delivery_row["delivery_id"])
+
+    conn.execute(
+        """
+        UPDATE records
+        SET deleted_at = ?,
+            deleted_by_device_id = ?,
+            delete_cancelled_delivery_ids_json = ?
+        WHERE tenant_id = ? AND record_id = ?
+        """,
+        (
+            now_iso,
+            deleted_by_device_id,
+            json.dumps(cancelled_delivery_ids),
+            tenant_id,
+            record_id,
+        ),
+    )
+    return (
+        {
+            "schema_version": "1.1",
+            "record_id": record_id,
+            "deleted_at": now_iso,
+            "cancelled_delivery_ids": cancelled_delivery_ids,
+        },
+        True,
+    )
+
+
 def delete_record(
     db_path: pathlib.Path, auth: AuthenticatedDevice, record_id: str
 ) -> dict[str, Any]:
@@ -956,101 +1089,254 @@ def delete_record(
     try:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            result, _ = _delete_record_in_tx(
+                conn,
+                tenant_id=auth.tenant_id,
+                record_id=record_id,
+                expected_origin_device_id=auth.device_id,
+                deleted_by_device_id=auth.device_id,
+                now_iso=now_iso,
+            )
+            conn.execute("COMMIT")
+            return result
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+
+
+def _require_existing_db(data_dir: pathlib.Path) -> pathlib.Path:
+    db_path = db_path_for(data_dir)
+    if not db_path.exists():
+        raise FileNotFoundError(f"No gateway database found at {db_path}.")
+    return ensure_gateway_initialized(data_dir)
+
+
+def list_devices_and_credentials(data_dir: pathlib.Path) -> dict[str, Any]:
+    """List paired devices and the Destination credentials each device issued, without secrets or hashes."""
+    db_path = _require_existing_db(data_dir)
+    conn = open_connection(db_path)
+    try:
+        device_rows = conn.execute(
+            """
+            SELECT device_id, display_name, platform, paired_at, revoked_at
+            FROM devices
+            ORDER BY paired_at ASC, device_id ASC
+            """
+        ).fetchall()
+        cred_rows = conn.execute(
+            """
+            SELECT c.credential_id,
+                   c.destination_id,
+                   d.display_name AS destination_display_name,
+                   c.issued_by_device_id,
+                   c.issued_at,
+                   c.revoked_at AS cred_revoked_at,
+                   d.revoked_at AS dest_revoked_at
+            FROM destination_credentials AS c
+            JOIN destinations AS d
+              ON d.tenant_id = c.tenant_id AND d.destination_id = c.destination_id
+            ORDER BY c.issued_at ASC, c.credential_id ASC
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    creds_by_device: dict[str, list[dict[str, Any]]] = {}
+    for row in cred_rows:
+        revoked_at = row["cred_revoked_at"] or row["dest_revoked_at"]
+        creds_by_device.setdefault(row["issued_by_device_id"], []).append(
+            {
+                "credential_id": row["credential_id"],
+                "destination_id": row["destination_id"],
+                "destination_display_name": row["destination_display_name"],
+                "state": "revoked" if revoked_at is not None else "active",
+                "issued_at": row["issued_at"],
+                "revoked_at": revoked_at,
+            }
+        )
+
+    devices = [
+        {
+            "device_id": row["device_id"],
+            "display_name": row["display_name"],
+            "platform": row["platform"],
+            "state": "revoked" if row["revoked_at"] is not None else "active",
+            "paired_at": row["paired_at"],
+            "revoked_at": row["revoked_at"],
+            "credentials": creds_by_device.get(row["device_id"], []),
+        }
+        for row in device_rows
+    ]
+    return {"devices": devices}
+
+
+def revoke_device(data_dir: pathlib.Path, device_id: str) -> dict[str, Any]:
+    """Revoke a paired device without revoking the Destination credentials it created."""
+    db_path = _require_existing_db(data_dir)
+    now_iso = format_utc(utc_now())
+    conn = open_connection(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
             row = conn.execute(
                 """
-                SELECT origin_device_id, deleted_at, delete_cancelled_delivery_ids_json
-                FROM records
-                WHERE tenant_id = ? AND record_id = ?
+                SELECT device_id, display_name, platform, paired_at, revoked_at
+                FROM devices
+                WHERE device_id = ?
                 """,
-                (auth.tenant_id, record_id),
+                (device_id,),
             ).fetchone()
-
-            if row is not None:
-                if row["origin_device_id"] != auth.device_id:
-                    raise GatewayError(
-                        403,
-                        RECORD_NOT_ORIGIN_DEVICE,
-                        "Only the device that created this record may delete it.",
-                    )
-                if row["deleted_at"] is not None:
-                    cancelled_ids = json.loads(row["delete_cancelled_delivery_ids_json"] or "[]")
-                    conn.execute("COMMIT")
-                    return {
-                        "schema_version": "1.1",
-                        "record_id": record_id,
-                        "deleted_at": row["deleted_at"],
-                        "cancelled_delivery_ids": cancelled_ids,
-                    }
-            else:
-                conn.execute(
-                    """
-                    INSERT INTO records (
-                        tenant_id, record_id, origin_device_id, created_at,
-                        deleted_at, deleted_by_device_id, delete_cancelled_delivery_ids_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (auth.tenant_id, record_id, auth.device_id, now_iso, now_iso, auth.device_id, "[]"),
-                )
+            if row is None:
+                raise LookupError(f"Device not found: {device_id}")
+            if row["revoked_at"] is not None:
                 conn.execute("COMMIT")
                 return {
-                    "schema_version": "1.1",
-                    "record_id": record_id,
-                    "deleted_at": now_iso,
-                    "cancelled_delivery_ids": [],
+                    "device_id": row["device_id"],
+                    "display_name": row["display_name"],
+                    "platform": row["platform"],
+                    "state": "revoked",
+                    "paired_at": row["paired_at"],
+                    "revoked_at": row["revoked_at"],
+                    "already_revoked": True,
                 }
-
-            delivery_rows = conn.execute(
-                """
-                SELECT delivery_id, state
-                FROM deliveries
-                WHERE tenant_id = ? AND record_id = ?
-                ORDER BY created_at ASC, delivery_id ASC
-                """,
-                (auth.tenant_id, record_id),
-            ).fetchall()
-
-            cancelled_delivery_ids: list[str] = []
-            for delivery_row in delivery_rows:
-                outcome = step(delivery_row["state"], DELIVERY_RECORD_DELETED)
-                if outcome.kind != "transition":
-                    continue
-                # Preserve lease_token_hash on LEASED->CANCELLED so the current lease holder gets a
-                # non-retryable state rejection rather than a retryable DELIVERY_LEASE_EXPIRED.
-                clear_token_sql = ", lease_token_hash = NULL" if delivery_row["state"] == PENDING else ""
-                conn.execute(
-                    f"""
-                    UPDATE deliveries
-                    SET state = ?,
-                        cancelled_at = ?,
-                        lease_expires_at = NULL{clear_token_sql}
-                    WHERE delivery_id = ?
-                    """,
-                    (outcome.state, now_iso, delivery_row["delivery_id"]),
-                )
-                cancelled_delivery_ids.append(delivery_row["delivery_id"])
-
             conn.execute(
-                """
-                UPDATE records
-                SET deleted_at = ?,
-                    deleted_by_device_id = ?,
-                    delete_cancelled_delivery_ids_json = ?
-                WHERE tenant_id = ? AND record_id = ?
-                """,
-                (
-                    now_iso,
-                    auth.device_id,
-                    json.dumps(cancelled_delivery_ids),
-                    auth.tenant_id,
-                    record_id,
-                ),
+                "UPDATE devices SET revoked_at = ? WHERE device_id = ?",
+                (now_iso, device_id),
             )
             conn.execute("COMMIT")
             return {
-                "schema_version": "1.1",
-                "record_id": record_id,
-                "deleted_at": now_iso,
+                "device_id": row["device_id"],
+                "display_name": row["display_name"],
+                "platform": row["platform"],
+                "state": "revoked",
+                "paired_at": row["paired_at"],
+                "revoked_at": now_iso,
+                "already_revoked": False,
+            }
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+
+
+def revoke_credential(data_dir: pathlib.Path, credential_id: str) -> dict[str, Any]:
+    """Revoke a single Destination credential by credential_id without touching its Destination or device."""
+    db_path = _require_existing_db(data_dir)
+    now_iso = format_utc(utc_now())
+    conn = open_connection(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                """
+                SELECT c.credential_id,
+                       c.destination_id,
+                       d.display_name AS destination_display_name,
+                       c.issued_by_device_id,
+                       c.issued_at,
+                       c.revoked_at
+                FROM destination_credentials AS c
+                JOIN destinations AS d
+                  ON d.tenant_id = c.tenant_id AND d.destination_id = c.destination_id
+                WHERE c.credential_id = ?
+                """,
+                (credential_id,),
+            ).fetchone()
+            if row is None:
+                raise LookupError(f"Credential not found: {credential_id}")
+            if row["revoked_at"] is not None:
+                conn.execute("COMMIT")
+                return {
+                    "credential_id": row["credential_id"],
+                    "destination_id": row["destination_id"],
+                    "destination_display_name": row["destination_display_name"],
+                    "issued_by_device_id": row["issued_by_device_id"],
+                    "state": "revoked",
+                    "issued_at": row["issued_at"],
+                    "revoked_at": row["revoked_at"],
+                    "already_revoked": True,
+                }
+            conn.execute(
+                "UPDATE destination_credentials SET revoked_at = ? WHERE credential_id = ?",
+                (now_iso, credential_id),
+            )
+            conn.execute("COMMIT")
+            return {
+                "credential_id": row["credential_id"],
+                "destination_id": row["destination_id"],
+                "destination_display_name": row["destination_display_name"],
+                "issued_by_device_id": row["issued_by_device_id"],
+                "state": "revoked",
+                "issued_at": row["issued_at"],
+                "revoked_at": now_iso,
+                "already_revoked": False,
+            }
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+
+
+def delete_revoked_device_records(data_dir: pathlib.Path, device_id: str) -> dict[str, Any]:
+    """Tombstone every Record owned by a revoked device, reusing `delete_record` semantics."""
+    db_path = _require_existing_db(data_dir)
+    now_iso = format_utc(utc_now())
+    conn = open_connection(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            device = conn.execute(
+                """
+                SELECT device_id, tenant_id, display_name, revoked_at
+                FROM devices
+                WHERE device_id = ?
+                """,
+                (device_id,),
+            ).fetchone()
+            if device is None:
+                raise LookupError(f"Device not found: {device_id}")
+            if device["revoked_at"] is None:
+                raise ValueError(
+                    f"Refusing to delete records for non-revoked device {device_id}: "
+                    "run revoke-device first."
+                )
+
+            rows = conn.execute(
+                """
+                SELECT record_id
+                FROM records
+                WHERE tenant_id = ? AND origin_device_id = ?
+                ORDER BY created_at ASC, record_id ASC
+                """,
+                (device["tenant_id"], device_id),
+            ).fetchall()
+
+            deleted_record_ids: list[str] = []
+            cancelled_delivery_ids: list[str] = []
+            for rec in rows:
+                result, newly_deleted = _delete_record_in_tx(
+                    conn,
+                    tenant_id=device["tenant_id"],
+                    record_id=rec["record_id"],
+                    expected_origin_device_id=device_id,
+                    deleted_by_device_id=None,
+                    now_iso=now_iso,
+                )
+                if newly_deleted:
+                    deleted_record_ids.append(result["record_id"])
+                    cancelled_delivery_ids.extend(result["cancelled_delivery_ids"])
+
+            conn.execute("COMMIT")
+            return {
+                "device_id": device_id,
+                "display_name": device["display_name"],
+                "deleted_record_ids": deleted_record_ids,
                 "cancelled_delivery_ids": cancelled_delivery_ids,
+                "deleted_at": now_iso,
             }
         except Exception:
             conn.execute("ROLLBACK")

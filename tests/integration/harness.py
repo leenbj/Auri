@@ -83,6 +83,7 @@ class GatewayProcess:
         host: str | None = "127.0.0.1",
         mdns: bool = False,
         extra_serve_args: list[str] | None = None,
+        env_overrides: dict[str, str] | None = None,
     ) -> None:
         self.data_dir = data_dir
         self.port = port or find_free_port()
@@ -90,6 +91,7 @@ class GatewayProcess:
         self.host = host
         self.mdns = mdns
         self.extra_serve_args = list(extra_serve_args or [])
+        self.env_overrides = dict(env_overrides or {})
         scheme = "https" if tls else "http"
         connect_host = host if host and host not in ("0.0.0.0", "::") else "127.0.0.1"
         self.base_url = f"{scheme}://{connect_host}:{self.port}"
@@ -118,10 +120,12 @@ class GatewayProcess:
             cmd.append("--no-mdns")
         cmd.extend(self.extra_serve_args)
 
+        env = subprocess_env()
+        env.update(self.env_overrides)
         self._proc = subprocess.Popen(
             cmd,
             cwd=str(REPO_ROOT),
-            env=subprocess_env(),
+            env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -205,10 +209,12 @@ class GatewayProcess:
                 self._output_changed.wait(remaining)
 
     def run_cli(self, *args: str) -> subprocess.CompletedProcess[str]:
+        env = subprocess_env()
+        env.update(self.env_overrides)
         return subprocess.run(
             [sys.executable, "-m", "auri_gateway", *args],
             cwd=str(REPO_ROOT),
-            env=subprocess_env(),
+            env=env,
             capture_output=True,
             text=True,
             check=False,
