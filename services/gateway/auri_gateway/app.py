@@ -14,8 +14,8 @@ from starlette.routing import Route
 from .contracts import UUID_RE, check_revision_semantic_rules, validate_schema
 from .db import ensure_gateway_initialized
 from .error_codes import REQUEST_INVALID, GatewayError
+from .mcp_endpoint import AgentMcpEndpoint
 from .store import (
-    authenticate_destination,
     authenticate_device,
     create_destination,
     get_destination,
@@ -191,14 +191,7 @@ def create_app(data_dir: pathlib.Path) -> Starlette:
         logger.info("destination_revoked destination_id=%s", destination_id)
         return JSONResponse(result)
 
-    async def mcp_auth_gate(request: Request) -> JSONResponse:
-        dest_auth = authenticate_destination(db_path, request.headers.get("authorization"))
-        logger.info("mcp_authenticated destination_id=%s", dest_auth.destination_id)
-        raise GatewayError(
-            501,
-            REQUEST_INVALID,
-            "MCP delivery tools are not implemented in this milestone.",
-        )
+    mcp_endpoint = AgentMcpEndpoint(db_path)
 
     async def gateway_error_handler(_request: Request, exc: GatewayError) -> JSONResponse:
         logger.info("request_rejected status=%s code=%s", exc.status_code, exc.code)
@@ -221,9 +214,10 @@ def create_app(data_dir: pathlib.Path) -> Starlette:
             put_revision,
             methods=["PUT"],
         ),
-        Route("/mcp", mcp_auth_gate, methods=["GET", "POST"]),
+        Route("/mcp", endpoint=mcp_endpoint.asgi_app()),
     ]
     return Starlette(
         routes=routes,
         exception_handlers={GatewayError: gateway_error_handler},
+        lifespan=mcp_endpoint.lifespan,
     )

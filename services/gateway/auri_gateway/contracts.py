@@ -40,6 +40,28 @@ def validator_for(schema_ref: str) -> Draft202012Validator:
     return Draft202012Validator({"$ref": BASE_URI + schema_ref}, registry=_schema_registry())
 
 
+def inline_schema(schema_ref: str) -> dict[str, Any]:
+    """Return a frozen contract definition with every `$ref` resolved in place.
+
+    MCP clients cannot fetch `https://contracts.auri.invalid/...`, so tool schemas must be
+    self-contained.
+    """
+    resolved = _schema_registry().resolver(BASE_URI).lookup(schema_ref)
+    return _inline_refs(resolved.contents, resolved.resolver)
+
+
+def _inline_refs(node: Any, resolver: Any) -> Any:
+    if isinstance(node, list):
+        return [_inline_refs(item, resolver) for item in node]
+    if not isinstance(node, dict):
+        return node
+    siblings = {key: _inline_refs(value, resolver) for key, value in node.items() if key != "$ref"}
+    if "$ref" not in node:
+        return siblings
+    target = resolver.lookup(node["$ref"])
+    return {**_inline_refs(target.contents, target.resolver), **siblings}
+
+
 def validate_schema(schema_ref: str, instance: Any) -> list[str]:
     """Validate an instance against schema_ref; return redacted field-level error strings."""
     errors = sorted(

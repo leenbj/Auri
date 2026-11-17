@@ -1,4 +1,8 @@
 # Pinned runtime dependencies for Auri Gateway (CLAUDE.md: 依赖锁定)
+# MCP: official Python SDK mcp==2.3.0 (stable 2.x line; 1.x is maintenance-only). It brings
+# PyJWT[crypto]; keep cryptography pinned: unpinned pip resolved 50.0.2, which crashed
+# `import jwt` on the 2026-11-17 dev machine.
+annotated-types==0.8.0
 anyio==4.16.0
 attrs==26.1.0
 certifi==2026.10.23
@@ -8,16 +12,28 @@ cryptography==44.0.3
 exceptiongroup==1.3.1
 h11==0.16.0
 httpcore==1.0.9
+httpcore2==2.14.0
 httpx==0.28.1
+httpx2==2.14.0
 idna==3.20
 ifaddr==0.2.0
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
+mcp==2.3.0
+mcp-types==2.3.0
+opentelemetry-api==1.45.2
 pycparser==3.11
+pydantic==2.14.3
+pydantic_core==2.50.4
+PyJWT==2.15.1
+python-multipart==0.0.32
 qrcode==8.2
 referencing==0.37.0
 rpds-py==0.30.0
+sse-starlette==3.5.1
 starlette==1.7.0
+truststore==0.10.5
 typing_extensions==4.16.0
+typing-inspection==0.4.5
 uvicorn==0.54.0
 zeroconf==0.152.1

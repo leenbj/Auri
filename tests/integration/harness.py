@@ -1,6 +1,7 @@
 """Black-box test harness for Auri Gateway integration and security tests."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -11,7 +12,8 @@ import subprocess
 import sys
 import time
 import uuid
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, NamedTuple
 
 import httpx
 import pytest
@@ -190,6 +192,190 @@ class GatewayProcess:
         assert_valid_contract("pairing.schema.json#/$defs/redeem_response", body)
         return body
 
+    def create_agent_destination(
+        self,
+        device_token: str,
+        display_name: str = "Test Agent",
+        *,
+        allowed_intents: tuple[str, ...] = ("context",),
+    ) -> "AgentDestination":
+        """Create an auto-send Destination over HTTP and issue its one-time credential."""
+        headers = {"Authorization": f"Bearer {device_token}"}
+        create_req = {
+            **load_fixture("messages/valid/destination.create_request.auto-send.json")["instance"],
+            "display_name": display_name,
+            "allowed_intents": list(allowed_intents),
+        }
+        assert_valid_contract("destination.schema.json#/$defs/create_request", create_req)
+        created = httpx.post(
+            f"{self.base_url}/v1/destinations", json=create_req, headers=headers, timeout=5.0
+        )
+        assert created.status_code == 200, created.text
+        destination_id = created.json()["destination_id"]
+        issued = httpx.post(
+            f"{self.base_url}/v1/destinations/{destination_id}/credential",
+            headers=headers,
+            timeout=5.0,
+        )
+        assert issued.status_code == 200, issued.text
+        assert_valid_contract("destination.schema.json#/$defs/credential_response", issued.json())
+        return AgentDestination(destination_id, issued.json()["credential"], display_name)
+
+    def publish(
+        self,
+        device_token: str,
+        destination_ids: list[str],
+        *,
+        text: str = "帮我记录一下：明天检查小说的记忆模块。",
+        record_id: str | None = None,
+        revision: int = 1,
+        intent: str = "context",
+        source: str = "asr",
+    ) -> dict[str, Any]:
+        """Submit one Revision over HTTP; returns the validated `stored` response."""
+        submission = make_submission(
+            record_id=record_id,
+            revision=revision,
+            text=text,
+            destination_ids=destination_ids,
+            source=source,
+        )
+        submission["publication"]["intent"] = intent
+        assert_valid_contract("revision.schema.json#/$defs/submission", submission)
+        resp = httpx.put(
+            f"{self.base_url}/v1/records/{submission['record_id']}/revisions/{revision}",
+            json=submission,
+            headers={"Authorization": f"Bearer {device_token}"},
+            timeout=5.0,
+        )
+        assert resp.status_code == 200, resp.text
+        stored = resp.json()
+        assert_valid_contract("revision.schema.json#/$defs/stored", stored)
+        return stored
+
+
+@dataclass(frozen=True)
+class AgentDestination:
+    destination_id: str
+    credential: str
+    display_name: str
+
+
+class ToolOutcome(NamedTuple):
+    """What an MCP tool call returned: the error flag and the structured payload."""
+
+    is_error: bool
+    payload: dict[str, Any]
+
+
+_DELIVERY_REQUEST_REFS = {
+    "delivery_claim": "claim_request",
+    "delivery_renew_lease": "renew_request",
+    "delivery_ack": "ack_request",
+    "delivery_nack": "nack_request",
+}
+_DELIVERY_RESPONSE_REFS = {
+    "delivery_claim": "claim_response",
+    "delivery_renew_lease": "renew_response",
+    "delivery_ack": "ack_response",
+    "delivery_nack": "nack_response",
+}
+
+
+class McpAgent:
+    """An Agent talking to `/mcp` with a Destination credential through the official MCP SDK client.
+
+    `mode="modern"` negotiates MCP 2026-07-28; `mode="legacy"` negotiates the handshake era
+    (2025-11-25). Every call opens its own connection, so calls from several threads are
+    genuinely concurrent at the HTTP level.
+    """
+
+    def __init__(self, base_url: str, credential: str, *, mode: str = "modern") -> None:
+        assert mode in ("modern", "legacy")
+        self.url = f"{base_url}/mcp"
+        self.credential = credential
+        self.mode = mode
+        self.protocol_version: str | None = None
+
+    def _run(self, operation):
+        import httpx2
+        from mcp import Client
+        from mcp.client.streamable_http import streamable_http_client
+
+        async def session():
+            async with httpx2.AsyncClient(
+                headers={"Authorization": f"Bearer {self.credential}"}, timeout=20.0
+            ) as http:
+                kwargs = {} if self.mode == "modern" else {"mode": "legacy"}
+                transport = streamable_http_client(self.url, http_client=http)
+                async with Client(transport, **kwargs) as client:
+                    self.protocol_version = client.protocol_version
+                    return await operation(client)
+
+        return asyncio.run(session())
+
+    def list_tools(self) -> list[Any]:
+        async def operation(client):
+            return (await client.list_tools()).tools
+
+        return self._run(operation)
+
+    def call(self, name: str, arguments: dict[str, Any]) -> ToolOutcome:
+        """Call a tool with arguments exactly as given (they may be contract-invalid on purpose)."""
+
+        async def operation(client):
+            return await client.call_tool(name, arguments)
+
+        result = self._run(operation)
+        payload = result.structured_content
+        if payload is None:
+            payload = json.loads(result.content[0].text)
+        return ToolOutcome(bool(result.is_error), payload)
+
+    def call_ok(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Call a contract-valid request; the response must be a contract-valid success."""
+        assert_valid_contract(f"delivery.schema.json#/$defs/{_DELIVERY_REQUEST_REFS[name]}", arguments)
+        outcome = self.call(name, arguments)
+        assert not outcome.is_error, outcome.payload
+        assert_valid_contract(
+            f"delivery.schema.json#/$defs/{_DELIVERY_RESPONSE_REFS[name]}", outcome.payload
+        )
+        return outcome.payload
+
+    def call_error(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Call a tool that must fail with a contract-valid unified error; returns that error."""
+        outcome = self.call(name, arguments)
+        assert outcome.is_error, outcome.payload
+        assert_valid_contract("error.schema.json", outcome.payload)
+        return outcome.payload
+
+    def claim(self, **arguments: Any) -> dict[str, Any]:
+        return self.call_ok("delivery_claim", arguments)
+
+    def renew(self, delivery_id: str, lease_token: str) -> dict[str, Any]:
+        return self.call_ok(
+            "delivery_renew_lease", {"delivery_id": delivery_id, "lease_token": lease_token}
+        )
+
+    def ack(self, delivery_id: str, lease_token: str, note: str | None = None) -> dict[str, Any]:
+        arguments = {"delivery_id": delivery_id, "lease_token": lease_token}
+        if note is not None:
+            arguments["note"] = note
+        return self.call_ok("delivery_ack", arguments)
+
+    def nack(
+        self, delivery_id: str, lease_token: str, *, retryable: bool, reason: str = "测试拒收"
+    ) -> dict[str, Any]:
+        return self.call_ok(
+            "delivery_nack",
+            {
+                "delivery_id": delivery_id,
+                "lease_token": lease_token,
+                "reason": reason,
+                "retryable": retryable,
+            },
+        )
+
 
 def make_redeem_request(
     pairing_code: str, display_name: str = "Test iPhone"
@@ -262,3 +448,27 @@ def gateway(tmp_path: pathlib.Path):
         yield gw
     finally:
         gw.stop()
+
+
+class World:
+    """One paired phone publishing to Agent Destinations on a running gateway."""
+
+    def __init__(self, gw: GatewayProcess) -> None:
+        self.gw = gw
+        self.device_token = gw.pair_device("Publisher Phone")["device_token"]
+
+    def destination(self, display_name: str = "Test Agent", **kwargs: Any) -> AgentDestination:
+        return self.gw.create_agent_destination(self.device_token, display_name, **kwargs)
+
+    def agent(self, destination: AgentDestination, *, mode: str = "modern") -> McpAgent:
+        return McpAgent(self.gw.base_url, destination.credential, mode=mode)
+
+    def publish(self, *destinations: AgentDestination, **kwargs: Any) -> dict[str, Any]:
+        return self.gw.publish(
+            self.device_token, [d.destination_id for d in destinations], **kwargs
+        )
+
+
+@pytest.fixture
+def world(gateway: GatewayProcess) -> World:
+    return World(gateway)
