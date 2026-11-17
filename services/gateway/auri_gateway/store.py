@@ -10,6 +10,7 @@ from datetime import timedelta
 from typing import Any
 
 from .db import ensure_gateway_initialized, format_utc, open_connection, parse_utc, sha256_str, utc_now
+from .delivery_machine import DESTINATION_REVOKED, step
 from .error_codes import (
     GATEWAY_AUTH_INVALID,
     GATEWAY_AUTH_REVOKED,
@@ -768,17 +769,29 @@ def revoke_destination(
                 """,
                 (now_iso, auth.tenant_id, destination_id),
             )
-            conn.execute(
+            delivery_rows = conn.execute(
                 """
-                UPDATE deliveries
-                SET state = 'CANCELLED',
-                    cancelled_at = ?,
-                    lease_token_hash = NULL,
-                    lease_expires_at = NULL
-                WHERE tenant_id = ? AND destination_id = ? AND state IN ('PENDING', 'LEASED')
+                SELECT delivery_id, state
+                FROM deliveries
+                WHERE tenant_id = ? AND destination_id = ?
                 """,
-                (now_iso, auth.tenant_id, destination_id),
-            )
+                (auth.tenant_id, destination_id),
+            ).fetchall()
+            for delivery_row in delivery_rows:
+                outcome = step(delivery_row["state"], DESTINATION_REVOKED)
+                if outcome.kind != "transition":
+                    continue
+                conn.execute(
+                    """
+                    UPDATE deliveries
+                    SET state = ?,
+                        cancelled_at = ?,
+                        lease_token_hash = NULL,
+                        lease_expires_at = NULL
+                    WHERE delivery_id = ?
+                    """,
+                    (outcome.state, now_iso, delivery_row["delivery_id"]),
+                )
             updated = conn.execute(
                 """
                 SELECT destination_id, display_name, send_mode, allowed_intents_json,

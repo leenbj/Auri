@@ -9,6 +9,7 @@ import httpx
 
 from harness import (
     GatewayProcess,
+    McpAgent,
     assert_valid_contract,
     gateway,  # noqa: F401
     load_fixture,
@@ -376,3 +377,94 @@ def test_duplicate_submission_does_not_create_duplicate_deliveries(
         ).fetchone()
         assert count_row is not None
         assert count_row[0] == 2
+
+
+def test_revoking_destination_cancels_open_deliveries_and_preserves_terminal_ones(
+    tmp_path: pathlib.Path,
+) -> None:
+    data_dir = tmp_path / "revoke-deliveries"
+    gw = GatewayProcess(data_dir)
+    gw.start()
+    try:
+        paired = gw.pair_device("Revoke Deliveries Phone")
+        device_token = paired["device_token"]
+        headers = {"Authorization": f"Bearer {device_token}"}
+
+        dest_1 = gw.create_agent_destination(device_token, "Revoked Agent")
+        dest_2 = gw.create_agent_destination(device_token, "Unaffected Agent")
+        agent_1 = McpAgent(gw.base_url, dest_1.credential)
+
+        # Create one delivery that gets ACKNOWLEDGED and one that gets REJECTED first.
+        acked_pub = gw.publish(device_token, [dest_1.destination_id], text="已确认的内容")
+        acked_id = acked_pub["deliveries"][0]["delivery_id"]
+        claimed_ack = agent_1.claim(limit=1)["deliveries"][0]
+        assert claimed_ack["delivery_id"] == acked_id
+        agent_1.ack(acked_id, claimed_ack["lease_token"])
+
+        rejected_pub = gw.publish(device_token, [dest_1.destination_id], text="永久拒收的内容")
+        rejected_id = rejected_pub["deliveries"][0]["delivery_id"]
+        claimed_rej = agent_1.claim(limit=1)["deliveries"][0]
+        assert claimed_rej["delivery_id"] == rejected_id
+        agent_1.nack(rejected_id, claimed_rej["lease_token"], retryable=False, reason="permanent")
+
+        # Create one LEASED delivery and one PENDING delivery on dest_1, plus one PENDING on dest_2.
+        leased_pub = gw.publish(device_token, [dest_1.destination_id], text="租约中被撤销")
+        leased_id = leased_pub["deliveries"][0]["delivery_id"]
+        claimed_leased = agent_1.claim(limit=1)["deliveries"][0]
+        assert claimed_leased["delivery_id"] == leased_id
+
+        pending_pub = gw.publish(device_token, [dest_1.destination_id], text="待领取被撤销")
+        pending_id = pending_pub["deliveries"][0]["delivery_id"]
+
+        other_pub = gw.publish(device_token, [dest_2.destination_id], text="另一个目标不受影响")
+        other_id = other_pub["deliveries"][0]["delivery_id"]
+
+        # Revoke dest_1 over HTTP.
+        del_resp = httpx.delete(
+            f"{gw.base_url}/v1/destinations/{dest_1.destination_id}",
+            headers=headers,
+            timeout=5.0,
+        )
+        assert del_resp.status_code == 200
+        revoked_at = del_resp.json()["revoked_at"]
+        assert revoked_at is not None
+
+        # Repeating DELETE is idempotent.
+        del_again = httpx.delete(
+            f"{gw.base_url}/v1/destinations/{dest_1.destination_id}",
+            headers=headers,
+            timeout=5.0,
+        )
+        assert del_again.status_code == 200
+        assert del_again.json()["revoked_at"] == revoked_at
+    finally:
+        gw.stop()
+
+    with sqlite3.connect(data_dir / "gateway.db") as conn:
+        conn.row_factory = sqlite3.Row
+        rows = {
+            row["delivery_id"]: dict(row)
+            for row in conn.execute(
+                "SELECT delivery_id, state, cancelled_at, lease_token_hash, lease_expires_at "
+                "FROM deliveries"
+            ).fetchall()
+        }
+
+    assert rows[pending_id]["state"] == "CANCELLED"
+    assert rows[pending_id]["cancelled_at"] is not None
+    assert rows[pending_id]["lease_token_hash"] is None
+    assert rows[pending_id]["lease_expires_at"] is None
+
+    assert rows[leased_id]["state"] == "CANCELLED"
+    assert rows[leased_id]["cancelled_at"] is not None
+    assert rows[leased_id]["lease_token_hash"] is None
+    assert rows[leased_id]["lease_expires_at"] is None
+
+    assert rows[acked_id]["state"] == "ACKNOWLEDGED"
+    assert rows[acked_id]["cancelled_at"] is None
+
+    assert rows[rejected_id]["state"] == "REJECTED"
+    assert rows[rejected_id]["cancelled_at"] is None
+
+    assert rows[other_id]["state"] == "PENDING"
+    assert rows[other_id]["cancelled_at"] is None
