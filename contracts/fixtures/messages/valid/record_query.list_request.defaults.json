@@ -1,0 +1,6 @@
+{
+  "schema": "record_query.schema.json#/$defs/list_request",
+  "expect": "valid",
+  "description": "不带参数，使用默认分页大小。",
+  "instance": {}
+}

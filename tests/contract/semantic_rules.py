@@ -65,9 +65,17 @@ def _check_claim_response(instance: dict) -> list[str]:
     return violations
 
 
+def _check_get_response(instance: dict) -> list[str]:
+    text = instance["text"]
+    if instance["is_partial"]:
+        return ["SR-06"] if len(text.encode("utf-8")) > MAX_TEXT_BYTES else []
+    return _check_text(text, instance["text_sha256"])
+
+
 _CHECKS = {
     "revision.schema.json#/$defs/submission": _check_submission,
     "delivery.schema.json#/$defs/claim_response": _check_claim_response,
+    "record_query.schema.json#/$defs/get_response": _check_get_response,
     "adapter.schema.json#/$defs/recording_result": _check_recording_result,
     "adapter.schema.json#/$defs/asr_capabilities": _check_asr_capabilities,
 }

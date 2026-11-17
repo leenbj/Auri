@@ -22,6 +22,8 @@ DEV-002 的产物，当前合同版本 `1.1`（1.0 冻结于 2026-11-15；1.1 �
 |---|---|
 | 提交 Revision、入库结果、删除 Record | `revision.schema.json` |
 | 领取、续租、确认、拒收 Delivery（MCP 工具输入输出） | `delivery.schema.json` |
+| 只读查询 Record（`record_list`、`record_get`、`record_search` MCP 工具输入输出） | `record_query.schema.json` |
+| 网关存活、能力、操作与 Record 状态查询（`/health`、`/v1/capabilities`、`/v1/operations/{id}`、`/v1/records/{id}/status`） | `gateway.schema.json` |
 | 设备配对 | `pairing.schema.json` |
 | Destination 管理与凭证签发 | `destination.schema.json` |
 | Headset Profile | `headset-profile.schema.json` |
@@ -34,7 +36,6 @@ DEV-002 的产物，当前合同版本 `1.1`（1.0 冻结于 2026-11-15；1.1 �
 没有冻结的部分：
 
 - 云端转录的任务字段和 `/v1/asr/jobs` 接口（ADR-0019）。
-- `record_list`、`record_get`、`record_search` 三个只读 MCP 工具，以及 `/health`、`/v1/capabilities`、`/v1/operations/{id}`、`/v1/records/{id}/status`。
 
 ## schema 表达不了、必须由实现校验的规则
 
@@ -56,6 +57,8 @@ DEV-002 的产物，当前合同版本 `1.1`（1.0 冻结于 2026-11-15；1.1 �
 - 只有录下 Record 的那台设备能提交或删除它（ADR-0020）。
 - 已有删除墓碑的 Record 不接受任何提交。
 - 身份只来自认证结果。请求体里没有 `tenant_id`、`agent_id`，也不接受这些字段。
+- `GET /health` 不要求认证，不返回正文、密钥或内部拓扑；`GET /v1/capabilities`、`GET /v1/operations/{operation_id}`、`GET /v1/records/{record_id}/status` 均要求设备令牌（Bearer）认证（未认证或持 Destination 凭证返回 `GATEWAY_AUTH_INVALID`），且 `/v1/operations/{operation_id}` 仅限来源设备查询、`/v1/records/{record_id}/status` 按认证 Tenant 隔离。
+- `record_get` 返回完整正文时（`is_partial = false`），`text_sha256` 必须与正文原始 UTF-8 字节一致；超出分页上限时必须通过 `is_partial = true` 与不透明 `next_cursor` 分段返回，不得静默截断后冒充完整正文。
 
 ## 状态机文件怎么读
 

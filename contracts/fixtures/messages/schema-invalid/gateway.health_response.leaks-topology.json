@@ -1,0 +1,14 @@
+{
+  "schema": "gateway.schema.json#/$defs/health_response",
+  "expect": "schema_invalid",
+  "rejected_because": "健康检查不能返回内部拓扑、密钥或正文（PRD 17.2）。",
+  "expect_error": {
+    "path": "",
+    "keyword": "additionalProperties"
+  },
+  "instance": {
+    "status": "ok",
+    "db_path": "/var/lib/auri/gateway.db",
+    "lan_ips": ["192.168.1.20"]
+  }
+}

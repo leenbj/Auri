@@ -1,0 +1,8 @@
+{
+  "schema": "record_query.schema.json#/$defs/get_request",
+  "expect": "valid",
+  "description": "按 record_id 读取投递给当前 Destination 的最新 Revision。",
+  "instance": {
+    "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49"
+  }
+}

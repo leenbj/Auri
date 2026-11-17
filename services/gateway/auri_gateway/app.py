@@ -12,11 +12,15 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from .contracts import UUID_RE, check_revision_semantic_rules, validate_schema
+from . import __version__
+from .contracts import MAX_TEXT_BYTES, UUID_RE, check_revision_semantic_rules, validate_schema
 from .db import ensure_gateway_initialized
+from .deliveries import DEFAULT_CLAIM_LIMIT, DEFAULT_LEASE_SECONDS
 from .error_codes import GATEWAY_UNREACHABLE, REQUEST_INVALID, GatewayError, build_error_payload
 from .mcp_endpoint import AgentMcpEndpoint
+from .queries import get_operation, get_record_status
 from .store import (
+    MAX_PAIRING_TTL_SECONDS,
     authenticate_device,
     create_destination,
     delete_record,
@@ -95,6 +99,37 @@ def create_app(data_dir: pathlib.Path) -> Starlette:
 
     async def health(_request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok"})
+
+    async def get_capabilities(request: Request) -> JSONResponse:
+        authenticate_device(db_path, request.headers.get("authorization"))
+        return JSONResponse(
+            {
+                "schema_version": "1.1",
+                "gateway_version": __version__,
+                "supported_schema_versions": ["1.1"],
+                "features": {
+                    "cloud_asr": False,
+                    "record_read_tools": True,
+                    "delivery_tools": True,
+                    "mdns_discovery": True,
+                    "lan_only_tls": True,
+                },
+                "limits": {
+                    "max_text_bytes": MAX_TEXT_BYTES,
+                    "max_destinations_per_publication": 50,
+                    "record_list_default_limit": 20,
+                    "record_list_max_limit": 100,
+                    "record_search_default_limit": 20,
+                    "record_search_max_limit": 100,
+                    "delivery_claim_default_limit": DEFAULT_CLAIM_LIMIT,
+                    "delivery_claim_max_limit": 50,
+                    "delivery_lease_default_seconds": DEFAULT_LEASE_SECONDS,
+                    "delivery_lease_min_seconds": 10,
+                    "delivery_lease_max_seconds": 600,
+                    "pairing_ttl_max_seconds": MAX_PAIRING_TTL_SECONDS,
+                },
+            }
+        )
 
     async def pairing_redeem(request: Request) -> JSONResponse:
         body = await _parse_json_object(request)
@@ -202,6 +237,16 @@ def create_app(data_dir: pathlib.Path) -> Starlette:
         logger.info("destination_revoked destination_id=%s", destination_id)
         return JSONResponse(result)
 
+    async def get_operation_endpoint(request: Request) -> JSONResponse:
+        auth = authenticate_device(db_path, request.headers.get("authorization"))
+        operation_id = _validate_uuid_param(request.path_params["operation_id"], "operation_id")
+        return JSONResponse(get_operation(db_path, auth, operation_id))
+
+    async def get_record_status_endpoint(request: Request) -> JSONResponse:
+        auth = authenticate_device(db_path, request.headers.get("authorization"))
+        record_id = _validate_uuid_param(request.path_params["record_id"], "record_id")
+        return JSONResponse(get_record_status(db_path, auth, record_id))
+
     mcp_endpoint = AgentMcpEndpoint(db_path)
 
     async def gateway_error_handler(_request: Request, exc: GatewayError) -> JSONResponse:
@@ -239,6 +284,7 @@ def create_app(data_dir: pathlib.Path) -> Starlette:
 
     routes = [
         Route("/health", health, methods=["GET"]),
+        Route("/v1/capabilities", get_capabilities, methods=["GET"]),
         Route("/v1/pairing/redeem", pairing_redeem, methods=["POST"]),
         Route("/v1/destinations", list_destinations_endpoint, methods=["GET"]),
         Route("/v1/destinations", create_destination_endpoint, methods=["POST"]),
@@ -255,9 +301,19 @@ def create_app(data_dir: pathlib.Path) -> Starlette:
             methods=["DELETE"],
         ),
         Route(
+            "/v1/records/{record_id:str}/status",
+            get_record_status_endpoint,
+            methods=["GET"],
+        ),
+        Route(
             "/v1/records/{record_id:str}/revisions/{revision:str}",
             put_revision,
             methods=["PUT"],
+        ),
+        Route(
+            "/v1/operations/{operation_id:str}",
+            get_operation_endpoint,
+            methods=["GET"],
         ),
         Route("/mcp", endpoint=mcp_endpoint.asgi_app()),
     ]
