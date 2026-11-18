@@ -1,0 +1,394 @@
+Installing pnpm@10.28.2...
+
+added 1 package, and audited 2 packages in 6s
+
+1 package is looking for funding
+  run `npm fund` for details
+
+1 high severity vulnerability
+
+To address all issues, run:
+  npm audit fix --force
+
+Run `npm audit` for details.
+Pnpm install success.
+> hvigor Finished :entry:clean... after 1 ms
+> hvigor WARN: The version number of the 'entry' module does not comply with the SemVer specification.
+               This will affect the installation and publication by ohpm.
+               Make sure the value of version in the oh-package.json5 file of the module complies with the SemVer specification.
+> hvigor Finished :entry:default@PreBuild... after 57 ms
+> hvigor Finished :entry:default@CreateModuleInfo... after 1 ms
+> hvigor Finished :entry:default@GenerateMetadata... after 1 ms
+> hvigor Finished :entry:default@ConfigureCmake... after 1 ms
+> hvigor Finished :entry:default@MergeProfile... after 14 ms
+> hvigor Finished :entry:default@CreateBuildProfile... after 1 ms
+> hvigor Finished :entry:default@PreCheckSyscap... after 1 ms
+> hvigor Finished :entry:default@GeneratePkgContextInfo... after 3 ms
+> hvigor Finished :entry:default@GeneratePkgSdkInfo... after 1 ms
+> hvigor Finished :entry:default@ProcessIntegratedHsp... after 1 ms
+> hvigor Finished :entry:default@BuildNativeWithCmake... after 1 ms
+> hvigor Finished :entry:default@MakePackInfo... after 1 ms
+> hvigor Finished :entry:default@SyscapTransform... after 1 ms
+> hvigor Finished :entry:default@ProcessProfile... after 51 ms
+> hvigor Finished :entry:default@ProcessRouterMap... after 1 ms
+> hvigor Finished :entry:default@ProcessShareConfig... after 1 ms
+> hvigor Finished :entry:default@ProcessStartupConfig... after 1 ms
+> hvigor Finished :entry:default@BuildNativeWithNinja... after 1 ms
+> hvigor Finished :entry:default@ProcessResource... after 4 ms
+> hvigor Finished :entry:default@GenerateLoaderJson... after 2 ms
+> hvigor Finished :entry:default@ProcessLibs... after 2 ms
+> hvigor Finished :entry:default@CompileResource... after 122 ms
+> hvigor Finished :entry:default@DoNativeStrip... after 1 ms
+> hvigor Finished :entry:default@BuildJS... after 1 ms
+> hvigor Finished :entry:default@CacheNativeLibs... after 2 ms
+> hvigor ERROR: Failed :entry:default@CompileArkTS...
+> hvigor WARN:
+1 WARN: ArkTS:WARN: For details about ArkTS syntax errors, see FAQs
+2 WARN: ArkTS:WARN File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:24:55
+ The system capacity of this api 'audio' is not supported on all devices
+
+3 WARN: ArkTS:WARN File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:208:21
+ The system capacity of this api 'audio' is not supported on all devices
+
+4 WARN: ArkTS:WARN File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:209:17
+ The system capacity of this api 'audio' is not supported on all devices
+
+5 WARN: ArkTS:WARN File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:210:21
+ The system capacity of this api 'audio' is not supported on all devices
+
+6 WARN: ArkTS:WARN File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:211:21
+ The system capacity of this api 'audio' is not supported on all devices
+
+7 WARN: ArkTS:WARN File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:214:15
+ The system capacity of this api 'audio' is not supported on all devices
+
+8 WARN: ArkTS:WARN File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:223:25
+ The system capacity of this api 'audio' is not supported on all devices
+
+9 WARN: ArkTS:WARN File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:241:40
+ The system capacity of this api 'audio' is not supported on all devices
+
+10 WARN: ArkTS:WARN File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:242:40
+ The system capacity of this api 'audio' is not supported on all devices
+
+11 WARN: ArkTS:WARN File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:243:41
+ The system capacity of this api 'audio' is not supported on all devices
+
+12 WARN: ArkTS:WARN File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:394:46
+ The system capacity of this api 'audio' is not supported on all devices
+
+13 WARN: ArkTS:WARN File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:493:70
+ The system capacity of this api 'audio' is not supported on all devices
+
+14 WARN: ArkTS:WARN File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:505:67
+ The system capacity of this api 'audio' is not supported on all devices
+
+15 WARN: ArkTS:WARN File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:521:9
+ The system capacity of this api 'audio' is not supported on all devices
+
+16 WARN: ArkTS:WARN File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:523:65
+ The system capacity of this api 'audio' is not supported on all devices
+
+17 WARN: ArkTS:WARN File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:563:38
+ The system capacity of this api 'audio' is not supported on all devices
+
+> hvigor ERROR: ArkTS Compiler Error
+1 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/AVSessionProbe.ets:30:63
+
+
+2 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/AVSessionProbe.ets:41:49
+
+
+3 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/AVSessionProbe.ets:69:50
+
+
+4 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/AVSessionProbe.ets:72:53
+
+
+5 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/AVSessionProbe.ets:126:34
+
+
+6 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/AVSessionProbe.ets:134:39
+
+
+7 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/AVSessionProbe.ets:163:42
+
+
+8 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/AVSessionProbe.ets:190:53
+
+
+9 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/AVSessionProbe.ets:227:55
+
+
+10 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/BackgroundTaskProbe.ets:43:37
+
+
+11 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/BackgroundTaskProbe.ets:48:42
+
+
+12 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/BackgroundTaskProbe.ets:65:37
+
+
+13 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/BackgroundTaskProbe.ets:68:41
+
+
+14 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:55:61
+
+
+15 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:75:70
+
+
+16 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:87:42
+
+
+17 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:100:38
+
+
+18 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:106:36
+
+
+19 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:110:42
+
+
+20 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:118:46
+
+
+21 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:139:42
+
+
+22 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:143:44
+
+
+23 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:146:32
+
+
+24 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:152:43
+
+
+25 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:178:43
+
+
+26 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:196:55
+
+
+27 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:226:60
+
+
+28 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:235:42
+
+
+29 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:253:64
+
+
+30 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:262:50
+
+
+31 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:288:37
+
+
+32 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:310:42
+
+
+33 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:330:37
+
+
+34 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:354:64
+
+
+35 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:396:51
+
+
+36 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:407:60
+
+
+37 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:422:52
+
+
+38 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:433:61
+
+
+39 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:440:62
+
+
+40 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:449:61
+
+
+41 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:459:61
+
+
+42 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:473:74
+
+
+43 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:481:66
+
+
+44 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:497:79
+
+
+45 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:509:67
+
+
+46 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:527:62
+
+
+47 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:534:66
+
+
+48 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:537:55
+
+
+49 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:602:16
+
+
+50 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:652:54
+
+
+51 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/LifecycleProbe.ets:31:59
+
+
+52 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/LifecycleProbe.ets:40:56
+
+
+53 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/LifecycleProbe.ets:56:45
+
+
+54 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/LifecycleProbe.ets:69:80
+
+
+55 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/LifecycleProbe.ets:82:44
+
+
+56 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/LifecycleProbe.ets:88:44
+
+
+57 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/LifecycleProbe.ets:94:38
+
+
+58 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/MdnsProbe.ets:38:46
+
+
+59 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/MdnsProbe.ets:47:46
+
+
+60 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/MdnsProbe.ets:54:42
+
+
+61 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/MdnsProbe.ets:63:41
+
+
+62 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/MdnsProbe.ets:76:49
+
+
+63 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/MdnsProbe.ets:102:48
+
+
+64 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/MdnsProbe.ets:121:45
+
+
+65 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/MdnsProbe.ets:131:51
+
+
+66 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/ProbeController.ets:48:35
+
+
+67 ERROR: 10605038 ArkTS Compiler Error
+Error Message: Object literal must correspond to some explicitly declared class or interface (arkts-no-untyped-obj-literals) At File: <temporary-probe>/entry/src/main/ets/probes/ProbeController.ets:112:36
+
+
+68 ERROR: 10505001 ArkTS Compiler Error
+Error Message: Property 'pressedTime' does not exist on type 'KeyEvent'. At File: <temporary-probe>/entry/src/main/ets/probes/AVSessionProbe.ets:120:43
+
+
+69 ERROR: 10505001 ArkTS Compiler Error
+Error Message: This comparison appears to be unintentional because the types '"ARMED" | "BLOCKED"' and '"ROUTING"' have no overlap. At File: <temporary-probe>/entry/src/main/ets/probes/CaptureProbe.ets:224:11
+
+
+COMPILE RESULT:FAIL {ERROR:70 WARN:17}
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --debug option to get more log output.
+
+
+FAILURE: Build completed with 1 failure.
+
+1: Task failed with an exception.
+-----------
+* What went wrong:
+Execution failed for task 'default@CompileArkTS'.
+  > Compilation error. See log for more details
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --debug option to get more log output.
+
+================================================================================
+> hvigor ERROR: BUILD FAILED in 3 s 964 ms
+
+26 tasks in total: 26 executed, 0 up-to-date

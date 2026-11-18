@@ -1,4 +1,4 @@
-# Source this file to use the pinned HarmonyOS 6.0.1 toolchain.
+# Source this file to use the installed DevEco toolchain.
 if [ -d /Applications/DevEco-Studio.app ]; then
   export DEVECO_APP=/Applications/DevEco-Studio.app
 elif [ -d "$HOME/Applications/DevEco-Studio.app" ]; then
