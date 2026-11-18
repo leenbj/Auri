@@ -478,19 +478,19 @@ class TranscriptionScheduler(
         } ?: return false
         val key = RunKey(started.jobId, nextRunId++)
         activeRun[started.jobId] = key.runId
-        runs[key] = scope.launch(runContext) {
-            var result: RunResult = RunResult.Cancelled
+        var result: RunResult = RunResult.Cancelled
+        val run = scope.launch(runContext) {
             try {
                 result = RunResult.Done(adapter.transcribe(TranscriptionRequest(started.recordId, audio)))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
                 result = RunResult.Crashed
-            } finally {
-                // 无论正常、出错还是被取消都只发一次：名额由邮箱协程在收到它时释放
-                mailbox.trySend(Message.RunFinished(key, result))
             }
         }
+        runs[key] = run
+        // 即使取消发生在协程体开始之前，完成处理器也只发送一次并释放名额。
+        run.invokeOnCompletion { mailbox.trySend(Message.RunFinished(key, result)) }
         return true
     }
 

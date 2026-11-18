@@ -16,6 +16,8 @@ import app.auri.capture.scheduler.TranscriptionJob
 import app.auri.capture.scheduler.TranscriptionScheduler
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -98,6 +100,7 @@ class SchedulerRig(
     idPrefix: Int = 0x5C,
     /** 调度器实际用的监视器，默认就是 [resources]；要测装饰器（比如录音优先）时传一个包着它的。 */
     monitor: ResourceMonitor = resources,
+    runContext: CoroutineContext = EmptyCoroutineContext,
 ) {
     val clock = FakeClock(scope.testScheduler)
     val decisions = CopyOnWriteArrayList<JobDecision>()
@@ -111,6 +114,7 @@ class SchedulerRig(
         resources = monitor,
         ids = SequentialIds(idPrefix),
         config = config,
+        runContext = runContext,
     )
 
     init {

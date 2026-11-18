@@ -17,6 +17,9 @@ import app.auri.capture.machine.TranscriptionState.WAITING_RESOURCES
 import app.auri.capture.testing.BoundedSchedulerTest
 import app.auri.capture.testing.Samples
 import app.auri.capture.testing.SchedulerRig
+import java.util.ArrayDeque
+import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -33,6 +36,32 @@ class SchedulerCancelTest : BoundedSchedulerTest() {
     private fun SchedulerRig.cancelAndSettle(recordId: String) {
         scheduler.cancel(jobOf(recordId).jobId)
         settle()
+    }
+
+    @Test
+    fun `取消尚未执行的运行任务后释放名额`() = runTest {
+        val pendingRuns = ArrayDeque<Runnable>()
+        val runDispatcher = object : CoroutineDispatcher() {
+            override fun dispatch(context: CoroutineContext, block: Runnable) { pendingRuns.add(block) }
+        }
+        val rig = SchedulerRig(this, runContext = runDispatcher)
+        val first = rig.addRecord(1)
+        val second = rig.addRecord(2)
+        rig.scheduler.submit(first)
+        rig.scheduler.submit(second)
+        rig.settle()
+        assertEquals(RUNNING, rig.jobOf(first).state)
+        assertEquals(QUEUED, rig.jobOf(second).state)
+
+        rig.cancelAndSettle(first)
+        while (pendingRuns.isNotEmpty()) pendingRuns.removeFirst().run()
+        rig.settle()
+        while (pendingRuns.isNotEmpty()) pendingRuns.removeFirst().run()
+        rig.settle()
+
+        assertEquals(CANCELLED, rig.jobOf(first).state)
+        assertEquals(SUCCEEDED, rig.jobOf(second).state)
+        assertEquals(listOf(second), rig.adapter.requests.map { it.recordId })
     }
 
     @Test
