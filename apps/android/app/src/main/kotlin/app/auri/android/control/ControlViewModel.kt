@@ -235,6 +235,8 @@ class ControlViewModel(
             CaptureState.RECORDING, CaptureState.FINALIZING -> {
                 local.update { it.copy(turningOff = true) }
                 if (captureState == CaptureState.RECORDING) controls.stop()
+                // 读状态到登记请求之间，保存可能已经完成：收集器那时还没有请求可兑现，这里按最新状态补一次
+                onCaptureState(controls.snapshot.value.state)
             }
             CaptureState.DISARMED -> Unit
         }
@@ -258,7 +260,8 @@ class ControlViewModel(
     // ---- 校准：向导 ----
 
     fun startCalibration() {
-        if (local.value.phase !is Phase.Setup) return
+        // 正在等录音保存完再关闭控制模式：此时开出来的校准，保存一完成就没有控制模式了
+        if (local.value.phase !is Phase.Setup || local.value.turningOff) return
         if (controls.snapshot.value.state == CaptureState.DISARMED) controls.enableControlMode()
         val wizard = CalibrationWizard(newRunId(), currentSetting(local.value))
         val run = Run(wizard)
@@ -278,10 +281,10 @@ class ControlViewModel(
     }
 
     /** 这一步做完了。 */
-    fun nextStep() = advance { it.next() }
+    fun nextStep(shown: CalibrationStep? = null) = advance(shown) { it.next() }
 
     /** 跳过这一步：它的观察作废，对应的能力保持未测试。 */
-    fun skipStep() = advance { it.skip() }
+    fun skipStep(shown: CalibrationStep? = null) = advance(shown) { it.skip() }
 
     fun repeatStep() {
         runningWizard()?.repeat()
@@ -336,9 +339,11 @@ class ControlViewModel(
 
     private fun runningWizard(): CalibrationWizard? = (local.value.phase as? Phase.Running)?.run?.wizard
 
-    private fun advance(action: (CalibrationWizard) -> Boolean) {
+    /** [shown]：点击时屏幕上显示的步骤。连点时第二下还带着旧步骤，不能作用到已经翻过去的下一步。 */
+    private fun advance(shown: CalibrationStep?, action: (CalibrationWizard) -> Boolean) {
         val running = local.value.phase as? Phase.Running ?: return
         val wizard = running.run.wizard
+        if (shown != null && wizard.state.value.step != shown) return
         if (!action(wizard)) return
         if (wizard.state.value.phase == CalibrationPhase.COMPLETED) finishRun(running.run) else active.useTemporary(wizard.controlProfile())
     }

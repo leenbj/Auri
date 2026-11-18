@@ -49,8 +49,9 @@ fun CalibrationSection(calibration: CalibrationUi, viewModel: ControlViewModel) 
             Text("屏幕：" + when (calibration.screenLocked) { true -> "锁定中"; false -> "未锁定"; null -> "读不出来" })
             Text("取证环境：" + describeSetting(calibration.setting))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = viewModel::nextStep) { Text("这一步做完了") }
-                Button(onClick = viewModel::skipStep) { Text("跳过") }
+                // 带上屏幕上显示的步骤：连点时第二下对着已经翻过去的步骤，会被视图模型丢掉
+                Button(onClick = { viewModel.nextStep(calibration.step) }) { Text("这一步做完了") }
+                Button(onClick = { viewModel.skipStep(calibration.step) }) { Text("跳过") }
                 Button(onClick = viewModel::repeatStep) { Text("重做") }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

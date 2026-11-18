@@ -84,9 +84,18 @@ class ControlViewModelTest {
         private val observers = mutableListOf<(NormalizedControlEvent) -> Unit>()
         val observerCount: Int get() = observers.size
 
+        /** 撤销旁听（放弃校准的过程中）时顺手执行一次：模拟“正在放弃校准的这一瞬间，别处的状态变了”。 */
+        var afterUnsubscribe: (() -> Unit)? = null
+
         fun observe(observer: (NormalizedControlEvent) -> Unit): Subscription {
             observers += observer
-            return Subscription { observers -= observer }
+            return Subscription {
+                observers -= observer
+                afterUnsubscribe?.let { hook ->
+                    afterUnsubscribe = null
+                    hook()
+                }
+            }
         }
 
         fun emit(event: NormalizedControlEvent) = observers.toList().forEach { it(event) }
@@ -268,6 +277,33 @@ class ControlViewModelTest {
 
         assertEquals(listOf("stop"), rig.controls.calls)
         assertFalse(rig.state.controlMode.turningOff)
+    }
+
+    @Test
+    fun `请求关闭的瞬间，保存正好完成（读状态与登记请求之间状态变了）：不能卡在“正在关闭”，要直接关`() = runUnconfined {
+        val rig = rig(CaptureState.ARMED)
+        rig.viewModel.startCalibration() // 关闭会先放弃这一轮校准，放弃的过程里撤旁听
+        rig.controls.move(CaptureState.FINALIZING) // 用户点关闭时正在保存
+        rig.events.afterUnsubscribe = { rig.controls.move(CaptureState.ARMED) } // 放弃校准的这一瞬间，保存完成回到待命
+
+        rig.viewModel.setControlMode(false)
+
+        assertEquals(listOf("disable"), rig.controls.calls)
+        assertFalse("没有“等保存完”这回事了，不能一直显示正在关闭", rig.state.controlMode.turningOff)
+    }
+
+    @Test
+    fun `正在等录音保存完再关闭控制模式：此时开始校准不理会，不会开出一轮注定没有控制模式的校准`() = runUnconfined {
+        val rig = rig(CaptureState.RECORDING)
+        rig.viewModel.setControlMode(false)
+
+        rig.viewModel.startCalibration()
+
+        assertTrue(rig.state.calibration is CalibrationUi.Setup)
+        assertEquals("没有开出向导，也没有多出一路旁听", 0, rig.events.observerCount)
+        rig.controls.move(CaptureState.FINALIZING)
+        rig.controls.move(CaptureState.ARMED)
+        assertEquals("关闭照常兑现", listOf("stop", "disable"), rig.controls.calls)
     }
 
     @Test
@@ -569,6 +605,26 @@ class ControlViewModelTest {
 
         assertTrue("结果页要先关闭才能重新校准", rig.state.calibration is CalibrationUi.Finished)
         assertEquals(0, rig.events.observerCount)
+    }
+
+    @Test
+    fun `同一步被连点两下“做完了”或“跳过”：第二下对着已经翻过去的那一步，不理会，不会悄悄多跳一步`() = runUnconfined {
+        val rig = rig(CaptureState.ARMED)
+        rig.viewModel.startCalibration()
+        fun shown() = (rig.state.calibration as CalibrationUi.Running).step
+
+        val first = shown()
+        rig.viewModel.nextStep(first)
+        rig.viewModel.nextStep(first) // 连点：屏幕上还是旧的第一步，这一下带着旧的步骤
+        assertEquals(CalibrationStep.GESTURE_WHILE_RECORDING, shown())
+
+        val second = shown()
+        rig.viewModel.skipStep(second)
+        rig.viewModel.skipStep(second)
+        assertEquals(CalibrationStep.RESTART_AFTER_STOP, shown())
+
+        rig.viewModel.nextStep(shown()) // 带着当前显示的步骤：正常前进
+        assertEquals(CalibrationStep.SCREEN_LOCKED, shown())
     }
 
     @Test
