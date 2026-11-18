@@ -562,6 +562,16 @@ MUTATIONS += (
         ("网络恢复就跑一轮",),
     ),
     Mutation(
+        "loop-network-change-deduplicated",
+        "默认网络换了一个而信号一直是“可用”（手机常开移动数据，Wi-Fi 回来只是换回去）也要立刻跑一轮：去重会把它吞掉，补传要干等最长一刻钟的探测退避",
+        (
+            Edit(LOOP, "network.available.collect { available ->", "network.available.distinctUntilChanged().collect { available ->"),
+            Edit(LOOP, "import kotlinx.coroutines.flow.combine\n", "import kotlinx.coroutines.flow.combine\nimport kotlinx.coroutines.flow.distinctUntilChanged\n"),
+        ),
+        LOOP_TESTS, SYNC_TEST[0],
+        ("默认网络换了一个",),
+    ),
+    Mutation(
         "loop-offline-keeps-probing",
         "断网期间不探测、不重试",
         (

@@ -19,11 +19,13 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 
-/** 平台的“有没有网”信号（Android 上由 ConnectivityManager 的回调提供）。 */
+/**
+ * 平台的“有没有网”信号（Android 上由 ConnectivityManager 的回调提供）。
+ * 每次默认网络变化发一个值，**不去重**：没有网络是 false；有网络是 true，默认网络换成另一个可用网络时再发一个 true。
+ */
 interface NetworkSignal {
     val available: Flow<Boolean>
 }
@@ -31,7 +33,7 @@ interface NetworkSignal {
 /**
  * 同步循环：决定**什么时候**跑一轮同步。引擎保证一轮里做对（先落盘后发送、不确定先问、永久拒绝不重试），
  * 循环保证该跑的时候一定会跑，不该跑的时候不跑：
- * - 启动时跑一轮（接回上次进程被杀时留下的任务）；运行中出现新任务就跑；网络恢复就跑；[nudge]（刚配对、回到前台）就跑。
+ * - 启动时跑一轮（接回上次进程被杀时留下的任务）；运行中出现新任务就跑；网络恢复或默认网络换了一个就跑；[nudge]（刚配对、回到前台）就跑。
  * - 任务在等重试：到了重试时间跑一轮。重试时间由引擎按有界指数退避排好（5 秒起、翻倍、封顶 15 分钟）。
  * - 网关一直连不上（网络是好的）：同样按退避去探，封顶 15 分钟一次，不会密集，也不会放弃（网关可能晚点开机）。
  * - 网络断开：没有请求在途的任务改为等待网关，断网期间一律不探测。
@@ -96,7 +98,9 @@ class SyncLoop(
 
     private suspend fun watchNetwork() {
         var first = true
-        network.available.distinctUntilChanged().collect { available ->
+        // 不去重：手机常开着移动数据，Wi-Fi 回来时系统只是把默认网络从蜂窝换回 Wi-Fi，信号一直是“可用”；
+        // 去重会把这一刻吞掉，补传就要干等探测的退避（最长 15 分钟）
+        network.available.collect { available ->
             val initial = first
             first = false
             online = available

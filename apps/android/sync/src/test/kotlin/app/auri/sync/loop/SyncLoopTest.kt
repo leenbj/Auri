@@ -99,6 +99,25 @@ class SyncLoopTest {
     }
 
     @Test
+    fun `默认网络换了一个而信号一直是可用（Wi-Fi 断开落到移动数据、Wi-Fi 回来又换回去）：也算网络变化，立刻跑一轮，不用干等探测的退避`() = loopRig(gatewayOnLan = false) { rig, network, loop ->
+        val key = rig.publish()
+        loop.start(backgroundScope)
+        runCurrent()
+        assertEquals(SyncState.WAITING_GATEWAY, rig.job(key).state)
+        after(2 * 60 * 60_000L) // 网关一直不在：探测间隔早已涨到封顶的 15 分钟，下一次探测最远还有一刻钟
+
+        rig.bringGatewayUp() // 手机回到了局域网；手机常开着移动数据，所以系统给的只是“默认网络换了一个”，没有“没网→有网”
+        runCurrent()
+        assertEquals("网关回来了，但还没有任何事件告诉手机", SyncState.WAITING_GATEWAY, rig.job(key).state)
+
+        network.switchToAnotherNetwork()
+        runCurrent()
+
+        assertEquals("换网络就该立刻补传，而不是再等最长一刻钟", SyncState.STORED, rig.job(key).state)
+        assertEquals(1, rig.server.putCount)
+    }
+
+    @Test
     fun `网络断开：排队与等待重试的任务改为等待网关，断网期间不再碰网关，网络回来后补传`() = loopRig { rig, network, loop ->
         rig.server.faults += Fault.Reject(503, "GATEWAY_UNREACHABLE", retryable = true)
         val key = rig.publish()
