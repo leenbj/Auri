@@ -33,6 +33,10 @@ const KEYCODE_MEDIA_PAUSE = 2077;
 
 const DEDUP_WINDOW_NS = 300_000_000;
 
+export function keyEventRawId(keyCode: number, pressedTime: number | undefined): string | null {
+  return pressedTime !== undefined && Number.isFinite(pressedTime) ? `${keyCode}-${pressedTime}` : null;
+}
+
 /**
  * Normalizes HarmonyOS AVSession commands, raw KeyEvents, and screen controls
  * into contract-aligned `NormalizedControlEvent` records without guessing

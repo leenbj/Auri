@@ -1,8 +1,25 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { ControlNormalizer } from '../entry/src/main/ets/logic/ControlNormalizer';
+import { ControlNormalizer, keyEventRawId } from '../entry/src/main/ets/logic/ControlNormalizer';
 
 describe('ControlNormalizer', () => {
+  it('uses the key press time for a raw ID and does not deduplicate when it is absent', () => {
+    assert.equal(keyEventRawId(10, 123), '10-123');
+    assert.equal(keyEventRawId(10, undefined), null);
+    const normalizer = new ControlNormalizer('harmonyos-generic-probe', 1);
+    const first = normalizer.normalize({
+      channel: 'avsession_key_event', platformCommand: null, keyCode: 10,
+      keyAction: 'down', monotonicNs: 1, rawEventId: keyEventRawId(10, undefined),
+    }, 'semantic', 'first');
+    const second = normalizer.normalize({
+      channel: 'avsession_key_event', platformCommand: null, keyCode: 10,
+      keyAction: 'down', monotonicNs: 2, rawEventId: keyEventRawId(10, undefined),
+    }, 'semantic', 'second');
+    assert.equal(first.command, 'TOGGLE');
+    assert.equal(second.command, 'TOGGLE');
+    assert.equal(second.deduplicated, false);
+  });
+
   it('maps AVSession play callback to START with unknown_remote source in semantic mode', () => {
     const normalizer = new ControlNormalizer('harmonyos-generic-probe', 1);
 
