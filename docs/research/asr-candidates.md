@@ -319,7 +319,7 @@ ADR-0017 与 PRD 第 15.1 节：引入共享 sherpa-onnx 之外的推理运行�
 | C3 | Whisper：`openai/whisper-small` 的 HF 卡片标 apache-2.0，`whisper-large-v3-turbo` 标 mit，GitHub README 写 MIT | 都是宽松许可；以 GitHub README 的 MIT 为准；该模型暂缓，不影响结论 |
 | C4 | Moonshine：HF `UsefulSensors/moonshine-base` 标 mit，但包内 LICENSE 说英语以外的模型适用非商业为主的 Community License | 中文模型取包内 LICENSE |
 | C5 | Qwen3 第三方导出：ModelScope 元数据标 apache-2.0，但仓库没有 LICENSE 文件，导出代码仓库也没有 | 以上游 Apache-2.0 作为权重许可依据；导出层许可证列入未核实 |
-| C6 | CLAUDE.md “依赖锁定”一条（含“模型含哈希与许可证必须固定版本”）末尾标注的是“第 26.4 节”；PRD 第 26.4 节实际是“必须纠正的参考项目用法”，依赖与版本锁定在第 15.4 节 | 本文引用第 15.4 节与 FR-ASR-003 / 004；建议文档负责人把 CLAUDE.md 的这处引用拆开标注 |
+| C6 | `docs/agent/product-and-constraints.md` “依赖锁定”一条（含“模型含哈希与许可证必须固定版本”）末尾标注的是“第 26.4 节”；PRD 第 26.4 节实际是“必须纠正的参考项目用法”，依赖与版本锁定在第 15.4 节 | 本文引用第 15.4 节与 FR-ASR-003 / 004；建议文档负责人把 `docs/agent/product-and-constraints.md` 的这处引用拆开标注 |
 | C7 | Qwen3 的 sherpa-onnx 核心支持从 1.12.34 起，但 ArkTS 绑定从 1.12.35 起 | 鸿蒙上最早可用版本按 1.12.35 算；固定的 v2.0.1 不受影响 |
 | C8 | 资产名称里的日期与资产实际更新时间不一致：SenseVoice 名称 2024-07-17、更新 2025-09-01；Fun-ASR-Nano 名称 2025-12-30、更新 2026-04-12；Qwen3-0.6B 名称 2026-03-25、更新 2026-04-07 | 名称不能标识内容（PRD FR-ASR-003：“模型名称相同不等于转换产物相同”）；固定清单以 SHA-256 为准 |
 
