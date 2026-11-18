@@ -10,13 +10,17 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.auri.android.control.ControlViewModel
 import app.auri.android.home.HomeViewModel
+import app.auri.android.ui.AppRoot
+import app.auri.android.ui.ControlScreen
 import app.auri.android.ui.HomeScreen
 
 class MainActivity : ComponentActivity() {
     private val runtime get() = (application as AuriApplication).runtime
 
     private val viewModel: HomeViewModel by viewModels { runtime.homeViewModelFactory }
+    private val controlViewModel: ControlViewModel by viewModels { runtime.controlViewModelFactory }
 
     // 不管用户给不给权限都继续开始：协调器会按实际情况拒绝并给出原因（PERMISSION_MIC_DENIED 等），界面如实显示
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { viewModel.start() }
@@ -25,7 +29,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             val state by viewModel.state.collectAsStateWithLifecycle()
-            HomeScreen(state, onStart = ::onStartPressed, onStop = viewModel::stop, onDismissNotice = viewModel::dismissNotice)
+            val controlState by controlViewModel.state.collectAsStateWithLifecycle()
+            AppRoot(
+                home = { HomeScreen(state, onStart = ::onStartPressed, onStop = viewModel::stop, onDismissNotice = viewModel::dismissNotice) },
+                control = { ControlScreen(controlState, controlViewModel, onStart = ::onStartPressed) },
+            )
         }
     }
 

@@ -4,12 +4,15 @@ import android.app.Application
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import app.auri.android.control.ControlWiring
+import app.auri.android.control.PROFILE_FILE_NAME
 import app.auri.android.home.CoordinatorControls
 import app.auri.android.home.HomeViewModel
 import app.auri.asr.LocalTranscriber
 import app.auri.asr.engine.SherpaOnnxEngineFactory
 import app.auri.asr.manifest.ModelManifest
 import app.auri.capture.adapter.TranscriptionAdapter
+import app.auri.capture.calibration.ProfileStore
 import app.auri.capture.coordinator.CaptureConfig
 import app.auri.capture.coordinator.CaptureCoordinator
 import app.auri.capture.pipeline.RecordPipeline
@@ -23,6 +26,7 @@ import app.auri.platform.control.ScreenControlAdapter
 import app.auri.platform.library.SqliteRecordLibrary
 import app.auri.platform.service.AndroidForegroundServiceController
 import app.auri.platform.service.bindForegroundService
+import app.auri.platform.storage.FileProfileStore
 import app.auri.platform.storage.WavRecordingStore
 import app.auri.platform.system.AndroidCaptureEnvironment
 import app.auri.platform.system.AppLifecycleTracker
@@ -51,7 +55,7 @@ fun captureConfigFor(maxAudioDurationMs: Long?): CaptureConfig {
 }
 
 /**
- * 把各层接起来的地方：屏幕按钮 → 协调器 → 蓝牙采集适配器 / WAV 存储 → 管线（自动转录）→ SQLite 库。
+ * 把各层接起来的地方：屏幕按钮与耳机媒体键（控制模式开着时）→ 协调器 → 蓝牙采集适配器 / WAV 存储 → 管线（自动转录）→ SQLite 库。
  * 没有别的逻辑；每一层的规则在它自己的模块里，有各自的测试。需要替换的东西（比如测试里的音频系统）经构造参数传入。
  */
 class AuriRuntime(
@@ -61,6 +65,7 @@ class AuriRuntime(
     recordingsDir: File = File(application.filesDir, "recordings"),
     modelsDir: File = File(application.filesDir, "models"),
     transcriptionOverride: TranscriptionAdapter? = null,
+    headsetProfileStore: ProfileStore = FileProfileStore(File(application.filesDir, PROFILE_FILE_NAME)),
 ) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -68,6 +73,7 @@ class AuriRuntime(
     val headset = AndroidHeadsetPresence(application)
     val library = SqliteRecordLibrary(application, databaseName)
     val screenControl = ScreenControlAdapter(SystemClock, RandomIds)
+    private val controlWiring = ControlWiring(application, screenControl, headsetProfileStore)
     val captureAdapter = BluetoothCaptureAdapter(audio, AndroidCaptureEnvironment(application, lifecycle), SystemClock)
 
     private val manifestJson = application.assets.open(MODEL_MANIFEST_ASSET).use { it.readBytes().toString(Charsets.UTF_8) }
@@ -78,7 +84,7 @@ class AuriRuntime(
     val pipeline = RecordPipeline(library, transcription, SystemClock, scope)
 
     val coordinator = CaptureCoordinator(
-        control = screenControl,
+        control = controlWiring.control,
         capture = captureAdapter,
         store = WavRecordingStore(recordingsDir),
         output = pipeline,
@@ -97,6 +103,8 @@ class AuriRuntime(
         pipeline.resume() // 上次没转完的、等模型的 Record 重新排队
         scope.launch { coordinator.snapshot.map(::captureLogLine).distinctUntilChanged().collect { Log.i(CAPTURE_LOG_TAG, it) } }
     }
+
+    val controlViewModelFactory = controlWiring.connect(coordinator, scope)
 
     val homeViewModelFactory = object : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
