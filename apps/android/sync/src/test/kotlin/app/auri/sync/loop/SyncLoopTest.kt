@@ -1,0 +1,346 @@
+@file:OptIn(ExperimentalCoroutinesApi::class)
+
+package app.auri.sync.loop
+
+import app.auri.sync.engine.JobKey
+import app.auri.sync.engine.RetryPolicy
+import app.auri.sync.machine.SyncState
+import app.auri.sync.testing.FakeGateway.Fault
+import app.auri.sync.testing.FakeNetwork
+import app.auri.sync.testing.SyncRig
+import app.auri.sync.testing.SyncSamples
+import app.auri.sync.testing.TlsFixtures
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * 同步循环：什么时候去跑一轮同步。引擎保证“一轮里做对”，循环保证“该跑的时候一定会跑、不该跑的时候不跑”：
+ * 启动、有新任务、网络恢复、重试时间到、网关一直连不上时按退避去探——并且永远不会对被永久拒绝的任务反复请求。
+ * 全部用虚拟时间，引擎是真的，网络、网关、局域网是假的。
+ */
+class SyncLoopTest {
+    private fun loopRig(gatewayOnLan: Boolean = true, body: suspend TestScope.(SyncRig, FakeNetwork, SyncLoop) -> Unit) = runTest {
+        val rig = SyncRig(this, gatewayOnLan = gatewayOnLan)
+        val network = FakeNetwork()
+        body(rig, network, SyncLoop(rig.engine, rig.jobs, network, rig.clock, RetryPolicy(), rig.log))
+    }
+
+    private fun SyncRig.bringGatewayUp() = lan.host(SyncSamples.LAN_ADDRESS, TlsFixtures.gatewayA) { server.handle(it) }
+
+    private suspend fun TestScope.after(ms: Long) {
+        advanceTimeBy(ms)
+        runCurrent()
+    }
+
+    private fun SyncRig.passes() = log.lines.count { it == "loop.pass" }
+
+    // ---- 什么时候跑一轮 ----
+
+    @Test
+    fun `启动时先跑一轮：上次留下的排队任务被发出去（重启之后不会丢）`() = loopRig { rig, _, loop ->
+        val key = rig.publish()
+
+        loop.start(backgroundScope)
+        runCurrent()
+
+        assertEquals(SyncState.STORED, rig.job(key).state)
+    }
+
+    @Test
+    fun `启动时接回上次被杀时卡在发送中的任务：它不是排队中的，只有启动那一轮能发现它；先问网关再决定`() = loopRig { rig, _, loop ->
+        val key = rig.publish()
+        rig.jobs.update(rig.job(key).copy(state = SyncState.SENDING, attempts = 1, uncertain = true)) // 进程在发送途中被杀留下的样子
+
+        loop.start(backgroundScope)
+        runCurrent()
+
+        assertEquals(SyncState.STORED, rig.job(key).state)
+        assertEquals("先问网关有没有，再提交", listOf("GET status ${key.recordId}", "PUT ${key.recordId}#1"), rig.server.calls.toList())
+    }
+
+    @Test
+    fun `运行中有新任务（发布了新的 Revision）：不需要任何别的触发，自己就发出去`() = loopRig { rig, _, loop ->
+        loop.start(backgroundScope)
+        runCurrent()
+
+        val key = rig.publish()
+        runCurrent()
+
+        assertEquals(SyncState.STORED, rig.job(key).state)
+    }
+
+    @Test
+    fun `网络恢复就跑一轮：网关在等的任务补传；在这之前什么事件都没有，它就一直等着`() = loopRig(gatewayOnLan = false) { rig, network, loop ->
+        val key = rig.publish()
+        loop.start(backgroundScope)
+        runCurrent()
+        assertEquals(SyncState.WAITING_GATEWAY, rig.job(key).state)
+        network.set(false)
+        runCurrent()
+
+        rig.bringGatewayUp()
+        runCurrent()
+        assertEquals("网关回来了，但还没有任何事件告诉手机", SyncState.WAITING_GATEWAY, rig.job(key).state)
+
+        network.set(true)
+        runCurrent()
+
+        assertEquals(SyncState.STORED, rig.job(key).state)
+        assertEquals(1, rig.server.putCount)
+    }
+
+    @Test
+    fun `网络断开：排队与等待重试的任务改为等待网关，断网期间不再碰网关，网络回来后补传`() = loopRig { rig, network, loop ->
+        rig.server.faults += Fault.Reject(503, "GATEWAY_UNREACHABLE", retryable = true)
+        val key = rig.publish()
+        loop.start(backgroundScope)
+        runCurrent()
+        assertEquals(SyncState.RETRY_SCHEDULED, rig.job(key).state)
+
+        network.set(false)
+        runCurrent()
+        assertEquals(SyncState.WAITING_GATEWAY, rig.job(key).state)
+        val requests = rig.lan.attempts.size + rig.server.calls.size
+
+        after(24 * 60 * 60_000L)
+        assertEquals("断网时不探测、不重试", requests, rig.lan.attempts.size + rig.server.calls.size)
+
+        network.set(true)
+        runCurrent()
+        assertEquals(SyncState.STORED, rig.job(key).state)
+    }
+
+    @Test
+    fun `网关答 503：到了重试时间才重发，不早也不晚`() = loopRig { rig, _, loop ->
+        rig.server.faults += Fault.Reject(503, "GATEWAY_UNREACHABLE", retryable = true)
+        val key = rig.publish()
+        loop.start(backgroundScope)
+        runCurrent()
+        assertEquals(1, rig.server.putCount)
+        assertEquals(SyncState.RETRY_SCHEDULED, rig.job(key).state)
+
+        after(4_999)
+        assertEquals("还差 1 毫秒", 1, rig.server.putCount)
+
+        after(1)
+        assertEquals(2, rig.server.putCount)
+        assertEquals(SyncState.STORED, rig.job(key).state)
+    }
+
+    @Test
+    fun `一直失败时重试间隔逐次翻倍，封顶在退避上限，永远不会密集重试`() = loopRig { rig, _, loop ->
+        repeat(40) { rig.server.faults += Fault.Reject(503, "GATEWAY_UNREACHABLE", retryable = true) }
+        val key = rig.publish()
+        loop.start(backgroundScope)
+        runCurrent()
+        val attemptTimes = mutableListOf(0L)
+        var elapsed = 0L
+        // 第一次失败之后的每次重试都先问网关结果（“可能已送到”），所以数的是到达网关的请求，不只是 PUT
+        var seen = rig.server.calls.size
+
+        val step = 1_000L
+        while (elapsed < 6 * 60 * 60_000L) {
+            after(step)
+            elapsed += step
+            if (rig.server.calls.size != seen) {
+                assertEquals("每次只发一个请求", seen + 1, rig.server.calls.size)
+                seen = rig.server.calls.size
+                attemptTimes += elapsed
+            }
+        }
+
+        val gaps = attemptTimes.zipWithNext { a, b -> b - a }
+        assertEquals("前几次：5、10、20、40、80、160、320、640 秒", listOf(5_000L, 10_000L, 20_000L, 40_000L, 80_000L, 160_000L, 320_000L, 640_000L), gaps.take(8))
+        assertTrue("之后封顶在 15 分钟：$gaps", gaps.drop(8).all { it == 15 * 60_000L })
+        assertEquals(SyncState.RETRY_SCHEDULED, rig.job(key).state)
+    }
+
+    @Test
+    fun `网关一直连不上（网络是好的）：按退避去探，5、10、20 秒……封顶 15 分钟，找到了就补传`() = loopRig(gatewayOnLan = false) { rig, _, loop ->
+        val key = rig.publish()
+        loop.start(backgroundScope)
+        runCurrent()
+        val perPass = rig.lan.attempts.size
+        assertTrue("一轮至少试一个地址", perPass > 0)
+
+        after(4_999)
+        assertEquals(perPass, rig.lan.attempts.size)
+        after(1)
+        assertEquals("5 秒后第一次探测", perPass * 2, rig.lan.attempts.size)
+        after(9_999)
+        assertEquals(perPass * 2, rig.lan.attempts.size)
+        after(1)
+        assertEquals("再 10 秒后第二次探测", perPass * 3, rig.lan.attempts.size)
+
+        // 很久以后：每 15 分钟一次，不会更密
+        after(6 * 60 * 60_000L)
+        val before = rig.lan.attempts.size
+        after(60 * 60_000L)
+        assertEquals("封顶之后每小时 4 次探测", 4 * perPass, rig.lan.attempts.size - before)
+
+        rig.bringGatewayUp()
+        after(15 * 60_000L)
+        assertEquals(SyncState.STORED, rig.job(key).state)
+    }
+
+    @Test
+    fun `被永久拒绝的任务无论过多久、网络怎么变、被催多少次，都不会再请求网关`() = loopRig { rig, network, loop ->
+        rig.server.faults += Fault.Reject(409, "RECORD_VERSION_CONFLICT", retryable = false)
+        val key = rig.publish()
+        loop.start(backgroundScope)
+        runCurrent()
+        assertEquals(SyncState.BLOCKED, rig.job(key).state)
+        val requests = rig.server.calls.size
+        val attempts = rig.lan.attempts.size
+
+        network.set(false)
+        runCurrent()
+        network.set(true)
+        runCurrent()
+        repeat(5) { loop.nudge() }
+        runCurrent()
+        val passes = rig.passes()
+        after(7 * 24 * 60 * 60_000L)
+
+        assertEquals(SyncState.BLOCKED, rig.job(key).state)
+        assertEquals("没有再发 PUT 或查询", requests, rig.server.calls.size)
+        assertEquals("连探测都没有", attempts, rig.lan.attempts.size)
+        assertEquals("也没有任何计时器去唤醒新的一轮", passes, rig.passes())
+    }
+
+    @Test
+    fun `nudge 立刻跑一轮，并且退避从头开始`() = loopRig(gatewayOnLan = false) { rig, _, loop ->
+        val key = rig.publish()
+        loop.start(backgroundScope)
+        runCurrent()
+        val perPass = rig.lan.attempts.size
+        after(5_000 + 10_000 + 20_000) // 已经探了三次，下一次要等 40 秒
+        assertEquals(perPass * 4, rig.lan.attempts.size)
+
+        loop.nudge()
+        runCurrent()
+        assertEquals("nudge 马上探一次", perPass * 5, rig.lan.attempts.size)
+        after(4_999)
+        assertEquals(perPass * 5, rig.lan.attempts.size)
+        after(1)
+        assertEquals("退避从头开始：5 秒后再探，不是 40 秒", perPass * 6, rig.lan.attempts.size)
+
+        rig.bringGatewayUp()
+        loop.nudge()
+        runCurrent()
+        assertEquals(SyncState.STORED, rig.job(key).state)
+    }
+
+    // ---- 不出错 ----
+
+    @Test
+    fun `正在发送的请求不会被任务表的变化打断：只发一次，不重复也不取消`() = loopRig { rig, _, loop ->
+        val gate = CompletableDeferred<Fault?>()
+        rig.server.holdNext = gate
+        val first = rig.publish(SyncSamples.RECORD_ID, 1)
+        loop.start(backgroundScope)
+        runCurrent()
+        assertEquals(SyncState.SENDING, rig.job(first).state)
+
+        val second = rig.publish(SyncSamples.OTHER_RECORD_ID, 1) // 任务表又变了、又有新任务
+        runCurrent()
+        assertEquals("第一条还在发送中", SyncState.SENDING, rig.job(first).state)
+
+        gate.complete(null)
+        runCurrent()
+
+        assertEquals(listOf(SyncState.STORED, SyncState.STORED), listOf(first, second).map { rig.job(it).state })
+        assertEquals("每条只发了一次", 2, rig.server.putCount)
+        assertEquals(1, rig.job(first).attempts)
+    }
+
+    @Test
+    fun `一堆催促合并成一次：一轮在跑的时候来了很多次 nudge，之后只多跑一轮`() = loopRig { rig, _, loop ->
+        val gate = CompletableDeferred<Fault?>()
+        rig.server.holdNext = gate
+        rig.publish()
+        loop.start(backgroundScope)
+        runCurrent()
+        assertEquals(1, rig.passes())
+
+        repeat(50) { loop.nudge() }
+        gate.complete(null)
+        runCurrent()
+
+        assertEquals("第一轮 + 合并后的一轮", 2, rig.passes())
+    }
+
+    @Test
+    fun `循环的作用域被取消之后什么都不再发生`() = loopRig(gatewayOnLan = false) { rig, network, loop ->
+        rig.publish()
+        val running = loop.start(backgroundScope)
+        runCurrent()
+
+        running.cancel()
+        runCurrent()
+        val before = rig.lan.attempts.size
+
+        loop.nudge()
+        network.set(false)
+        network.set(true)
+        rig.publish(SyncSamples.OTHER_RECORD_ID, 1)
+        after(2 * 60 * 60_000L)
+
+        assertEquals(before, rig.lan.attempts.size)
+    }
+
+    @Test
+    fun `网络信号自己出了故障：记一条日志，其余的触发照常工作`() = runTest {
+        val rig = SyncRig(this)
+        val broken = object : NetworkSignal {
+            override val available: Flow<Boolean> = flow { throw IllegalStateException("系统服务不可用") }
+        }
+        val loop = SyncLoop(rig.engine, rig.jobs, broken, rig.clock, RetryPolicy(), rig.log)
+        loop.start(backgroundScope)
+        runCurrent()
+
+        val key = rig.publish()
+        runCurrent()
+
+        assertEquals(SyncState.STORED, rig.job(key).state)
+        assertTrue(rig.log.lines.any { it.startsWith("loop.network.failed IllegalStateException") })
+    }
+
+    @Test
+    fun `任务表的变化信号出了故障：记一条日志，网络触发与手动触发照常工作`() = runTest {
+        val rig = SyncRig(this)
+        val network = FakeNetwork()
+        val key = rig.publish()
+        val brokenJobs = object : app.auri.sync.engine.SyncJobStore by rig.jobs {
+            override fun observe(): Flow<List<app.auri.sync.engine.SyncJob>> = flow { throw IllegalStateException("数据库打不开") }
+        }
+        val loop = SyncLoop(rig.engine, brokenJobs, network, rig.clock, RetryPolicy(), rig.log)
+        loop.start(backgroundScope)
+        runCurrent()
+
+        assertEquals("启动时那一轮不依赖变化信号", SyncState.STORED, rig.job(key).state)
+        assertTrue(rig.log.lines.any { it.startsWith("loop.jobs.failed IllegalStateException") })
+    }
+
+    @Test
+    fun `同一个 Record 的新 Revision 是新任务：也会被发出去，两个版本各发一次`() = loopRig { rig, _, loop ->
+        loop.start(backgroundScope)
+        runCurrent()
+        val first = rig.publish(SyncSamples.RECORD_ID, 1)
+        runCurrent()
+        val second = rig.publish(SyncSamples.RECORD_ID, 2, text = "改过之后的文字")
+        runCurrent()
+
+        assertEquals(listOf(JobKey(SyncSamples.RECORD_ID, 1), JobKey(SyncSamples.RECORD_ID, 2)), listOf(first, second))
+        assertEquals(listOf(SyncState.STORED, SyncState.STORED), listOf(first, second).map { rig.job(it).state })
+    }
+}

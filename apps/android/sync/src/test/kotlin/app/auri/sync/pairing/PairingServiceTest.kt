@@ -221,6 +221,7 @@ class PairingServiceTest {
         val failing = object : PairingStore {
             override suspend fun load() = PairingState.NotPaired
             override suspend fun save(gateway: PairedGateway) = throw IOException("disk full")
+            override suspend fun update(transform: (PairedGateway) -> PairedGateway?) = false
             override suspend fun clear() = Unit
         }
 
@@ -250,6 +251,7 @@ class PairingServiceTest {
                 delay(100)
                 saved += gateway
             }
+            override suspend fun update(transform: (PairedGateway) -> PairedGateway?) = false
             override suspend fun clear() = Unit
         }
         val job = async(start = CoroutineStart.UNDISPATCHED) { service(slowStore).pair(payload()) }

@@ -4,6 +4,9 @@ import app.auri.sync.testing.SyncSamples
 import app.auri.sync.testing.TlsFixtures
 import java.io.File
 import javax.crypto.spec.SecretKeySpec
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -122,6 +125,70 @@ class FilePairingStoreTest {
 
         assertFalse(leftover.exists())
         assertEquals(listOf("pairing.bin"), tmp.root.list()!!.toList())
+    }
+
+    @Test
+    fun `update 在同一把锁里读改写：变换看到的是此刻磁盘上的记录，写回的仍是密文`() = runBlocking {
+        val store = FilePairingStore(file, box)
+        store.save(gateway.copy(needsUser = null))
+
+        val applied = store.update { current -> current.copy(needsUser = NeedsUser.AUTH_REJECTED) }
+
+        assertTrue(applied)
+        assertEquals(NeedsUser.AUTH_REJECTED, (FilePairingStore(file, box).load() as PairingState.Paired).gateway.needsUser)
+        assertFalse(String(file.readBytes(), Charsets.ISO_8859_1).contains(SyncSamples.TOKEN_TEXT))
+    }
+
+    @Test
+    fun `update 的变换返回 null 就什么都不写；没配对或记录已丢失时更不会凭空造出一条`() = runBlocking {
+        val store = FilePairingStore(file, box)
+        assertFalse("没配对", store.update { it })
+        assertFalse(file.exists())
+
+        store.save(gateway)
+        val before = file.readBytes()
+        assertFalse(store.update { null })
+        assertTrue("没改就不能重写文件", before.contentEquals(file.readBytes()))
+
+        file.writeBytes("garbage".toByteArray())
+        assertFalse("记录已丢失", store.update { it.copy(needsUser = null) })
+        assertEquals(PairingState.Lost, store.load())
+    }
+
+    @Test
+    fun `update 与 save 互斥：重新配对写入的新记录不会被晚到的旧观察覆盖`() = runBlocking {
+        val store = FilePairingStore(file, box)
+        val old = SyncSamples.pairedGateway(lastGoodAddress = null)
+        store.save(old)
+        val fresh = SyncSamples.pairedGateway(pairedAt = java.time.Instant.parse("2026-11-18T09:00:00Z"))
+
+        // 引擎在旧记录上观察到问题；就在它回来更新之前，用户重新配对，写入了新记录
+        store.save(fresh)
+        val applied = store.update { current -> if (current.pairedAt == old.pairedAt) current.copy(needsUser = NeedsUser.KEY_MISMATCH) else null }
+
+        assertFalse("变换必须看到新记录，所以不能再套用旧观察", applied)
+        assertEquals(fresh, (store.load() as PairingState.Paired).gateway)
+    }
+
+    @Test
+    fun `update 持锁期间 save 必须等着：读改写不会被夹在中间的重新配对覆盖`() = runBlocking {
+        val store = FilePairingStore(file, box)
+        store.save(SyncSamples.pairedGateway())
+        val fresh = SyncSamples.pairedGateway(pairedAt = java.time.Instant.parse("2026-11-18T09:00:00Z"))
+        val inside = CompletableDeferred<Unit>()
+
+        val updating = async(Dispatchers.IO) {
+            store.update { current ->
+                inside.complete(Unit)
+                Thread.sleep(300) // 变换还在进行时，用户重新配对了
+                current.copy(needsUser = NeedsUser.KEY_MISMATCH)
+            }
+        }
+        inside.await()
+        store.save(fresh)
+        updating.await()
+
+        assertEquals("save 排在 update 之后：最终留下的是新记录", fresh, (store.load() as PairingState.Paired).gateway)
     }
 
     @Test

@@ -35,33 +35,42 @@ class FilePairingStore(
     private val mutex = Mutex()
     private val tmp = File(file.parentFile, file.name + ".tmp")
 
-    override suspend fun load(): PairingState = mutex.withLock {
+    override suspend fun load(): PairingState = mutex.withLock { withContext(io) { read() } }
+
+    override suspend fun save(gateway: PairedGateway) {
+        mutex.withLock { withContext(io) { write(gateway) } }
+    }
+
+    override suspend fun update(transform: (PairedGateway) -> PairedGateway?): Boolean = mutex.withLock {
         withContext(io) {
-            if (!file.exists()) return@withContext PairingState.NotPaired
-            val plain = try {
-                box.open(file.readBytes())
-            } catch (_: IOException) {
-                null
-            }
-            plain?.let(::decode)?.let { PairingState.Paired(it) } ?: PairingState.Lost
+            val current = (read() as? PairingState.Paired)?.gateway ?: return@withContext false
+            val updated = transform(current) ?: return@withContext false
+            write(updated)
+            true
         }
     }
 
-    override suspend fun save(gateway: PairedGateway) {
-        mutex.withLock {
-            withContext(io) {
-                val sealed = box.seal(encode(gateway))
-                file.parentFile.mkdirs()
-                FileOutputStream(tmp).use {
-                    it.write(sealed)
-                    it.fd.sync()
-                }
-                try {
-                    Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-                } catch (_: AtomicMoveNotSupportedException) {
-                    Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
-                }
-            }
+    private fun read(): PairingState {
+        if (!file.exists()) return PairingState.NotPaired
+        val plain = try {
+            box.open(file.readBytes())
+        } catch (_: IOException) {
+            null
+        }
+        return plain?.let(::decode)?.let { PairingState.Paired(it) } ?: PairingState.Lost
+    }
+
+    private fun write(gateway: PairedGateway) {
+        val sealed = box.seal(encode(gateway))
+        file.parentFile.mkdirs()
+        FileOutputStream(tmp).use {
+            it.write(sealed)
+            it.fd.sync()
+        }
+        try {
+            Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
         }
     }
 

@@ -41,5 +41,12 @@ interface PairingStore {
     /** 原子地替换配对记录：要么是旧的，要么是新的，不会出现写了一半。 */
     suspend fun save(gateway: PairedGateway)
 
+    /**
+     * 在同一把锁里读出当前记录、套用 [transform]、写回。[transform] 返回 null 表示不改（不重写文件）。
+     * 返回是否写入了。没配对或记录已丢失时什么也不做：不能凭空造出一条。
+     * 引擎只能经它改记录（记最近连上的地址、打上“要用户处理”），这样晚到的旧观察不会覆盖用户刚刚重新配对写入的新记录。
+     */
+    suspend fun update(transform: (PairedGateway) -> PairedGateway?): Boolean
+
     suspend fun clear()
 }
