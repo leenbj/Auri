@@ -22,6 +22,7 @@ if (ROOT / ".git").exists() or subprocess.run(
 CAPTURE = "apps/android/capture/src/main/kotlin/app/auri/capture/"
 PLATFORM = "apps/android/platform/src/main/kotlin/app/auri/platform/"
 PLATFORM_TEST = "apps/android/platform/src/test/kotlin/app/auri/platform/"
+APP = "apps/android/app/src/main/kotlin/app/auri/android/"
 
 # (name, Gradle module, test class, expected failing test, [(path, old, new), ...])
 MUTANTS = [
@@ -125,6 +126,78 @@ MUTANTS = [
     ]),
     ("W7", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "命令映射只采用亲眼看到的", [
         (CAPTURE + "calibration/CalibrationFindings.kt", "kind in started && kind in stopped -> BusinessCommand.TOGGLE", "kind in started && kind in stopped -> BusinessCommand.START"),
+    ]),
+    ("R1", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "锁屏步骤只声明没效果", [
+        (CAPTURE + "calibration/CalibrationFindings.kt", '"recording-survived-lock", declaredAbout = { false }', '"recording-survived-lock", declaredAbout = { it.wasStop(locked = true) }'),
+    ]),
+    ("R2", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "锁屏步骤里手势停止发生在没锁屏的时候", [
+        (CAPTURE + "calibration/CalibrationFindings.kt", "declaredAbout = { stoppedWhileLocked && it.wasStart(locked = true) }", "declaredAbout = { it.wasStart(locked = true) }"),
+    ]),
+    ("R3", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "锁屏步骤里手势停止发生在没锁屏的时候", [
+        (CAPTURE + "calibration/CalibrationFindings.kt", "any { it.isRemoteStop() && it.screenLocked == true }", "any { it.isRemoteStop() }"),
+    ]),
+    ("R4", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "手势开始之后准备没成功", [
+        (CAPTURE + "calibration/CalibrationFindings.kt", ".firstOrNull { it.stateBefore == CaptureState.ROUTING && it.stateAfter != CaptureState.ROUTING }", ".firstOrNull { it.stateAfter == CaptureState.RECORDING }"),
+    ]),
+    ("R5", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "手势开始之后准备没成功", [
+        (CAPTURE + "calibration/CalibrationFindings.kt", ".firstOrNull { it.stateBefore == CaptureState.ROUTING && it.stateAfter != CaptureState.ROUTING }", ".lastOrNull { it.stateBefore == CaptureState.ROUTING && it.stateAfter != CaptureState.ROUTING }"),
+    ]),
+    ("R7", "platform", "app.auri.platform.control.CompositeControlAdapterTest", "两个来源同时来事件", [
+        (PLATFORM + "control/CompositeControlAdapter.kt", "synchronized(deliveryLock) {", "run {"),
+    ]),
+    ("R8", "platform", "app.auri.platform.control.HeadsetControlAdapterTest", "已经过了校验、正在递送的事件", [
+        (PLATFORM + "control/HeadsetControlAdapter.kt", "synchronized(lock) {\n            if (!active || token != activation) return", "run {\n            if (!active || token != activation) return"),
+    ]),
+    ("R9", "platform", "app.auri.platform.storage.FileProfileStoreTest", "写临时文件这一步失败时也要清理", [
+        (PLATFORM + "storage/FileProfileStore.kt", "temp.delete()", "Unit"),
+    ]),
+    ("R11", "app", "app.auri.android.control.ControlViewModelTest", "正在等录音保存完再关闭控制模式", [
+        (APP + "control/ControlViewModel.kt", "local.value.phase !is Phase.Setup || local.value.turningOff", "local.value.phase !is Phase.Setup"),
+    ]),
+    ("R12", "app", "app.auri.android.control.ControlViewModelTest", "同一步被连点两下", [
+        (APP + "control/ControlViewModel.kt", "if (shown != null && wizard.state.value.step != shown) return", "if (false) return"),
+    ]),
+    ("N1", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "第二步里中途锁了屏", [
+        (CAPTURE + "calibration/CalibrationFindings.kt", "fun wasStop(locked: Boolean) = lockSteady && state", "fun wasStop(locked: Boolean) = state"),
+    ]),
+    ("N1b", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "第三步里中途锁了屏", [
+        (CAPTURE + "calibration/CalibrationFindings.kt", "fun wasStart(locked: Boolean) = lockSteady && (state", "fun wasStart(locked: Boolean) = (state"),
+    ]),
+    ("N7", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "向导所知的采集状态落后于实际", [
+        (CAPTURE + "calibration/CalibrationWizard.kt", "now.state == trackedState && now.screenLocked == knownLock", "now.screenLocked == knownLock"),
+    ]),
+    ("N8", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "事件已经到了、决定还没到时点", [
+        (CAPTURE + "calibration/CalibrationWizard.kt", "if (pairing.size > 0) return false", "if (false) return false"),
+    ]),
+    ("N9", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "重做这一步之后，上一次尝试的事件晚到的决定", [
+        (CAPTURE + "calibration/CalibrationWizard.kt", "pairing.discard()\n        if (now != null)", "pairing.clear()\n        if (now != null)"),
+    ]),
+    ("N10", "capture", "app.auri.capture.calibration.CalibrationObservationTest", "步骤边界：上一步里还没等到决定的屏幕停止", [
+        (CAPTURE + "calibration/CalibrationWizard.kt", "pairing.discard()\n        val following", "pairing.clear()\n        val following"),
+    ]),
+    ("N11", "app", "app.auri.android.control.ControlViewModelTest", "锁屏读数变成读不出来", [
+        (APP + "control/ControlViewModel.kt", "screenLocked.collect { locked -> wizard.onScreenLockChanged(locked, controls.snapshot.value.state) }", "screenLocked.collect { locked -> if (locked != null) wizard.onScreenLockChanged(locked, controls.snapshot.value.state) }"),
+    ]),
+    ("N12", "app", "app.auri.android.control.ControlViewModelTest", "声明没效果时，界面把实际的采集状态交给向导", [
+        (APP + "control/ControlViewModel.kt", "runningWizard()?.reportNoEffect(currentEnvironment())", "runningWizard()?.reportNoEffect()"),
+    ]),
+    ("N13", "platform", "app.auri.platform.storage.FileProfileStoreTest", "替换这一步抛的不是 IOException", [
+        (PLATFORM + "storage/FileProfileStore.kt", "} catch (e: Exception) {\n            // 不只是 IOException", "} catch (e: IOException) {\n            // 不只是 IOException"),
+    ]),
+    ("N14", "platform", "app.auri.platform.control.CompositeControlAdapterTest", "编号也在锁里取", [
+        (PLATFORM + "control/CompositeControlAdapter.kt", "synchronized(deliveryLock) {\n            val numbered = event.copy(sequence = nextSequence())", "val numbered = event.copy(sequence = nextSequence())\n        synchronized(deliveryLock) {"),
+    ]),
+    ("Q1", "capture", "app.auri.capture.calibration.ControlDecisionPairingTest", "放弃归属之后", [
+        (CAPTURE + "calibration/Observation.kt", "fun discard() = pending.forEach { it.live = false }", "fun discard() = pending.clear()"),
+    ]),
+    ("Q2", "capture", "app.auri.capture.calibration.ControlDecisionPairingTest", "放弃归属之后", [
+        (CAPTURE + "calibration/Observation.kt", "return if (entry.live) entry.event else null", "return entry.event"),
+    ]),
+    ("Q3", "capture", "app.auri.capture.calibration.ControlDecisionPairingTest", "放弃归属之后", [
+        (CAPTURE + "calibration/Observation.kt", "val size: Int get() = pending.count { it.live }", "val size: Int get() = pending.size"),
+    ]),
+    ("S1b", "capture", "app.auri.capture.calibration.CalibrationObservationTest", "有触发器的内部错误", [
+        (CAPTURE + "calibration/CalibrationWizard.kt", "if (decision.trigger == null && decision.cause == Cause.INTERNAL_ERROR) pairing.clear()", "if (decision.cause == Cause.INTERNAL_ERROR) pairing.clear()"),
     ]),
 ]
 
