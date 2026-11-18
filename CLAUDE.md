@@ -111,6 +111,21 @@ execution/acceptance/android-capture/run_emulator_acceptance.sh      # 一次性
 adb logcat -d -s AuriCapture:I                                       # 真机：采集状态变化日志（只有状态、原因、输入类型，没有文字与设备标识）
 ```
 
+Android 耳机手势控制与校准（Ticket 17，同在 `apps/android/`：`:capture` 里是按键归一化与去抖、校准向导与 Headset Profile、反馈映射（纯 Kotlin/JVM），`:platform` 是媒体按键通道（只在控制模式开着时占用）、振动 + 静音通知、锁屏监测的 Android 实现，`:app` 加了“耳机控制”页与校准页；步骤、真机流程（`NOT_RUN`）、**已知限制（没有音频播放时系统不把媒体键交给我们的会话，需要范围决策）**与结果见 `execution/acceptance/android-control/README.md`）：
+
+```bash
+cd apps/android
+./gradlew :capture:test :platform:testDebugUnitTest :app:testDebugUnitTest :asr:testDebugUnitTest   # JVM 单测（193 + 134 + 87 + 112），不需要设备；输入没变的测试会被判 UP-TO-DATE 而不执行，要强制重跑先 :capture:cleanTest 等（见该 README 第 3 节）
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest :platform:assembleDebugAndroidTest         # 构建 APK 与两个仪器测试 APK
+cd ../..
+AURI_GRADLE_ARGS=--no-daemon .venv/bin/pytest execution/acceptance/android-control                   # Python 验收工具（106 个；含真实调用 Gradle 的合同输出校验，需要 JAVA_HOME）
+.venv/bin/python execution/acceptance/android-control/control_contract_check.py <输出目录> --preset jvm            # 校验向导与归一化器写出的 JSON 符合合同
+.venv/bin/python execution/acceptance/android-control/control_contract_check.py --profile <headset-profile.json>   # 校验从真机取回的校准档案
+execution/acceptance/android-control/run_emulator_acceptance.sh        # 一次性无头模拟器验收（E2）：同样先取共享锁 ~/.cache/auri/emulator.lock，无论成败都杀模拟器、删 AVD、放锁
+adb shell run-as app.auri.android cat files/headset-profile.json > headset-profile.json   # 真机（debug 构建）：取回校准档案
+adb logcat -d -s AuriControl:I AuriCapture:I                           # 真机：耳机控制与采集状态日志（只有状态与原因，没有设备名、文字或标识）
+```
+
 鸿蒙探针（DEV-003，工程位于 `execution/p0-spikes/harmonyos-probe/`）：
 
 ```bash

@@ -173,7 +173,4 @@ echo
 echo "E2 测得的事实（这是测量值，不是通过 / 失败的判据；送达数为 0 不等于耳机有问题，也不等于“按键能收到”，见 README“已知限制”）："
 grep -h 'AuriControlTest: measured' "$OUT/logcat-control.txt" 2>/dev/null | sed -E 's/^.*AuriControlTest: /  /' || true
 echo
-echo "E2 测得的事实（这是测量值，不是通过 / 失败的判据；送达数为 0 不等于耳机有问题，也不等于“按键能收到”，见 README“已知限制”）："
-grep -h 'AuriControlTest: measured' "$OUT/logcat-control.txt" 2>/dev/null | sed -E 's/^.*AuriControlTest: /  /' || true
-echo
 echo "全部通过（E2 模拟器）。输出目录：$OUT"
