@@ -16,8 +16,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -27,6 +30,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** 本机可用空间。生产里是 `filesDir.usableSpace`；单测换成可控的数。 */
 fun interface SpaceProbe {
@@ -125,8 +129,7 @@ class ModelManager(
     private val downloader = ResumableDownloader(transport, openSink)
 
     private val lock = Any()
-    private val jobs = HashMap<String, Job>()
-    private val stops = HashMap<String, Stop>()
+    private val jobs = HashMap<String, TransferJob>()
     private val installed = HashMap<String, Installed>()
     private val leases = HashMap<File, Int>()
     private var generation = 0L
@@ -134,6 +137,10 @@ class ModelManager(
     private class Installed(val manifest: ModelManifest, val dir: File)
 
     private enum class Stop { PAUSE, CANCEL }
+
+    private class TransferJob(var stop: Stop? = null) {
+        lateinit var job: Job
+    }
 
     private val mutableState = MutableStateFlow(
         ModelsState(catalog.entries.map { ModelEntryState(it.info, it.modelId == catalog.defaultModelId, null, false, Transfer.Idle) }),
@@ -186,22 +193,19 @@ class ModelManager(
         val entry = catalog.entry(modelId) ?: return
         synchronized(lock) {
             val previous = jobs[modelId]
-            if (previous?.isActive == true) return
+            if (previous?.job?.isActive == true) return
             val current = mutableState.value.entry(modelId)
             if (current.isInstalled && current.transfer == Transfer.Idle) return
-            // 上一个传输刚被暂停或取消、还在收尾（残片文件还没放开）：它停下的原因留给它自己去读，新的传输等它收完才开始，
-            // 绝不与它同时碰同一个残片。收尾已经结束（或根本没跑起来）时，没人会读的旧原因在这里清掉
-            if (previous == null || previous.isCompleted) stops.remove(modelId)
-            jobs[modelId] = scope.launch(Dispatchers.IO) { runTransfer(entry, after = previous) }
+            enqueue(entry, previous)
         }
     }
 
     /** 暂停：连接立刻断开，已下载的字节保留，之后 [start] 从那里继续。 */
     fun pause(modelId: String) {
         synchronized(lock) {
-            val job = jobs[modelId]?.takeIf { it.isActive } ?: return
-            stops[modelId] = Stop.PAUSE
-            job.cancel()
+            val transfer = jobs[modelId]?.takeIf { it.job.isActive } ?: return
+            transfer.stop = Stop.PAUSE
+            transfer.job.cancel()
         }
     }
 
@@ -209,10 +213,14 @@ class ModelManager(
     fun cancel(modelId: String) {
         val entry = catalog.entry(modelId) ?: return
         synchronized(lock) {
-            val job = jobs[modelId]?.takeIf { it.isActive }
-            if (job != null) {
-                stops[modelId] = Stop.CANCEL
-                job.cancel()
+            val previous = jobs[modelId]
+            if (previous?.job?.isActive == true) {
+                previous.stop = Stop.CANCEL
+                previous.job.cancel()
+                return
+            }
+            if (previous != null && !previous.job.isCompleted) {
+                enqueue(entry, previous, Stop.CANCEL)
                 return
             }
             val workDir = store.downloadDir(modelId, entry.manifest.modelVersion)
@@ -220,6 +228,16 @@ class ModelManager(
             workDir.deleteRecursively()
             updateEntry(modelId) { it.copy(transfer = Transfer.Idle) }
         }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun enqueue(entry: CatalogEntry, previous: TransferJob?, stop: Stop? = null) {
+        val transfer = TransferJob(stop)
+        jobs[entry.modelId] = transfer
+        transfer.job = scope.launch(Dispatchers.IO, start = CoroutineStart.ATOMIC) {
+            runTransfer(entry, previous?.job, transfer)
+        }
+        if (stop != null) transfer.job.cancel()
     }
 
     /**
@@ -236,15 +254,16 @@ class ModelManager(
         }
     }
 
-    private suspend fun runTransfer(entry: CatalogEntry, after: Job?) {
+    private suspend fun runTransfer(entry: CatalogEntry, after: Job?, transfer: TransferJob) {
         val id = entry.modelId
         val manifest = entry.manifest
         val workDir = store.downloadDir(id, manifest.modelVersion)
-        val self = currentCoroutineContext()[Job]
         var outcome: Outcome = Outcome.Unchanged
         try {
-            // 在 try 里等：等的时候被暂停或取消，走的是下面同一套善后
-            after?.join()
+            // 即使自己已被取消，也要等前一个传输及其清理完成，链条不能断。
+            withContext(NonCancellable) { after?.join() }
+            if (synchronized(lock) { transfer.stop } != null) throw CancellationException()
+            currentCoroutineContext().ensureActive()
             val have = downloader.partialBytes(manifest.archive, workDir)
             val needed = SpaceRule.needed(manifest.archive.sizeBytes, manifest.files.sumOf { it.sizeBytes }, have)
             val available = space.usableBytes()
@@ -257,7 +276,7 @@ class ModelManager(
             install(entry, workDir, archiveFile)
             outcome = Outcome.Installed
         } catch (e: CancellationException) {
-            outcome = when (synchronized(lock) { stops.remove(id) }) {
+            outcome = when (synchronized(lock) { transfer.stop }) {
                 Stop.PAUSE -> Outcome.Moved(Transfer.Paused(downloader.partialBytes(manifest.archive, workDir), manifest.archive.sizeBytes))
                 Stop.CANCEL -> {
                     downloader.discard(workDir)
@@ -273,7 +292,7 @@ class ModelManager(
             // 不认识的失败也要让界面有个交代，而不是永远停在“下载中”
             outcome = Outcome.Moved(Transfer.Failed(ModelError(ModelErrorKind.STORAGE_ERROR), downloader.partialBytes(manifest.archive, workDir)))
         } finally {
-            finish(id, self, outcome)
+            finish(id, transfer, outcome)
         }
     }
 
@@ -289,9 +308,10 @@ class ModelManager(
      * 传输结束的唯一出口：同一个临界区里摘掉任务并发布最终状态，之后马上又能 [start]。
      * 只摘自己（[self]）：收尾期间 [start] 已经登记了接班的新传输时，不能把它摘掉，否则它会脱离暂停与取消的控制。
      */
-    private fun finish(modelId: String, self: Job?, outcome: Outcome) {
+    private fun finish(modelId: String, self: TransferJob, outcome: Outcome) {
         synchronized(lock) {
-            if (jobs[modelId] === self) jobs.remove(modelId)
+            if (jobs[modelId] !== self) return
+            jobs.remove(modelId)
             when (outcome) {
                 Outcome.Unchanged -> Unit
                 Outcome.Installed -> updateEntry(modelId) { it.copy(transfer = Transfer.Idle) }

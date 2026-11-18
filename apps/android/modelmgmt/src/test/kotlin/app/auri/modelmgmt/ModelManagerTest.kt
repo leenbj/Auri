@@ -589,6 +589,67 @@ class ModelManagerTest {
     }
 
     @Test
+    fun `暂停等待中的第二次传输后再开始，第三次仍须等待第一次关闭`() {
+        val rig = Rig()
+        val held = HeldFirstSink()
+        val manager = rig.manager(openSink = held::openSink)
+        rig.server.stallAfterBytes = 60_000
+        try {
+            manager.start(rig.id)
+            manager.await(rig.id) { (it.transfer as? Transfer.Downloading)?.let { d -> d.bytesDone >= 60_000 } == true }
+            manager.pause(rig.id)
+            assertTrue(held.firstIsClosing.await(10, TimeUnit.SECONDS))
+
+            manager.start(rig.id)
+            manager.pause(rig.id)
+            Thread.sleep(500)
+            manager.start(rig.id)
+            Thread.sleep(500)
+
+            assertEquals("第一次仍持有残片时第三次不能联网", 1, rig.server.requests.size)
+            assertEquals(1, held.openNow)
+            assertEquals(1, held.mostOpen.get())
+            held.letFirstClose()
+            rig.server.stallAfterBytes = null
+            rig.server.releaseStall()
+            manager.awaitInstalled(rig.id)
+            assertEquals(1, held.mostOpen.get())
+        } finally {
+            held.letFirstClose()
+            rig.server.releaseStall()
+        }
+    }
+
+    @Test
+    fun `取消等待中的第二次传输后，第三次在清理残片之后从头开始`() {
+        val rig = Rig()
+        val held = HeldFirstSink()
+        val manager = rig.manager(openSink = held::openSink)
+        rig.server.stallAfterBytes = 60_000
+        try {
+            manager.start(rig.id)
+            manager.await(rig.id) { (it.transfer as? Transfer.Downloading)?.let { d -> d.bytesDone >= 60_000 } == true }
+            manager.pause(rig.id)
+            assertTrue(held.firstIsClosing.await(10, TimeUnit.SECONDS))
+            manager.start(rig.id)
+            manager.cancel(rig.id)
+            manager.start(rig.id)
+            Thread.sleep(500)
+            assertEquals(1, rig.server.requests.size)
+
+            held.letFirstClose()
+            rig.server.stallAfterBytes = null
+            rig.server.releaseStall()
+            manager.awaitInstalled(rig.id)
+            assertEquals(listOf(null, null), rig.server.requests.map { it.range })
+            assertEquals(1, held.mostOpen.get())
+        } finally {
+            held.letFirstClose()
+            rig.server.releaseStall()
+        }
+    }
+
+    @Test
     fun `暂停之后旧的传输还在收尾时又点开始：新的传输等旧的放开残片才开始，不会两个一起写，也不会脱离暂停的控制`() {
         val rig = Rig()
         val held = HeldFirstSink()
