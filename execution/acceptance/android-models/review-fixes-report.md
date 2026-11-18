@@ -54,6 +54,8 @@ The first preflight capture run exposed a setup race in the new frame test (the 
 
 ## Mutation evidence
 
+**Literal legacy-mutation requirement not met:** the unchanged historical M9 is no longer applicable after F11 removed its `needsUser` stop behavior, and the old assertion contradicts the requested automatic recovery. The other 25 original checks were caught unchanged; a revised M9 was caught, but it is not the same mutant.
+
 The 24 JVM checks M1–M19, M17b, M-T and M-R1a/b/c all failed for an assertion under their respective mutations. M9 had to be revised: the historical mutation meant “resource waits never become needsUser,” which is now explicitly the desired F11 behavior, so that historical assertion cannot both be killed and meet the new rule. The new M9 instead stops automatic resource polling after the fifth check and is killed by `SchedulerWaitingTest.五次重查之后内存或存储恢复且没有通知，五分钟内自动继续`; it was rerun against the final code. M-T now covers the test-only loopback HTTP timeout path; it is not proof of the production HTTPS client's timeout.
 
 The five requested new areas yielded six JVM mutants, all killed: F1 (never releases the run slot), F2 (collects after invalid pointer; additionally rerun using an actual file permission read error), F3a (runs without durable RUNNING), F3b (does not recognize already-published Revision), F4 (deletes the leased generation), and F7 (drops the transfer predecessor). Device mutants M-D1 and M-D2 were both caught on the emulator by their respective battery and thermal signal tests (one expected assertion failure each). Mutants were applied one at a time, their targeted test failure was checked in fresh JUnit XML, and the original source was restored after each. A compile error was not counted as a killed mutant.
