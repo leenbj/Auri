@@ -168,6 +168,26 @@ class CalibrationFindingsTest {
     }
 
     @Test
+    fun `unattributed media keys do not certify the selected headset`() {
+        val run = Run(real)
+        run.idle()
+        run.feed.gesture(PlatformEvent.SCREEN_BUTTON, START, ROUTING, source = ControlSource.SCREEN_CONTROL)
+        run.feed.other(CaptureEvent.ROUTE_VERIFIED, RECORDING)
+        run.feed.gesture(PlatformEvent.TOGGLE, TOGGLE, FINALIZING, source = ControlSource.UNKNOWN_REMOTE)
+        assertEquals("the unattributed observation must be recorded", 1, run.wizard.state.value.summary.unattributedEventCount)
+        run.feed.other(CaptureEvent.FINALIZE_COMPLETE, ARMED)
+        run.wizard.next()
+        run.feed.gesture(PlatformEvent.TOGGLE, TOGGLE, ROUTING, source = ControlSource.UNKNOWN_REMOTE)
+        run.feed.other(CaptureEvent.ROUTE_VERIFIED, RECORDING)
+        run.wizard.next()
+        run.wizard.next()
+
+        val capabilities = run.profile().capabilities
+        assertEquals(CompatStatus.NOT_TESTED, capabilities.stopWhileBluetoothMicActive.status)
+        assertEquals(CompatStatus.NOT_TESTED, capabilities.foregroundStartStop.status)
+    }
+
+    @Test
     fun `停止之后开始，但录音没有真的起来（路由没确认）：不算开始成功`() {
         val run = Run(real)
         run.idle()

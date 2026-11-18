@@ -24,7 +24,7 @@ sealed interface NormalizeResult {
  *  3. 按键种类、设备和平台时间相同才视为重复；时间或种类不同的取消命令不能被窗口吞掉。
  *  4. START/TOGGLE 必须带可信且未过期的发生时刻；STOP 即使时间不可信也可以停止。
  *  5. 命令只经过档案的映射；停止键（MEDIA_STOP）永远只能停止，即使档案把 pause 映射成了切换。
- *  6. 来源：系统能证明来自外接设备才是 headset_remote，其余都是 unknown_remote。不猜左右耳，不假设存在原始双击。
+ *  6. 来源：只有能归属于所选蓝牙耳机时才是 headset_remote，其余都是 unknown_remote。
  *
  * 线程安全：可从任意线程调用。序号在对象的整个生命期内单调递增；[resetGestureState] 只清去抖状态。
  */
@@ -66,7 +66,7 @@ class HeadsetEventNormalizer(
 
         val event = NormalizedControlEvent(
             eventId = ids.newUuid(),
-            source = if (input.fromExternalDevice == true) ControlSource.HEADSET_REMOTE else ControlSource.UNKNOWN_REMOTE,
+            source = if (input.fromBluetoothHeadset) ControlSource.HEADSET_REMOTE else ControlSource.UNKNOWN_REMOTE,
             platformEvent = platformEvent,
             command = command,
             monotonicNs = gestureNs,

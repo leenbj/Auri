@@ -16,7 +16,8 @@ enum class KeyPhase { DOWN, UP, REPEAT }
  * [rawId]：平台给的、同一次按键被重复递送时不变的标识；拿不到就是 null——绝不拿 0 之类的占位值充当标识，
  * 否则每次按键都会被当成“同一个事件”而被吞掉。
  * [issuedAtNs]：平台说的按键发生时刻，已换算到与 [receivedAtNs] 同一个单调时钟；拿不到就是 null。
- * [fromExternalDevice]：平台能证明事件来自外接（蓝牙）设备时为 true / false，不知道就是 null。
+ * [fromExternalDevice]：平台报告是否为外接设备；USB 也属于外接设备。
+ * [fromBluetoothHeadset]：平台能将事件归属于所选蓝牙耳机时才为 true。
  */
 data class RawMediaInput(
     val kind: MediaKind,
@@ -26,6 +27,7 @@ data class RawMediaInput(
     val fromExternalDevice: Boolean? = null,
     val receivedAtNs: Long,
     val deviceId: Int? = null,
+    val fromBluetoothHeadset: Boolean = false,
 ) {
     init {
         require(receivedAtNs >= 0) { "received_at_ns 不能为负" }

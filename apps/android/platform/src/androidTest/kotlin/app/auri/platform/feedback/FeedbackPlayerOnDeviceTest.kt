@@ -2,8 +2,10 @@ package app.auri.platform.feedback
 
 import android.Manifest
 import android.app.Notification
+import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.net.Uri
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.rule.GrantPermissionRule
@@ -85,5 +87,32 @@ class FeedbackPlayerOnDeviceTest {
         assertFalse("渠道自己不振动（振动由节奏单独发出）", channel.shouldVibrate())
         assertEquals(NotificationManager.IMPORTANCE_LOW, channel.importance)
         assertTrue("通知本身也不带声音", notification.sound == null)
+    }
+
+    @Suppress("DEPRECATION")
+    @Test
+    fun anOldAudibleChannelIsRemovedAndThePostedNotificationIsMuted() {
+        manager.createNotificationChannel(
+            NotificationChannel("auri-feedback", "old feedback", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                setSound(Uri.parse("content://fixture/audible"), null)
+                enableVibration(true)
+            },
+        )
+        assertNotNull(manager.getNotificationChannel("auri-feedback").sound)
+        val started = Feedbacks.of(FeedbackKind.STARTED)
+
+        player.play(started)
+
+        val notification = checkNotNull(posted(started.notificationText))
+        val channel = checkNotNull(manager.getNotificationChannel(notification.channelId))
+        assertNull(manager.getNotificationChannel("auri-feedback"))
+        assertEquals(AndroidFeedbackPlayer.CHANNEL_ID, channel.id)
+        assertNull(channel.sound)
+        assertFalse(channel.shouldVibrate())
+        assertTrue(channel.importance <= NotificationManager.IMPORTANCE_LOW)
+        assertNotNull(notification.group)
+        assertEquals(Notification.GROUP_ALERT_SUMMARY, notification.groupAlertBehavior)
+        assertTrue(notification.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0)
+        assertNull(notification.sound)
     }
 }

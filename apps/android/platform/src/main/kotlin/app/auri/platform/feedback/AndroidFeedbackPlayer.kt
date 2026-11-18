@@ -10,6 +10,20 @@ import android.os.VibratorManager
 import app.auri.capture.feedback.Feedback
 import app.auri.capture.feedback.FeedbackPlayer
 
+internal interface FeedbackNotificationGateway {
+    fun deleteChannel(id: String)
+    fun createSilentChannel(id: String)
+    fun post(id: String, text: String, silent: Boolean, onlyAlertOnce: Boolean)
+}
+
+internal class FeedbackNotifications(private val gateway: FeedbackNotificationGateway) {
+    fun show(text: String) {
+        gateway.deleteChannel("auri-feedback")
+        gateway.createSilentChannel(AndroidFeedbackPlayer.CHANNEL_ID)
+        gateway.post(AndroidFeedbackPlayer.CHANNEL_ID, text, silent = true, onlyAlertOnce = true)
+    }
+}
+
 /**
  * 开始、停止、没能开始三种提示：振动节奏 + 一条静音通知（屏幕上的文字由界面自己显示）。
  *
@@ -38,21 +52,32 @@ class AndroidFeedbackPlayer(
 
     private fun notify(feedback: Feedback) {
         val manager = context.getSystemService(NotificationManager::class.java) ?: return
-        manager.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "录音反馈", NotificationManager.IMPORTANCE_LOW).apply {
-                setSound(null, null)
-                enableVibration(false) // 振动由 vibrate() 按各自的节奏发出
-                setShowBadge(false)
-            },
-        )
-        val notification = Notification.Builder(context, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setContentTitle("Auri")
-            .setContentText(feedback.notificationText)
-            .setTimeoutAfter(TIMEOUT_MS)
-            .setAutoCancel(true)
-            .build()
-        manager.notify(NOTIFICATION_ID, notification)
+        FeedbackNotifications(object : FeedbackNotificationGateway {
+            override fun deleteChannel(id: String) = manager.deleteNotificationChannel(id)
+
+            override fun createSilentChannel(id: String) {
+                manager.createNotificationChannel(
+                    NotificationChannel(id, "录音反馈", NotificationManager.IMPORTANCE_LOW).apply {
+                        setSound(null, null)
+                        enableVibration(false)
+                        setShowBadge(false)
+                    },
+                )
+            }
+
+            override fun post(id: String, text: String, silent: Boolean, onlyAlertOnce: Boolean) {
+                val builder = Notification.Builder(context, id)
+                    .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+                    .setContentTitle("Auri")
+                    .setContentText(text)
+                    .setTimeoutAfter(TIMEOUT_MS)
+                    .setAutoCancel(true)
+                // A child muted by group-alert behavior stays silent even if the user makes its channel audible.
+                if (silent) builder.setGroup("auri-feedback-silent").setGroupAlertBehavior(Notification.GROUP_ALERT_SUMMARY)
+                if (onlyAlertOnce) builder.setOnlyAlertOnce(true)
+                manager.notify(NOTIFICATION_ID, builder.build())
+            }
+        }).show(feedback.notificationText)
     }
 
     private fun guarded(step: String, block: () -> Unit) {
@@ -64,7 +89,7 @@ class AndroidFeedbackPlayer(
     }
 
     companion object {
-        const val CHANNEL_ID = "auri-feedback"
+        const val CHANNEL_ID = "auri-feedback-silent-v2"
 
         /** 与前台服务的通知（编号 1）区分开；同一编号后来的反馈替换前一条，不会越堆越多。 */
         const val NOTIFICATION_ID = 17

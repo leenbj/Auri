@@ -50,7 +50,7 @@ private class Finding(val verdict: Verdict, val evidenceId: String? = null)
  *    并且到达那一刻的锁屏状态与开始时一致；准备被取消或受阻后，用户改点屏幕按钮录上的那一段，不能算在手势头上。
  *  - 一项能力由一或两项检查决定：全部成功 = 支持；全部声明没效果 = 不支持；成功与没效果混合 = PARTIAL；
  *    只要有一项没有结论，整项能力就保持 NOT_TESTED。
- *  - 耳机手势指来自遥控的事件（耳机，或系统没说清来源的媒体键）；屏幕上的点击从不算。
+ *  - 耳机手势必须能归属于耳机；来源不明的媒体键和屏幕点击都不能证明耳机能力。
  *    “录音中”意味着路由已经验证过是蓝牙麦克风；“前台”要求锁屏状态明确是未锁定，未知不算。
  *  - 取证环境不是真机 + 真实耳机时，所有能力都只能是 NOT_TESTED，最多带 E2 证据说明跑过（合同不允许 E2 的兼容结论）。
  *  - start_after_process_termination 在这四个场景里测不到（进程被杀后没有任何组件能收到按键），永远是未测试。
@@ -161,7 +161,7 @@ internal object CalibrationFindings {
                 is Observation.Decided -> when {
                     !lockedWithRecording -> Unit
                     // 耳机手势在锁屏中遇到了正在进行的录音：录音撑到了这一刻
-                    o.source.isRemote() && o.screenLocked == true && o.stateBefore == CaptureState.RECORDING -> return true
+                    o.source.isHeadset() && o.screenLocked == true && o.stateBefore == CaptureState.RECORDING -> return true
                     // 录音在这里结束了（任何原因，包括耳机让它停下、但这一刻读不出锁屏状态）：之后的录音不是同一段，不能再算它撑过了锁屏
                     o.stateBefore == CaptureState.RECORDING && o.stateAfter != CaptureState.RECORDING -> lockedWithRecording = false
                 }

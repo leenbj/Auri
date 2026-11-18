@@ -2,6 +2,11 @@ package app.auri.platform.control
 
 import app.auri.capture.control.KeyPhase
 import app.auri.capture.control.MediaKind
+import app.auri.capture.control.ControlProfile
+import app.auri.capture.control.HeadsetEventNormalizer
+import app.auri.capture.control.NormalizeResult
+import app.auri.capture.contract.ControlSource
+import app.auri.capture.testing.SequentialIds
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
@@ -92,5 +97,11 @@ class MediaKeysTest {
         assertEquals(true, raw(external = true).fromExternalDevice)
         assertEquals(false, raw(external = false).fromExternalDevice)
         assertNull(raw(external = null).fromExternalDevice)
+    }
+
+    @Test
+    fun `an external keyboard is not attributed to a Bluetooth headset`() {
+        val event = (HeadsetEventNormalizer(SequentialIds()).normalize(raw(external = true), ControlProfile.generic()) as NormalizeResult.Emit).event
+        assertEquals(ControlSource.UNKNOWN_REMOTE, event.source)
     }
 }

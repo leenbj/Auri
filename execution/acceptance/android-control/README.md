@@ -16,8 +16,12 @@
 - F2：开始和切换命令要求可信且不超过五秒的事件时间，迟到的停止命令仍可停止。
 - F3：协调器串行执行停止和关闭，在确认 `DISARMED` 前拒绝新的开始或切换。
 - F4：只合并按键种类、设备和平台时间相同的重复事件；独立的停止或取消不再被 400 ms 窗口吞掉。
+- F5：删除旧反馈渠道，使用新的低重要性无声渠道，并在每条通知上设置静音分组行为和仅提醒一次；振动单独发出。
+- F6：外接设备不等于蓝牙耳机；无法归属的事件保留为 `UNKNOWN_REMOTE`，校准显示原因且不把它当耳机能力证据。
 
 F4 假设：平台未提供区分不同手势的标识时，相同设备、键值和发生时刻只能作为同一个事件；不同事件即使来自同一物理手势也不能安全地合并，真实耳机行为待 E3 测量。
+
+F6 保守假设：Android 31–35 的公开 `InputDevice` API 没有可验证的蓝牙地址与所选耳机关联，当前所有系统媒体键均归为 `UNKNOWN_REMOTE`；它们仍可控制录音，但不能据此认证耳机手势能力，直到有可靠归属信号。AOSP 的 `getBluetoothAddress` 是隐藏 API，不能使用。
 
 ## 1. 这里有什么
 
@@ -192,6 +196,8 @@ AURI_GRADLE_ARGS=--no-daemon execution/acceptance/android-control/run_emulator_a
 ## 8. 合同缺口与建议（没有改 `contracts/`，只记录）
 
 `contracts/fixtures/state-machines/capture.machine.json` 的 `DISARMED` → `START` 只描述忽略媒体事件，没有独立的屏幕手动开始；建议合同负责人明确手动采集与耳机控制模式的独立状态转换。当前实现内部先走待命转移但不启用耳机通道，结束后回到 `DISARMED`。
+
+`contracts/schemas/headset-profile.schema.json#/$defs/capability/properties` 没有未测试原因字段且禁止额外属性；建议合同负责人增加可选的结构化原因字段。当前向导在内存和结果页面记录并展示来源无法确认，无法把这一原因持久写入合同档案。
 
 | # | 现象 | 涉及字段 / 文件 | 建议 |
 |---|---|---|---|

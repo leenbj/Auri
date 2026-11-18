@@ -38,13 +38,15 @@ internal sealed interface Observation {
 /** 平台事件来自遥控：耳机，或系统没说清来源的媒体键。屏幕按钮不是。 */
 internal fun ControlSource?.isRemote(): Boolean = this == ControlSource.HEADSET_REMOTE || this == ControlSource.UNKNOWN_REMOTE
 
+internal fun ControlSource?.isHeadset(): Boolean = this == ControlSource.HEADSET_REMOTE
+
 /** 遥控让录音进入准备（开始）：从就绪或受阻转到准备中。被忽略、被拒绝的决定前后状态相同，不会满足。 */
 internal fun Observation.Decided.isRemoteStart(): Boolean =
-    source.isRemote() && (stateBefore == CaptureState.ARMED || stateBefore == CaptureState.BLOCKED) && stateAfter == CaptureState.ROUTING
+    source.isHeadset() && (stateBefore == CaptureState.ARMED || stateBefore == CaptureState.BLOCKED) && stateAfter == CaptureState.ROUTING
 
 /** 遥控让正在进行的录音停止（进入封存）。录音中 = 实际输入来源已经验证过。 */
 internal fun Observation.Decided.isRemoteStop(): Boolean =
-    source.isRemote() && stateBefore == CaptureState.RECORDING && stateAfter == CaptureState.FINALIZING
+    source.isHeadset() && stateBefore == CaptureState.RECORDING && stateAfter == CaptureState.FINALIZING
 
 /**
  * 把协调器的决定与引起它的控制事件配对。

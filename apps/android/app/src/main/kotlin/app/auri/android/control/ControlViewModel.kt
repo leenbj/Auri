@@ -154,7 +154,7 @@ sealed interface CalibrationUi {
         val setting: EvidenceSetting,
     ) : CalibrationUi
 
-    data class Finished(val lines: List<CapabilityLine>, val canSave: Boolean, val saved: Boolean, val setting: EvidenceSetting) : CalibrationUi
+    data class Finished(val lines: List<CapabilityLine>, val canSave: Boolean, val saved: Boolean, val setting: EvidenceSetting, val unattributedEventCount: Int) : CalibrationUi
 }
 
 sealed interface ControlNotice {
@@ -417,7 +417,7 @@ class ControlViewModel(
                 setting = phase.run.wizard.setting,
             )
         }
-        is Phase.Finished -> CalibrationUi.Finished(phase.lines, phase.canSave, phase.saved, phase.run.wizard.setting)
+        is Phase.Finished -> CalibrationUi.Finished(phase.lines, phase.canSave, phase.saved, phase.run.wizard.setting, phase.run.wizard.state.value.unattributedEventCount)
     }
 
     private companion object {

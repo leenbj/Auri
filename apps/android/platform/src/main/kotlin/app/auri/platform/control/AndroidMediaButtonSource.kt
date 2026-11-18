@@ -102,6 +102,7 @@ class AndroidMediaButtonSource(
                     action = event.action,
                     repeatCount = event.repeatCount,
                     eventTimeMs = event.eventTime,
+                    // shortcut: public InputDevice has no verified headset address; keep source unknown until attribution is available.
                     fromExternalDevice = event.device?.isExternal,
                     uptimeNowMs = uptimeNowMs,
                     receivedAtNs = receivedAtNs,

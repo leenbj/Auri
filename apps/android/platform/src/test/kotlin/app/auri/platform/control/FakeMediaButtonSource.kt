@@ -54,7 +54,7 @@ class FakeMediaButtonSource(private val clock: Clock) : MediaButtonSource {
         receivedAtNs: Long = clock.monotonicNs(),
     ): Boolean {
         val listener = active ?: return false
-        listener(RawMediaInput(kind, phase, rawId, issuedAtNs, external, receivedAtNs))
+        listener(RawMediaInput(kind, phase, rawId, issuedAtNs, external, receivedAtNs, fromBluetoothHeadset = external == true))
         return true
     }
 

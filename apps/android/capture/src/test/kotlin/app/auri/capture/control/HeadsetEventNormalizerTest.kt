@@ -11,7 +11,7 @@ import org.junit.Test
 
 /**
  * 归一化与去抖的规则（PRD FR-HS-001 / FR-HS-004）：
- *  - 平台事件 → 业务命令只经过档案的映射；来源只有“系统能证明是外接设备”才写 headset_remote，其余都是 unknown_remote；
+ *  - 平台事件 → 业务命令只经过档案的映射；只有能确认来自所选蓝牙耳机才写 headset_remote；
  *    永远不猜左右耳，也不假设存在原始的“双击”。
  *  - 同一次手势的突发重复（同一个原始事件被递送两次，或一个手势同时发出几个事件）只算一次：绝不先开始再立刻停止。
  *  - 窗口过后的第二次手势照常通过：录音准备中（ROUTING）的停止 / 切换不会被去抖吞掉。
@@ -29,7 +29,7 @@ class HeadsetEventNormalizerTest {
         rawId: String? = null,
         issuedAtMs: Long? = atMs,
         external: Boolean? = true,
-    ) = RawMediaInput(kind, phase, rawId, issuedAtMs?.times(ms), external, atMs * ms)
+    ) = RawMediaInput(kind, phase, rawId, issuedAtMs?.times(ms), external, atMs * ms, fromBluetoothHeadset = external == true)
 
     private fun HeadsetEventNormalizer.emit(input: RawMediaInput, profile: ControlProfile = generic): NormalizedControlEvent {
         val result = normalize(input, profile)
@@ -60,7 +60,7 @@ class HeadsetEventNormalizerTest {
     }
 
     @Test
-    fun `系统不能证明事件来自外接设备时来源是 unknown_remote：不知道就是不知道，也不猜左右耳`() {
+    fun `系统不能归属耳机时来源是 unknown_remote，不猜左右耳`() {
         val n = normalizer()
 
         assertEquals(ControlSource.UNKNOWN_REMOTE, n.emit(input(MediaKind.PLAY, 0, external = null)).source)

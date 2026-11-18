@@ -427,6 +427,9 @@ class ControlViewModelTest {
 
         val running = rig.state.calibration as CalibrationUi.Running
         assertEquals(mapOf(PlatformEvent.PLAY to 2), running.summary.eventCounts)
+        assertEquals(1, running.summary.unattributedEventCount)
+        repeat(4) { rig.viewModel.nextStep() }
+        assertEquals(1, (rig.state.calibration as CalibrationUi.Finished).unattributedEventCount)
     }
 
     @Test

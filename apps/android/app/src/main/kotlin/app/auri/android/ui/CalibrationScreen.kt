@@ -43,7 +43,8 @@ fun CalibrationSection(calibration: CalibrationUi, viewModel: ControlViewModel) 
         is CalibrationUi.Running -> {
             Text("第 ${calibration.stepNumber} / ${calibration.stepCount} 步（第 ${calibration.attempt} 次尝试）")
             Text(describeStep(calibration.step))
-            Text("收到的耳机事件：" + describeEventCounts(calibration.summary.eventCounts))
+            Text("收到的遥控事件：" + describeEventCounts(calibration.summary.eventCounts))
+            if (calibration.summary.unattributedEventCount > 0) Text("部分事件来源无法确认，不能作为耳机能力的证据")
             Text("手势开始了录音：" + yesNo(calibration.summary.startedByGesture) + "；手势停止了录音：" + yesNo(calibration.summary.stoppedByGesture))
             if (calibration.summary.ownerReportedNoEffect) Text("你已声明：做了手势，没有反应")
             Text("屏幕：" + when (calibration.screenLocked) { true -> "锁定中"; false -> "未锁定"; null -> "读不出来" })
@@ -62,6 +63,7 @@ fun CalibrationSection(calibration: CalibrationUi, viewModel: ControlViewModel) 
         is CalibrationUi.Finished -> {
             Text("校准完成，五项能力：")
             calibration.lines.forEach { Text("${describeCapability(it.capability)}：${it.status}（证据 ${it.evidenceLevel ?: "无"}）") }
+            if (calibration.unattributedEventCount > 0) Text("部分事件来源无法确认，不能作为耳机能力的证据")
             Text("取证环境：" + describeSetting(calibration.setting))
             if (!calibration.canSave) Text("没有任何可保存的结论：不会保存，也不会替换以前的档案")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

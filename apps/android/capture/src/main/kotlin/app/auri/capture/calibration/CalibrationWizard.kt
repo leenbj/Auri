@@ -1,6 +1,7 @@
 package app.auri.capture.calibration
 
 import app.auri.capture.contract.CaptureState
+import app.auri.capture.contract.ControlSource
 import app.auri.capture.contract.NormalizedControlEvent
 import app.auri.capture.contract.PlatformEvent
 import app.auri.capture.control.ControlProfile
@@ -50,6 +51,7 @@ data class StepSummary(
     val stoppedByGesture: Boolean = false,
     /** 用户声明“我做了手势，没有任何效果”。只有用户能声明，向导不会从“没有事件”推断。 */
     val ownerReportedNoEffect: Boolean = false,
+    val unattributedEventCount: Int = 0,
 )
 
 /** 界面此刻读到的实际环境；向导自己所知的来自事件与决定，送到向导有时延。 */
@@ -62,6 +64,7 @@ data class CalibrationState(
     val attempt: Int,
     val stepOutcomes: Map<CalibrationStep, StepOutcome>,
     val summary: StepSummary,
+    val unattributedEventCount: Int,
 )
 
 /**
@@ -317,6 +320,7 @@ class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
             attempt = data?.attempt ?: 1,
             stepOutcomes = CalibrationStep.entries.associateWith { steps.getValue(it).outcome },
             summary = data?.let { summaryOf(it) } ?: StepSummary(),
+            unattributedEventCount = steps.values.sumOf { summaryOf(it).unattributedEventCount },
         )
     }
 
@@ -327,6 +331,7 @@ class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
             startedByGesture = decided.any { it.isRemoteStart() },
             stoppedByGesture = decided.any { it.isRemoteStop() },
             ownerReportedNoEffect = data.declared != null,
+            unattributedEventCount = data.observations.count { it is Observation.Arrived && it.source == ControlSource.UNKNOWN_REMOTE },
         )
     }
 
