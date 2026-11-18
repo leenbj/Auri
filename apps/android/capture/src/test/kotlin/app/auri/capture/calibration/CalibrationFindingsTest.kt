@@ -390,7 +390,7 @@ class CalibrationFindingsTest {
         run.wizard.next()
         val c = run.profile().capabilities
         assertEquals(CapabilityRecord.untested, c.continueRecordingWhenLocked)
-        assertEquals("能在锁屏时用手势重新开始，这一点是观察到的", CompatStatus.SUPPORTED_BACKGROUND_RESTART, c.restartAfterStopWhenLocked.status)
+        assertEquals("锁屏期间没有手势停止，不能证明锁屏后重新开始", CapabilityRecord.untested, c.restartAfterStopWhenLocked)
     }
 
     @Test
@@ -406,7 +406,21 @@ class CalibrationFindingsTest {
         run.wizard.next()
         val c = run.profile().capabilities
         assertEquals(CapabilityRecord.untested, c.continueRecordingWhenLocked)
-        assertEquals("锁屏中用手势开始是观察到的", CompatStatus.SUPPORTED_BACKGROUND_RESTART, c.restartAfterStopWhenLocked.status)
+        assertEquals("首次锁屏开始之前没有锁屏停止", CapabilityRecord.untested, c.restartAfterStopWhenLocked)
+    }
+
+    @Test
+    fun `a locked stop after the first locked start cannot retroactively prove a restart`() {
+        val run = Run(real)
+        run.toLockStep(recordingAtLock = false)
+        run.wizard.onScreenLockChanged(true)
+        run.feed.gesture(PlatformEvent.TOGGLE, TOGGLE, ROUTING, locked = true)
+        run.feed.other(CaptureEvent.ROUTE_VERIFIED, RECORDING, locked = true)
+        run.feed.gesture(PlatformEvent.TOGGLE, TOGGLE, FINALIZING, locked = true)
+        run.feed.other(CaptureEvent.FINALIZE_COMPLETE, ARMED, locked = true)
+        run.wizard.next()
+
+        assertEquals(CapabilityRecord.untested, run.profile().capabilities.restartAfterStopWhenLocked)
     }
 
     @Test

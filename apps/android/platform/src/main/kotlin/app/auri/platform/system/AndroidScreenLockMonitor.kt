@@ -10,11 +10,15 @@ import android.os.PowerManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
-/** 熄屏或锁屏界面在显示，都算“锁着”：校准“锁屏后手势还管不管用”只关心屏幕不可交互这一件事。 */
-fun lockedFrom(interactive: Boolean, keyguardLocked: Boolean): Boolean = !interactive || keyguardLocked
+/** 熄屏本身不是锁定证据；只有 keyguard 明确锁着才算锁定。 */
+fun lockedFrom(interactive: Boolean, keyguardLocked: Boolean): Boolean? = when {
+    keyguardLocked -> true
+    interactive -> false
+    else -> null
+}
 
 /**
- * 屏幕是不是锁着：true = 熄屏或锁屏界面显示中，false = 亮着且已解锁，null = 读不出来（框架抛了异常）。
+ * 屏幕是不是锁着：true = keyguard 锁定，false = 亮着且已解锁，null = 熄屏但未观察到锁定或读不出来。
  * 只读系统状态，不持有任何通路。监听熄屏 / 亮屏 / 解锁三个系统广播（动态注册，清单里没有广播接收器）。
  * 校准向导靠它给“锁屏时”的观察打标签；它不是兼容结论的证据，证据只来自录音状态与手势。
  */

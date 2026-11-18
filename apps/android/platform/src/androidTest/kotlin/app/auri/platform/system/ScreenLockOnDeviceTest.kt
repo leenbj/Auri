@@ -1,6 +1,7 @@
 package app.auri.platform.system
 
 import android.content.Context
+import android.app.KeyguardManager
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -24,6 +25,7 @@ class ScreenLockOnDeviceTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context: Context = instrumentation.targetContext
     private val power: PowerManager = context.getSystemService(PowerManager::class.java)
+    private val keyguard: KeyguardManager = context.getSystemService(KeyguardManager::class.java)
     private val monitor = AndroidScreenLockMonitor(context)
 
     private fun shell(command: String) {
@@ -54,7 +56,7 @@ class ScreenLockOnDeviceTest {
     }
 
     @Test
-    fun monitorReportsLockedAfterTheScreenTurnsOff() {
+    fun monitorReportsKeyguardStateAfterTheScreenTurnsOff() {
         wakeUpAndSettle()
         monitor.start()
 
@@ -68,8 +70,8 @@ class ScreenLockOnDeviceTest {
         }) { !power.isInteractive }
         if (!systemTurnedOff) fail("系统没有熄屏（熄屏键补发过也没生效：刺激的问题，不是监视器的问题）")
 
-        val reported = await(TIMEOUT_MS) { monitor.locked.value == true }
-        assertEquals("系统已经熄屏（isInteractive=${power.isInteractive}），监视器应当报告 locked=true", true, reported)
+        val reported = await(TIMEOUT_MS) { monitor.locked.value == lockedFrom(power.isInteractive, keyguard.isKeyguardLocked) }
+        assertEquals("屏幕熄灭后监视器应当报告实际 keyguard 状态", true, reported)
     }
 
     private companion object {

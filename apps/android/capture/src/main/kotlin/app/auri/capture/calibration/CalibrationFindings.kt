@@ -180,11 +180,27 @@ internal object CalibrationFindings {
         observations.indices.any { i ->
             val o = observations[i]
             o is Observation.Decided && o.isRemoteStart() && o.afterFinalize && o.screenLocked == locked &&
+                (!locked || lockedStopBefore(observations, i)) &&
                 observations.drop(i + 1).filterIsInstance<Observation.Decided>()
                     .firstOrNull { it.stateBefore == CaptureState.ROUTING && it.stateAfter != CaptureState.ROUTING }
                     // 录音到达“录音中”的那一刻，屏幕状态也要和开始时一致：中途解锁 / 锁屏的，没观察到在那种状态下真的录起来
                     ?.let { it.stateAfter == CaptureState.RECORDING && it.screenLocked == locked } == true
         }
+
+    private fun lockedStopBefore(observations: List<Observation>, startIndex: Int): Boolean {
+        val stopIndex = (0 until startIndex).lastOrNull { i ->
+            val decision = observations[i] as? Observation.Decided
+            decision?.stateBefore == CaptureState.RECORDING && decision.stateAfter == CaptureState.FINALIZING
+        } ?: return false
+        val stop = observations[stopIndex] as Observation.Decided
+        if (!stop.isRemoteStop() || stop.screenLocked != true) return false
+        val between = observations.subList(stopIndex + 1, startIndex)
+        return between.none { it is Observation.LockChanged && !it.locked } &&
+            between.filterIsInstance<Observation.Decided>().none { it.screenLocked != true } &&
+            between.filterIsInstance<Observation.Decided>().any {
+                it.stateBefore == CaptureState.FINALIZING && it.stateAfter == CaptureState.ARMED
+            }
+    }
 
     /**
      * 命令映射：在默认映射上，只对亲眼看到“开始过”或“停止过”录音的事件种类（play、pause、toggle）做改动——
