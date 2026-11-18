@@ -22,7 +22,8 @@ def test_mutation_edits_apply_exactly_once(mutation):
         text = (REPO / edit.path).read_text(encoding="utf-8")
         assert text.count(edit.old) == 1, f"{mutation.id}: {edit.path} 里原文出现 {text.count(edit.old)} 次"
         assert edit.old != edit.new
-        assert "/src/main/" in edit.path, "变异只能碰生产代码，不能碰测试"
+        assert "/src/main/" in edit.path or edit.path in mc.SCANNER_SOURCES, "变异只能碰生产代码，不能碰测试（唯一例外：网络卫士的规则表）"
+        assert not edit.path.endswith("Test.kt") and "/androidTest/" not in edit.path, "任何变异都不能改测试类本身"
 
 
 @pytest.mark.parametrize("mutation", mc.MUTATIONS, ids=lambda m: m.id)
@@ -31,6 +32,13 @@ def test_every_expected_failing_test_exists_in_the_sources(mutation):
     sources = "\n".join(p.read_text(encoding="utf-8") for p in (REPO / "apps" / "android").rglob("*.kt") if "/src/" in str(p) and "test" in str(p).lower())
     for needle in mutation.must_fail:
         assert re.search(re.escape(needle), sources), f"{mutation.id}: 找不到预期变红的测试 {needle!r}"
+
+
+def test_the_only_test_source_exception_is_the_network_guard_rule_table():
+    assert mc.SCANNER_SOURCES == {"apps/android/app/src/test/kotlin/app/auri/android/netguard/NetworkSurface.kt"}
+    for path in mc.SCANNER_SOURCES:
+        assert (REPO / path).is_file()
+        assert "/netguard/" in path and not path.endswith("Test.kt")
 
 
 def test_mutation_ids_are_unique_and_documented():

@@ -977,6 +977,252 @@ MUTATIONS += (
     ),
 )
 
+APP_TEST = "app/build/test-results/testDebugUnitTest"
+PLATFORM_TEST = "platform/build/test-results/testDebugUnitTest"
+GUARD_TESTS = (":app:testDebugUnitTest", "--tests", "*NoNetworkCodeGuardTest*")
+MANIFEST_TESTS = (":app:testDebugUnitTest", "--tests", "*NoNetworkManifestTest*")
+MIC_TESTS = (":platform:testDebugUnitTest", "--tests", "*NoPhoneMicPathTest*")
+VM_TESTS = (":app:testDebugUnitTest", "--tests", "*SyncViewModelTest*")
+TEXT_TESTS = (":app:testDebugUnitTest", "--tests", "*SyncScreenTextTest*")
+NETSURFACE = "apps/android/app/src/test/kotlin/app/auri/android/netguard/NetworkSurface.kt"
+# 唯一允许被变异的“测试源码”：网络卫士的规则表。它不是测试本身，而是被正对照测试检验的对象；
+# 这些正对照（卫士认得出……）就是为“规则表被削弱”准备的，所以要用变异证明它们真的会变红。
+SCANNER_SOURCES = frozenset({NETSURFACE})
+APP_MANIFEST = "apps/android/app/src/main/AndroidManifest.xml"
+APP_APPLICATION = "apps/android/app/src/main/kotlin/app/auri/android/AuriApplication.kt"
+CAPTURE_TYPES = "apps/android/capture/src/main/kotlin/app/auri/capture/coordinator/CoordinatorTypes.kt"
+SYNC_LOG = "apps/android/sync/src/main/kotlin/app/auri/sync/SyncLog.kt"
+ANDROID_SYNC_LOG = "apps/android/syncplatform/src/main/kotlin/app/auri/syncplatform/AndroidSyncLog.kt"
+VIEWMODEL = "apps/android/app/src/main/kotlin/app/auri/android/sync/SyncViewModel.kt"
+SYNC_SCREEN = "apps/android/app/src/main/kotlin/app/auri/android/ui/SyncScreen.kt"
+GUARD_REAL_TREE = "六个生产模块编译出的类里没有任何违反网络规矩的引用"
+TRUST_ALL_SNIPPET = (
+    "        javax.net.ssl.SSLContext.getInstance(\"TLS\").init(\n"
+    "            null,\n"
+    "            arrayOf<javax.net.ssl.TrustManager>(object : javax.net.ssl.X509TrustManager {\n"
+    "                override fun checkClientTrusted(chain: Array<java.security.cert.X509Certificate>?, authType: String?) = Unit\n"
+    "                override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>?, authType: String?) = Unit\n"
+    "                override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = emptyArray()\n"
+    "            }),\n"
+    "            null,\n"
+    "        )\n"
+)
+START_LINE = "        runtime.sync.start() // 配对记录读一次；没配对时什么也不会发生（Ticket 21）\n"
+
+# 切片 9：网络卫士（真实生产树上的违规必须被它抓到；卫士自己的规则被削弱必须被正对照抓到）、清单、隐私卫士
+MUTATIONS += (
+    Mutation(
+        "guard-hostname-verifier-in-pinned-client",
+        "没有主机名校验的后门：PinnedHttpsClient 里放一个“全放行”的 HostnameVerifier 必须被卫士抓到",
+        (Edit(
+            HTTPS, "    override suspend fun execute(address: GatewayAddress, request: HttpRequest): HttpReply {\n",
+            "    private val permissive = javax.net.ssl.HostnameVerifier { _, _ -> true }\n\n    override suspend fun execute(address: GatewayAddress, request: HttpRequest): HttpReply {\n",
+        ),),
+        GUARD_TESTS, APP_TEST,
+        (GUARD_REAL_TREE, "没有任何生产模块的类引用 HostnameVerifier 或 HttpsURLConnection", "源码里同样没有"),
+    ),
+    Mutation(
+        "guard-trust-all-in-app",
+        "应用壳里另起一套“信任所有证书”必须被卫士抓到（唯一的信任管理器是 SpkiPinTrustManager）",
+        (Edit(APP_APPLICATION, START_LINE, START_LINE + TRUST_ALL_SNIPPET),),
+        GUARD_TESTS, APP_TEST,
+        (GUARD_REAL_TREE, "整个应用里唯一的信任管理器实现是 SpkiPinTrustManager", "源码里同样没有"),
+    ),
+    Mutation(
+        "guard-socket-in-capture-module",
+        "录音/采集模块里出现套接字必须被卫士抓到（:capture 不许有任何网络类）",
+        (Edit(CAPTURE_TYPES, "interface Clock {", "private val sneakySocket: Any = java.net.Socket()\n\ninterface Clock {"),),
+        GUARD_TESTS, APP_TEST,
+        (GUARD_REAL_TREE,),
+    ),
+    Mutation(
+        "guard-cleartext-url-in-sync",
+        "任何位置出现明文 http:// 地址必须被卫士抓到",
+        (Edit(SYNC_LOG, "fun interface SyncLog {", 'const val SNEAKY_URL = "http://example.invalid/leak"\n\nfun interface SyncLog {'),),
+        GUARD_TESTS, APP_TEST,
+        (GUARD_REAL_TREE,),
+    ),
+    Mutation(
+        "guard-trust-class-outside-tls-package",
+        "TrustManager 出现在 :sync 的 tls 包之外必须被卫士抓到（位置才是规矩）",
+        (Edit(SYNC_LOG, "fun interface SyncLog {", "private val sneakyTrust: javax.net.ssl.TrustManager? = null\n\nfun interface SyncLog {"),),
+        GUARD_TESTS, APP_TEST,
+        (GUARD_REAL_TREE, "源码里同样没有"),
+    ),
+    Mutation(
+        "guard-rule-trust-allowed-in-app",
+        "卫士自己被削弱（信任类放行到应用壳）：正对照“信任所有证书”必须因此变红",
+        (Edit(NETSURFACE, "allowedIn = listOf(syncTls),", 'allowedIn = listOf(syncTls, Where("app", "app/")),'),),
+        GUARD_TESTS, APP_TEST,
+        ("卫士认得出信任所有证书的实现", "卫士认得出另建 SSLContext 与信任管理器数组"),
+    ),
+    Mutation(
+        "guard-rule-cleartext-removed",
+        "卫士自己被削弱（不再查明文地址）：正对照“明文地址”必须因此变红",
+        (Edit(NETSURFACE, 'private const val CLEARTEXT = "http://"', 'private const val CLEARTEXT = "http-never://"'),),
+        GUARD_TESTS, APP_TEST,
+        ("卫士认得出明文地址",),
+    ),
+    Mutation(
+        "guard-rule-ignores-type-descriptors",
+        "卫士自己被削弱（只看类常量，不看类型描述符）：数组与方法签名里的引用必须仍被认出",
+        (Edit(NETSURFACE, ' || constant.contains("L$name;")', ""),),
+        GUARD_TESTS, APP_TEST,
+        ("前缀规则按包匹配",),
+    ),
+    Mutation(
+        "guard-rule-ignores-module",
+        "卫士自己被削弱（只看类路径、不看模块）：同一个类放到别的模块的同名包里必须仍被认出",
+        (Edit(NETSURFACE, "it.module == module && classPath.startsWith(it.classPathPrefix)", "classPath.startsWith(it.classPathPrefix)"),),
+        GUARD_TESTS, APP_TEST,
+        ("同一个合规的类放到不该放的位置也被认出",),
+    ),
+    Mutation(
+        "manifest-app-declares-internet",
+        "应用主清单自己声明 INTERNET（而不是只来自 :syncplatform）必须被清单测试抓到",
+        (Edit(APP_MANIFEST, '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n', '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n    <uses-permission android:name="android.permission.INTERNET" />\n'),),
+        MANIFEST_TESTS, APP_TEST,
+        ("合并后的应用清单里 INTERNET 只来自 syncplatform", "只有 syncplatform 的清单声明 INTERNET"),
+    ),
+    Mutation(
+        "manifest-allows-cleartext-traffic",
+        "放开明文流量必须被清单测试抓到",
+        (Edit(APP_MANIFEST, 'android:allowBackup="false"', 'android:allowBackup="false"\n        android:usesCleartextTraffic="true"'),),
+        MANIFEST_TESTS, APP_TEST,
+        ("合并后的应用清单没有放开明文流量",),
+    ),
+    Mutation(
+        "privacy-guard-media-recorder-in-syncplatform",
+        "同步层里出现 MediaRecorder（任何向系统要手机麦克风的路径）必须被隐私卫士抓到：卫士已扩到 :syncplatform",
+        (Edit(ANDROID_SYNC_LOG, "object AndroidSyncLog : SyncLog {", "private val sneakyMic: Any = android.media.MediaRecorder::class.java\n\nobject AndroidSyncLog : SyncLog {"),),
+        MIC_TESTS, PLATFORM_TEST,
+        ("compiled production modules restrict AudioRecord", "production sources cannot hide inlined audio source constants"),
+    ),
+    Mutation(
+        "privacy-guard-audio-record-in-sync",
+        "纯 JVM 的 :sync 里出现 AudioRecord 的引用必须被隐私卫士抓到：卫士已扩到 :sync",
+        (Edit(SYNC_LOG, "fun interface SyncLog {", 'const val SNEAKY_AUDIO = "android/media/AudioRecord"\n\nfun interface SyncLog {'),),
+        MIC_TESTS, PLATFORM_TEST,
+        ("compiled production modules restrict AudioRecord", "production sources cannot hide inlined audio source constants"),
+    ),
+)
+
+# 切片 10：同步页的视图模型与文字
+MUTATIONS += (
+    Mutation(
+        "sync-vm-pairing-not-atomic",
+        "多个线程同时送来同一帧：配对必须恰好开始一次（原子地从 Idle 切到 Pairing）",
+        (Edit(VIEWMODEL, "        if (!progress.compareAndSet(current, PairingProgress.Pairing)) return\n", "        progress.value = PairingProgress.Pairing\n"),),
+        VM_TESTS, APP_TEST,
+        ("多个线程同时送来同一帧",),
+    ),
+    Mutation(
+        "sync-vm-repeated-frames-not-ignored",
+        "配对进行中取景重复送来的帧必须被忽略",
+        (Edit(VIEWMODEL, "        if (current is PairingProgress.Pairing) return // 取景一秒会来几十帧，配对进行中只认第一帧\n", ""),),
+        VM_TESTS, APP_TEST,
+        ("配对进行中取景重复送来的帧被忽略",),
+    ),
+    Mutation(
+        "sync-vm-paired-qr-not-remembered",
+        "配对成功之后同一张二维码在路上的帧不能触发第二次配对",
+        (Edit(VIEWMODEL, "        if (text.trim() == lastPairedText) return\n", ""),),
+        VM_TESTS, APP_TEST,
+        ("配对成功之后同一张二维码在路上的帧",),
+    ),
+    Mutation(
+        "sync-vm-failed-qr-marked-used",
+        "配对没成功就没有用掉这张码：失败之后同一张二维码必须能重试",
+        (Edit(VIEWMODEL, "            if (result == PairingProgress.Idle) lastPairedText = text.trim()\n", "            lastPairedText = text.trim()\n"),),
+        VM_TESTS, APP_TEST,
+        ("配对失败之后同一张二维码可以重试",),
+    ),
+    Mutation(
+        "sync-vm-manual-entry-ignores-release-flag",
+        "release 版没有手动输入配对载荷的入口",
+        (Edit(VIEWMODEL, "        if (manualEntryAvailable) onQrText(text)\n", "        onQrText(text)\n"),),
+        VM_TESTS, APP_TEST,
+        ("release 版没有手动入口",),
+    ),
+    Mutation(
+        "sync-vm-unexpected-exception-not-contained",
+        "配对流程抛了意料之外的异常：界面不能一直停在正在配对",
+        (Edit(VIEWMODEL, "    } catch (_: Exception) {\n        PairingProgress.Failed(PairingProblem.UNKNOWN)", "    } catch (_: java.io.IOException) {\n        PairingProgress.Failed(PairingProblem.UNKNOWN)"),),
+        VM_TESTS, APP_TEST,
+        ("配对流程抛了意料之外的异常",),
+    ),
+    Mutation(
+        "sync-vm-outcomes-confused",
+        "配对的每一种结局界面都分得清：过期与找不到网关不能互相顶替",
+        (Edit(
+            VIEWMODEL,
+            "            PairingOutcome.Expired -> PairingProgress.Failed(PairingProblem.EXPIRED)\n            PairingOutcome.NotFound -> PairingProgress.Failed(PairingProblem.NOT_FOUND)",
+            "            PairingOutcome.Expired -> PairingProgress.Failed(PairingProblem.NOT_FOUND)\n            PairingOutcome.NotFound -> PairingProgress.Failed(PairingProblem.EXPIRED)",
+        ),),
+        VM_TESTS, APP_TEST,
+        ("配对的每一种结局界面都分得清",),
+    ),
+    Mutation(
+        "sync-vm-progress-waits-for-first-status",
+        "配对的进展不用等第一份同步状态：读到配对记录之前也要看得到",
+        (Edit(VIEWMODEL, ".onStart { emit(null) }", ""),),
+        VM_TESTS, APP_TEST,
+        ("合规的二维码开始配对", "不是配对载荷的二维码给出 INVALID_QR"),
+    ),
+    Mutation(
+        "sync-vm-dismiss-does-nothing",
+        "关掉配对失败的提示后必须回到 Idle",
+        (Edit(VIEWMODEL, "        if (current is PairingProgress.Failed) progress.compareAndSet(current, PairingProgress.Idle)\n", ""),),
+        VM_TESTS, APP_TEST,
+        ("不是配对载荷的二维码给出 INVALID_QR",),
+    ),
+    Mutation(
+        "sync-vm-invalid-qr-silently-ignored",
+        "不是配对载荷的二维码要给出 INVALID_QR，不能悄悄没反应",
+        (Edit(VIEWMODEL, "                progress.compareAndSet(current, PairingProgress.Failed(PairingProblem.INVALID_QR))\n", ""),),
+        VM_TESTS, APP_TEST,
+        ("不是配对载荷的二维码给出 INVALID_QR",),
+    ),
+    Mutation(
+        "screen-text-waiting-asks-user-to-act",
+        "等网关不需要用户做什么：这句话不能变成让用户去处理",
+        (Edit(SYNC_SCREEN, "连上之后会自动发送，不需要你做什么。\"", "连上之后会自动发送。请检查网关。\""),),
+        TEXT_TESTS, APP_TEST,
+        ("等网关与稍后重试明说不需要用户做什么",),
+    ),
+    Mutation(
+        "screen-text-retry-same-as-waiting",
+        "稍后重试与等网关是两种情形：文字不能混成一句",
+        (Edit(
+            SYNC_SCREEN, "SyncHeadline.RETRYING_LATER -> \"网关暂时没有成功处理，稍后会自动重试，不需要你做什么。\"",
+            "SyncHeadline.RETRYING_LATER -> \"现在连不上网关（可能不在同一个网络，或网关没开机）。连上之后会自动发送，不需要你做什么。\"",
+        ),),
+        TEXT_TESTS, APP_TEST,
+        ("六种情形的话两两不同",),
+    ),
+    Mutation(
+        "screen-text-needs-user-says-nothing-to-do",
+        "需要用户处理的那一种不能说成“不需要你做什么”",
+        (Edit(SYNC_SCREEN, "\"需要你处理：下面的问题解决之前，相关文字不会再自动发送。\"", "\"需要你处理：不需要你做什么，相关文字不会再自动发送。\""),),
+        TEXT_TESTS, APP_TEST,
+        ("等网关与稍后重试明说不需要用户做什么",),
+    ),
+    Mutation(
+        "screen-text-pairing-lost-no-repair-advice",
+        "连接层面的原因要告诉用户重新配对",
+        (Edit(SYNC_SCREEN, "本机保存的配对信息丢失（例如清除了安全存储）。请重新配对。", "本机保存的配对信息丢失（例如清除了安全存储）。请稍后再试。"),),
+        TEXT_TESTS, APP_TEST,
+        ("每个需要用户处理的原因都有自己的话",),
+    ),
+    Mutation(
+        "screen-text-counts-order-changed",
+        "计数那一行的顺序固定",
+        (Edit(SYNC_SCREEN, "排队 ${counts.queued} · 发送中 ${counts.sending}", "发送中 ${counts.sending} · 排队 ${counts.queued}"),),
+        TEXT_TESTS, APP_TEST,
+        ("计数那一行六个数都在，顺序固定",),
+    ),
+)
+
 # 后面各个切片的变异在对应测试写好之后追加到这里（见 README 的“变异检查”一节）。
 
 
