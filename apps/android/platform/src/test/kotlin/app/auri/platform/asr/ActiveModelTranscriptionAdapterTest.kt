@@ -249,9 +249,10 @@ class ActiveModelTranscriptionAdapterTest {
         rig.ready(1)
         rig.reportFailure = IllegalStateException("上报方出错")
 
-        val outcome = rig.adapter.transcribe(request()).outcome
+        val result = rig.adapter.transcribe(request())
 
-        assertTrue(outcome is TranscriptionOutcome.WaitingModel)
+        assertTrue(result.outcome is TranscriptionOutcome.WaitingModel)
+        assertEquals(1L, result.modelGeneration)
         assertEquals(1, rig.integrityReports.size)
     }
 
@@ -310,9 +311,10 @@ class ActiveModelTranscriptionAdapterTest {
         }
         val old = rig.ready(1)
 
-        val outcome = rig.adapter.transcribe(request()).outcome
+        val result = rig.adapter.transcribe(request())
 
-        assertTrue(outcome is TranscriptionOutcome.WaitingModel)
+        assertTrue(result.outcome is TranscriptionOutcome.WaitingModel)
+        assertEquals(1L, result.modelGeneration)
         assertSame("旧引擎出的事，记在旧的那一代名下；模型管理器会忽略已经被换掉的一代", old, rig.integrityReports.single())
         assertEquals("新模型的字", ((rig.adapter.transcribe(request())).outcome as TranscriptionOutcome.Text).text)
         assertEquals(listOf(1L, 2L), rig.loaded.map { it.generation })

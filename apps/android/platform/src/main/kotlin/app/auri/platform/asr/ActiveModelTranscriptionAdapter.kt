@@ -81,7 +81,8 @@ class ActiveModelTranscriptionAdapter(
                 is ActiveModelStatus.Ready -> {
                     val lease = status.model.acquire() ?: continue
                     try {
-                        return run(status.model, request)
+                        val result = run(status.model, request)
+                        return TranscriptionResult(result.job, result.capabilities, result.outcome, status.model.generation)
                     } finally {
                         lease.close()
                     }

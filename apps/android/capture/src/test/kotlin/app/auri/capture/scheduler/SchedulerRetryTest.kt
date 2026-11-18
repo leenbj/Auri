@@ -17,6 +17,7 @@ import app.auri.capture.testing.BoundedSchedulerTest
 import app.auri.capture.testing.Samples
 import app.auri.capture.testing.SchedulerRig
 import java.time.Duration
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -31,6 +32,30 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class SchedulerRetryTest : BoundedSchedulerTest() {
     private val transient = TranscriptionOutcome.Failed(ErrorCode.ASR_RESOURCE_LIMIT, retryable = true)
+
+    @Test
+    fun `旧模型迟到的拒绝不会让新模型继续等待`() = runTest {
+        val rig = SchedulerRig(this)
+        val id = rig.addRecord(1)
+        val finishOld = CompletableDeferred<Unit>()
+        rig.models.ready()
+        rig.adapter.hook = { if (rig.adapter.requests.size == 1) finishOld.await() }
+        rig.adapter.outcome = {
+            if (rig.adapter.requests.size == 1) TranscriptionOutcome.WaitingModel(ErrorCode.MODEL_INTEGRITY_FAILED)
+            else TranscriptionOutcome.Text("新模型", "zh", null)
+        }
+        rig.scheduler.submit(id)
+        rig.settle()
+        rig.models.ready()
+        rig.settle()
+
+        finishOld.complete(Unit)
+        rig.settle()
+
+        assertEquals(SUCCEEDED, rig.jobOf(id).state)
+        assertEquals(2, rig.adapter.requests.size)
+        assertEquals("新模型", rig.library.get(id)!!.latestText)
+    }
 
     @Test
     fun `可重试的失败：先等一段退避再重试，重试成功就是成功，失败的那次不留下 Revision`() = runTest {

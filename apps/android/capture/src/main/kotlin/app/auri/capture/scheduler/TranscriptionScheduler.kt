@@ -118,7 +118,7 @@ class TranscriptionScheduler(
         /** 这次调用被取消了（我们自己取消的），没有结果。 */
         data object Cancelled : RunResult
 
-        data class Done(val result: TranscriptionResult) : RunResult
+        data class Done(val result: TranscriptionResult, val generation: Long?) : RunResult
 
         /** 适配器抛出了异常：一个 bug，不是引擎的结果。 */
         data object Crashed : RunResult
@@ -486,11 +486,13 @@ class TranscriptionScheduler(
             it.copy(attempts = it.attempts + 1, baseRevisions = entry.revisions.size, wait = null, retryAt = null)
         } ?: return false
         val key = RunKey(started.jobId, nextRunId++)
+        val generation = (models.readiness.value as? ModelReadiness.Ready)?.generation
         activeRun[started.jobId] = key.runId
         var result: RunResult = RunResult.Cancelled
         val run = scope.launch(runContext) {
             try {
-                result = RunResult.Done(adapter.transcribe(TranscriptionRequest(started.recordId, audio)))
+                val returned = adapter.transcribe(TranscriptionRequest(started.recordId, audio))
+                result = RunResult.Done(returned, returned.modelGeneration ?: generation)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Throwable) {
@@ -512,7 +514,7 @@ class TranscriptionScheduler(
                 when (val result = message.result) {
                     RunResult.Cancelled -> Unit
                     RunResult.Crashed -> dispatch(job, PERMANENT_ERROR, JobCause.RUN_RESULT) { it.copy(failure = null) }
-                    is RunResult.Done -> applyResult(job, result.result)
+                    is RunResult.Done -> applyResult(job, result.result, result.generation)
                 }
             } else if (job.isTerminal && message.result is RunResult.Done) {
                 // 任务已经结束（比如被取消）之后才返回的结果：交给状态机裁决，它会拒绝，决定里留一条记录，没有任何副作用
@@ -529,13 +531,13 @@ class TranscriptionScheduler(
         is TranscriptionOutcome.Failed -> if (outcome.retryable) RETRYABLE_ERROR else PERMANENT_ERROR
     }
 
-    private suspend fun applyResult(job: TranscriptionJob, result: TranscriptionResult) {
+    private suspend fun applyResult(job: TranscriptionJob, result: TranscriptionResult, generation: Long?) {
         when (val outcome = result.outcome) {
             is TranscriptionOutcome.Text ->
                 if (outcome.text.isBlank()) dispatch(job, RESULT_NO_SPEECH, JobCause.RUN_RESULT) else finishWithText(job, result, outcome)
 
             TranscriptionOutcome.NoSpeech -> dispatch(job, RESULT_NO_SPEECH, JobCause.RUN_RESULT)
-            is TranscriptionOutcome.WaitingModel -> onModelRefused(job, outcome.code)
+            is TranscriptionOutcome.WaitingModel -> onModelRefused(job, outcome.code, generation)
             is TranscriptionOutcome.Failed ->
                 // 可重试的才重试，次数用完同样是永久失败：失败有上限，不会无限重试
                 if (outcome.retryable && job.attempts < config.maxAttempts) {
@@ -551,8 +553,9 @@ class TranscriptionScheduler(
      * 每一步都由状态机批准。调度器记下“这个模型 generation 被引擎拒绝了”：同一个 generation 下一律当作缺失，
      * 不会反复撞同一个坏模型；模型管理器换了新模型（generation 变了）或调用 [resume] 才再试。
      */
-    private suspend fun onModelRefused(job: TranscriptionJob, code: ErrorCode) {
-        (models.readiness.value as? ModelReadiness.Ready)?.let { refusal = Refusal(it.generation, code) }
+    private suspend fun onModelRefused(job: TranscriptionJob, code: ErrorCode, generation: Long?) {
+        val current = models.readiness.value as? ModelReadiness.Ready
+        if (generation != null && current?.generation == generation) refusal = Refusal(generation, code)
         val scheduled = dispatch(job, RETRYABLE_ERROR, JobCause.MODEL_REFUSED) {
             it.copy(failure = null, retryAt = clock.now())
         } ?: return

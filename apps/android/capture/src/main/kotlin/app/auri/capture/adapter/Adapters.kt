@@ -148,6 +148,8 @@ class TranscriptionResult(
     val job: AsrTaskHandle,
     val capabilities: AsrCapabilities,
     val outcome: TranscriptionOutcome,
+    /** 实际使用的本地模型代；没有模型管理器时为 null。 */
+    val modelGeneration: Long? = null,
 )
 
 interface TranscriptionAdapter {
