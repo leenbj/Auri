@@ -23,6 +23,11 @@ data class Feedback(
     val pulses: List<Long> get() = vibrationPattern.filterIndexed { index, _ -> index % 2 == 1 }
 }
 
+/** 把反馈交给用户的出口。生产实现在 :platform（振动 + 静音通知），测试里用假的。实现不得抛异常、不得发出任何声音。 */
+fun interface FeedbackPlayer {
+    fun play(feedback: Feedback)
+}
+
 object Feedbacks {
     // 不看屏幕就能分清：开始 = 一下短振；停止 = 两下短振；没能开始 = 一下长振
     private val started = Feedback(FeedbackKind.STARTED, "录音已开始", "录音中", listOf(0, 120))

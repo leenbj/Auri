@@ -1,0 +1,78 @@
+package app.auri.platform.feedback
+
+import android.Manifest
+import android.app.Notification
+import android.app.NotificationManager
+import android.content.Context
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.rule.GrantPermissionRule
+import app.auri.capture.feedback.FeedbackKind
+import app.auri.capture.feedback.Feedbacks
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import org.junit.runner.RunWith
+
+/**
+ * 反馈在设备上真的发出来，并且没有声音（证据等级 E2：模拟器）。
+ * 证明：三种反馈各发一条通知，文字与 Feedbacks 里的一致（用户能分清）；通知渠道没有声音、不自带振动、重要性低
+ * （不会弹出、不会响）；play 不抛异常。
+ * 不证明：振动在手上的感觉与节奏是否容易分清（要真机、有人）；通知是否在锁屏上显示（取决于用户的系统设置）。
+ */
+@RunWith(AndroidJUnit4::class)
+class FeedbackPlayerOnDeviceTest {
+    @get:Rule
+    val notifications: GrantPermissionRule = GrantPermissionRule.grant(Manifest.permission.POST_NOTIFICATIONS)
+
+    private val context: Context = InstrumentationRegistry.getInstrumentation().targetContext
+    private val manager = context.getSystemService(NotificationManager::class.java)
+    private val player = AndroidFeedbackPlayer(context)
+
+    @After
+    fun clear() {
+        manager.cancel(AndroidFeedbackPlayer.NOTIFICATION_ID)
+    }
+
+    private fun posted(): Notification? {
+        repeat(50) {
+            manager.activeNotifications.firstOrNull { it.id == AndroidFeedbackPlayer.NOTIFICATION_ID }?.let { return it.notification }
+            Thread.sleep(100)
+        }
+        return null
+    }
+
+    @Test
+    fun eachFeedbackKindPostsItsOwnSilentNotification() {
+        FeedbackKind.entries.forEach { kind ->
+            val feedback = Feedbacks.of(kind)
+            clear()
+
+            player.play(feedback)
+
+            val notification = posted()
+            assertNotNull("$kind：应当发出一条通知", notification)
+            assertEquals("$kind：通知文字", feedback.notificationText, notification!!.extras.getCharSequence(Notification.EXTRA_TEXT).toString())
+        }
+    }
+
+    @Suppress("DEPRECATION") // Notification.sound 在有渠道的系统上不起作用，这里只是确认没人往里塞声音
+    @Test
+    fun theNotificationChannelHasNoSoundNoVibrationAndLowImportance() {
+        player.play(Feedbacks.of(FeedbackKind.STARTED))
+        val notification = checkNotNull(posted())
+
+        val channel = checkNotNull(manager.getNotificationChannel(notification.channelId))
+
+        assertEquals(AndroidFeedbackPlayer.CHANNEL_ID, channel.id)
+        assertNull("渠道不能有声音：录音走的是蓝牙通路", channel.sound)
+        assertFalse("渠道自己不振动（振动由节奏单独发出）", channel.shouldVibrate())
+        assertEquals(NotificationManager.IMPORTANCE_LOW, channel.importance)
+        assertTrue("通知本身也不带声音", notification.sound == null)
+    }
+}
