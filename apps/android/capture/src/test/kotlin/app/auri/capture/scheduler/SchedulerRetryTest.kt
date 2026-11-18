@@ -159,7 +159,7 @@ class SchedulerRetryTest : BoundedSchedulerTest() {
         val waiting = rig.jobOf(id)
         assertEquals(WAITING_MODEL, waiting.state)
         assertEquals(WaitReason.Model(ErrorCode.MODEL_INTEGRITY_FAILED), waiting.wait)
-        assertEquals("模型没被用上，不算一次尝试", 0, waiting.attempts)
+        assertEquals("已记录的尝试次数不能回退", 1, waiting.attempts)
         assertEquals("只撞了一次，之后没有空转", 1, rig.adapter.requests.size)
         assertEquals(listOf(RUN_STARTED, RETRYABLE_ERROR, RETRY_DUE, MODEL_MISSING), rig.decisionsOf(waiting.jobId).map { it.trigger })
         val record = rig.library.get(id)!!

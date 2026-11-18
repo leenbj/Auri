@@ -28,6 +28,24 @@ abstract class RecordLibraryContract {
     private fun <T> run(block: suspend () -> T): T = runBlocking { withTimeout(30_000) { block() } }
 
     @Test
+    fun `同一个转录任务重放发布只返回原来的 Revision`() = run {
+        var publications = 0
+        val library = newLibrary { publications++ }
+        val entry = Samples.entry(1)
+        library.addRecord(entry)
+        val draft = Samples.draft(entry.recordId, text = "原结果").copy(publicationKey = Samples.uuid(90))
+
+        val first = library.publishRevision(draft)
+        val replay = library.publishRevision(draft.copy(text = "重放得到的另一段文字"))
+        val next = library.publishRevision(draft.copy(publicationKey = Samples.uuid(91)))
+
+        assertEquals(first, replay)
+        assertEquals(2, next.number)
+        assertEquals(listOf(first, next), library.get(entry.recordId)!!.revisions)
+        assertEquals(2, publications)
+    }
+
+    @Test
     fun `登记之后能取回：一个 Record，没有 Revision，状态是 PENDING，与音频同一个标识`() = run {
         val library = newLibrary()
         val entry = Samples.entry(1)

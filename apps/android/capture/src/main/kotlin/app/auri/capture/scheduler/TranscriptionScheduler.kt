@@ -137,6 +137,7 @@ class TranscriptionScheduler(
     private val timers = HashMap<String, Job>()
     private var nextSeq = 1L
     private var nextRunId = 1L
+    private var storeLoaded = false
 
     /** 引擎在运行时拒绝过的模型 generation（见 [onModelRefused]）；不落盘，重启后由 [resume] 重新试。 */
     private var refusal: Refusal? = null
@@ -234,14 +235,16 @@ class TranscriptionScheduler(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            emptyList()
+            return
         }
         saved.forEach { jobsById[it.jobId] = it }
         nextSeq = (saved.maxOfOrNull { it.seq } ?: 0L) + 1
+        storeLoaded = true
         publish()
     }
 
     private suspend fun onSubmit(message: Message.Submit) {
+        if (!storeLoaded) return
         if (createJob(message.recordId, message.kind) != null) wake(JobCause.PUMP)
     }
 
@@ -267,6 +270,8 @@ class TranscriptionScheduler(
     }
 
     private suspend fun onResume() {
+        if (!storeLoaded) load()
+        if (!storeLoaded) return
         refusal = null
         adoptOrphans()
         for (job in jobsById.values.toList()) if (job.jobId !in timers) rearm(job)
@@ -276,7 +281,7 @@ class TranscriptionScheduler(
 
     /**
      * 任务库里还写着“正在转”、可是这个进程里没有对应的引擎调用：上一个进程在转的时候被杀了。
-     * Record 里已经多了 Revision（发布之后、记账之前被杀）就直接认领成功；否则被杀的那次算一次尝试：
+     * Record 里有本任务发布的 Revision（发布之后、记账之前被杀）就直接认领成功；否则被杀的那次算一次尝试：
      * 次数没用完就按退避重试，用完了就是失败——崩溃循环有上限（开始之前就把次数落盘了）。
      */
     private suspend fun adoptOrphans() {
@@ -288,12 +293,15 @@ class TranscriptionScheduler(
                 Lookup.Gone -> null
             }
             val base = job.baseRevisions
-            val published = entry?.revisions?.takeIf { base != null && it.size > base }?.last()
+            val published = entry?.revisions?.firstOrNull { it.publicationKey == job.jobId }
+            val ambiguousLegacy = entry?.revisions?.drop(base ?: entry.revisions.size)
+                ?.any { it.publicationKey == null && it.source == RevisionSource.ASR } == true
             when {
                 published != null -> dispatch(job, RESULT_TEXT, JobCause.RUN_INTERRUPTED) {
                     it.copy(resultRevision = published.number, modelId = published.modelId, modelVersion = published.modelVersion, failure = null)
                 }
 
+                ambiguousLegacy -> dispatch(job, PERMANENT_ERROR, JobCause.RUN_INTERRUPTED) { it.copy(failure = null) }
                 job.attempts >= config.maxAttempts -> dispatch(job, PERMANENT_ERROR, JobCause.RUN_INTERRUPTED) { it.copy(failure = null) }
                 else -> dispatch(job, RETRYABLE_ERROR, JobCause.RUN_INTERRUPTED) {
                     it.copy(failure = null, retryAt = clock.now().plusMillis(backoffFor(it.attempts)))
@@ -322,6 +330,7 @@ class TranscriptionScheduler(
     // ---------------------------------------------------------------- 唤醒：先过模型这一关，再过资源这一关，最后才开始
 
     private suspend fun wake(cause: JobCause) {
+        if (!storeLoaded) return
         reconcileModel(cause)
         if (jobsById.values.any { it.state in RESOURCE_RELEVANT }) {
             val status = resourceStatus()
@@ -365,7 +374,7 @@ class TranscriptionScheduler(
     }
 
     /**
-     * 运行中资源变差：只有能中途停的引擎才打断（打断的这次不算一次尝试）。真引擎（cancel_support = none）停不下来，
+     * 运行中资源变差：只有能中途停的引擎才打断；已经落盘的尝试次数不能回退。真引擎（cancel_support = none）停不下来，
      * 那一次照常转完，之后排队的任务才会等。
      */
     private suspend fun interruptRunning(wait: WaitReason.Resources, cause: JobCause) {
@@ -375,7 +384,7 @@ class TranscriptionScheduler(
             val runId = activeRun.remove(job.jobId)
             runs.entries.firstOrNull { it.key.jobId == job.jobId && it.key.runId == runId }?.value?.cancel()
             dispatch(job, RESOURCES_LOW, cause) {
-                it.copy(attempts = maxOf(0, it.attempts - 1), wait = wait, waitChecks = 0, needsUser = false)
+                it.copy(wait = wait, waitChecks = 0, needsUser = false)
             }
         }
     }
@@ -473,7 +482,7 @@ class TranscriptionScheduler(
             dispatch(job, CANCEL, JobCause.RECORD_GONE)
             return true
         }
-        val started = dispatch(job, RUN_STARTED, JobCause.PUMP) {
+        val started = dispatch(job, RUN_STARTED, JobCause.PUMP, requireDurable = true) {
             it.copy(attempts = it.attempts + 1, baseRevisions = entry.revisions.size, wait = null, retryAt = null)
         } ?: return false
         val key = RunKey(started.jobId, nextRunId++)
@@ -540,12 +549,12 @@ class TranscriptionScheduler(
     /**
      * 引擎说模型不可用（运行时才发现）。转移表里 RUNNING 没有直接去等模型的边，所以走 重试→立刻到期→排队→模型缺失，
      * 每一步都由状态机批准。调度器记下“这个模型 generation 被引擎拒绝了”：同一个 generation 下一律当作缺失，
-     * 不会反复撞同一个坏模型；模型管理器换了新模型（generation 变了）或调用 [resume] 才再试。这次没用上模型，不算一次尝试。
+     * 不会反复撞同一个坏模型；模型管理器换了新模型（generation 变了）或调用 [resume] 才再试。
      */
     private suspend fun onModelRefused(job: TranscriptionJob, code: ErrorCode) {
         (models.readiness.value as? ModelReadiness.Ready)?.let { refusal = Refusal(it.generation, code) }
         val scheduled = dispatch(job, RETRYABLE_ERROR, JobCause.MODEL_REFUSED) {
-            it.copy(attempts = maxOf(0, it.attempts - 1), failure = null, retryAt = clock.now())
+            it.copy(failure = null, retryAt = clock.now())
         } ?: return
         dispatch(scheduled, RETRY_DUE, JobCause.MODEL_REFUSED) { it.copy(retryAt = null) }
     }
@@ -576,6 +585,7 @@ class TranscriptionScheduler(
             modelVersion = result.capabilities.modelVersion,
             confidence = outcome.confidence,
             createdAt = clock.now(),
+            publicationKey = job.jobId,
         )
         val revision = try {
             library.publishRevision(draft)
@@ -600,25 +610,30 @@ class TranscriptionScheduler(
         job: TranscriptionJob,
         event: TranscriptionEvent,
         cause: JobCause,
+        requireDurable: Boolean = false,
         change: (TranscriptionJob) -> TranscriptionJob = { it },
     ): TranscriptionJob? {
         val current = jobsById[job.jobId] ?: return null
         val rule = TranscriptionMachine.resolve(current.state, event)
         val outcome = rule?.outcome ?: Outcome.REJECTED
-        decisionFlow.tryEmit(JobDecision(current.jobId, event, outcome, current.state, rule?.to ?: current.state, cause))
-        if (rule == null || rule.outcome != Outcome.TRANSITION) return null
+        if (rule == null || rule.outcome != Outcome.TRANSITION) {
+            decisionFlow.tryEmit(JobDecision(current.jobId, event, outcome, current.state, rule?.to ?: current.state, cause))
+            return null
+        }
         val next = change(current).copy(state = rule.to, updatedAt = clock.now())
+        if (requireDurable && !persist(next)) return null
+        decisionFlow.tryEmit(JobDecision(current.jobId, event, outcome, current.state, rule.to, cause))
         timers.remove(next.jobId)?.cancel()
-        update(next)
+        update(next, writeStore = !requireDurable)
         rearm(next)
         return next
     }
 
     /** 不是状态转移的改动（计数、等待原因）：落盘、发布、同步 Record。 */
-    private suspend fun update(job: TranscriptionJob) {
+    private suspend fun update(job: TranscriptionJob, writeStore: Boolean = true) {
         val stamped = job.copy(updatedAt = clock.now())
         jobsById[stamped.jobId] = stamped
-        persist(stamped)
+        if (writeStore) persist(stamped)
         publish()
         syncRecord(stamped)
     }
@@ -637,15 +652,16 @@ class TranscriptionScheduler(
         }
     }
 
-    private suspend fun persist(job: TranscriptionJob) {
+    private suspend fun persist(job: TranscriptionJob): Boolean =
         try {
             store.put(job)
+            true
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             storeFailureCount.incrementAndGet()
+            false
         }
-    }
 
     private fun publish() {
         jobFlow.value = jobsById.values.sortedByDescending { it.seq }

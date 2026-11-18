@@ -37,7 +37,7 @@ data class TranscriptionJob(
     val updatedAt: Instant,
     /** 已经开始跑的次数（RUN_STARTED 时先落盘再跑：转到一半进程被杀也算一次，崩溃循环因此有上限）。 */
     val attempts: Int = 0,
-    /** 本次运行开始时 Record 已有的 Revision 数：重启后据此判断“结果其实已经发布了”（见调度器的恢复逻辑）。 */
+    /** 本次运行开始时已有的 Revision 数，用来识别无法归属的旧版发布。 */
     val baseRevisions: Int? = null,
     /** 只在 WAITING_MODEL / WAITING_RESOURCES 时有值。 */
     val wait: WaitReason? = null,

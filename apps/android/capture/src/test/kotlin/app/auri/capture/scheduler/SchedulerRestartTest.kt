@@ -2,6 +2,7 @@ package app.auri.capture.scheduler
 
 import app.auri.capture.adapter.TranscriptionOutcome
 import app.auri.capture.contract.ErrorCode
+import app.auri.capture.contract.RevisionSource
 import app.auri.capture.library.TranscriptionStatus
 import app.auri.capture.machine.Outcome
 import app.auri.capture.machine.TranscriptionEvent
@@ -44,6 +45,49 @@ class SchedulerRestartTest : BoundedSchedulerTest() {
 
     private fun TestScope.restarted(old: SchedulerRig, prefix: Int, scope: CoroutineScope = backgroundScope) =
         SchedulerRig(this, library = old.library, store = old.store, schedulerScope = scope, idPrefix = prefix)
+
+    @Test
+    fun `开始状态无法落盘时不运行引擎，存储恢复后才能开始`() = runTest {
+        val store = FailStateStore(RUNNING)
+        val rig = SchedulerRig(this, store = store)
+        val id = rig.addRecord(1)
+        rig.scheduler.submit(id)
+        rig.settle()
+
+        assertTrue("没有持久化尝试就不能开始推理", rig.adapter.requests.isEmpty())
+        assertEquals(TranscriptionState.QUEUED, store.inner.all().single().state)
+        assertEquals(0, store.inner.all().single().attempts)
+
+        store.failState = null
+        rig.scheduler.resume()
+        rig.settle()
+        assertEquals(SUCCEEDED, rig.jobOf(id).state)
+        assertEquals(1, rig.library.get(id)!!.revisions.size)
+    }
+
+    @Test
+    fun `结果已发布但成功状态未落盘，重启认领本次结果而不是之后的用户修订`() = runTest {
+        val store = FailStateStore(SUCCEEDED)
+        val scope = killableScope()
+        val first = SchedulerRig(this, store = store, schedulerScope = scope)
+        val id = first.addRecord(1)
+        first.scheduler.submit(id)
+        first.settle()
+        assertEquals(SUCCEEDED, first.jobOf(id).state)
+        assertEquals(RUNNING, store.inner.all().single().state)
+        first.library.publishRevision(Samples.draft(id, text = "用户后来修改").copy(source = RevisionSource.USER_EDIT))
+        scope.cancel()
+
+        store.failState = null
+        val restarted = restarted(first, 0x5D)
+        restarted.scheduler.resume()
+        restarted.settle()
+
+        assertEquals(SUCCEEDED, restarted.jobOf(id).state)
+        assertEquals("应认领转录产生的第一条，而不是后来的修订", 1, restarted.jobOf(id).resultRevision)
+        assertTrue(restarted.adapter.requests.isEmpty())
+        assertEquals(2, restarted.library.get(id)!!.revisions.size)
+    }
 
     @Test
     fun `等着的任务在重启之后原样回来，条件好了接着转，还是同一个任务`() = runTest {
@@ -114,7 +158,7 @@ class SchedulerRestartTest : BoundedSchedulerTest() {
         first.settle()
         assertEquals(RUNNING, first.jobOf(id).state)
         // Revision 已经落库，但任务还没来得及记成成功，进程就没了
-        first.library.publishRevision(Samples.draft(id))
+        first.library.publishRevision(Samples.draft(id).copy(publicationKey = first.jobOf(id).jobId))
         scope.cancel()
 
         val second = restarted(first, 0x5D)
@@ -242,35 +286,47 @@ class SchedulerRestartTest : BoundedSchedulerTest() {
     }
 
     @Test
-    fun `任务库读写都坏了：转录照常进行，次数记下，重启之后按 Record 库对账不丢也不重`() = runTest {
+    fun `任务库读写都坏了：先等待存储恢复，重启后按 Record 库对账不丢也不重`() = runTest {
         val flaky = FlakyJobStore()
         val scope = killableScope()
         val first = SchedulerRig(this, store = flaky, schedulerScope = scope)
         val finished = first.addRecord(1)
         val waiting = first.addRecord(2)
+        val alreadyDone = first.addRecord(3)
+        first.library.publishRevision(Samples.draft(alreadyDone))
         flaky.failing = true
         first.scheduler.submit(finished)
         first.settle()
+        assertEquals("任务库写不进去不能开始推理", TranscriptionState.QUEUED, first.jobOf(finished).state)
         first.models.missing()
         first.settle()
         first.scheduler.submit(waiting)
         first.settle()
 
-        assertEquals("任务库写不进去不影响转录", SUCCEEDED, first.jobOf(finished).state)
+        assertEquals(WAITING_MODEL, first.jobOf(finished).state)
         assertEquals(WAITING_MODEL, first.jobOf(waiting).state)
+        assertTrue(first.adapter.requests.isEmpty())
         assertTrue("写失败的次数记下来了", first.scheduler.storeFailures > 0)
         assertTrue(flaky.inner.all().isEmpty())
         scope.cancel()
 
         flaky.failing = false
-        flaky.failReads = true // 重启后连读也失败：当作空
+        flaky.failReads = true // 读失败不能当作空，否则会重复运行旧任务
         val second = SchedulerRig(this, library = first.library, store = flaky, idPrefix = 0x5D)
         second.scheduler.resume()
         second.settle()
+        assertTrue(second.adapter.requests.isEmpty())
+        assertTrue(second.jobs.isEmpty())
 
-        assertEquals("已完成的不重复转", 1, second.library.get(finished)!!.revisions.size)
+        flaky.failReads = false
+        second.scheduler.resume()
+        second.settle()
+
+        assertEquals("已完成的不重复转", 1, second.library.get(alreadyDone)!!.revisions.size)
+        assertEquals(SUCCEEDED, second.jobOf(finished).state)
         assertEquals("等模型的那个补回了任务并转完", SUCCEEDED, second.jobOf(waiting).state)
-        assertEquals(listOf(waiting), second.adapter.requests.map { it.recordId })
+        assertEquals(setOf(finished, waiting), second.adapter.requests.map { it.recordId }.toSet())
+        assertEquals(1, second.library.get(finished)!!.revisions.size)
         assertEquals(1, second.library.get(waiting)!!.revisions.size)
     }
 
@@ -366,5 +422,14 @@ class SchedulerRestartTest : BoundedSchedulerTest() {
             if (failReads) throw IllegalStateException("任务库读取失败（测试注入）")
             return inner.all()
         }
+    }
+
+    private class FailStateStore(var failState: TranscriptionState?) : JobStore {
+        val inner = InMemoryJobStore()
+        override suspend fun put(job: TranscriptionJob) {
+            if (job.state == failState) error("injected storage failure")
+            inner.put(job)
+        }
+        override suspend fun all() = inner.all()
     }
 }

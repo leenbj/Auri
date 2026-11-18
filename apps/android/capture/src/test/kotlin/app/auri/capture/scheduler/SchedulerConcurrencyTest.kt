@@ -88,6 +88,6 @@ class SchedulerConcurrencyTest : BoundedSchedulerTest() {
         assertEquals("旧调用返回之后任务重新开始", 2, rig.adapter.requests.size)
         assertEquals(SUCCEEDED, rig.jobOf(id).state)
         assertEquals("旧调用的结果作废，只有重新开始的那一次产生了 Revision", 1, rig.library.get(id)!!.revisions.size)
-        assertEquals(1, rig.jobOf(id).attempts)
+        assertEquals(2, rig.jobOf(id).attempts)
     }
 }

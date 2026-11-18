@@ -252,7 +252,7 @@ class SchedulerWaitingTest : BoundedSchedulerTest() {
         val paused = rig.jobOf(id)
         assertEquals(WAITING_RESOURCES, paused.state)
         assertEquals(WaitReason.Resources(ResourceReason.THERMAL), paused.wait)
-        assertEquals("被打断的这次不占重试次数", 0, paused.attempts)
+        assertEquals("已记录的尝试次数不能回退", 1, paused.attempts)
 
         rig.resources.ok()
         rig.settle()
@@ -261,7 +261,7 @@ class SchedulerWaitingTest : BoundedSchedulerTest() {
 
         val done = rig.jobOf(id)
         assertEquals(SUCCEEDED, done.state)
-        assertEquals(1, done.attempts)
+        assertEquals(2, done.attempts)
         assertEquals(2, rig.adapter.requests.size)
         assertEquals(1, rig.library.get(id)!!.revisions.size)
     }

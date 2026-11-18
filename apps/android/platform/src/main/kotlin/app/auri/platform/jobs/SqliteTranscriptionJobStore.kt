@@ -46,7 +46,7 @@ class SqliteTranscriptionJobStore(
 
     override suspend fun put(job: TranscriptionJob) {
         withContext(io) {
-            helper.writableDatabase.insertWithOnConflict("transcription_jobs", null, job.toValues(), SQLiteDatabase.CONFLICT_REPLACE)
+            check(helper.writableDatabase.insertWithOnConflict("transcription_jobs", null, job.toValues(), SQLiteDatabase.CONFLICT_REPLACE) != -1L)
         }
     }
 
