@@ -59,3 +59,7 @@ captures/
 *.aab
 *.aar
 *.tar.bz2
+
+# apps/android（Ticket 16）：缓存目录。默认的 ~/.cache/auri/（模型、引擎 AAR、一次性 AVD、模拟器锁）在仓库外；
+# 万一用 AURI_CACHE_DIR 指进了仓库里的 .cache/，里面的东西也不入库
+.cache/

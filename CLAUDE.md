@@ -87,7 +87,7 @@ Android 本地转录（Ticket 14，工程位于 `apps/android/`，需先 `source
 
 ```bash
 cd apps/android
-./gradlew :asr:testDebugUnitTest :app:testDebugUnitTest              # JVM 单测（112 + 28），不需要设备
+./gradlew :asr:testDebugUnitTest :app:testDebugUnitTest              # JVM 单测（:asr 112；:app 51，其中 28 个是 Ticket 14 的），不需要设备
 ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest           # 构建会校验引擎 AAR 的大小与 SHA-256，不符即失败
 cd ../..
 .venv/bin/pytest execution/acceptance/asr-android                    # Python 验收工具与合同输出校验（会调用 Gradle，需要 JAVA_HOME）
@@ -96,6 +96,19 @@ export ADB_LIBUSB=1                                                  # macOS：a
 execution/acceptance/asr-android/install_on_device.sh                # 把模型放进已安装 debug 应用的私有目录
 execution/acceptance/asr-android/run_device_acceptance.sh            # 设备（模拟器/真机）一键验收：仪器测试（check_instrumentation.py 逐个核对 @Test 都跑了）+ 三次冷启动基准 + 合同校验
 adb shell am start -S -W -n app.auri.android/.TranscribeFileActivity --es wav samples/zh.wav --es out NAME --ei warm_repeats 3   # 转录一个文件；必须带 -S
+```
+
+Android 屏幕按钮录一段并转成文字（Ticket 16，同在 `apps/android/`：`:capture` 是纯 Kotlin/JVM 模块（采集协调器、状态机、Record 库接口与自动转录管线），`:platform` 是 Android 实现，`:app` 是首页；步骤、真机流程（`NOT_RUN`）与结果见 `execution/acceptance/android-capture/README.md`）：
+
+```bash
+cd apps/android
+./gradlew :capture:test :platform:testDebugUnitTest :app:testDebugUnitTest :asr:testDebugUnitTest   # JVM 单测（71 + 56 + 51 + 112），不需要设备
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest :platform:assembleDebugAndroidTest         # 构建 APK 与两个仪器测试 APK
+cd ../..
+.venv/bin/pytest execution/acceptance/android-capture                # Python 验收工具（57 个；含真实调用 Gradle 的合同输出校验，需要 JAVA_HOME）
+.venv/bin/python execution/acceptance/android-capture/capture_contract_check.py <输出目录> --preset jvm   # 校验采集→转录样本 JSON 符合合同
+execution/acceptance/android-capture/run_emulator_acceptance.sh      # 一次性无头模拟器验收（E2）：先取共享锁 ~/.cache/auri/emulator.lock，无论成败都杀模拟器、删 AVD、放锁
+adb logcat -d -s AuriCapture:I                                       # 真机：采集状态变化日志（只有状态、原因、输入类型，没有文字与设备标识）
 ```
 
 鸿蒙探针（DEV-003，工程位于 `execution/p0-spikes/harmonyos-probe/`）：

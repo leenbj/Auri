@@ -1,0 +1,55 @@
+# Ticket 16 review fixes — 2026-11-18
+
+Branch: `ticket/16-record-transcribe`. Baseline: `bba291f774b63e20fcffae42de97b62ac794cef7`. The branch contained `origin/integration/auri-v2` before work; `git fetch origin && git merge origin/integration/auri-v2` reported `Already up to date` before the fresh suites.
+
+All automated evidence below is E2 (JVM fakes or Android emulator). Recording and transcription with a physical Android phone and FreeClip, actual route-notification latency, Bluetooth device identity behavior, and real background/lock-screen behavior are **NOT_RUN**: this machine has no phone or headset. The product-owner procedure remains in the parent README §4.
+
+## Findings and red/green evidence
+
+| Finding | Test observed failing before the fix | Fix and passing coverage |
+|---|---|---|
+| F1 | `RouteBoundaryTest.a buffer spanning an unknown to verified route never reaches storage`: a buffer containing marker 1 reached the real coordinator's fake store; `BluetoothCaptureAdapterTest.a buffer returned after cancellation is discarded and counted` also failed on the missing count. | `BluetoothCaptureAdapter.kt`: compare actual routes before and after each read, require the selected Bluetooth input and no callback, and count/drop ambiguous samples. `RouteBoundaryTest` retains only the next buffer; `BluetoothCaptureAdapterTest.a route callback during a read discards that buffer even if the device is unchanged` covers callbacks. E2. |
+| F2 | `BluetoothCaptureAdapterTest.a different bluetooth headset cannot verify the requested input`: B was VERIFIED after requesting A. | `BluetoothCaptureAdapter.kt`: require the routed input's framework device ID to match the requested input, otherwise MISMATCH and no frames. The same test passes with two same-type Bluetooth devices. E2. |
+| F3 | `HomeViewModelTest.duration limit stop is visible with its reason and seconds`: the view state lacked the automatic-stop reason. | `CaptureCoordinator.kt`, `CoordinatorTypes.kt`, `HomeViewModel.kt`, and `HomeScreen.kt`: retain the configured limit for a duration stop, expose `DURATION_LIMIT` and seconds, and show a line; `CaptureHappyPathTest.duration limit remains visible until the next recording starts` also exercises the actual timer. E2. |
+| F4 | `BluetoothCaptureAdapterTest.cancelling while route request is blocked releases any later acquisition`, `late cleanup of a cancelled route cannot clear the next session route`, `reader startup failure releases every acquired resource`, and `an unexpected recorder read failure releases resources and reports interruption` failed on old cleanup paths; `NoPhoneMicPathTest.an exception while selecting the preferred device releases the recorder` found an unguarded framework exception path. | `BluetoothCaptureAdapter.kt` and `AndroidAudioSystem.kt`: track pending acquisition, release late resources, serialize route acquisition/cleanup, and clean up reader and preferred-device failures; also test cancellation during focus acquisition. E2. The preferred-device exception check is structural because Android framework `AudioRecord` cannot be substituted in this JVM. |
+| F5 | `ForegroundServiceFailureTest.service refusal while routing blocks capture with its reason`, `service refusal after route verification seals the recording`, and `asynchronous foreground promotion failure ends an active recording` all failed. | `CaptureCoordinator.kt`, `ForegroundServiceBinder.kt`, `AndroidForegroundServiceController.kt`, `MicCaptureForegroundService.kt`, and `AuriRuntime.kt`: report synchronous and asynchronous failures, reject in ROUTING, and seal as SYSTEM_INTERRUPTION in RECORDING. E2 fakes; emulator service/refusal coverage is listed below. |
+| F6 | `PendingPromotionTest.a refused stop request must not tear down a service awaiting promotion` found the unconditional unsafe `stopService` fallback. | `AndroidForegroundServiceController.kt` and `MicCaptureForegroundService.kt`: defer the fallback until promotion acknowledgment. `PendingPromotionTest.refused stop is deferred until foreground promotion` exercises the exact interleaving with fake requests. E2. The red test inspected the real source branch because Android's unmocked Context methods cannot run in this JVM; the fake gate tests the ordering but cannot reproduce the Android framework crash itself. |
+| F7 | `ReleaseFailureTest.stop seals audio even when release throws`, `route loss seals audio even when release throws`, and `duration limit seals audio even when release throws` all left the coordinator RECORDING. | `CaptureCoordinator.kt`: contain a release exception and continue cleanup/state transition and sealing. All three tests also assert the fake foreground service stops. E2. |
+| F8 | `BluetoothCaptureAdapterTest.failed and throwing route requests restore the prior audio mode`: the fake remained in communication mode. | `BluetoothCaptureAdapter.kt` registers route cleanup before requesting it; `AndroidAudioSystem.kt` makes route clearing idempotent and restores the saved mode in `finally`. The fake exercises false and exception outcomes. E2; actual AudioManager mode restoration on a physical device is NOT_RUN. |
+| F9 | `WavRecordingStoreTest.one second of stereo audio retains all interleaved samples and its duration`: the stored sample count was halved. | `WavRecordingStore.kt`: count all interleaved samples, so 32,000 samples at 16 kHz stereo give 1,000 ms. E2. |
+| F10 | `NoPhoneMicPathTest.the guard rejects a recorder hidden behind a Kotlin import alias`, `bytecode guard catches an aliased MediaRecorder with inlined audio source`, and `the guard rejects an aliased inlined audio source constant` each failed against the prior guard. | `NoPhoneMicPathTest.kt` and `platform/build.gradle.kts`: scan production source and compiled classes of all four Android modules, check the allowed recorder's bytecode/source and preferred device, and verify separately compiled test-local aliases are rejected. E2. |
+
+The JVM tests fake the Android audio system and service behavior; in particular they cannot establish physical microphone provenance, operating-system callback timing, or force an actual Android foreground-service refusal. An internal cumulative sample count records boundary drops; no audio values or Bluetooth addresses are logged. Route checks use the exact system input device ID, so a same-device ID change during a session is conservatively refused. Android's communication-device selection already pairs the input and communication endpoints by type and address internally; addresses are not included in capture events.
+
+## Ticket checklist
+
+| Item | Coverage | Evidence |
+|---|---|---|
+| Coordinator and adapter boundaries | `CaptureCoordinator`, `CaptureMachineTableTest`, `CaptureHappyPathTest` | E2 JVM |
+| Contract state-machine scenarios | `CaptureScenarioReplayTest` | E2 JVM |
+| No unverified audio persisted/transcribed | `CaptureGateTest`, `RouteBoundaryTest` | E2 JVM fakes |
+| Refuse unavailable headset and never fall back to phone mic | `BluetoothCaptureAdapterTest`, `NoPhoneMicPathTest`, `CaptureRefusalOnDeviceTest` | E2 JVM/emulator |
+| Reject late callbacks, old generations, and wrong epochs | `CaptureStalenessTest`, `BluetoothCaptureAdapterTest` | E2 JVM |
+| Stop, transcribe, and create a Record and initial model-labeled Revision | `RecordPipelineTest`, `ContractOutputTest` | E2 JVM |
+| Separate headset connection, actual input, and capture state | `HomeViewModelTest`, `HomeFlowTest` | E2 JVM |
+| Record and transcribe on a phone with FreeClip | Product-owner steps in README §4 | NOT_RUN: no physical phone or headset |
+
+## Mutation checks
+
+On the Mac mini, the twelve earlier mutants M1–M12 and three new F1/F2/F4 mutants were each run with their targeted Gradle JVM tests and were all killed by test assertions (15/15). M3's first mutation was rejected by the mutation script as ambiguous because the searched expression appeared twice; the retry targeted `onFrames` specifically and was killed by `CaptureStalenessTest` (10 tests, 1 failed). New mutants were killed respectively by `RouteBoundaryTest`, `BluetoothCaptureAdapterTest.a different bluetooth headset cannot verify the requested input`, and `BluetoothCaptureAdapterTest.cancelling while route request is blocked releases any later acquisition`. These are deliberate failing runs; files were restored before the fresh suites.
+
+## Fresh suite results
+
+- `source ~/.config/auri/android-env.sh && ./gradlew :capture:test :platform:testDebugUnitTest :app:testDebugUnitTest :asr:testDebugUnitTest --no-daemon --rerun-tasks --console=plain` from `apps/android`: **PASS**, 72 + 84 + 52 + 112 = **320 tests**, 0 failed, 0 skipped (measured from Gradle XML on this Mac).
+- `source ~/.config/auri/android-env.sh && AURI_GRADLE_ARGS='--no-daemon' execution/acceptance/android-capture/run_emulator_acceptance.sh`: **PASS**, 19 platform + 4 app = **23 instrumented tests**, 0 issues, API 35 arm64 emulator (E2). The script removed its temporary AVD and released the emulator lock; `avdmanager` printed a `devices.xml` load warning but the configured emulator booted and all tests ran.
+- `source ~/.config/auri/android-env.sh && AURI_GRADLE_ARGS='--no-daemon' .venv/bin/pytest execution/acceptance/android-capture`: **57 passed**, 0 failed, 0 skipped, on this Mac.
+- `source ~/.config/auri/android-env.sh && .venv/bin/pytest tests/contract tests/integration tests/security`: **492 passed**, 0 failed, 0 skipped, in 210.81 seconds on this Mac.
+
+## Assumptions and limits
+
+- The requested duration cap is temporary, not the product's long-recording design: the current 30-second engine limit minus 500 ms gives 29.5 seconds; tickets 18 and 20 own the real duration limit and segmentation.
+- The user instructed this dispatched worker not to ask questions; tests use the requested coordinator, adapter, view-model, and fake Android boundaries, with no separate seam-confirmation step.
+- The frozen capture machine has no foreground-service-failure event: use existing `ROUTE_UNVERIFIED` in ROUTING with `BACKGROUND_START_DENIED`, and `SYSTEM_INTERRUPTION` in RECORDING with the same diagnostic code. No contract was changed.
+- The interface does not offer a JVM way to exercise actual `AudioManager` mode changes or the Android framework's pending-foreground crash. Fake coverage is E2; the emulator covers the real service's normal/refusal paths, and physical-device behavior is NOT_RUN.
+- The source and bytecode guard covers all four current production modules' debug classes. Android can delay or omit route notifications; strict Bluetooth-only certification still needs E3 evidence.
+- Boundary drops are counted, but `adapter.schema.json#/$defs/recording_result/properties/discarded_ranges` remains empty: the current capture callbacks do not carry original monotonic intervals, and the contract does not say how a pre-verification interval relates to the recording start. Proposed follow-up G6 in the README: define that timeline and carry the original intervals; no contract file was changed.
