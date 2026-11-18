@@ -41,7 +41,7 @@ internal fun describeWaitResources(reason: ResourceReason?, needsUser: Boolean):
         ResourceReason.UNKNOWN -> "资源状态暂时不可用，稍后自动重查"
         null -> "资源不足（原因未知）"
     }
-    return if (needsUser) "$why；已经多次重查仍不行，不再自动重试，请处理后点“重新检查”" else why
+    return if (needsUser) "$why；可以手动重新检查，也会自动重查" else why
 }
 
 internal fun describeModelWait(code: ErrorCode?): String = when (code) {

@@ -60,7 +60,7 @@ import kotlinx.coroutines.launch
  *  - 默认一次转一个（[SchedulerConfig.maxConcurrent]，再取引擎声明的上限）；录完的第一次转录排在用户要求的重转录之前，同类按先后。
  *  - 没有模型：任务等模型（WAITING_MODEL）并记下原因，模型好了自动继续；不上云（ADR-0019）。等模型不轮询——模型管理器会通知。
  *  - 资源不够（录音中、过热、省电、内存、存储）：任务等（WAITING_RESOURCES）并记下原因；条件变好立刻继续，
- *    条件没变也按有界的间隔重查（防止通知丢了），用完次数就标“需要用户处理”，不再自己重试。
+ *    条件没变也按退避间隔重查，最长每五分钟一次。
  *  - 可重试的失败按有界的退避重试，次数用完就是 FAILED；永久性失败直接 FAILED。重启后崩溃循环也有上限（开始前先把次数落盘）。
  *  - 取消：运行中的转录不能中途停（原生推理），任务立刻变 CANCELLED、名额一直占到那次调用返回，迟到的结果被状态机拒绝，不写 Revision。
  *  - 重转录是新任务，产生新的 Revision；旧 Revision 不动（不可变）。
@@ -231,7 +231,7 @@ class TranscriptionScheduler(
         mailbox.trySend(Message.Stale(jobId, event))
     }
 
-    /** 用户点“重新检查”：等资源的任务计数清零、立刻重查，条件好了就继续；还是不行就重新有界地重查。 */
+    /** 用户点“重新检查”：等资源的任务计数清零、立刻重查。 */
     fun recheckResources() {
         mailbox.trySend(Message.RecheckRequested)
     }
@@ -266,7 +266,9 @@ class TranscriptionScheduler(
         } catch (e: Exception) {
             return
         }
-        saved.forEach { jobsById[it.jobId] = it }
+        saved.forEach { job ->
+            jobsById[job.jobId] = if (job.state == TranscriptionState.WAITING_RESOURCES) job.copy(needsUser = false) else job
+        }
         nextSeq = (saved.maxOfOrNull { it.seq } ?: 0L) + 1
         storeLoaded = true
         publish()
@@ -457,9 +459,9 @@ class TranscriptionScheduler(
         val job = jobsById[message.jobId] ?: return
         when (job.state) {
             TranscriptionState.WAITING_RESOURCES -> {
-                if (job.needsUser || job.waitChecks != message.token) return
-                val checks = job.waitChecks + 1
-                val counted = job.copy(waitChecks = checks, needsUser = checks >= config.resourceRecheckMs.size)
+                if (job.waitChecks != message.token) return
+                val checks = if (job.waitChecks == Int.MAX_VALUE) Int.MAX_VALUE else job.waitChecks + 1
+                val counted = job.copy(waitChecks = checks, needsUser = false)
                 update(counted)
                 rearm(counted)
                 wake(JobCause.RESOURCES_RECHECK) // 条件好了就转移并继续；没好，计数已经记下
@@ -670,11 +672,12 @@ class TranscriptionScheduler(
         syncRecord(stamped)
     }
 
-    /** 等资源的任务按有界的间隔定时重查；等重试的任务在退避到期时再试。 */
+    /** 等资源的任务按退避间隔定时重查；等重试的任务在退避到期时再试。 */
     private fun rearm(job: TranscriptionJob) {
         timers.remove(job.jobId)?.cancel()
         val (delayMs, token) = when {
-            job.state == TranscriptionState.WAITING_RESOURCES && !job.needsUser -> config.resourceRecheckMs[job.waitChecks] to job.waitChecks
+            job.state == TranscriptionState.WAITING_RESOURCES ->
+                (config.resourceRecheckMs.getOrNull(job.waitChecks) ?: config.resourceRecheckMs.lastOrNull() ?: 300_000L).coerceAtMost(300_000L) to job.waitChecks
             job.state == TranscriptionState.RETRY_SCHEDULED -> maxOf(0L, (job.retryAt ?: clock.now()).toEpochMilli() - clock.now().toEpochMilli()) to job.attempts
             else -> return
         }

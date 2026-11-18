@@ -43,7 +43,7 @@ data class TranscriptionJob(
     val wait: WaitReason? = null,
     /** 等资源时已经重查过几次。 */
     val waitChecks: Int = 0,
-    /** 重查次数用完了仍然不行：不再自己重试，界面提示用户处理（用户点“重新检查”或条件发生变化才会继续）。 */
+    /** 兼容旧任务库的标记；恢复后等待中的任务继续自动重查。 */
     val needsUser: Boolean = false,
     /** RETRY_SCHEDULED 的重试时间。 */
     val retryAt: Instant? = null,

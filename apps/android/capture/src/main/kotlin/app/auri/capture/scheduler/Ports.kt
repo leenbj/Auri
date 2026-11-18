@@ -84,7 +84,7 @@ data class SchedulerConfig(
     val maxAttempts: Int = 3,
     /** 第 k 次失败之后等多久再试（k 从 1 起；超出表长用最后一项）。 */
     val retryBackoffMs: List<Long> = listOf(30_000, 120_000),
-    /** 等资源时，第 k 次重查的间隔；用完仍不行就标“需要用户处理”，不再自己重查。 */
+    /** 等资源时的退避间隔；用完后持续使用最后一档，最多五分钟。 */
     val resourceRecheckMs: List<Long> = listOf(15_000, 30_000, 60_000, 120_000, 300_000),
 ) {
     init {

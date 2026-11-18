@@ -174,7 +174,40 @@ class SchedulerWaitingTest : BoundedSchedulerTest() {
     }
 
     @Test
-    fun `一直不行：重查的次数有界，用完就标需要用户处理，之后不再自己重查（绝不无限重试）`() = runTest {
+    fun `五次重查之后内存或存储恢复且没有通知，五分钟内自动继续`() = runTest {
+        for (reason in listOf(ResourceReason.LOW_MEMORY, ResourceReason.LOW_STORAGE)) {
+            val rig = SchedulerRig(this)
+            val id = rig.addRecord(1)
+            rig.resources.setSilently(ResourceStatus.Low(reason))
+            rig.scheduler.submit(id)
+            rig.settle()
+            rig.advance(rig.config.resourceRecheckMs.sum())
+            assertEquals(WAITING_RESOURCES, rig.jobOf(id).state)
+            assertEquals(WaitReason.Resources(reason), rig.jobOf(id).wait)
+
+            rig.resources.setSilently(ResourceStatus.Ok)
+            rig.advance(300_000)
+
+            assertEquals("$reason 恢复后应自动继续", SUCCEEDED, rig.jobOf(id).state)
+        }
+    }
+
+    @Test
+    fun `配置较长的资源重查间隔也不能超过五分钟`() = runTest {
+        val rig = SchedulerRig(this, config = SchedulerConfig(resourceRecheckMs = listOf(900_000)))
+        val id = rig.addRecord(1)
+        rig.resources.setSilently(ResourceStatus.Low(ResourceReason.LOW_STORAGE))
+        rig.scheduler.submit(id)
+        rig.settle()
+        rig.resources.setSilently(ResourceStatus.Ok)
+
+        rig.advance(300_000)
+
+        assertEquals(SUCCEEDED, rig.jobOf(id).state)
+    }
+
+    @Test
+    fun `一直不行：重查退避到五分钟，不会紧密循环或开始推理`() = runTest {
         val rig = SchedulerRig(this)
         val id = rig.addRecord(1)
         rig.resources.status = ResourceStatus.Low(ResourceReason.THERMAL)
@@ -182,41 +215,45 @@ class SchedulerWaitingTest : BoundedSchedulerTest() {
         rig.settle()
         assertFalse(rig.jobOf(id).needsUser)
 
-        val total = rig.config.resourceRecheckMs.sum()
-        rig.advance(total - 1)
-        assertFalse("最后一次重查之前还不算用完", rig.jobOf(id).needsUser)
-        rig.advance(1)
+        rig.advance(rig.config.resourceRecheckMs.sum())
 
         val stuck = rig.jobOf(id)
         assertEquals("仍然在等，没有变成失败", WAITING_RESOURCES, stuck.state)
-        assertTrue(stuck.needsUser)
+        assertFalse(stuck.needsUser)
         assertEquals(rig.config.resourceRecheckMs.size, stuck.waitChecks)
-        val checksAtExhaustion = rig.resources.checks.get()
-        val decisionsAtExhaustion = rig.decisions.size
+        assertEquals(WaitReason.Resources(ResourceReason.THERMAL), stuck.wait)
+        val checksAtCap = rig.resources.checks.get()
+        val decisionsAtCap = rig.decisions.size
 
-        rig.advance(7 * 24 * 60 * 60 * 1000L)
+        rig.advance(300_000 - 1)
+        assertEquals("五分钟之前不重查", checksAtCap, rig.resources.checks.get())
+        rig.advance(1)
+        assertEquals("五分钟到期后重查一次", checksAtCap + 1, rig.resources.checks.get())
+        rig.advance(24 * 60 * 60 * 1000L)
 
-        assertEquals("用完之后一次检查都没有再做", checksAtExhaustion, rig.resources.checks.get())
-        assertEquals(decisionsAtExhaustion, rig.decisions.size)
+        assertEquals("每五分钟一次，持续等待不是失败重试", checksAtCap + 1 + 288, rig.resources.checks.get())
+        assertEquals(decisionsAtCap, rig.decisions.size)
         assertTrue(rig.adapter.requests.isEmpty())
     }
 
     @Test
-    fun `需要用户处理的任务：用户点重新检查会清零重来；条件自己变好（有信号）也会继续`() = runTest {
+    fun `等待中的任务：用户点重新检查会清零退避，条件变好有信号时继续`() = runTest {
         val rig = SchedulerRig(this)
         val id = rig.addRecord(1)
         rig.resources.status = ResourceStatus.Low(ResourceReason.BATTERY_SAVER)
         rig.scheduler.submit(id)
         rig.settle()
         rig.advance(rig.config.resourceRecheckMs.sum())
-        assertTrue(rig.jobOf(id).needsUser)
+        assertFalse(rig.jobOf(id).needsUser)
+        assertEquals(rig.config.resourceRecheckMs.size, rig.jobOf(id).waitChecks)
 
-        rig.scheduler.recheckResources() // 还是不行：计数清零，重新有界地重查
+        rig.scheduler.recheckResources() // 还是不行：计数清零，重新退避
         rig.settle()
         assertFalse(rig.jobOf(id).needsUser)
         assertEquals(0, rig.jobOf(id).waitChecks)
-        rig.advance(rig.config.resourceRecheckMs.sum())
-        assertTrue("重新用完又回到需要用户处理，同样有界", rig.jobOf(id).needsUser)
+        rig.advance(rig.config.resourceRecheckMs.first())
+        assertEquals(1, rig.jobOf(id).waitChecks)
+        assertFalse(rig.jobOf(id).needsUser)
 
         rig.resources.ok() // 用户把省电模式关了
         rig.settle()

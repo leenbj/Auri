@@ -30,6 +30,7 @@ import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -401,6 +402,30 @@ class SchedulerRestartTest : BoundedSchedulerTest() {
         assertEquals(SUCCEEDED, restarted.jobOf(Samples.uuid(1)).state)
         assertNull(restarted.jobOf(Samples.uuid(1)).retryAt)
         assertEquals(Outcome.TRANSITION, restarted.decisionsOf("00000000-0000-4000-8000-0000000000aa").first().outcome)
+    }
+
+    @Test
+    fun `旧版已停重查的等待任务重启后恢复自动重查`() = runTest {
+        val store = InMemoryJobStore()
+        val library = InMemoryRecordLibrary()
+        val id = Samples.uuid(1)
+        library.addRecord(Samples.entry(1))
+        val now = java.time.Instant.parse("2026-01-01T00:00:00Z")
+        store.put(TranscriptionJob(
+            jobId = Samples.uuid(99), recordId = id, kind = JobKind.INITIAL, seq = 1,
+            state = WAITING_RESOURCES, createdAt = now, updatedAt = now,
+            wait = WaitReason.Resources(ResourceReason.LOW_MEMORY), waitChecks = 5, needsUser = true,
+        ))
+        val rig = SchedulerRig(this, library = library, store = store)
+        rig.resources.setSilently(ResourceStatus.Low(ResourceReason.LOW_MEMORY))
+        rig.scheduler.resume()
+        rig.settle()
+        assertFalse(rig.jobOf(id).needsUser)
+        rig.resources.setSilently(ResourceStatus.Ok)
+
+        rig.advance(300_000)
+
+        assertEquals(SUCCEEDED, rig.jobOf(id).state)
     }
 
     /** 一个会读写失败的任务库。 */

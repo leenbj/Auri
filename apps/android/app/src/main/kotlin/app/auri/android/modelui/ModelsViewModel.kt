@@ -115,7 +115,7 @@ sealed interface JobStatus {
     /** 等模型：[code] 是 MODEL_NOT_INSTALLED（没装）或 MODEL_INTEGRITY_FAILED（装了但校验没过）。 */
     data class WaitingModel(val code: ErrorCode?) : JobStatus
 
-    /** 等资源：[reason] 说明为什么；[needsUser] 为 true 表示重查用完了仍然不行，不会再自己重试，需要用户处理或点“重新检查”。 */
+    /** 等资源：[reason] 说明为什么；[needsUser] 兼容旧任务库的标记。 */
     data class WaitingResources(val reason: ResourceReason?, val needsUser: Boolean) : JobStatus
 
     data class RetryScheduled(val retryAt: Instant, val attempts: Int) : JobStatus
