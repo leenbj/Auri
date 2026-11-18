@@ -15,7 +15,7 @@
 | `apps/android/app/`（`:app`） | 极简 Compose 首页 + `HomeViewModel`（`HomeUiState` 与操作的说明在 `HomeViewModel.kt` 文件头的注释里）+ `AuriRuntime`（把各层接起来，没有别的逻辑） |
 | `apps/android/asr/`（`:asr`） | Ticket 14 的转录库，**公共 API 未改** |
 | `capture_contract_check.py` | 用真实 `contracts/schemas/*.json`、语义规则 SR-01…06 与文件间一致性校验 Kotlin 写出的样本 JSON（做法沿用 Ticket 14 的 `asr-android/contract_check.py`，不回显来自输出文件的任何值） |
-| `check_capture_instrumentation.py` | 读 `am instrument -r` 的原始输出，逐个核对每个 `@Test`（含 `SqliteRecordLibraryContractTest` 继承来的 11 个契约测试）都跑了且通过；复用 Ticket 14 的日志解析 |
+| `check_capture_instrumentation.py` | 读 `am instrument -r` 的原始输出，逐个核对每个 `@Test`（含 `SqliteRecordLibraryContractTest` 继承来的 11 个契约测试，以及 Ticket 20 起 `SqliteTranscriptionJobStoreContractTest` 继承来的 7 个）都跑了且通过；复用 Ticket 14 的日志解析 |
 | `run_emulator_acceptance.sh` | 一次性无头模拟器验收（E2）：建 AVD → 起模拟器 → 安装 → 仪器测试 → 逐个核对 → **无论成败都**杀模拟器、删 AVD、释放锁（共享机器的锁协议见脚本头） |
 | `test_*.py` | 上面这些工具的测试（含变异验证，见第 8 节）；`test_capture_contract_output.py` 会真实调用 Gradle |
 | `capture_support.py` | 测试共用：仓库路径、带环境检查的 Gradle 调用、仪器日志构造 |
@@ -46,10 +46,10 @@
 
 | 套件 | 测试数 | 内容 |
 |---|---|---|
-| `:platform` 仪器测试 | 19 | `SqliteRecordLibraryContractTest`（11，继承自 `:capture` testFixtures 的契约测试）+ `SqliteRecordLibraryTest`（8） |
+| `:platform` 仪器测试 | 19（Ticket 20 起共 30） | `SqliteRecordLibraryContractTest`（11，继承自 `:capture` testFixtures 的契约测试）+ `SqliteRecordLibraryTest`（8）；Ticket 20 另加任务库的 `SqliteTranscriptionJobStoreContractTest`（7，同样继承契约）与 `AndroidResourceMonitorTest`（4），见 `execution/acceptance/android-models/README.md` |
 | `:app` 仪器测试（`app.auri.android.capture` 包） | 4 | `CaptureRefusalOnDeviceTest`（没有耳机 → 拒绝、零写入、零转录、不开手机麦克风）；`ForegroundServiceOnDeviceTest` 三个：麦克风类前台服务能起来、类型是 microphone、能停；**起了立刻连停十次**，进程不崩、最后服务不在；**应用按 Home 进了后台再停**，服务照样停掉、进程不崩（先确认焦点窗口确实已不是本应用） |
 
-`check_capture_instrumentation.py` 逐个核对这 23 个测试都真的跑了并通过（只看 `OK (N tests)` 不够：被忽略的不计数，假设失败也算“通过”）。Ticket 14 的设备测试要 239 MB 模型，不在这里跑。
+`check_capture_instrumentation.py` 逐个核对这 23 个测试（Ticket 20 起是 34 个）都真的跑了并通过（只看 `OK (N tests)` 不够：被忽略的不计数，假设失败也算“通过”）。Ticket 14 的设备测试要 239 MB 模型，不在这里跑。
 
 ## 3. 在本机怎么跑
 
