@@ -913,6 +913,19 @@ class CalibrationFindingsTest {
         assertEquals(CompatStatus.UNSUPPORTED, run.profile().capabilities.stopWhileBluetoothMicActive.status)
     }
 
+    @Test
+    fun `点“重做”时界面读到的环境与向导所知的都不同（决定与锁屏通知还没送到向导）：采集状态、锁屏状态、锁屏是否变过，三样都以界面此刻读到的为准`() {
+        val run = Run(real)
+        run.idle() // 第二步开始；向导所知：就绪（ARMED），此刻还不知道录音已经开始了
+        run.wizard.onScreenLockChanged(null) // 锁屏读数读不出来：向导所知的锁屏状态不可信
+        run.wizard.repeat(CurrentEnvironment(RECORDING, false)) // 界面此刻读到：录音中、亮屏
+        run.wizard.reportNoEffect(CurrentEnvironment(RECORDING, false)) // 再用耳机试一次，没反应
+        run.wizard.next()
+        run.wizard.skip()
+        run.wizard.skip()
+        assertEquals(CompatStatus.UNSUPPORTED, run.profile().capabilities.stopWhileBluetoothMicActive.status)
+    }
+
     // ---- 档案本身与命令映射 ----
 
     @Test
