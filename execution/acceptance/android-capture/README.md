@@ -89,7 +89,7 @@ AURI_GRADLE_ARGS=--no-daemon execution/acceptance/android-capture/run_emulator_a
 
 1. **确认设备**。`export ADB_LIBUSB=1; adb devices`：只应看到这一部手机（多台时 `export ANDROID_SERIAL=<序列号>`，别让 adb 选错设备）。记下手机型号、Android 版本、耳机型号；耳机固件版本系统不暴露，在华为智慧生活 App 里看，看不到就写“未知”。
 2. **构建并安装**。`cd apps/android && ./gradlew :app:assembleDebug && adb install -r app/build/outputs/apk/debug/app-debug.apk`。
-3. **安装模型**（Ticket 14 的脚本，约 239 MB，放进应用私有目录，不入库）：`.venv/bin/python execution/acceptance/asr-android/prepare_model.py`，然后 `execution/acceptance/asr-android/install_on_device.sh`。没装模型也能录，Record 会显示“等待转录模型（MODEL_NOT_INSTALLED）”，装好后回到应用就会自动转录。
+3. **安装模型**（Ticket 14 的脚本，约 239 MB，放进应用私有目录，不入库）：`.venv/bin/python execution/acceptance/asr-android/prepare_model.py`，然后 `execution/acceptance/asr-android/install_on_device.sh`。没装模型也能录，Record 会显示“等待转录模型（MODEL_NOT_INSTALLED）”，装好后回到应用就会自动转录。**Ticket 20 之后这一步要改成：打开应用顶部的“模型”页，点“下载”（需要联网，约 163 MB）**——产品里的转录只用模型管理器装好的模型，`install_on_device.sh` 放进 `files/models` 的那份现在只服务 Ticket 14 自己的设备测试，不再喂给产品转录；步骤见 `execution/acceptance/android-models/README.md` 第 5 节。
 4. **连接耳机**。在手机蓝牙设置里确认 FreeClip 已连接。打开 Auri，首页三行应分开显示：`耳机：已连接（耳机名）`、`实际输入：未观测到`、`采集状态：未开启`。**截图①**。
 5. **录一段（前台，屏幕按钮）**。点“开始录音”，依次授权麦克风、“附近的设备”（蓝牙连接）、通知。授权后采集状态应经 `正在确认耳机麦克风` 变成 `录音中`，`实际输入` 变成 `蓝牙耳机（HFP）（耳机名）`（或 LE Audio），通知栏出现常驻的 “Auri 正在录音”。**截图②**。此时在 Mac 上：`adb shell dumpsys audio > /tmp/dumpsys-audio-recording.txt`（录音配置段落里应看到本应用的录音来源是通信类（`VOICE_COMMUNICATION`），输入设备是蓝牙而不是内置麦克风）；`adb logcat -d -s AuriCapture:I > /tmp/auricapture.txt`（只有状态行，没有正文）。
 6. **说一句固定测试句**，对着耳机，5–10 秒（目前最长约 29.5 秒会自动停止，见第 6 节限制）：“今天是测试，Auri 录音转文字，一二三四五。”
