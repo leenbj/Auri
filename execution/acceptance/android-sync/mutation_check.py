@@ -105,6 +105,71 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
 )
 
+GATEWAY_CLIENT = "apps/android/sync/src/main/kotlin/app/auri/sync/gateway/GatewayClient.kt"
+WIRE = "apps/android/sync/src/main/kotlin/app/auri/sync/gateway/Wire.kt"
+TOKEN = "apps/android/sync/src/main/kotlin/app/auri/sync/pairing/DeviceToken.kt"
+HTTP = "apps/android/sync/src/main/kotlin/app/auri/sync/http/Http.kt"
+CLIENT_TESTS = (":sync:test", "--tests", "*GatewayClientTest*")
+
+MUTATIONS += (
+    Mutation(
+        "put-accepts-answer-about-another-revision",
+        "提交的响应必须是对这一条的回答（record_id / revision / text_sha256 都要对上），否则不能当成已入库",
+        (Edit(GATEWAY_CLIENT, "if (stored.recordId != submission.recordId || stored.revision != submission.revision || stored.textSha256 != submission.textSha256) {", "if (false) {"),),
+        CLIENT_TESTS, "sync/build/test-results/test",
+        ("回答的不是我们提交的那一条",),
+    ),
+    Mutation(
+        "status-accepts-answer-about-another-record",
+        "状态查询的回答必须是我们问的那条 Record",
+        (Edit(GATEWAY_CLIENT, "if (status.recordId != recordId) throw", "if (false) throw"),),
+        CLIENT_TESTS, "sync/build/test-results/test",
+        ("回答的不是我们问的那条",),
+    ),
+    Mutation(
+        "retryable-inferred-from-status-only",
+        "网关在错误体里明说的 retryable 优先于按状态码的推断",
+        (Edit(GATEWAY_CLIENT, "retryable = retryable ?: (reply.status >= 500 || reply.status == 429 || reply.status == 408),", "retryable = (reply.status >= 500 || reply.status == 429 || reply.status == 408),"),),
+        CLIENT_TESTS, "sync/build/test-results/test",
+        ("明说的 retryable 优先",),
+    ),
+    Mutation(
+        "response-schema-version-unchecked",
+        "响应的 schema_version 必须是 1.1",
+        (Edit(WIRE, 'if (string("schema_version") != Wire.SCHEMA_VERSION) throw Unreadable("schema_version")', "Unit"),),
+        CLIENT_TESTS, "sync/build/test-results/test",
+        ("令牌太短、含空白或版本不是 1_1", "读不懂"),
+    ),
+    Mutation(
+        "device-token-format-unchecked",
+        "令牌必须是 32..512 个可见 ASCII（不含空白与换行），否则不存",
+        (Edit(TOKEN, r'private val FORMAT = Regex("^[\\x21-\\x7e]{32,512}$")', r'private val FORMAT = Regex("^.*$", RegexOption.DOT_MATCHES_ALL)'),),
+        CLIENT_TESTS, "sync/build/test-results/test",
+        ("令牌太短、含空白或版本不是 1_1",),
+    ),
+    Mutation(
+        "device-token-printed-by-toString",
+        "令牌的字符串形式不能含内容（日志里不小心带上也不泄露）",
+        (Edit(TOKEN, 'override fun toString() = "DeviceToken(redacted)"', 'override fun toString() = "DeviceToken($value)"'),),
+        CLIENT_TESTS, "sync/build/test-results/test",
+        ("合同样本响应解析出网关与设备标识",),
+    ),
+    Mutation(
+        "request-toString-prints-headers",
+        "请求的字符串形式不能带请求头（里面有令牌）",
+        (Edit(HTTP, 'override fun toString() = "$method $path"', 'override fun toString() = "$method $path $headers"'),),
+        CLIENT_TESTS, "sync/build/test-results/test",
+        ("路径、令牌、内容类型与正文逐字节正确",),
+    ),
+    Mutation(
+        "health-accepts-anything",
+        "存活检查必须是合同里的 {status: ok}",
+        (Edit(GATEWAY_CLIENT, 'if (it.string("status") != "ok") throw Unreadable("status")', "Unit"),),
+        CLIENT_TESTS, "sync/build/test-results/test",
+        ("回的不是合同里的存活响应",),
+    ),
+)
+
 # 后面各个切片的变异在对应测试写好之后追加到这里（见 README 的“变异检查”一节）。
 
 
