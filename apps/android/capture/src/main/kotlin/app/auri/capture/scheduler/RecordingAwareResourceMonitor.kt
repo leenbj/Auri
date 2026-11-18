@@ -1,12 +1,14 @@
 package app.auri.capture.scheduler
 
 import app.auri.capture.contract.CaptureState
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.channelFlow
 
 /**
  * 录音优先（Ticket 20）：采集正在确认路由或录音时，调度器不开始新的转录（原因 [ResourceReason.RECORDING_ACTIVE]），录音一结束再开始；
@@ -24,10 +26,17 @@ class RecordingAwareResourceMonitor(
         if (captureState.value in RECORDING) ResourceStatus.Low(ResourceReason.RECORDING_ACTIVE) else base.check()
 
     /** 开始录与结束录各发一个信号（调度器据此重问 [check]）；ROUTING 到 RECORDING 这类答案没变的状态变化不发。 */
-    override val changes: Flow<Unit> = merge(
-        base.changes,
-        captureState.map { it in RECORDING }.distinctUntilChanged().drop(1).map { },
-    )
+    override val changes: Flow<Unit> = channelFlow {
+        val ready = CompletableDeferred<Unit>()
+        launch {
+            base.changes.collect {
+                send(Unit)
+                ready.complete(Unit)
+            }
+        }
+        ready.await()
+        captureState.map { it in RECORDING }.distinctUntilChanged().drop(1).collect { send(Unit) }
+    }
 
     private companion object {
         val RECORDING = setOf(CaptureState.ROUTING, CaptureState.RECORDING)

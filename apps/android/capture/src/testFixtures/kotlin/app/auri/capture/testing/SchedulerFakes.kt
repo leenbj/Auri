@@ -22,6 +22,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -58,7 +60,7 @@ class FakeResourceMonitor : ResourceMonitor {
     @Volatile
     var failure: RuntimeException? = null
     private val signal = MutableSharedFlow<Unit>(extraBufferCapacity = 64)
-    override val changes get() = signal
+    override val changes = flow { emit(Unit); emitAll(signal) }
 
     override fun check(): ResourceStatus {
         checks.incrementAndGet()

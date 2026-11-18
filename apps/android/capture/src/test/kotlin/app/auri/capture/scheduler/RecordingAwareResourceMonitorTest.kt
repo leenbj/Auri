@@ -7,6 +7,7 @@ import app.auri.capture.testing.FakeResourceMonitor
 import app.auri.capture.testing.SchedulerRig
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
@@ -64,7 +65,7 @@ class RecordingAwareResourceMonitorTest {
     @Test
     fun `开始录与结束录都发信号让调度器重问，别的状态变化不发，下层的信号照样转发`() = runTest {
         val signals = mutableListOf<Unit>()
-        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { monitor.changes.collect { signals += it } }
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { monitor.changes.drop(1).collect { signals += it } }
 
         capture.value = CaptureState.ROUTING
         assertEquals("开始确认路由", 1, signals.size)

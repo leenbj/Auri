@@ -7,7 +7,7 @@ import app.auri.capture.machine.TranscriptionState
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.flow.flowOf
 
 // 调度器碰外界的三个端口（任务库见 JobStore）。生产实现分别在 :app（模型管理器）与 :platform（Android 资源信号），
 // 这里只有接口与空实现；调度器的全部规则都能用假实现在 JVM 里测。
@@ -42,7 +42,7 @@ sealed interface ResourceStatus {
 /**
  * 手机此刻转得动吗（存储、内存、温度、省电模式、是否正在录音）。
  * [check] 现取现算，可以在任意线程调用；[changes] 在可能改变答案的事情发生时发一个信号（温度回调、省电广播、录音开始或结束），
- * 调度器收到信号就重新问 [check]。信号可能丢，所以调度器还会按有界的间隔自己重查。
+ * 首个信号表示监听注册完成；调度器收到信号就重新问 [check]。信号可能丢，所以调度器还会按有界的间隔自己重查。
  */
 interface ResourceMonitor {
     fun check(): ResourceStatus
@@ -53,7 +53,7 @@ interface ResourceMonitor {
 object ResourcesAlwaysOk : ResourceMonitor {
     override fun check(): ResourceStatus = ResourceStatus.Ok
 
-    override val changes: Flow<Unit> = emptyFlow()
+    override val changes: Flow<Unit> = flowOf(Unit)
 }
 
 /** 任务库：任务在每次状态变化时落盘，进程重启后据此恢复。生产实现是 `:platform` 的 SQLite，测试用 [InMemoryJobStore]。 */

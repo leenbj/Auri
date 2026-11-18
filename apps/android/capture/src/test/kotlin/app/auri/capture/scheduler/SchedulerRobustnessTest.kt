@@ -18,6 +18,7 @@ import app.auri.capture.testing.InMemoryRecordLibrary
 import app.auri.capture.testing.Samples
 import app.auri.capture.testing.SchedulerRig
 import app.auri.capture.testing.SequentialIds
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -35,6 +36,27 @@ import org.junit.Test
 /** 调度器依赖的东西（Record 库、适配器）出故障时：绝不能把用户的转录悄悄取消或卡死整个队列。 */
 @OptIn(ExperimentalCoroutinesApi::class)
 class SchedulerRobustnessTest : BoundedSchedulerTest() {
+    @Test
+    fun `资源监听尚未注册完成时不能开始推理`() = runTest {
+        val registration = CompletableDeferred<Unit>()
+        val monitor = object : ResourceMonitor {
+            override fun check() = ResourceStatus.Ok
+            override val changes = flow<Unit> {
+                registration.await()
+                error("injected registration failure")
+            }
+        }
+        val rig = SchedulerRig(this, monitor = monitor)
+        val id = rig.addRecord(1)
+        rig.scheduler.submit(id)
+        rig.settle()
+        assertTrue("资源状态尚不可知，不应开始推理", rig.adapter.requests.isEmpty())
+
+        registration.complete(Unit)
+        rig.settle()
+        assertEquals(WAITING_RESOURCES, rig.jobOf(id).state)
+    }
+
     @Test
     fun `资源变化流抛错时等待并重订阅，异常不逃到未捕获处理器`() = runTest {
         var broken = true

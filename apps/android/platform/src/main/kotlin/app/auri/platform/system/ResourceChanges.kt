@@ -13,9 +13,16 @@ internal fun resourceChanges(
 ): Flow<Unit> = callbackFlow {
     var thermalRegistration: AutoCloseable? = null
     var batteryRegistration: AutoCloseable? = null
+    val lock = Any()
+    var ready = false
+    val signal: () -> Unit = { synchronized(lock) { if (ready) trySend(Unit) }; Unit }
     try {
-        thermalRegistration = thermal { trySend(Unit) }
-        batteryRegistration = battery { trySend(Unit) }
+        thermalRegistration = thermal(signal)
+        batteryRegistration = battery(signal)
+        synchronized(lock) {
+            ready = true
+            trySend(Unit)
+        }
         awaitClose()
     } finally {
         runCatching { batteryRegistration?.close() }

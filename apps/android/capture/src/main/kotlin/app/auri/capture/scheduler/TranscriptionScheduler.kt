@@ -141,6 +141,7 @@ class TranscriptionScheduler(
     private var nextRunId = 1L
     private var storeLoaded = false
     private var resourceFlowUnavailable = false
+    private var resourceMonitoringPending = true
 
     /** 引擎在运行时拒绝过的模型 generation（见 [onModelRefused]）；不落盘，重启后由 [resume] 重新试。 */
     private var refusal: Refusal? = null
@@ -243,10 +244,12 @@ class TranscriptionScheduler(
             is Message.RunFinished -> onRunFinished(message)
             Message.ModelChanged -> wake(JobCause.MODEL_CHANGED)
             Message.ResourcesChanged -> {
+                resourceMonitoringPending = false
                 resourceFlowUnavailable = false
                 wake(JobCause.RESOURCES_CHANGED)
             }
             Message.ResourcesUnavailable -> {
+                resourceMonitoringPending = false
                 resourceFlowUnavailable = true
                 wake(JobCause.RESOURCES_CHANGED)
             }
@@ -361,7 +364,7 @@ class TranscriptionScheduler(
     // ---------------------------------------------------------------- 唤醒：先过模型这一关，再过资源这一关，最后才开始
 
     private suspend fun wake(cause: JobCause) {
-        if (!storeLoaded) return
+        if (!storeLoaded || resourceMonitoringPending) return
         reconcileModel(cause)
         if (jobsById.values.any { it.state in RESOURCE_RELEVANT }) {
             val status = resourceStatus()
