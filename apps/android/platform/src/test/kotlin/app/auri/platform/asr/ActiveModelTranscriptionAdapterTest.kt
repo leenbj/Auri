@@ -20,7 +20,9 @@ import java.io.IOException
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -93,7 +95,7 @@ class ActiveModelTranscriptionAdapterTest {
     private inner class FakeEngine(val generation: Long, var reply: () -> app.auri.asr.TranscriptionOutcome) : LocalSpeechEngine, AutoCloseable {
         override val capabilities = asrCapabilities("gen-$generation")
         var calls = 0
-        var closed = false
+        @Volatile var closed = false
 
         override fun transcribe(audio: PcmAudio): app.auri.asr.TranscriptionResult {
             calls += 1
@@ -134,6 +136,10 @@ class ActiveModelTranscriptionAdapterTest {
 
     private val handle = CaptureHandle("0b0b0b0b-0000-4000-8000-000000000001", 1, 1, GateState.OPEN)
     private var recordCounter = 0
+
+    private suspend fun awaitClosed(engine: FakeEngine) = withTimeout(5_000) {
+        while (!engine.closed) delay(1)
+    }
 
     @Test
     fun `转录校验与推理期间持有模型目录租约，用完释放`() = runBlocking {
@@ -210,6 +216,7 @@ class ActiveModelTranscriptionAdapterTest {
         val result = rig.adapter.transcribe(request())
 
         assertEquals(listOf(1L, 2L), rig.loaded.map { it.generation })
+        awaitClosed(rig.engines[0])
         assertTrue("旧一代的引擎已关闭，不再占内存", rig.engines[0].closed)
         assertEquals("gen-2", result.capabilities.modelVersion)
         assertEquals(1, rig.engines[1].calls)
@@ -290,6 +297,7 @@ class ActiveModelTranscriptionAdapterTest {
 
         rig.adapter.close()
 
+        awaitClosed(rig.engines.single())
         assertTrue(rig.engines.single().closed)
         val failed = rig.adapter.transcribe(request()).outcome
         assertTrue("已关闭：不再加载任何东西", failed is TranscriptionOutcome.Failed)
@@ -318,6 +326,7 @@ class ActiveModelTranscriptionAdapterTest {
         assertSame("旧引擎出的事，记在旧的那一代名下；模型管理器会忽略已经被换掉的一代", old, rig.integrityReports.single())
         assertEquals("新模型的字", ((rig.adapter.transcribe(request())).outcome as TranscriptionOutcome.Text).text)
         assertEquals(listOf(1L, 2L), rig.loaded.map { it.generation })
+        awaitClosed(rig.engines[0])
         assertTrue(rig.engines[0].closed)
     }
 

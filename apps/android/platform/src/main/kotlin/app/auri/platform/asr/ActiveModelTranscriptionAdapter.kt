@@ -14,6 +14,7 @@ import app.auri.modelmgmt.ActiveModel
 import app.auri.modelmgmt.ActiveModelStatus
 import java.io.File
 import java.util.UUID
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -36,7 +37,7 @@ fun ModelManifest.declaredCapabilities(): AsrCapabilities =
 /**
  * 转录适配器：跟着模型管理器“当前启用的模型”走（Ticket 20）。
  *  - 没装、或已判为损坏：不创建引擎、不碰任何目录，直接回“等模型”（调度器本来就不会在这时放行任务，这是第二道门）；
- *  - 装好了：按模型的“代”创建引擎并复用；换了代就先摘掉旧引擎、再创建新的，旧引擎在锁外关掉（它可能正在转，关闭会等它）；
+ *  - 装好了：按模型的“代”创建引擎并复用；换代后等旧引擎的使用者全部返回，再在适配器线程关闭它；
  *  - 引擎加载前的校验器拒绝了这个模型（MODEL_INTEGRITY_FAILED）：把出事的那一份 [ActiveModel] 上报给 [onIntegrityFailure]，
  *    模型管理器据此判为损坏；上报带着“代”，所以模型已被换掉时迟到的上报不会冤枉新模型；
  *  - 没有云端回退：这里只有本地引擎。创建引擎抛异常、适配器已关闭、上报方出错，都收敛成结果，不往上抛。
@@ -51,7 +52,11 @@ class ActiveModelTranscriptionAdapter(
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val loadEngine: (ActiveModel) -> LoadedEngine,
 ) : TranscriptionAdapter, AutoCloseable {
-    private class Current(val model: ActiveModel, val loaded: LoadedEngine)
+    private class Current(val model: ActiveModel, val loaded: LoadedEngine) {
+        var users = 0
+        var retired = false
+        var closeScheduled = false
+    }
 
     private val lock = Any()
     private var current: Current? = null
@@ -61,11 +66,13 @@ class ActiveModelTranscriptionAdapter(
         while (true) {
             val status = active.value as? ActiveModelStatus.Ready ?: return fallbackCapabilities
             val lease = status.model.acquire() ?: continue
+            var borrowed: Current? = null
             return try {
-                engineFor(status.model).engine.capabilities.toCapture()
+                borrow(status.model).also { borrowed = it }.loaded.engine.capabilities.toCapture()
             } catch (e: Exception) {
                 fallbackCapabilities
             } finally {
+                borrowed?.let(::release)
                 lease.close()
             }
         }
@@ -92,50 +99,80 @@ class ActiveModelTranscriptionAdapter(
     }
 
     private suspend fun run(model: ActiveModel, request: TranscriptionRequest): TranscriptionResult {
-        val loaded = try {
-            engineFor(model)
+        val borrowed = try {
+            borrow(model)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             return outcomeOnly(TranscriptionOutcome.Failed(null))
         }
-        val result = LocalTranscriptionAdapter(loaded.engine, dispatcher).transcribe(request)
-        val outcome = result.outcome
-        if (outcome is TranscriptionOutcome.WaitingModel && outcome.code == ErrorCode.MODEL_INTEGRITY_FAILED) {
-            try {
-                onIntegrityFailure(model)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                // 上报方出错不能吞掉转录结果：调度器仍要知道这次是“等模型”
+        try {
+            val result = LocalTranscriptionAdapter(borrowed.loaded.engine, dispatcher).transcribe(request)
+            val outcome = result.outcome
+            if (outcome is TranscriptionOutcome.WaitingModel && outcome.code == ErrorCode.MODEL_INTEGRITY_FAILED) {
+                try {
+                    onIntegrityFailure(model)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // 上报方出错不能吞掉转录结果：调度器仍要知道这次是“等模型”
+                }
             }
+            return result
+        } finally {
+            release(borrowed)
         }
-        return result
     }
 
-    private fun engineFor(model: ActiveModel): LoadedEngine {
+    private fun borrow(model: ActiveModel): Current {
         var stale: LoadedEngine? = null
         try {
             return synchronized(lock) {
                 check(!closed) { "转录适配器已关闭" }
                 val existing = current
-                if (existing != null && existing.model.generation == model.generation) return existing.loaded
-                // 先摘掉旧的再创建新的：创建抛异常时旧引擎也不会继续挂着，下一次重新来
-                current = null
-                stale = existing?.loaded
-                loadEngine(model).also { current = Current(model, it) }
+                val selected = if (existing != null && existing.model.generation == model.generation) existing else {
+                    current = null
+                    if (existing != null) stale = retire(existing)
+                    Current(model, loadEngine(model)).also { current = it }
+                }
+                selected.users += 1
+                selected
             }
         } finally {
-            stale?.closeQuietly()
+            stale?.closeLater()
         }
     }
 
     override fun close() {
         val toClose = synchronized(lock) {
             closed = true
-            current?.loaded.also { current = null }
+            current?.let(::retire).also { current = null }
         }
-        toClose?.closeQuietly()
+        toClose?.closeLater()
+    }
+
+    /** 在 lock 内调用，确保每个引擎只安排一次关闭。 */
+    private fun retire(engine: Current): LoadedEngine? {
+        engine.retired = true
+        return closable(engine)
+    }
+
+    private fun closable(engine: Current): LoadedEngine? {
+        if (!engine.retired || engine.users != 0 || engine.closeScheduled) return null
+        engine.closeScheduled = true
+        return engine.loaded
+    }
+
+    private fun release(engine: Current) {
+        val toClose = synchronized(lock) {
+            engine.users -= 1
+            closable(engine)
+        }
+        toClose?.closeLater()
+    }
+
+    private fun LoadedEngine.closeLater() {
+        dispatcher.dispatch(EmptyCoroutineContext, Runnable { closeQuietly() })
     }
 
     private fun LoadedEngine.closeQuietly() {

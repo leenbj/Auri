@@ -30,6 +30,8 @@ import app.auri.platform.storage.WavRecordingStore
 import app.auri.platform.system.SystemClock
 import java.io.File
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -169,6 +171,59 @@ class LocalTranscriptionStackTest {
         while (!condition()) {
             if (System.nanoTime() > deadline) fail("等不到：$what")
             Thread.sleep(10)
+        }
+    }
+
+    @Test
+    fun `模型切换时运行中的旧引擎不阻塞邮箱取消任务`() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val replacementCreated = CountDownLatch(1)
+        val oldClosed = CountDownLatch(1)
+        val closeThreads = CopyOnWriteArrayList<Thread>()
+        val base = ThreadRecordingEngine()
+        val blocking = object : LocalSpeechEngine {
+            override val capabilities = base.capabilities
+            override fun transcribe(audio: PcmAudio): app.auri.asr.TranscriptionResult {
+                entered.countDown()
+                check(release.await(10, TimeUnit.SECONDS))
+                return base.transcribe(audio)
+            }
+        }
+        val active = MutableStateFlow<ActiveModelStatus>(ActiveModelStatus.Ready(model(1)))
+        val stack = LocalTranscriptionStack(
+            library, active, capabilities(), {}, { selected ->
+                if (selected.generation == 1L) {
+                    LoadedEngine(blocking, AutoCloseable {
+                        release.await(10, TimeUnit.SECONDS)
+                        closeThreads += Thread.currentThread()
+                        oldClosed.countDown()
+                    })
+                } else {
+                    replacementCreated.countDown()
+                    LoadedEngine(base, base)
+                }
+            }, SystemClock, scope, InMemoryJobStore(), ResourcesAlwaysOk,
+        )
+        this.stack = stack
+        try {
+            val id = addRecord(1)
+            stack.scheduler.submit(id)
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            active.value = ActiveModelStatus.Ready(model(2))
+            assertTrue(replacementCreated.await(5, TimeUnit.SECONDS))
+
+            stack.scheduler.cancel(stack.scheduler.jobs.value.single().jobId)
+            awaitUntil("模型切换期间取消生效", timeoutMs = 1_000) {
+                stack.scheduler.jobs.value.single().state == TranscriptionState.CANCELLED
+            }
+            assertEquals("旧引擎仍在运行，不能关闭", 1L, oldClosed.count)
+
+            release.countDown()
+            assertTrue(oldClosed.await(5, TimeUnit.SECONDS))
+            assertEquals("auri-transcribe", closeThreads.single().name)
+        } finally {
+            release.countDown()
         }
     }
 

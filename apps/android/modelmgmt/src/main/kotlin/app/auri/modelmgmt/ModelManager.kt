@@ -403,7 +403,7 @@ class ModelManager(
             if (released.compareAndSet(false, true)) synchronized(lock) {
                 val remaining = leases.getValue(dir) - 1
                 if (remaining == 0) leases.remove(dir) else leases[dir] = remaining
-                installed[id]?.dir?.let { collectGarbage(id, it.name) }
+                if (remaining == 0) installed[id]?.dir?.takeIf { it != dir }?.let { collectGarbage(id, it.name) }
             }
         }
     }
