@@ -2,15 +2,16 @@
 
 沿用 Ticket 14 的 execution/acceptance/asr-android/check_instrumentation.py（读它的日志解析与源码里 @Test 的提取，不复制），
 只补一件它做不到的事：继承来的测试。`:platform` 的 SqliteRecordLibraryContractTest 自己没有 @Test，它继承
-`:capture` testFixtures 里 RecordLibraryContract 的 11 个契约测试（名字是带反引号的 Kotlin 方法名，日志里以子类名报出）。
+`:capture` testFixtures 里 RecordLibraryContract 的 11 个契约测试（名字是带反引号的 Kotlin 方法名，日志里以子类名报出）；
+Ticket 20 的 SqliteTranscriptionJobStoreContractTest 同理，继承 JobStoreContract 的 7 个。
 只看最后那行 `OK (N tests)` 不够：被 @Ignore 的不计入 N，Assume 失败（等于跳过）却算“通过”，删掉一个测试也只是 N 少一。
 所以这里以源码为准，逐个要求日志里有它的“通过”记录；没有记录、被忽略、假设失败、失败、出错、只开始没结束（进程崩了）
 都是问题，没有“跳过”；日志里出现源码里没有的测试也算问题（设备上装的可能是旧版测试 APK）。
 
 用法：python check_capture_instrumentation.py <instrumentation.log> <androidTest 源码目录> [<目录> ...]
 有问题就逐条打印并以 1 退出；参数不对退出 2。
-shortcut: 继承只认 `class X : RecordLibraryContract()` 这一种写法（目前唯一的契约基类）；契约基类里 @Test 的个数与读出的方法名个数
-对不上就抛 ValueError，不悄悄少数。有第二个契约基类时再泛化。
+shortcut: 继承只认 `class X : <契约基类>()` 这一种写法，契约基类登记在 CONTRACT_BASES（目前两个）；契约基类里 @Test 的个数与读出的
+方法名个数对不上就抛 ValueError，不悄悄少数。新增契约基类时往 CONTRACT_BASES 里加一行。
 """
 import importlib.util
 import pathlib
@@ -24,9 +25,11 @@ _spec = importlib.util.spec_from_file_location("asr_check_instrumentation", _HER
 _base = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_base)
 
-CONTRACT_SOURCE = REPO_ROOT / "apps" / "android" / "capture" / "src" / "testFixtures" / "kotlin" / "app" / "auri" / "capture" / "testing" / "RecordLibraryContract.kt"
+_FIXTURES = REPO_ROOT / "apps" / "android" / "capture" / "src" / "testFixtures" / "kotlin" / "app" / "auri" / "capture" / "testing"
+CONTRACT_SOURCE = _FIXTURES / "RecordLibraryContract.kt"
+CONTRACT_BASES = {"RecordLibraryContract": CONTRACT_SOURCE, "JobStoreContract": _FIXTURES / "JobStoreContract.kt"}
 _BACKTICK_TEST = re.compile(r"@Test\b\s*fun\s+`([^`]+)`")
-_SUBCLASS = re.compile(r"^class\s+(\w+)\s*:\s*RecordLibraryContract\(\)", re.MULTILINE)
+_SUBCLASS = re.compile(r"^class\s+(\w+)\s*:\s*(%s)\(\)" % "|".join(CONTRACT_BASES), re.MULTILINE)
 _PACKAGE = re.compile(r"^package\s+([\w.]+)", re.MULTILINE)
 
 
@@ -42,7 +45,7 @@ def contract_test_names(source: pathlib.Path = CONTRACT_SOURCE) -> list:
 def expected_tests(src_dirs) -> set:
     """源码里的每个 @Test（含继承来的契约测试），形如 `app.auri.platform.library.SqliteRecordLibraryTest#方法名`。"""
     names: set = set()
-    contract = None
+    contracts: dict = {}
     for src_dir in src_dirs:
         names |= _base.expected_tests(src_dir)
         for path in sorted(pathlib.Path(src_dir).rglob("*.kt")):
@@ -50,9 +53,11 @@ def expected_tests(src_dirs) -> set:
             for match in _SUBCLASS.finditer(text):
                 package = _PACKAGE.search(text)
                 if package is None:
-                    raise ValueError(f"{path.name} 继承了 RecordLibraryContract，但读不出包名")
-                contract = contract if contract is not None else contract_test_names()
-                names.update(f"{package.group(1)}.{match.group(1)}#{name}" for name in contract)
+                    raise ValueError(f"{path.name} 继承了 {match.group(2)}，但读不出包名")
+                base = match.group(2)
+                if base not in contracts:
+                    contracts[base] = contract_test_names(CONTRACT_BASES[base])
+                names.update(f"{package.group(1)}.{match.group(1)}#{name}" for name in contracts[base])
     return names
 
 

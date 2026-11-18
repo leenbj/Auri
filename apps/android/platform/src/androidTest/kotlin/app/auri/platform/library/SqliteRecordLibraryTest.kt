@@ -62,6 +62,27 @@ class SqliteRecordLibraryTest {
     }
 
     @Test
+    fun 旧数据库升级后保留原记录并支持幂等发布() = runBlocking {
+        val first = open()
+        val entry = Samples.entry(1)
+        first.addRecord(entry)
+        val old = first.publishRevision(Samples.draft(entry.recordId, text = "旧版本"))
+        first.close()
+        raw { db ->
+            db.execSQL("DROP INDEX revisions_publication_key")
+            db.execSQL("ALTER TABLE revisions DROP COLUMN publication_key")
+            db.version = 1
+        }
+
+        val upgraded = open()
+        assertEquals(listOf(old), upgraded.get(entry.recordId)!!.revisions)
+        val draft = Samples.draft(entry.recordId, text = "新结果").copy(publicationKey = Samples.uuid(90))
+        val published = upgraded.publishRevision(draft)
+        assertEquals(published, upgraded.publishRevision(draft))
+        assertEquals(listOf(old, published), upgraded.get(entry.recordId)!!.revisions)
+    }
+
+    @Test
     fun 没有转出文字的_Record_重启之后还是待转录_音频位置不丢() = runBlocking {
         val first = open()
         val entry = Samples.entry(2)

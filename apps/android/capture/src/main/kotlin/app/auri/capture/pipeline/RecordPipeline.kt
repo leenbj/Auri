@@ -1,19 +1,14 @@
 package app.auri.capture.pipeline
 
 import app.auri.capture.adapter.TranscriptionAdapter
-import app.auri.capture.adapter.TranscriptionOutcome
-import app.auri.capture.adapter.TranscriptionRequest
 import app.auri.capture.contract.ErrorCode
-import app.auri.capture.contract.RevisionSource
-import app.auri.capture.contract.ReviewState
 import app.auri.capture.coordinator.CaptureOutput
 import app.auri.capture.coordinator.Clock
 import app.auri.capture.coordinator.SealedRecording
 import app.auri.capture.library.RecordEntry
 import app.auri.capture.library.RecordLibrary
-import app.auri.capture.library.RevisionDraft
 import app.auri.capture.library.TranscriptionStatus
-import java.util.concurrent.ConcurrentHashMap
+import app.auri.capture.scheduler.TranscriptionScheduler
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
@@ -32,33 +27,33 @@ sealed interface PipelineNotice {
 }
 
 /**
- * 录音封存之后的流水线：登记 Record → 自动转录（一次只转一个，按先后顺序）→ 发布第一条 Revision。
+ * 录音封存之后的流水线：登记 Record → 交给转录调度器（[TranscriptionScheduler]）→ 第一条 Revision 由调度器发布。
  * 接在协调器后面当它的 [CaptureOutput]；协调器只管把录音封存好，之后没有任何人需要“触发转录”。
  *
- * 规则：
+ * 本类只做“登记”：转录的排队、一次只转一个（默认）、等模型、等资源、有界重试、取消、重转录、重启后恢复，全在调度器里
+ * （规则见它的类注释；任务状态严格按 transcription.machine.json 走）。这里保留的规则：
  *  - 一个封存结果 = 一个 Record（record_id 与音频同一个标识）；同一个录音交付两次只登记一次。
- *  - 转出的文字是数据：原样存成 Revision，不解释、不执行（SEC-004）。空白文字当作没有语音，不留空 Revision。
- *  - 没有语音 = 有 Record、没有 Revision；不编造文字。没有音频（确认了路由却没收到采样）同样记为没有语音，不调用转录。
- *  - 模型没装好：Record 与音频保留，状态为 WAITING_MODEL，[resume] 时重新转录。转录失败：状态为 FAILED，不自动重试。
- *  - 适配器或库的异常只影响那一个 Record，队列继续往下走。
+ *  - 没有音频（确认了路由却没收到采样）记为没有语音，不提交转录。
+ *  - 转出的文字是数据（SEC-004）、没有语音就没有 Revision、模型没装好 Record 与音频保留并等模型——这些由调度器保证。
+ *  - 库的异常只影响那一个 Record：登记失败发 [PipelineNotice.RecordNotSaved]，其余照常。
  *  - 日志里不出现正文（本类不打日志）。
  */
 class RecordPipeline(
     private val library: RecordLibrary,
-    private val transcription: TranscriptionAdapter,
-    private val clock: Clock,
+    private val scheduler: TranscriptionScheduler,
     private val scope: CoroutineScope,
 ) : CaptureOutput {
+    /** 默认配置的调度器：模型随时可用、资源永远够、任务只存在内存里（重启后靠 Record 库的状态重建）。 */
+    constructor(library: RecordLibrary, transcription: TranscriptionAdapter, clock: Clock, scope: CoroutineScope) :
+        this(library, TranscriptionScheduler(library, transcription, clock, scope), scope)
+
     private val intake = Channel<SealedRecording>(Channel.UNLIMITED)
-    private val queue = Channel<String>(Channel.UNLIMITED)
-    private val queued: MutableSet<String> = ConcurrentHashMap.newKeySet()
     private val noticeFlow = MutableSharedFlow<PipelineNotice>(extraBufferCapacity = 64)
 
     val notices: SharedFlow<PipelineNotice> = noticeFlow.asSharedFlow()
 
     init {
         scope.launch { for (sealed in intake) register(sealed) }
-        scope.launch { for (recordId in queue) transcribeOne(recordId) }
     }
 
     /** 协调器在封存完成时调用；只入队，不阻塞。 */
@@ -70,19 +65,11 @@ class RecordPipeline(
         noticeFlow.tryEmit(PipelineNotice.RecordingLost(recordId, reason))
     }
 
-    /** 把库里还没转完的 Record（上次没转完、或等模型）重新排进转录队列：进程重启后、模型装好后调用。 */
-    fun resume() {
-        scope.launch {
-            val pending = try {
-                library.incomplete()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                return@launch
-            }
-            pending.forEach { enqueue(it.recordId) }
-        }
-    }
+    /**
+     * 进程启动后、界面回到前台、模型装好后调用（可以随便多调）：调度器会认领上次被杀时正在转的任务，
+     * 并把库里没转完却没有任务的 Record 补上任务。
+     */
+    fun resume() = scheduler.resume()
 
     private suspend fun register(sealed: SealedRecording) {
         val result = sealed.result
@@ -111,59 +98,6 @@ class RecordPipeline(
             noticeFlow.tryEmit(PipelineNotice.RecordNotSaved(result.recordId))
             return
         }
-        if (added && audio != null) enqueue(result.recordId)
-    }
-
-    private fun enqueue(recordId: String) {
-        if (queued.add(recordId)) queue.trySend(recordId)
-    }
-
-    private suspend fun transcribeOne(recordId: String) {
-        try {
-            val entry = library.get(recordId) ?: return
-            val audio = entry.audio ?: return
-            if (entry.transcription != TranscriptionStatus.PENDING && entry.transcription != TranscriptionStatus.WAITING_MODEL) return
-
-            val result = transcription.transcribe(TranscriptionRequest(recordId, audio))
-            when (val outcome = result.outcome) {
-                is TranscriptionOutcome.Text ->
-                    if (outcome.text.isBlank()) {
-                        library.markTranscription(recordId, TranscriptionStatus.NO_SPEECH)
-                    } else {
-                        library.publishRevision(
-                            RevisionDraft(
-                                recordId = recordId,
-                                text = outcome.text,
-                                source = RevisionSource.ASR,
-                                language = outcome.language,
-                                reviewState = ReviewState.NOT_REVIEWED,
-                                executionLocation = result.capabilities.executionLocation,
-                                engine = result.capabilities.engine,
-                                modelId = result.capabilities.modelId,
-                                modelVersion = result.capabilities.modelVersion,
-                                confidence = outcome.confidence,
-                                createdAt = clock.now(),
-                            ),
-                        )
-                    }
-
-                TranscriptionOutcome.NoSpeech -> library.markTranscription(recordId, TranscriptionStatus.NO_SPEECH)
-                is TranscriptionOutcome.WaitingModel -> library.markTranscription(recordId, TranscriptionStatus.WAITING_MODEL, outcome.code)
-                is TranscriptionOutcome.Failed -> library.markTranscription(recordId, TranscriptionStatus.FAILED, outcome.code)
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            // 只影响这一个 Record：标为失败（音频仍在），队列继续
-            try {
-                library.markTranscription(recordId, TranscriptionStatus.FAILED, null)
-            } catch (inner: CancellationException) {
-                throw inner
-            } catch (inner: Exception) {
-                // 连状态都写不进去：Record 保持原样，下次 resume 还会再试
-            }
-        } finally {
-            queued.remove(recordId)
-        }
+        if (added && audio != null) scheduler.submit(result.recordId)
     }
 }

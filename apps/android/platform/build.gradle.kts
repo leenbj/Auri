@@ -27,13 +27,19 @@ android {
     }
 
     testOptions {
-        unitTests.all { it.useJUnit() }
+        unitTests.all {
+            it.useJUnit()
+            // 模型适配器的测试直接读 apps/android/manifests/ 下真实的清单
+            it.systemProperty("auri.manifests.dir", rootProject.projectDir.resolve("manifests").path)
+        }
     }
 }
 
 dependencies {
     api(project(":capture"))
     implementation(project(":asr"))
+    // 转录适配器与模型管理器的粘合（ActiveModel 在 :modelmgmt）；:platform 自己的清单仍然不声明 INTERNET
+    implementation(project(":modelmgmt"))
     implementation(libs.kotlinx.coroutines.android)
 
     testImplementation(libs.junit)
@@ -46,7 +52,10 @@ dependencies {
     androidTestImplementation(testFixtures(project(":capture")))
 }
 
-// The privacy guard scans compiled production classes in all four modules.
+// The privacy and network-isolation guards scan compiled production classes in all five modules.
 tasks.matching { it.name == "testDebugUnitTest" }.configureEach {
-    dependsOn(":app:compileDebugKotlin", ":app:compileDebugJavaWithJavac")
+    dependsOn(
+        ":app:compileDebugKotlin", ":app:compileDebugJavaWithJavac",
+        ":modelmgmt:compileDebugKotlin", ":modelmgmt:compileDebugJavaWithJavac",
+    )
 }

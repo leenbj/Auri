@@ -1,0 +1,77 @@
+// :modelmgmt —— 本地转录模型的目录、下载（可暂停、可续传）、校验与原子启用（Ticket 20）。
+// 这是整个应用里唯一允许出现网络代码的模块，所以 INTERNET 权限只在它的清单里声明：
+// 它不依赖 :capture / :platform，看不到任何音频、文字或 Record 类型，也没有任何通道把它们交给网络
+// （NetworkIsolationTest 扫四个生产模块的类文件，保证网络 API 只出现在这里；音频与文字的离线证据见 execution/acceptance/android-models/README.md）。
+// 依赖 :asr 只为复用 ModelManifest 与 ModelVerifier：下载下来的文件必须由同一个校验器放行，而不是另写一套。
+plugins {
+    alias(libs.plugins.android.library)
+    alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.serialization)
+}
+
+android {
+    namespace = "app.auri.modelmgmt"
+    compileSdk = 35
+
+    defaultConfig {
+        // 与 :asr 一致
+        minSdk = 31
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    testOptions {
+        unitTests.all {
+            it.useJUnit()
+            // 测试直接读 apps/android/manifests/ 下真实的清单，不拷贝
+            it.systemProperty("auri.manifests.dir", rootProject.projectDir.resolve("manifests").path)
+        }
+    }
+}
+
+// 一次真实下载的检查（不是单元测试，单元测试里不许联网）：
+//   ./gradlew :modelmgmt:realDownloadCheck -PauriRealDownload=<仓库外的目录，例如 ~/.cache/auri/models>
+// 做什么见 RealDownloadCheck.kt 的文件头。没有给 -PauriRealDownload 就失败，不会悄悄下到别处。
+tasks.register<JavaExec>("realDownloadCheck") {
+    group = "verification"
+    description = "用线上同一套代码对清单里的真实地址下载一次（中途暂停并续传），再独立校验哈希。需要联网。"
+    // 只借单元测试的类路径（编译好的测试类 + 运行时依赖），不运行它：这两个文件集合自带的构建依赖只会触发编译与依赖打包。
+    // 注意别写成 unit.map { ... }：TaskProvider.map 会把 testDebugUnitTest 本身变成依赖，整套单元测试会先跑一遍。
+    val unit = tasks.named<Test>("testDebugUnitTest").get()
+    classpath = unit.testClassesDirs + unit.classpath
+    mainClass.set("app.auri.modelmgmt.RealDownloadCheckKt")
+    val manifest = rootProject.projectDir.resolve("manifests/sensevoice-small-int8-2024-07-17.manifest.json")
+    argumentProviders.add(
+        CommandLineArgumentProvider {
+            val dir = providers.gradleProperty("auriRealDownload").orNull
+                ?: throw GradleException("要用 -PauriRealDownload=<目录> 指定下载到哪里（仓库外，例如 ~/.cache/auri/models）")
+            listOf(manifest.path, dir)
+        },
+    )
+}
+
+dependencies {
+    // ModelManifest / ModelVerifier 出现在本模块的公开接口里
+    api(project(":asr"))
+    api(libs.kotlinx.coroutines.core)
+    implementation(libs.kotlinx.serialization.json)
+    // 清单里的包是 .tar.bz2：JDK 与 Android 都没有 bzip2 解码，所以需要它。
+    // commons-io 与 commons-lang3 是它的必需依赖，在这里写成精确版本（与它的 POM 一致），不让构建悄悄解析成别的版本。
+    // 三个 jar 的 SHA-256 固定在 DependencyPinTest 里。
+    implementation(libs.commons.compress)
+    implementation(libs.commons.io)
+    implementation(libs.commons.lang3)
+
+    // DNS 必须在实际建立 HTTPS 连接时校验，不能让 URLConnection 再解析一次。
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okio:okio:3.6.0")
+
+    testImplementation(libs.junit)
+}

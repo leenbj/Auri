@@ -26,6 +26,11 @@ class InMemoryRecordLibrary(private val publicationStep: (Revision) -> Unit = {}
 
     override suspend fun publishRevision(draft: RevisionDraft): Revision = synchronized(this) {
         val current = records.value.firstOrNull { it.recordId == draft.recordId } ?: throw NoSuchRecordException(draft.recordId)
+        val existing = draft.publicationKey?.let { key -> records.value.flatMap { it.revisions }.firstOrNull { it.publicationKey == key } }
+        if (existing != null) {
+            require(existing.recordId == draft.recordId)
+            return@synchronized existing
+        }
         val revision = draft.toRevision(current.revisions.size + 1)
         publicationStep(revision) // 失败就在这里抛出：下面的写入不会发生
         replace(current.copy(revisions = current.revisions + revision, transcription = TranscriptionStatus.DONE, failureCode = null))
