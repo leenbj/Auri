@@ -12,6 +12,10 @@ import app.auri.capture.control.MediaKind
 import app.auri.capture.coordinator.Clock
 import app.auri.capture.testing.SequentialIds
 import java.time.Instant
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -92,6 +96,38 @@ class HeadsetControlAdapterTest {
         clock.advanceMs(1_000)
         source.press(MediaKind.PLAY_PAUSE)
         assertEquals(1, received.size)
+    }
+
+    @Test
+    fun `已经过了校验、正在递送的事件，要递送完关闭才返回：关闭返回之后，这一次开启期间的事件不会再到达订阅者`() {
+        val inHandler = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val order = CopyOnWriteArrayList<String>()
+        adapter.onCommand {
+            inHandler.countDown()
+            release.await(5, TimeUnit.SECONDS)
+            order += "delivered"
+        }
+        adapter.enableUserControlMode()
+
+        val pusher = thread { source.press(MediaKind.PLAY_PAUSE, rawId = "key:85:t:1") }
+        val closer = thread(start = false) {
+            adapter.disableUserControlMode()
+            order += "disabled"
+        }
+        try {
+            assertTrue("事件已通过校验、卡在订阅者里", inHandler.await(5, TimeUnit.SECONDS))
+            closer.start()
+            // 递送没有被关闭等待时，关闭会直接跑完（TERMINATED），抢在这个事件之前
+            awaitBlockedOrDone(closer)
+            assertEquals("关闭必须等在途的递送做完，不能越过它", Thread.State.BLOCKED, closer.state)
+        } finally {
+            release.countDown()
+        }
+        pusher.join(5_000)
+        closer.join(5_000)
+
+        assertEquals(listOf("delivered", "disabled"), order)
     }
 
     @Test

@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.StateFlow
  * [HeadsetEventNormalizer] 归一化与去抖，再递送合同里的 normalized_control_event。
  *
  *  - 控制模式关闭 = 通道已释放：没有人收听，关闭之后（或上一次激活留下的）迟到回调通过“激活代数”校验丢掉；
+ *    校验与递送在同一把锁里，关闭返回时已经没有这一次开启期间的事件在途；
  *  - 框架调用（[MediaButtonSource.activate] / [MediaButtonSource.deactivate]）随时可能抛异常：包住、照样清理、
  *    照样到达终态，绝不向协调器抛；激活失败如实报 [HeadsetControlStatus.UNAVAILABLE]，不装作开着；
  *  - [profile] 每次按键都实时读取：校准向导可以临时换成“只观察”的映射；
@@ -89,21 +90,22 @@ class HeadsetControlAdapter(
     }
 
     private fun onRaw(token: Long, raw: RawMediaInput) {
-        val event = synchronized(lock) {
+        // 校验与递送在同一把锁里：关闭（同一把锁）返回之后，不会再有这一次开启期间已通过校验的事件到达订阅者
+        synchronized(lock) {
             if (!active || token != activation) return
-            when (val result = normalizer.normalize(raw, profile())) {
+            val event = when (val result = normalizer.normalize(raw, profile())) {
                 is NormalizeResult.Emit -> result.event
                 is NormalizeResult.Drop -> {
                     log("headset_control_dropped reason=${result.reason}")
                     return
                 }
             }
-        }
-        handlers.forEach {
-            try {
-                it(event)
-            } catch (e: Exception) {
-                log("headset_control_subscriber_failed reason=${e.javaClass.simpleName}")
+            handlers.forEach {
+                try {
+                    it(event)
+                } catch (e: Exception) {
+                    log("headset_control_subscriber_failed reason=${e.javaClass.simpleName}")
+                }
             }
         }
     }

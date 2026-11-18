@@ -7,6 +7,9 @@ import app.auri.capture.contract.ControlSource
 import app.auri.capture.contract.NormalizedControlEvent
 import app.auri.capture.contract.PlatformEvent
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlin.concurrent.thread
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -160,6 +163,39 @@ class CompositeControlAdapterTest {
         assertEquals("旁听者抛异常不能吞掉命令", 2, delivered.size)
         assertEquals(listOf(0L), observed.map { it.sequence })
         assertTrue(logs.any { it.startsWith("control_observer_failed") })
+    }
+
+    @Test
+    fun `两个来源同时来事件：编号、旁听者、命令订阅者看到的是同一个先后顺序（校准向导按旁听顺序给决定配对，顺序错了会配错）`() {
+        val observed = CopyOnWriteArrayList<Long>()
+        val delivered = CopyOnWriteArrayList<Long>()
+        val firstInObserver = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        composite.observe { event ->
+            observed += event.sequence
+            if (event.sequence == 0L) {
+                firstInObserver.countDown()
+                release.await(5, TimeUnit.SECONDS)
+            }
+        }
+        composite.onCommand { delivered += it.sequence }
+
+        val first = thread { screen.emit(ControlSource.SCREEN_CONTROL, sequence = 0) }
+        val second = thread(start = false) { headset.emit(ControlSource.HEADSET_REMOTE, sequence = 0) }
+        try {
+            assertTrue("第一个事件已编号，卡在旁听者里", firstInObserver.await(5, TimeUnit.SECONDS))
+            second.start()
+            // 没有串行化时，第二个事件会越过第一个直接跑完（TERMINATED），先到达命令订阅者
+            awaitBlockedOrDone(second)
+            assertEquals("第二个事件必须被锁挡在第一个后面", Thread.State.BLOCKED, second.state)
+        } finally {
+            release.countDown()
+        }
+        first.join(5_000)
+        second.join(5_000)
+
+        assertEquals(listOf(0L, 1L), observed)
+        assertEquals("命令订阅者的顺序必须和旁听者、和编号一致", listOf(0L, 1L), delivered)
     }
 
     @Test
