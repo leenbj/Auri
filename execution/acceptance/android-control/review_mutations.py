@@ -142,7 +142,12 @@ def memory_sample():
 def main():
     previous = None
     failures = []
-    for name, module, test_class, expected_test, edits in MUTANTS:
+    requested = set(sys.argv[1:])
+    known = {mutant[0] for mutant in MUTANTS}
+    if requested - known:
+        raise ValueError(f"Unknown mutants: {sorted(requested - known)}")
+    selected = [mutant for mutant in MUTANTS if not requested or mutant[0] in requested]
+    for name, module, test_class, expected_test, edits in selected:
         started = time.monotonic()
         while True:
             used, free = memory_sample()
@@ -184,7 +189,7 @@ def main():
         finally:
             for path, original in originals.items():
                 path.write_text(original)
-    print(f"Mutation checks: {len(MUTANTS) - len(failures)}/{len(MUTANTS)} killed", flush=True)
+    print(f"Mutation checks: {len(selected) - len(failures)}/{len(selected)} killed", flush=True)
     return 1 if failures else 0
 
 

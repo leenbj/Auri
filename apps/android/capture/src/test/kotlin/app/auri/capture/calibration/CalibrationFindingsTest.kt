@@ -305,6 +305,8 @@ class CalibrationFindingsTest {
     fun `跳过的步骤什么都不算：之前声明过没效果也作废`() {
         val run = Run(real)
         run.idle()
+        run.feed.gesture(PlatformEvent.SCREEN_BUTTON, START, ROUTING, source = ControlSource.SCREEN_CONTROL)
+        run.feed.other(CaptureEvent.ROUTE_VERIFIED, RECORDING)
         run.wizard.reportNoEffect()
         run.wizard.skip()
         run.wizard.next()
