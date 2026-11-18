@@ -21,7 +21,7 @@
 #   AURI_LOCK_POLL_SECONDS（等锁时的轮询间隔，默认 30）、AURI_BOOT_TIMEOUT（等开机的秒数，默认 300）、
 #   AURI_ALSO_ASR_ACCEPTANCE=1：同一台模拟器上再跑 Ticket 14 的 run_device_acceptance.sh（:app 仪器测试，含改过的离线证明），要真模型；
 #   AURI_SKIP_BUILD=1、AURI_SYNCPLATFORM_TEST_APK、AURI_EMULATOR_LOCK、AURI_AVD_NAME、AURI_REAL_GATEWAY_HELPER、AURI_ASR_ACCEPTANCE_SCRIPT：
-#   这几个只给 test_run_emulator_acceptance.py 用，平时别设。
+#   这几个只给 test_sync_run_emulator_acceptance.py 用，平时别设。
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -95,7 +95,7 @@ SYNCPLATFORM_TEST_APK="${AURI_SYNCPLATFORM_TEST_APK:-$ANDROID_DIR/syncplatform/b
 [ -f "$SYNCPLATFORM_TEST_APK" ] || fail "没有 $SYNCPLATFORM_TEST_APK"
 
 step "2/7 取得模拟器锁（同一时刻只许一台模拟器）"
-# bash 收到 INT/TERM/HUP 这类致命信号退出时同样会执行 EXIT 陷阱（test_run_emulator_acceptance.py 里逐个信号验证）
+# bash 收到 INT/TERM/HUP 这类致命信号退出时同样会执行 EXIT 陷阱（test_sync_run_emulator_acceptance.py 里逐个信号验证）
 trap cleanup EXIT
 mkdir -p "$(dirname "$LOCK")"
 until mkdir "$LOCK" 2>/dev/null; do

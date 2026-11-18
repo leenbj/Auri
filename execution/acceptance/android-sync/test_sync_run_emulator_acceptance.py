@@ -138,8 +138,10 @@ class Env:
         self.syncplatform_log.write_text(instrumentation_log(all_pass(ci.expected_tests([SYNCPLATFORM_SRC]))))
 
     def env(self, **extra) -> dict:
+        # 外面设着的 AURI_* / FAKE_* 一律不放进来（例如刚跑完真验收、shell 里还留着 AURI_ALSO_ASR_ACCEPTANCE=1，
+        # 就会让“默认不跑 Ticket 14 验收”的断言莫名失败）：这里只认下面显式给的
         env = {
-            **os.environ,
+            **{k: v for k, v in os.environ.items() if not k.startswith(("AURI_", "FAKE_"))},
             "PATH": f"{self.bin}:{os.environ['PATH']}",
             "JAVA_HOME": str(self.root),
             "AURI_SKIP_BUILD": "1",
