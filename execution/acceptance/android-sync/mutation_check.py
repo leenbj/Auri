@@ -642,6 +642,241 @@ MUTATIONS += (
     ),
 )
 
+SUBMISSION = "apps/android/sync/src/main/kotlin/app/auri/sync/gateway/SubmissionBuilder.kt"
+SOURCE = "apps/android/sync/src/main/kotlin/app/auri/sync/engine/RecordLibrarySubmissionSource.kt"
+SUBMISSION_TESTS = (":sync:test", "--tests", "*SubmissionBuilderTest*")
+FIXTURE_REFUSAL = "合同判为无效而手机端表达得出来的样本"
+
+# 切片 6：提交体构建器（本地 Record/Revision → 合同允许的请求体）
+MUTATIONS += (
+    Mutation(
+        "submission-accepts-non-bluetooth",
+        "输入路由不是蓝牙的录音绝不送出去",
+        (Edit(SUBMISSION, "            entry.inputRouteType.isBluetooth &&\n", "            true &&\n"),),
+        SUBMISSION_TESTS, SYNC_TEST[0],
+        ("输入路由不是蓝牙",),
+    ),
+    Mutation(
+        "submission-ignores-status-end-reason",
+        "complete/partial 必须与结束原因一致（被截断的不能标成完成）",
+        (Edit(SUBMISSION, "entry.status == (if (entry.endReason.truncated) CaptureStatus.PARTIAL else CaptureStatus.COMPLETE)", "true"),),
+        SUBMISSION_TESTS, SYNC_TEST[0],
+        ("完成状态必须与结束原因一致", FIXTURE_REFUSAL),
+    ),
+    Mutation(
+        "submission-allows-no-speech-segments",
+        "有 Revision 就至少有一个语音片段",
+        (Edit(SUBMISSION, "        return segments.isNotEmpty() &&\n", "        return true &&\n"),),
+        SUBMISSION_TESTS, SYNC_TEST[0],
+        (FIXTURE_REFUSAL,),
+    ),
+    Mutation(
+        "submission-skips-sr02-order",
+        "SR-02：语音片段不得重叠、必须按时间排好",
+        (Edit(SUBMISSION, "segments.zipWithNext().all { (previous, next) -> previous.endMs <= next.startMs }", "true"),),
+        SUBMISSION_TESTS, SYNC_TEST[0],
+        (FIXTURE_REFUSAL,),
+    ),
+    Mutation(
+        "submission-skips-sr03-bounds",
+        "SR-03：语音片段不得超出录音时长",
+        (Edit(SUBMISSION, "segments.all { it.endMs <= entry.captureDurationMs }", "true"),),
+        SUBMISSION_TESTS, SYNC_TEST[0],
+        (FIXTURE_REFUSAL,),
+    ),
+    Mutation(
+        "submission-skips-sr04-duration-sum",
+        "SR-04：语音总时长等于各片段时长之和",
+        (Edit(SUBMISSION, "segments.sumOf { it.endMs - it.startMs } == entry.speechDurationMs", "true"),),
+        SUBMISSION_TESTS, SYNC_TEST[0],
+        (FIXTURE_REFUSAL,),
+    ),
+    Mutation(
+        "submission-counts-text-by-chars",
+        "SR-06：正文上限按 UTF-8 字节计，不是按字符数",
+        (Edit(SUBMISSION, "revision.text.toByteArray(Charsets.UTF_8).size <= MAX_TEXT_BYTES", "revision.text.length <= MAX_TEXT_BYTES"),),
+        SUBMISSION_TESTS, SYNC_TEST[0],
+        ("正文超过 1 MiB",),
+    ),
+    Mutation(
+        "submission-asr-without-model",
+        "转录来源的 Revision 必须写明引擎与模型",
+        (Edit(SUBMISSION, "(revision.source != RevisionSource.ASR || (revision.engine.isNotNullOrEmpty() && revision.modelId.isNotNullOrEmpty() && revision.modelVersion.isNotNullOrEmpty()))", "true"),),
+        SUBMISSION_TESTS, SYNC_TEST[0],
+        ("来源是转录就必须写明引擎与模型", FIXTURE_REFUSAL),
+    ),
+    Mutation(
+        "submission-trims-text",
+        "正文原样发送：改动一个字符（哪怕是空白）哈希就对不上",
+        (Edit(SUBMISSION, '                put("text", revision.text)\n', '                put("text", revision.text.trim())\n'),),
+        SUBMISSION_TESTS, SYNC_TEST[0],
+        ("正文原样进请求体",),
+    ),
+    Mutation(
+        "submission-guesses-firmware",
+        "系统不暴露的耳机固件版本必须是 null，不得猜",
+        (Edit(SUBMISSION, 'put("headset_firmware", JsonNull)', 'put("headset_firmware", "unknown")'),),
+        SUBMISSION_TESTS, SYNC_TEST[0],
+        ("耳机名按字符数",),
+    ),
+    Mutation(
+        "submission-name-length-in-utf16",
+        "耳机名上限按字符（码点）计，不是 UTF-16 单元",
+        (Edit(SUBMISSION, "it.characterCount() <= MAX_HEADSET_NAME", "it.length <= MAX_HEADSET_NAME"),),
+        SUBMISSION_TESTS, SYNC_TEST[0],
+        ("耳机名按字符数",),
+    ),
+    Mutation(
+        "submission-confidence-unbounded",
+        "置信度必须在 0 到 1 之间",
+        (Edit(SUBMISSION, "(confidence.isFinite() && confidence in 0.0..1.0)", "true"),),
+        SUBMISSION_TESTS, SYNC_TEST[0],
+        ("语言、置信度和各字段的长度上限",),
+    ),
+    Mutation(
+        "submission-language-unchecked",
+        "语言标签必须符合合同的格式",
+        (Edit(SUBMISSION, "            LANGUAGE.matches(revision.language) &&\n", "            true &&\n"),),
+        SUBMISSION_TESTS, SYNC_TEST[0],
+        ("语言、置信度和各字段的长度上限",),
+    ),
+    Mutation(
+        "submission-uuid-unchecked",
+        "record_id 必须是小写 UUID",
+        (Edit(SUBMISSION, "            Wire.UUID.matches(entry.recordId) &&\n", "            true &&\n"),),
+        SUBMISSION_TESTS, SYNC_TEST[0],
+        (FIXTURE_REFUSAL,),
+    ),
+    Mutation(
+        "source-ignores-revision-number",
+        "任务的版本号必须对上：要发第 2 版不能发成别的版本",
+        (Edit(SOURCE, "it.number == key.revision", "true"),),
+        SUBMISSION_TESTS, SYNC_TEST[0],
+        ("从本地 Record 库读",),
+    ),
+)
+
+OBSERVABLE = "apps/android/sync/src/main/kotlin/app/auri/sync/pairing/ObservablePairingStore.kt"
+QR = "apps/android/sync/src/main/kotlin/app/auri/sync/pairing/QrDecoder.kt"
+OBSERVABLE_TESTS = (":sync:test", "--tests", "*ObservablePairingStoreTest*")
+QR_TESTS = (":sync:test", "--tests", "*QrDecoderTest*")
+OBSERVABLE_SAVE = "delegate.save(gateway)\n            current.value = delegate.load()"
+
+# 切片 7：配对状态的可观察副本、二维码解码
+MUTATIONS += (
+    Mutation(
+        "observable-guesses-not-paired-initially",
+        "没读过之前不发任何状态：真实状态可能是已配对，不猜“未配对”给界面",
+        (Edit(OBSERVABLE, "MutableStateFlow<PairingState?>(null)", "MutableStateFlow<PairingState?>(PairingState.NotPaired)"),),
+        OBSERVABLE_TESTS, SYNC_TEST[0],
+        ("还没读过之前没有任何状态",),
+    ),
+    Mutation(
+        "observable-refresh-not-published",
+        "启动时的 refresh 读到什么就要发出什么",
+        (Edit(OBSERVABLE, "mutex.withLock { current.value = delegate.load() }", "mutex.withLock { delegate.load() }"),),
+        OBSERVABLE_TESTS, SYNC_TEST[0],
+        ("还没读过之前没有任何状态",),
+    ),
+    Mutation(
+        "observable-save-not-published",
+        "配对完成（保存）后订阅者要立刻看到",
+        (Edit(OBSERVABLE, OBSERVABLE_SAVE, "delegate.save(gateway)"),),
+        OBSERVABLE_TESTS, SYNC_TEST[0],
+        ("保存、更新、清除之后订阅者各看到一次新状态",),
+    ),
+    Mutation(
+        "observable-update-not-published",
+        "引擎打上“要用户处理”（更新）后订阅者要立刻看到",
+        (Edit(OBSERVABLE, "if (written) current.value = delegate.load()", "if (written) Unit"),),
+        OBSERVABLE_TESTS, SYNC_TEST[0],
+        ("保存、更新、清除之后订阅者各看到一次新状态",),
+    ),
+    Mutation(
+        "observable-clear-not-published",
+        "清除配对后订阅者要立刻看到",
+        (Edit(OBSERVABLE, "delegate.clear()\n            current.value = delegate.load()", "delegate.clear()"),),
+        OBSERVABLE_TESTS, SYNC_TEST[0],
+        ("保存、更新、清除之后订阅者各看到一次新状态",),
+    ),
+    Mutation(
+        "observable-publishes-written-not-read-back",
+        "发出的是读回来的记录，不是写进去的那份（盘上读不回来就不能显示已配对）",
+        (Edit(OBSERVABLE, OBSERVABLE_SAVE, "delegate.save(gateway)\n            current.value = PairingState.Paired(gateway)"),),
+        OBSERVABLE_TESTS, SYNC_TEST[0],
+        ("读回来的记录",),
+    ),
+    Mutation(
+        "observable-publishes-before-persisting",
+        "存盘失败时不能已经发出“已配对”",
+        (Edit(OBSERVABLE, OBSERVABLE_SAVE, "current.value = PairingState.Paired(gateway)\n            delegate.save(gateway)"),),
+        OBSERVABLE_TESTS, SYNC_TEST[0],
+        ("底层存不下",),
+    ),
+    Mutation(
+        "observable-load-not-published",
+        "读到的状态也要发出，底层被别处改过时订阅者跟上",
+        (Edit(OBSERVABLE, "delegate.load().also { current.value = it }", "delegate.load()"),),
+        OBSERVABLE_TESTS, SYNC_TEST[0],
+        ("读一次也会发出",),
+    ),
+    Mutation(
+        "observable-no-lock",
+        "读写排队：旧读数不能盖掉后来写入的新状态",
+        (Edit(
+            OBSERVABLE, "private val mutex = Mutex()",
+            "private val mutex = object { suspend fun <T> withLock(block: suspend () -> T): T = block() }",
+        ),),
+        OBSERVABLE_TESTS, SYNC_TEST[0],
+        ("同时进行的读写排队",),
+    ),
+    Mutation(
+        "qr-reads-other-formats",
+        "只认二维码：别的条码不读",
+        (Edit(
+            QR, "QRCodeReader().decode(BinaryBitmap(HybridBinarizer(source)), hints).text",
+            "com.google.zxing.MultiFormatReader().decode(BinaryBitmap(HybridBinarizer(source)), emptyMap<DecodeHintType, Any>()).text",
+        ),),
+        QR_TESTS, SYNC_TEST[0],
+        ("只认二维码",),
+    ),
+    Mutation(
+        "qr-ignores-row-stride",
+        "CameraX 的行距可能大于宽度，必须按行距读",
+        (Edit(QR, "System.arraycopy(luminance, y * rowStride, pixels, y * width, width)", "System.arraycopy(luminance, y * width, pixels, y * width, width)"),),
+        QR_TESTS, SYNC_TEST[0],
+        ("行距大于宽度",),
+    ),
+    Mutation(
+        "qr-no-inverted-attempt",
+        "深色背景上的浅色二维码（网关终端的 --invert 输出）也要能读",
+        (Edit(QR, "(read(source) ?: read(source.invert()))?.let { return it }", "read(source)?.let { return it }"),),
+        QR_TESTS, SYNC_TEST[0],
+        ("深底浅码",),
+    ),
+    Mutation(
+        "qr-no-rotation",
+        "手机竖着拿时相机帧转了 90 度：四个方向都要读",
+        (Edit(QR, "repeat(4) {", "repeat(1) {"),),
+        QR_TESTS, SYNC_TEST[0],
+        ("四个方向都能读",),
+    ),
+    Mutation(
+        "qr-no-size-guard",
+        "尺寸与数据对不上时返回 null，不抛越界异常（取景回调里抛异常会停掉相机管线）",
+        (Edit(QR, "        if (luminance.size.toLong() < rowStride.toLong() * (height - 1) + width) return null\n", ""),),
+        QR_TESTS, SYNC_TEST[0],
+        ("尺寸与数据对不上",),
+    ),
+    Mutation(
+        "qr-throws-on-unreadable",
+        "读不出来是 null，不是异常",
+        (Edit(QR, "} catch (_: ReaderException) {\n        null\n    }", "} catch (e: ReaderException) {\n        throw e\n    }"),),
+        QR_TESTS, SYNC_TEST[0],
+        ("纯白、纯黑、噪声",),
+    ),
+)
+
 # 后面各个切片的变异在对应测试写好之后追加到这里（见 README 的“变异检查”一节）。
 
 
