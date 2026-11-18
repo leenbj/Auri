@@ -12,7 +12,7 @@ enum class JobKind { INITIAL, RETRANSCRIBE }
  * 为什么此刻不能转（WAITING_RESOURCES 的原因）。不是合同枚举：合同只定义状态与事件，原因文字是应用自己的事。
  * 同时出现多个原因时按这里的顺序取第一个（见 [ResourcePolicy]）：录音优先，其次是会伤到手机的，再其次是省电，最后是空间。
  */
-enum class ResourceReason { RECORDING_ACTIVE, THERMAL, BATTERY_SAVER, LOW_MEMORY, LOW_STORAGE }
+enum class ResourceReason { RECORDING_ACTIVE, THERMAL, BATTERY_SAVER, LOW_MEMORY, LOW_STORAGE, UNKNOWN }
 
 /** 任务在等什么：界面据此告诉用户原因。 */
 sealed interface WaitReason {

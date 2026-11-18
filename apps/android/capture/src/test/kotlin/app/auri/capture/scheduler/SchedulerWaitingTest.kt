@@ -225,7 +225,7 @@ class SchedulerWaitingTest : BoundedSchedulerTest() {
     }
 
     @Test
-    fun `资源监视器自己出故障：按可用处理，不挡住转录`() = runTest {
+    fun `资源监视器自己出故障：等待读数恢复后继续`() = runTest {
         val rig = SchedulerRig(this)
         val id = rig.addRecord(1)
         rig.resources.failure = IllegalStateException("平台接口故障（测试注入）")
@@ -233,6 +233,11 @@ class SchedulerWaitingTest : BoundedSchedulerTest() {
         rig.scheduler.submit(id)
         rig.settle()
 
+        assertEquals(WAITING_RESOURCES, rig.jobOf(id).state)
+        assertEquals(WaitReason.Resources(ResourceReason.UNKNOWN), rig.jobOf(id).wait)
+        rig.resources.failure = null
+        rig.resources.ok()
+        rig.settle()
         assertEquals(SUCCEEDED, rig.jobOf(id).state)
     }
 

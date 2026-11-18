@@ -89,6 +89,8 @@ class TranscriptionScheduler(
 
         data object ResourcesChanged : Message
 
+        data object ResourcesUnavailable : Message
+
         data object RecheckRequested : Message
 
         data object Resume : Message
@@ -138,6 +140,7 @@ class TranscriptionScheduler(
     private var nextSeq = 1L
     private var nextRunId = 1L
     private var storeLoaded = false
+    private var resourceFlowUnavailable = false
 
     /** 引擎在运行时拒绝过的模型 generation（见 [onModelRefused]）；不落盘，重启后由 [resume] 重新试。 */
     private var refusal: Refusal? = null
@@ -169,7 +172,26 @@ class TranscriptionScheduler(
             }
         }
         scope.launch { models.readiness.collect { mailbox.trySend(Message.ModelChanged) } }
-        scope.launch { resources.changes.collect { mailbox.trySend(Message.ResourcesChanged) } }
+        scope.launch {
+            var failures = 0
+            while (true) {
+                try {
+                    resources.changes.collect {
+                        failures = 0
+                        mailbox.trySend(Message.ResourcesChanged)
+                    }
+                    break
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    mailbox.trySend(Message.ResourcesUnavailable)
+                    System.err.println("Resource monitor unavailable")
+                    val delayMs = config.resourceRecheckMs.getOrElse(failures) { config.resourceRecheckMs.lastOrNull() ?: 15_000L }
+                    failures = (failures + 1).coerceAtMost(config.resourceRecheckMs.size)
+                    delay(delayMs.coerceAtMost(300_000L))
+                }
+            }
+        }
     }
 
     /** 录完的一个 Record 提交转录。同一个 Record 只会有一个第一次转录任务（重复提交什么都不做）。 */
@@ -220,7 +242,14 @@ class TranscriptionScheduler(
             is Message.Submit -> onSubmit(message)
             is Message.RunFinished -> onRunFinished(message)
             Message.ModelChanged -> wake(JobCause.MODEL_CHANGED)
-            Message.ResourcesChanged -> wake(JobCause.RESOURCES_CHANGED)
+            Message.ResourcesChanged -> {
+                resourceFlowUnavailable = false
+                wake(JobCause.RESOURCES_CHANGED)
+            }
+            Message.ResourcesUnavailable -> {
+                resourceFlowUnavailable = true
+                wake(JobCause.RESOURCES_CHANGED)
+            }
             Message.RecheckRequested -> onRecheckRequested()
             Message.Resume -> onResume()
             is Message.Stale -> jobsById[message.jobId]?.let { dispatch(it, message.event, JobCause.STALE_SIGNAL) }
@@ -397,13 +426,13 @@ class TranscriptionScheduler(
         false
     }
 
-    /** 资源监视器自己出故障：按“可用”处理，不让它挡住转录（引擎自己的失败路径兜底）。 */
+    /** 资源状态未知时保守等待，稍后重查。 */
     private fun resourceStatus(): ResourceStatus = try {
-        resources.check()
+        if (resourceFlowUnavailable) ResourceStatus.Low(ResourceReason.UNKNOWN) else resources.check()
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
-        ResourceStatus.Ok
+        ResourceStatus.Low(ResourceReason.UNKNOWN)
     }
 
     private suspend fun onRecheckRequested() {

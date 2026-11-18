@@ -2,8 +2,7 @@ package app.auri.capture.scheduler
 
 /**
  * 手机此刻的几项读数。平台层（`:platform` 的 AndroidResourceMonitor）负责从系统读出来，这里只做判断，所以规则能在 JVM 里测。
- * 读不出来的项由平台层决定怎么办（见 [ResourceMonitor]：监视器抛异常时调度器按“可用”处理，不让一个读不出来的传感器永远挡住转录；
- * 引擎自己的失败路径兜底，SchedulerWaitingTest 钉住这一条）。
+ * 读不出来时调度器保守等待，稍后重查。
  */
 data class ResourceReadings(
     /** `PowerManager.getCurrentThermalStatus()`：0 无、1 轻微、2 中等、3 严重、4 危急、5 紧急、6 即将关机。 */

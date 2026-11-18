@@ -10,6 +10,7 @@ import app.auri.capture.machine.TranscriptionState.CANCELLED
 import app.auri.capture.machine.TranscriptionState.FAILED
 import app.auri.capture.machine.TranscriptionState.QUEUED
 import app.auri.capture.machine.TranscriptionState.SUCCEEDED
+import app.auri.capture.machine.TranscriptionState.WAITING_RESOURCES
 import app.auri.capture.testing.BoundedSchedulerTest
 import app.auri.capture.testing.FakeClock
 import app.auri.capture.testing.FakeTranscriptionAdapter
@@ -17,7 +18,14 @@ import app.auri.capture.testing.InMemoryRecordLibrary
 import app.auri.capture.testing.Samples
 import app.auri.capture.testing.SchedulerRig
 import app.auri.capture.testing.SequentialIds
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -27,6 +35,40 @@ import org.junit.Test
 /** 调度器依赖的东西（Record 库、适配器）出故障时：绝不能把用户的转录悄悄取消或卡死整个队列。 */
 @OptIn(ExperimentalCoroutinesApi::class)
 class SchedulerRobustnessTest : BoundedSchedulerTest() {
+    @Test
+    fun `资源变化流抛错时等待并重订阅，异常不逃到未捕获处理器`() = runTest {
+        var broken = true
+        val uncaught = mutableListOf<Throwable>()
+        val schedulerScope = CoroutineScope(
+            SupervisorJob() + StandardTestDispatcher(testScheduler) + CoroutineExceptionHandler { _, error -> uncaught += error },
+        )
+        val monitor = object : ResourceMonitor {
+            override fun check() = ResourceStatus.Ok
+            override val changes = flow {
+                if (broken) error("injected registration failure")
+                emit(Unit)
+                awaitCancellation()
+            }
+        }
+        try {
+            val rig = SchedulerRig(this, schedulerScope = schedulerScope, monitor = monitor)
+            val id = rig.addRecord(1)
+            rig.settle()
+            rig.scheduler.submit(id)
+            rig.settle()
+
+            assertEquals(WAITING_RESOURCES, rig.jobOf(id).state)
+            assertTrue(rig.adapter.requests.isEmpty())
+            assertTrue(uncaught.isEmpty())
+
+            broken = false
+            rig.advance(rig.config.resourceRecheckMs.first())
+            assertEquals(SUCCEEDED, rig.jobOf(id).state)
+        } finally {
+            schedulerScope.cancel()
+        }
+    }
+
     /** Record 库的包装：[unavailable] 为 true 时读取失败。 */
     private class FlakyLibrary(val inner: InMemoryRecordLibrary = InMemoryRecordLibrary()) : RecordLibrary by inner {
         @Volatile

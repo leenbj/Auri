@@ -38,6 +38,7 @@ internal fun describeWaitResources(reason: ResourceReason?, needsUser: Boolean):
         ResourceReason.BATTERY_SAVER -> "省电模式开着，关掉省电模式或充电后继续"
         ResourceReason.LOW_MEMORY -> "可用内存不足，关掉别的应用后继续"
         ResourceReason.LOW_STORAGE -> "存储空间不足，腾出空间后继续"
+        ResourceReason.UNKNOWN -> "资源状态暂时不可用，稍后自动重查"
         null -> "资源不足（原因未知）"
     }
     return if (needsUser) "$why；已经多次重查仍不行，不再自动重试，请处理后点“重新检查”" else why
