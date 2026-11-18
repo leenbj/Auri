@@ -120,4 +120,19 @@ describe('RouteEvidenceGate', () => {
     assert.equal(staleResult.rejection_reason, 'STALE_GENERATION');
     assert.equal(gate.currentGeneration(), activeGen);
   });
+
+  it('invalidates a cancelled routing generation before a new session starts', () => {
+    const gate = new RouteEvidenceGate();
+    const cancelled = gate.beginRouting('session-cancelled');
+
+    gate.cancelRouting(cancelled);
+
+    assert.notEqual(gate.currentGeneration(), cancelled);
+    assert.equal(gate.acceptFrame(cancelled, 0), 'discarded');
+    const late = gate.evaluateObservedInput(cancelled, [
+      makeDevice({ deviceTypeCode: 7, deviceTypeName: 'BLUETOOTH_SCO' }),
+    ]);
+    assert.equal(late.rejection_reason, 'STALE_GENERATION');
+    assert.equal(late.gate_open, false);
+  });
 });

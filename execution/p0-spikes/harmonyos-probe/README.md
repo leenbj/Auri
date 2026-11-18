@@ -12,17 +12,22 @@
 
 ---
 
-## 固定工具链与 SDK 版本
+## 构建工具链与 SDK 版本
 
 | 项 | 固定值 | 说明 |
 |---|---|---|
-| IDE 与构建模型 | DevEco Studio `6.0.1` Release（`modelVersion: "6.0.1"`） | 见 `hvigor/hvigor-config.json5` 与根目录 `oh-package.json5` |
+| IDE 与构建模型 | DevEco Studio `26.0.1`，项目 `modelVersion: "6.0.1"` | 使用 IDE 内置的 hvigor `6.26.20`、ohpm `26.0.1.220` 和 JBR；项目模型版本未改 |
+| 构建 SDK | 内置 HarmonyOS API 26 Beta1，`26.0.1.120` | 当前 Studio 的 SDK 设置只提供此版本；Beta SDK 不适合作为最终发布基线，发布前必须另行验证 Release SDK |
 | `runtimeOS` | `HarmonyOS` | 见根目录 `build-profile.json5` |
-| `targetSdkVersion` | `6.0.1(21)` | 对应 HarmonyOS 6.0.1 Release SDK / API 21（`Ohos_sdk_public 6.0.1.112`） |
+| `targetSdkVersion` | `6.0.1(21)` | 保持 HarmonyOS 6.0.1 / API 21 目标，未因使用 API 26 SDK 构建而上调 |
 | `compatibleSdkVersion`（最低系统版本） | `5.0.0(12)` | 对应 HarmonyOS NEXT 5.0.0 / API 12；低于 API 21 的真机可安装，但 `AudioSessionManager.selectMediaInputDevice` 等 API 21 接口会在运行时按 `deviceInfo.sdkApiVersion >= 21` 跳过并记录日志 |
 | 第三方依赖 | 无（`dependencies: {}`） | 仅使用系统 Kit 公开 API |
 
-> 当前环境状态（Linux）：本机没有安装 DevEco Studio、HarmonyOS SDK、`hvigorw`、`hdc` 与真机设备，因此**构建、签名、装机与真机运行均为 `NOT_RUN`**。仅纯逻辑模块的离线单元测试在 Linux 上通过 Node v24.22.3 运行（属 E2 证据，不能证明蓝牙或后台行为）。
+> 2026-11-18 在 Mac mini 的临时副本中，`ohpm install` 和 Debug `assembleHap` 成功，产物为未签名 HAP；离线单元测试 25/25 通过。编译器仍警告部分 Audio API 的系统能力并非所有设备都支持。装机、签名与全部真机场景仍为 `NOT_RUN`；单元测试只属 E2 证据，不能证明蓝牙或后台行为。
+
+ArkTS 日志数据与设备信息使用显式接口，日志字段和脱敏规则保持不变。捕获开始时立即进入 `ROUTING` 并固定 generation；取消会使旧 generation 失效，迟到的权限、路由和采集器回调不能继续启动录音。取消等待正在启动的后台任务结束后再清理。
+
+API 级别说明以此 Mac 内置 SDK 的声明为准：`KeyEvent.key` 与 `Key.pressedTime` 均标记 `@since 9`（atomic service 从 API 12）；按键时间是开机后的微秒数，字段属于 `event.key.pressedTime`，不是 `event.pressedTime`。最低 API 12 因而在声明层面包含该字段，但对真实设备缺少 key 或时间值仍安全降级为无 raw event ID，不按不存在的 ID 去重；真实设备是否提供该值尚未验证。`AudioSessionManager.getAvailableDevices`、`selectMediaInputDevice`、`setBluetoothAndNearlinkPreferredRecordCategory` 和 `currentInputDeviceChanged` 标记 `@since 21`，低于 API 21 时沿用原有跳过和实际输入路由验证，绝不回退手机麦克风。
 
 ---
 
@@ -49,8 +54,10 @@ node --import ./tests/resolve-ts.mjs ./tools/redact-log.mjs \
 
 ## Mac 上构建、免费调试签名、装机与取日志步骤
 
+只验证构建时无需真机、账号或签名：在临时副本中执行第 3 步的构建命令即可。未签名 HAP 不能用于真机安装。
+
 前置条件：
-1. 在 Mac 上安装 **DevEco Studio 6.0.1 Release**（自带 HarmonyOS 6.0.1 API 21 SDK、`hvigorw` 与 `hdc`）。
+1. 在 Mac 上安装 **DevEco Studio 26.0.1**，使用内置 API 26 Beta1 SDK、`hvigorw` 与 `hdc`。最终发布前须另用 Release SDK 验证；此处只记录探针的构建基线。
 2. 在鸿蒙真机开启开发者模式与 USB 调试（设置 → 关于本机 → 连续点击软件版本开启开发者选项 → 打开 USB 调试），用 USB 数据线连接 Mac 并在手机端点击“信任此电脑”。
 3. 准备一个已登录华为开发者门户的普通 **HUAWEI ID**（鸿蒙正式签名证书尚未申请，P0 探针先使用 DevEco Studio 的免费自动调试签名）。
 
@@ -82,8 +89,11 @@ hdc shell param get const.ohos.apiversion
 
 ```bash
 cd execution/p0-spikes/harmonyos-probe
+source ~/.config/auri/harmony-env.sh
+export JAVA_HOME=/Applications/DevEco-Studio.app/Contents/jbr/Contents/Home
+ohpm install
 
-# 使用项目本地配置好自动签名的配置构建 Debug HAP
+# 无签名配置时生成 entry-default-unsigned.hap；配置本地签名后才生成可装机的 signed HAP
 hvigorw assembleHap -p buildMode=debug --no-daemon
 
 # 确认产物路径后安装到真机（如更新安装失败可先 hdc uninstall app.auri.probe.harmonyos）
@@ -172,10 +182,10 @@ node --import ./tests/resolve-ts.mjs ./tools/redact-log.mjs \
 
 ### 未核实项（需产品负责人在 Mac + DevEco Studio + 真机上核实）
 
-以下细节因本机无 DevEco Studio / 商业 HarmonyOS SDK / 真机编译器而**未核实**，构建或首次运行时若编译器报错请同步记录并修正：
+以下细节需要真机或发布工具链核实：
 
-1. **未核实**：`@kit.AVSessionKit` 的 `session.on('handleKeyEvent', (event: KeyEvent) => ...)` 中，商业 SDK 6.0.1(21) 声明的 `KeyEvent` 字段究竟是 `event.key.code` + `event.action`（`@ohos.multimodalInput.keyEvent` 定义）还是 `event.keyCode`（ArkUI 简化定义）；若 DevEco Studio 报属性不存在，请以 IDE 跳转的 `.d.ts` 定义为准修改 `AVSessionProbe.ets`。
-2. **未核实**：`audio.DeviceType.BLE_HEADSET` 的精确数值（代码内按 `26` 预留，仅 `WIRED_HEADSET=3`、`WIRED_HEADPHONES=4`、`BLUETOOTH_SCO=7`、`BLUETOOTH_A2DP=8`、`MIC=15`、`USB_HEADSET=22`、`NEARLINK=31` 在检索到的文档中有明确数值）；同时如果 `compatibleSdkVersion` 为 `5.0.0(12)` 而 `targetSdkVersion` 为 `6.0.1(21)`，`Code Linter` 对 API 21 接口（`getAvailableDevices`、`selectMediaInputDevice`、`setBluetoothAndNearlinkPreferredRecordCategory`、`currentInputDeviceChanged`）已设为 `warn`，但仍未核实商业 SDK 编译器是否允许在无 `@ohos` 动态导入下直接通过编译。
+1. **未核实**：真实 API 12/21 设备上的 `handleKeyEvent` 内容与 `event.key.pressedTime` 是否提供；安装的 Beta SDK 声明已核实，真机行为仍为 `NOT_RUN`。
+2. **未核实**：`audio.DeviceType.BLE_HEADSET` 的精确数值（代码内按 `26` 预留，仅 `WIRED_HEADSET=3`、`WIRED_HEADPHONES=4`、`BLUETOOTH_SCO=7`、`BLUETOOTH_A2DP=8`、`MIC=15`、`USB_HEADSET=22`、`NEARLINK=31` 在检索到的文档中有明确数值）；API 21 接口已在当前 Beta SDK 下编译，设备上的可用性仍需验证。
 3. **未核实**：`hdc file recv` 能否直接从 `/data/app/el2/100/base/app.auri.probe.harmonyos/haps/entry/files/` 拉取文件，还是 HarmonyOS NEXT 6.x 真机必须通过 DevEco Studio 的 **Device File Browser (Application Sandbox View)** 导出。
 4. **未核实**：免费调试签名是否允许申请 `ohos.permission.KEEP_BACKGROUND_RUNNING`（`audioRecording` 长时任务）以及是否完整支持 `@kit.NetworkKit` 的 mDNS 局域网广播发现。
 5. **未核实**：`AVSessionProbe` 与 `CaptureProbe` 在真机运行 S1–S7 与 M1 的全部真实行为（包括 `KEYCODE_MEDIA_*` 实际收到的按键码、FreeClip 2 / FreeClip 在 HarmonyOS 上走 HFP 还是 NearLink、以及 `AUDIO_RECORDING` 长时任务在锁屏下的限制）。

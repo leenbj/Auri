@@ -12,6 +12,15 @@ const SAMPLE_RATE_HZ = 16000;
 const CHANNELS = 1;
 const BYTES_PER_SAMPLE = 2;
 
+interface LogDevice extends Record<string, string | number | boolean | null> {
+  id: number;
+  device_type_code: number;
+  device_type: string;
+  role: string;
+  display_name: string;
+  address: string;
+}
+
 /**
  * Strict Bluetooth-only capture and route-evidence probe for HarmonyOS NEXT.
  * - Never falls back to built-in phone microphone.
@@ -43,6 +52,7 @@ export class CaptureProbe {
   private lastAcceptedMono = 0;
   private stopInFlight = false;
   private listenersRegistered = false;
+  private backgroundStart: Promise<boolean> | null = null;
 
   private onStateChangeCallback: ((state: CaptureState, sessionId: string) => void) | null = null;
 
@@ -157,14 +167,9 @@ export class CaptureProbe {
       return;
     }
 
-    const micGranted = await this.requestMicPermission();
-    if (!micGranted) {
-      await this.block('PERMISSION_MIC_DENIED');
-      return;
-    }
-
     this.sessionId = util.generateRandomUUID(true);
     this.activeGeneration = this.routeGate.beginRouting(this.sessionId);
+    const genAtStart = this.activeGeneration;
     this.activeEpoch = 0;
     this.acceptedBytes = 0;
     this.quarantinedBytes = 0;
@@ -174,7 +179,19 @@ export class CaptureProbe {
     this.lastAcceptedMono = 0;
     this.setState('ROUTING');
 
+    const micGranted = await this.requestMicPermission();
+    if (!this.isCurrentRouting(genAtStart)) {
+      return;
+    }
+    if (!micGranted) {
+      await this.block('PERMISSION_MIC_DENIED');
+      return;
+    }
+
     const snapshotBefore = await this.queryAvailableInputDevices();
+    if (!this.isCurrentRouting(genAtStart)) {
+      return;
+    }
     logger.log('capture_start_requested', {
       trigger,
       session_id: this.sessionId,
@@ -198,12 +215,22 @@ export class CaptureProbe {
         note: 'AudioSessionManager.selectMediaInputDevice requires API 21+; relying on runtime route verification'
       });
     }
-
-    if (this.useBackgroundTask && this.context !== null) {
-      await this.bgTask.startRecordingTask(this.context);
+    if (!this.isCurrentRouting(genAtStart)) {
+      return;
     }
 
-    const genAtStart = this.activeGeneration;
+    if (this.useBackgroundTask && this.context !== null) {
+      const pending = this.bgTask.startRecordingTask(this.context);
+      this.backgroundStart = pending;
+      await pending;
+      if (this.backgroundStart === pending) {
+        this.backgroundStart = null;
+      }
+      if (!this.isCurrentRouting(genAtStart)) {
+        return;
+      }
+    }
+
     const streamInfo: audio.AudioStreamInfo = {
       samplingRate: audio.AudioSamplingRate.SAMPLE_RATE_16000,
       channels: audio.AudioChannel.CHANNEL_1,
@@ -221,7 +248,7 @@ export class CaptureProbe {
 
     try {
       const cap = await audio.createAudioCapturer(capturerOptions);
-      if (this.state !== 'ROUTING' || genAtStart !== this.activeGeneration) {
+      if (!this.isCurrentRouting(genAtStart)) {
         await cap.release();
         logger.log('stale_capturer_released_after_cancel', { generation: genAtStart });
         return;
@@ -248,8 +275,10 @@ export class CaptureProbe {
       });
 
       await cap.start();
-      if (this.state !== 'ROUTING' || genAtStart !== this.activeGeneration) {
-        await this.teardownCapturer();
+      if (!this.isCurrentRouting(genAtStart)) {
+        if (this.capturer === cap) {
+          await this.teardownCapturer();
+        }
         logger.log('stale_start_cancelled_before_route_check', { generation: genAtStart });
         return;
       }
@@ -295,6 +324,9 @@ export class CaptureProbe {
         quarantined_bytes_discarded: this.quarantinedBytes
       });
     } catch (err) {
+      if (!this.isCurrentRouting(genAtStart)) {
+        return;
+      }
       const bizErr = err as BusinessError;
       await this.teardownCapturer();
       await this.block('capturer_start_failed', bizErr);
@@ -348,6 +380,9 @@ export class CaptureProbe {
   private async cancelRoutingAndCleanup(reason: string): Promise<void> {
     this.routeGate.cancelRouting(this.activeGeneration);
     await this.teardownCapturer();
+    if (this.backgroundStart !== null) {
+      await this.backgroundStart;
+    }
     if (this.context !== null) {
       await this.bgTask.stopRecordingTask(this.context);
     }
@@ -595,8 +630,8 @@ export class CaptureProbe {
 
   private toLogDevices(
     devices: ObservedAudioDevice[]
-  ): Array<Record<string, string | number | boolean | null>> {
-    const out: Array<Record<string, string | number | boolean | null>> = [];
+  ): LogDevice[] {
+    const out: LogDevice[] = [];
     for (let i = 0; i < devices.length; i += 1) {
       const d = devices[i];
       out.push({
@@ -662,5 +697,9 @@ export class CaptureProbe {
     if (this.onStateChangeCallback !== null) {
       this.onStateChangeCallback(next, this.sessionId);
     }
+  }
+
+  private isCurrentRouting(generation: number): boolean {
+    return this.state === 'ROUTING' && generation === this.routeGate.currentGeneration();
   }
 }
