@@ -3,10 +3,13 @@
   采集所需的权限与前台服务放在这个库模块里，随它一起合并进应用。
   没有 INTERNET：本地转录没有任何网络路径（NFR-008），应用的 NoNetworkManifestTest 检查合并后的清单。
   麦克风运行时权限（RECORD_AUDIO）与麦克风类前台服务权限（FOREGROUND_SERVICE_MICROPHONE，API 34+）是两层，都要有。
+  MODIFY_AUDIO_SETTINGS：录音前把音频模式切到 MODE_IN_COMMUNICATION、结束时恢复（AudioManager.setMode 要求它，
+  普通权限、安装即授予，探针清单里也有）。
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
