@@ -30,6 +30,7 @@ import app.auri.syncplatform.jobs.SqliteSyncJobStore
 import app.auri.syncplatform.keystore.KeystoreKeys
 import app.auri.syncplatform.network.AndroidNetworkSignal
 import java.io.File
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -68,7 +69,7 @@ class SyncRuntime(
     discovery: GatewayDiscovery,
     network: NetworkSignal,
     http: HttpExchangeFactory = HttpExchangeFactory { pin -> PinnedHttpsClient(pin) },
-    log: SyncLog = SyncLog.None,
+    private val log: SyncLog = SyncLog.None,
 ) : SyncController {
     val jobs = SqliteSyncJobStore(library)
 
@@ -91,9 +92,17 @@ class SyncRuntime(
     override val status: Flow<SyncStatus> = combine(pairing.states, jobs.observe()) { pairingState, list -> SyncStatus.of(pairingState, list) }.distinctUntilChanged()
 
     fun start(): Job = scope.launch {
-        pairing.refresh()
-        // 上次进程在“刚配好对、还没把停下的任务放回队列”时被杀：配对记录是好的，任务却还停着。放回去。
-        engine.resolveAfterRepair()
+        // 同步出故障不能带倒整个进程（录音在同一个进程里，这个作用域又没有异常处理器，逃出来的异常就是应用崩溃）：
+        // 记下来，循环照常起来，它的第一轮会再试
+        try {
+            pairing.refresh()
+            // 上次进程在“刚配好对、还没把停下的任务放回队列”时被杀：配对记录是好的，任务却还停着。放回去。
+            engine.resolveAfterRepair()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            log.event("start.failed ${failure::class.simpleName}")
+        }
         loop.start(this)
     }
 
