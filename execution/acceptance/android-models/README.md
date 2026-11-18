@@ -80,19 +80,19 @@ AURI_GRADLE_ARGS=--no-daemon execution/acceptance/android-capture/run_emulator_a
 .venv/bin/pytest tests/contract tests/integration tests/security
 ```
 
-**最终运行的结果**（2026-11-18，分支 `ticket/20-model-management`，已合并 `origin/integration/auri-v2` 的 `e92cfa7`；JVM 单测跑之前先清过测试结果，所以不是 `UP-TO-DATE`）：
+**最终运行的结果**（2026-11-18，分支 `ticket/20-model-management`，已合并 `origin/integration/auri-v2` 的 `e92cfa7`；JVM 单测跑之前先清过测试结果，所以不是 `UP-TO-DATE`；第 10 节缺陷 4 修好之后整套重新跑过，一次只跑一个 Gradle 调用，一个接一个，模拟器与 Gradle 单测不同时跑）：
 
 | 套件 | 命令 | 结果 |
 |---|---|---|
 | `:capture` | `:capture:cleanTest :capture:test` | 158 个，0 失败，0 跳过 |
-| `:modelmgmt` | `:modelmgmt:cleanTestDebugUnitTest :modelmgmt:testDebugUnitTest` | 69 个，0 失败，0 跳过 |
+| `:modelmgmt` | `:modelmgmt:cleanTestDebugUnitTest :modelmgmt:testDebugUnitTest` | 71 个，0 失败，0 跳过 |
 | `:platform` | `:platform:cleanTestDebugUnitTest :platform:testDebugUnitTest` | 108 个，0 失败，0 跳过 |
 | `:app` | `:app:cleanTestDebugUnitTest :app:testDebugUnitTest` | 66 个，0 失败，0 跳过 |
 | `:asr` | `:asr:cleanTestDebugUnitTest :asr:testDebugUnitTest` | 112 个，0 失败，0 跳过（公共 API 未改） |
-| 构建 | `:app:assembleDebug :app:assembleDebugAndroidTest :platform:assembleDebugAndroidTest` | 成功（两个模拟器脚本各构建过一次） |
-| 模拟器（E2） | 第 7 节 | 全部通过 |
+| 构建 | `:app:assembleDebug :app:assembleDebugAndroidTest :platform:assembleDebugAndroidTest` | 成功（在模拟器脚本的第一步里构建） |
+| 模拟器（E2） | 第 7 节，`run_emulator_acceptance.sh` | 平台 `OK (30 tests)`，应用 `OK (4 tests)`；核对器 30 + 4 个测试，0 个问题；退出码 0；AVD、锁、模拟器进程都已清掉 |
 | Python 验收 | `.venv/bin/pytest execution/acceptance/android-capture execution/acceptance/asr-android` | 189 个通过 |
-| 合同、集成、安全 | `.venv/bin/pytest tests/contract tests/integration tests/security` | 492 个通过（与 Gradle 同时跑，360 秒，比单独跑慢） |
+| 合同、集成、安全 | `.venv/bin/pytest tests/contract tests/integration tests/security` | 492 个通过（单独跑，232 秒） |
 | 一次真实下载 | `:modelmgmt:realDownloadCheck`（联网） | 通过（第 3 节） |
 
 **Gradle 的一个陷阱**：读源码、合同或构建产物的测试（`NetworkIsolationTest`、`NoNetworkManifestTest`、场景回放）如果没把这些文件声明成输入，改了它们之后 Gradle 会说 `UP-TO-DATE` 而不重跑。做最终验证前先清结果（`:capture:cleanTest`、`:modelmgmt:cleanTestDebugUnitTest` 等）。`realDownloadCheck` 只借单元测试的类路径，不要写成 `tasks.named<Test>(...).map { … }`：`TaskProvider.map` 会把整套单元测试变成它的依赖。
@@ -152,7 +152,7 @@ AURI_GRADLE_ARGS=--no-daemon execution/acceptance/android-capture/run_emulator_a
 | B（RAM 4096 MB、data 10G） | Ticket 14 的 `execution/acceptance/asr-android/run_device_acceptance.sh`（取锁、建 AVD、起模拟器、清理由一个一次性包装脚本做，不入库） | `OK (29 tests)`（Ticket 14 的 25 个 + Ticket 16 的 4 个，含重写后的 `OfflineProofTest` 3 个）；核对器 29 个测试，0 个问题；三次冷启动都 `SUCCEEDED`；15 + 5 个场景的合同校验 0 个问题 |
 | C（回归与变异；一次性脚本，不入库） | 同一个 `AndroidResourceMonitorTest` 连跑 15 次，再装两个变异版各跑一次（第 10 节 M-D1、M-D2） | 15 次全过；两个变异各让对应的一个测试红、其余 3 个过 |
 
-会话 A 第一次跑（`OK (30 tests)`）被核对器判了失败，第二次跑里有一个设备测试偶发失败；两件事都在第 10 节“这次发现并修掉的缺陷”第 2、3 条里，修好后 A 重新完整跑到全过。B 跑在这两处修复之前；之后 `:app` 与它依赖的产品代码没有变（`AndroidResourceMonitor` 只改了注释），所以没有重跑 B。
+会话 A 第一次跑（`OK (30 tests)`）被核对器判了失败，第二次跑里有一个设备测试偶发失败；两件事都在第 10 节“这次发现并修掉的缺陷”第 2、3 条里，修好后 A 重新完整跑到全过。B 跑在这两处修复之前；之后 `:app` 与它依赖的产品代码没有变（`AndroidResourceMonitor` 只改了注释），所以没有重跑 B。第 10 节缺陷 4（`ModelManager` 收尾竞争）修好之后又把 A 完整跑了一遍，结果相同（30 + 4 个测试，核对器 0 个问题，退出码 0）。
 
 这些会话证明了什么（E2）：
 
