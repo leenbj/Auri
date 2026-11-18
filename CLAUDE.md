@@ -102,7 +102,7 @@ Android 屏幕按钮录一段并转成文字（Ticket 16，同在 `apps/android/
 
 ```bash
 cd apps/android
-./gradlew :capture:test :platform:testDebugUnitTest :app:testDebugUnitTest :asr:testDebugUnitTest   # JVM 单测（70 + 53 + 51 + 112），不需要设备
+./gradlew :capture:test :platform:testDebugUnitTest :app:testDebugUnitTest :asr:testDebugUnitTest   # JVM 单测（71 + 56 + 51 + 112），不需要设备
 ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest :platform:assembleDebugAndroidTest         # 构建 APK 与两个仪器测试 APK
 cd ../..
 .venv/bin/pytest execution/acceptance/android-capture                # Python 验收工具（57 个；含真实调用 Gradle 的合同输出校验，需要 JAVA_HOME）

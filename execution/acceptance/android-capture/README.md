@@ -2,7 +2,7 @@
 
 对应 `.scratch/auri-v1/issues/16-android-record-and-transcribe.md`（GitHub issue #17），PRD 引用：FR-REC-001/002（严格蓝牙输入、路由确认前不落盘）、FR-ASR-001（本地转录）、FR-TXT-002（Revision 不可变）、SEC-004（转录文字是数据）、ADR-0014/0016/0020。这是手机端的第一条完整路径，也是 iOS、鸿蒙两端的样板，所以模块边界比界面重要。
 
-**状态（2026-11-18）**：代码、JVM 单元测试、Python 验收工具、模拟器仪器测试全部通过。**没有任何真机（E3）结果**：本机没有 Android 手机，也没有 FreeClip，所以清单最后一项“真机上用 FreeClip 录一段并得到文字”是 **`NOT_RUN`**；产品负责人的真机步骤在第 4 节。模拟器没有蓝牙耳机，它证明的是**拒绝路径、存储、前台服务**，不是“用耳机录到音”。
+**状态（2026-11-18）**：代码、JVM 单元测试、Python 验收工具、模拟器仪器测试全部通过。接手后这些全部重新跑过，并因此改掉了此前记录里的一处不实：“模拟器仪器测试全部通过”**复现不了**——没有耳机的拒绝路径会让整个进程崩溃（前台服务被系统以 `ForegroundServiceDidNotStartInTimeException` 终结），已修，见第 8 节。**没有任何真机（E3）结果**：本机没有 Android 手机，也没有 FreeClip，所以清单最后一项“真机上用 FreeClip 录一段并得到文字”是 **`NOT_RUN`**；产品负责人的真机步骤在第 4 节。模拟器没有蓝牙耳机，它证明的是**拒绝路径、存储、前台服务**，不是“用耳机录到音”。
 
 证据等级沿用 PRD 第 5.2 节：JVM 单测与模拟器 = **E2**；真机 = E3。没有真机/账号/签名的项标 `NOT_RUN` 或 `BLOCKED_EXTERNAL`，不用模拟或伪造替代。
 
@@ -22,14 +22,14 @@
 
 ## 2. 清单逐项对照
 
-JVM 测试数是 2026-11-18 在 Mac 上 `./gradlew :capture:test :platform:testDebugUnitTest :app:testDebugUnitTest :asr:testDebugUnitTest` 的结果：`:capture` 70、`:platform` 53、`:app` 51（其中 Ticket 14 的 28 个）、`:asr` 112，全部通过，0 失败 0 跳过。
+JVM 测试数是 2026-11-18 在 Mac 上 `./gradlew :capture:test :platform:testDebugUnitTest :app:testDebugUnitTest :asr:testDebugUnitTest` 的结果：`:capture` 71、`:platform` 56、`:app` 51（其中 Ticket 14 的 28 个）、`:asr` 112，全部通过，0 失败 0 跳过。
 
 | # | 清单项（Ticket 16） | 覆盖它的测试 / 文件 | 证据等级 |
 |---|---|---|---|
 | 1 | 采集协调器实现采集状态机，只通过控制、采集、转录三个适配器接口接触系统 | `:capture` 是纯 JVM 模块，编译期就不可能引用 Android 类（`CaptureGateTest` 里还有一个源码扫描测试钉住它不含麦克风采集 API）；协调器的构造参数只有适配器接口、时钟、ID 生成器；`CaptureMachineTableTest`（3：状态/事件集合与合同一致、42 条转移规则逐条一致、没列出的组合被拒绝）、`CaptureHappyPathTest`（1）、`CaptureResultTest`（10）、`RecordPipelineTest`（14） | E2 |
 | 2 | contracts 里采集状态机的事件序列样本全部通过（假适配器） | `CaptureScenarioReplayTest`：把 `contracts/fixtures/state-machines/capture.scenarios.json` 的 **20 个场景**逐步回放到真正的协调器上（每步恰好一个决定，触发事件、结果、状态都与合同一致），并要求 `capture.machine.json` 的 **42 条规则**每条都被某个场景步骤真正走到过；少回放一个场景、漏一条规则就失败。合同文件直接读仓库的 `contracts/`，不是拷贝 | E2 |
-| 3 | 路由确认前的音频只在内存里，确认失败时丢弃，不落盘、不转录 | `CaptureGateTest`（13）：假存储记录每一次写入尝试；输入是手机麦克风 / 一直说不清 / 用户取消 / 隔离区超上限 / 确认后存储打不开，五种情形下确认前的采样都没有进过存储、没有东西交去转录；确认后确认前的采样也不会被补写。`CaptureHappyPathTest`：确认前只进内存，确认后才写入。`WavRecordingStoreTest`（7）：录音进行中磁盘上只有 `.part` 文件、闸门已关或属于别的会话的写入被拒且文件一个字节不增 | E2 |
-| 4 | 耳机麦克风不可用时不录音并给出原因；任何情况下不改用手机麦克风 | 行为：`CaptureGateTest` 的“耳机麦克风不可用：什么都不录，给出原因，不重试，也没有第二种输入请求”“没有权限”“资格说不清按不能开始处理”；`BluetoothCaptureAdapterTest`（18）。结构：`BluetoothInput` 构造函数私有、`openRecorder` 只接受它，“请求手机麦克风”在类型上就写不出来；源码扫描：`NoPhoneMicPathTest`（5：全模块只有一处创建录音、录音源只用 `VOICE_COMMUNICATION`、偏好设备必须设上否则放弃、内置麦克风类型只出现在路由归类里、能开录音的接口只接受蓝牙输入）与 `CaptureGateTest` 里的“只有请求蓝牙输入这一种办法”。设备上：`CaptureRefusalOnDeviceTest`（模拟器没有蓝牙输入 → 拒绝，原因 `INPUT_DEVICE_MISSING`，**系统路由请求 0 次、`AudioRecord` 0 个、系统里没有任何录音配置、录音目录 0 个文件、转录请求 0 次**，库里 0 条） | E2（模拟器；真机的“耳机在但被系统切走”见第 4 节第 9 步 `NOT_RUN`） |
+| 3 | 路由确认前的音频只在内存里，确认失败时丢弃，不落盘、不转录 | `CaptureGateTest`（14）：假存储记录每一次写入尝试；输入是手机麦克风 / 一直说不清 / 用户取消 / 隔离区超上限 / 确认后存储打不开，五种情形下确认前的采样都没有进过存储、没有东西交去转录；确认后确认前的采样也不会被补写。`CaptureHappyPathTest`：确认前只进内存，确认后才写入。`WavRecordingStoreTest`（7）：录音进行中磁盘上只有 `.part` 文件、闸门已关或属于别的会话的写入被拒且文件一个字节不增 | E2 |
+| 4 | 耳机麦克风不可用时不录音并给出原因；任何情况下不改用手机麦克风 | 行为：`CaptureGateTest` 的“耳机麦克风不可用：什么都不录，给出原因，不重试，也没有第二种输入请求”“没有权限”“资格说不清按不能开始处理”，以及“资格没过：准备任务根本没有发出，而不是发出之后赶在它开始之前取消”（让准备任务一发出就当场开始；前面三个“0 次请求”的断言在排队调度器下对“先发出再取消”是空的，变异验证 M8 发现后补的）；`BluetoothCaptureAdapterTest`（18）。结构：`BluetoothInput` 构造函数私有、`openRecorder` 只接受它，“请求手机麦克风”在类型上就写不出来；源码扫描：`NoPhoneMicPathTest`（5：全模块只有一处创建录音、录音源只用 `VOICE_COMMUNICATION`、偏好设备必须设上否则放弃、内置麦克风类型只出现在路由归类里、能开录音的接口只接受蓝牙输入）与 `CaptureGateTest` 里的“只有请求蓝牙输入这一种办法”。设备上：`CaptureRefusalOnDeviceTest`（模拟器没有蓝牙输入 → 拒绝，原因 `INPUT_DEVICE_MISSING`，**系统路由请求 0 次、`AudioRecord` 0 个、系统里没有任何录音配置、录音目录 0 个文件、转录请求 0 次**，库里 0 条） | E2（模拟器；真机的“耳机在但被系统切走”见第 4 节第 9 步 `NOT_RUN`） |
 | 5 | 取消后迟到的回调、旧代次的写入、路由纪元失配、封存中的过期 TOGGLE 都不能改写当前会话（各有测试） | `CaptureStalenessTest`（10）：取消后迟到的路由确认/帧/中断/不可用；取消时还没返回的准备晚到后被关掉；旧 generation 的帧、路由、中断；封存中收到旧回调；录音中 epoch 不符的帧；准备阶段更旧 epoch 的确认；路由观测里会话标识不是当前会话；封存期间（及封存后才送到）的 TOGGLE；进程恢复后晚到的封存结果。`BluetoothCaptureAdapterTest`（18）钉住适配器侧：路由变化事件先于该批帧、系统把路由换成手机麦克风时只报告 mismatch 与新 epoch 而不去纠正；关闸与封存是协调器的事（`CaptureGateTest` 的“录音中输入变成别的来源：立即关闸”） | E2 |
 | 6 | 停止后自动转录，一条 Record 和第一个 Revision，写明所用模型；Record 与音频同一个标识；路由已确认但没有语音 = 没有 Revision 的 Record | `RecordPipelineTest`（14）：停止之后没有任何人调“转录”，库里恰好一条 Record、一条 Revision（number=1，写明引擎/模型/版本，执行位置 on_device），Record 与音频文件共用标识；无语音 → 没有 Revision 的 Record，不编造文字；模型缺失 → 等模型，装好后重新转录；失败保留音频。`InMemoryRecordLibraryTest`（11）与设备上的 `SqliteRecordLibraryContractTest`（同一套 11 个契约测试）；`SqliteRecordLibraryTest`（8，设备）：重开仍在、`UPDATE`/`DELETE` 被触发器拒绝（Revision 不可变）、发布步骤与 Revision 同一个事务（失败整体回滚，Ticket 21 的“待同步任务”就接在这一步）。`ContractOutputTest`（3）+ `test_capture_contract_output.py`（4）把整条线的产物写成 JSON 交给真实 schema 校验 | E2 |
 | 7 | 首页分开显示耳机连接、实际输入来源、当前录音状态 | `HomeViewModelTest`（11）、`HomeFlowTest`（4）：三个事实各自独立（耳机已连接 + 实际输入是手机麦克风；耳机未连接 + BLOCKED 等组合都存在），实际输入只来自协调器快照里系统的观测，不由“已连接”推出；按钮可用性由状态决定；`CaptureLogTest`（4）：真机复测用的状态日志不带耳机名/会话标识 | E2 |
@@ -47,9 +47,9 @@ JVM 测试数是 2026-11-18 在 Mac 上 `./gradlew :capture:test :platform:testD
 | 套件 | 测试数 | 内容 |
 |---|---|---|
 | `:platform` 仪器测试 | 19 | `SqliteRecordLibraryContractTest`（11，继承自 `:capture` testFixtures 的契约测试）+ `SqliteRecordLibraryTest`（8） |
-| `:app` 仪器测试（`app.auri.android.capture` 包） | 2 | `CaptureRefusalOnDeviceTest`（没有耳机 → 拒绝、零写入、零转录、不开手机麦克风）、`ForegroundServiceOnDeviceTest`（麦克风类前台服务能起来、类型是 microphone、能停） |
+| `:app` 仪器测试（`app.auri.android.capture` 包） | 4 | `CaptureRefusalOnDeviceTest`（没有耳机 → 拒绝、零写入、零转录、不开手机麦克风）；`ForegroundServiceOnDeviceTest` 三个：麦克风类前台服务能起来、类型是 microphone、能停；**起了立刻连停十次**，进程不崩、最后服务不在；**应用按 Home 进了后台再停**，服务照样停掉、进程不崩（先确认焦点窗口确实已不是本应用） |
 
-`check_capture_instrumentation.py` 逐个核对这 21 个测试都真的跑了并通过（只看 `OK (N tests)` 不够：被忽略的不计数，假设失败也算“通过”）。Ticket 14 的设备测试要 239 MB 模型，不在这里跑。
+`check_capture_instrumentation.py` 逐个核对这 23 个测试都真的跑了并通过（只看 `OK (N tests)` 不够：被忽略的不计数，假设失败也算“通过”）。Ticket 14 的设备测试要 239 MB 模型，不在这里跑。
 
 ## 3. 在本机怎么跑
 
@@ -59,7 +59,7 @@ JVM 测试数是 2026-11-18 在 Mac 上 `./gradlew :capture:test :platform:testD
 source ~/.config/auri/android-env.sh
 cd apps/android
 
-# JVM 单元测试（不需要设备）：:capture 70、:platform 53、:app 51、:asr 112
+# JVM 单元测试（不需要设备）：:capture 71、:platform 56、:app 51、:asr 112
 ./gradlew :capture:test :platform:testDebugUnitTest :app:testDebugUnitTest :asr:testDebugUnitTest
 
 # 构建 debug APK 与两个仪器测试 APK
@@ -104,15 +104,15 @@ execution/acceptance/android-capture/run_emulator_acceptance.sh
    | | | 耳机不可用时拒绝 | | | 截图④ | |
    | | | 录音中耳机掉线 | | | logcat | |
 
-**真机上我们不知道、需要这次观察的事**（代码里的数字是假设，不是实测）：路由确认的 5 秒超时对 FreeClip 够不够（SCO 建立耗时）；`setCommunicationDevice` + `MODE_IN_COMMUNICATION` 对手机上别的音频（正在播放的音乐）的副作用；FreeClip 只连 A2DP 时是否暴露输入设备；LE Audio 耳机上 `routedDevice` 的类型；录音一进后台系统是否仍然给音频（Ticket 19 才处理，这里只记录观察到的）。
+**真机上我们不知道、需要这次观察的事**（代码里的数字是假设，不是实测）：路由确认的 5 秒超时对 FreeClip 够不够（SCO 建立耗时）；`setCommunicationDevice` + `MODE_IN_COMMUNICATION` 对手机上别的音频（正在播放的音乐）的副作用；FreeClip 只连 A2DP 时是否暴露输入设备；LE Audio 耳机上 `routedDevice` 的类型；录音一进后台系统是否仍然给音频（Ticket 19 才处理，这里只记录观察到的）；SCO 建立的头几十毫秒里系统会不会先报出内置麦克风——协调器对**第一次** `MISMATCH` 观测就立刻受阻（`INPUT_ROUTE_UNVERIFIED`），如果真机上出现“耳机明明在，却因一次瞬时的内置麦克风观测被拒”，原样上报，不要自己放宽判定（要不要给 `MISMATCH` 一个短宽限是合同层面的决定）。
 
 ## 5. 设计要点（iOS、鸿蒙照着做）
 
 - **四个接缝**：`ControlAdapter`（控制命令）、`CaptureAdapter`（资格检查、请求蓝牙输入、路由证据、帧）、`RecordingStore`（封存的音频）、`TranscriptionAdapter`（转录）；外加 `RecordLibrary`。协调器是纯逻辑，只认这些接口，另外两端用 Swift / ArkTS 重写协调器时，应当回放**同一份** `capture.scenarios.json` 与 `capture.machine.json`，并复用同一套 `RecordLibrary` 契约测试的思路（`RecordLibraryContract` 的 11 条）。
 - **协调器**：所有命令与回调进同一个邮箱、由一个循环串行处理；每个 Capture Session 带 `capture_session_id` + generation + route epoch；旧 generation 的回调、epoch 不符的帧、会话标识不对的路由观测，都不能改写当前会话；进程恢复后回到 DISARMED，不自动开麦。
 - **Route Evidence 只来自系统的观测**：“已配对 / 已连接 / 偏好设备”都不是证据。路由确认前的帧只进内存隔离区（有上限，只丢弃不落盘），确认后才写存储；路由一变就立刻关闸；确认前的采样永远不会被补写。
-- **Android 实现**：`AudioRecord` + `getRoutedDevice()` + `OnRoutingChangedListener`，另外每次读完帧后主动查一次 `routedDevice`，并保证“路由事件先于该批帧交付”；`setCommunicationDevice` + `MODE_IN_COMMUNICATION`（结束时恢复原来的音频模式）；`AudioSource.VOICE_COMMUNICATION`；偏好设备必须设上，设不上就释放并报错，绝不留下一个“默认输入”的录音；设备地址只在内部用来把输入设备对上同一个耳机的通信设备，不外传、不记录。
-- **前台服务**是第二层：运行时麦克风权限与 `FOREGROUND_SERVICE_MICROPHONE`（API 34+）是两层，`BLUETOOTH_CONNECT`（API 31+）另算；服务在 `ROUTING`…`FINALIZING` 期间存在，`startForeground` 放在 `onCreate`，`START_NOT_STICKY`，通知里没有任何转录内容；服务起不来就取消这次采集。
+- **Android 实现**：`AudioRecord` + `getRoutedDevice()` + `OnRoutingChangedListener`，另外每次读完帧后主动查一次 `routedDevice`，并保证“路由事件先于该批帧交付”；`setCommunicationDevice` + `MODE_IN_COMMUNICATION`（结束时恢复原来的音频模式；`AudioManager.setMode` 要 `MODIFY_AUDIO_SETTINGS`，它是安装即授予的普通权限，缺了系统只记一条警告、模式切换被悄悄丢掉——清单里有，`PlatformManifestTest` 钉住）；`AudioSource.VOICE_COMMUNICATION`；偏好设备必须设上，设不上就释放并报错，绝不留下一个“默认输入”的录音；设备地址只在内部用来把输入设备对上同一个耳机的通信设备，不外传、不记录。
+- **前台服务**是第二层：运行时麦克风权限与 `FOREGROUND_SERVICE_MICROPHONE`（API 34+）是两层，`BLUETOOTH_CONNECT`（API 31+）另算；服务在 `ROUTING`…`FINALIZING` 期间存在，`startForeground` 放在 `onCreate`，`START_NOT_STICKY`，通知里没有任何转录内容；服务起不来就取消这次采集。**停止是一条命令（`ACTION_STOP`，经 `startForegroundService` 发出，服务收到后 `stopSelf(startId)`），不是 `stopService`**：服务连 `onCreate` 都没执行时 `stopService` 会让系统终结整个进程（第 8 节）；系统按顺序投递命令，停止总在 `startForeground` 之后。
 - **Record 库**：一个 Record 对应一次已确认路由的录音，与音频文件共用 `record_id`；文字是只增不改的 Revision 链（SQLite 触发器在数据库层面拒绝 `UPDATE`/`DELETE`）；发布 Revision 是**一个本地事务**，事务里留了一个发布步骤（`publicationStep`），Ticket 21 的“待同步任务”入队就放在那里，保证“已发布”与“待同步”不会分家。字段名与枚举值照 `revision.schema.json` 的 `capture` / `content` 两段，`ContractOutputTest` 证明本地库里存的字段足够组装它们。
 - **转录文字是数据**：界面只显示，不执行，日志里没有正文。日志只有一行状态（`AuriCapture` 标签：状态、受阻原因、系统观测到的输入类型），不带耳机名、设备地址、标识、文字或音频。
 
@@ -130,6 +130,7 @@ execution/acceptance/android-capture/run_emulator_acceptance.sh
 10. **SQLite 用框架自带的 `SQLiteOpenHelper`**，不引入 Room/KSP（少一个依赖）；schema 版本 1，没有迁移。时间以“秒 + 纳秒”存。
 11. **音频系统副作用**：录音期间手机的音频模式被切到通信模式、通信设备设成耳机，结束时恢复；这在真机上的副作用没有验证（第 4 节末尾）。
 12. **模拟器 = E2**：`AVD` 没有蓝牙输入，所以设备端测试断言“系统里确实没有蓝牙输入”（有的话测试响亮地失败，而不是悄悄换个断言）。
+13. **TDD 的接缝没能先问人**：实现规范的 TDD 流程要求先和人确认要测的接缝；这次是被派发的 worker，没有人可问，我按“协调器的公共接口、四个适配器接口、`HomeViewModel`”定了接缝（合同样本、适配器边界、首页状态三处都是别人会依赖的），测试都写在这些接口上，不测内部。可以推翻。
 
 ## 7. 合同缺口与建议（没有改 `contracts/`，只记录）
 
@@ -143,19 +144,44 @@ execution/acceptance/android-capture/run_emulator_acceptance.sh
 
 ## 8. 测试的牙齿（变异验证）与 TDD 的诚实说明
 
-没有为每个切片严格先红后绿：一部分切片是把测试和实现一起写好再跑，测试第一次就通过。补救办法是**变异验证**：改坏被测代码，确认对应测试变红，再恢复。本轮（验收工具与设备测试）做过并记录的有：
+没有为每个切片严格先红后绿：一部分切片是把测试和实现一起写好再跑，测试第一次就通过。补救办法是**变异验证**：改坏被测代码，确认对应测试变红，再恢复。**前任**对验收工具与设备测试做过并记录的有下面几条（接手后没有逐条复跑这些变异，只复跑了它们所属的测试套件、全部通过；所以它们是前任的记录，不是接手后的证据）：
 
 - `capture_contract_check.py`：去掉路由纪元检查、`verified` 检查、模型一致检查、SR 语义检查、会话一致检查、语音片段一致检查、“无语音不得有文字”检查、让报错回显值——8 个变异各被预期的测试抓住。
 - Kotlin → Python 整条线：把 `text_sha256` 写成全 0、把 capture 段 `status` 写死成 `complete`、把 Revision 的 `model_id` 写成别的——3 个变异都被 `test_capture_contract_output.py` 抓住（不是编译错误）。
 - `run_emulator_acceptance.sh`：不释放锁、不删 AVD、不杀模拟器、不固定设备序列号、不加 `-no-window`、无条件停 adb 服务、不等锁、不清残留锁、残留锁不看模拟器进程、去掉“是否模拟器”检查、跳过日志核对——11 个变异各被至少一个行为测试抓住；另外证明 INT/TERM/HUP 三种信号中断时清理照样做完。
-- 设备测试：在真机之外，在模拟器上做过两次带变异的验收：①把内置麦克风当成蓝牙输入 → `CaptureRefusalOnDeviceTest` 以断言失败（期望 `INPUT_DEVICE_MISSING`，实际 `INPUT_ROUTE_UNVERIFIED`）；②让前台服务不调用 `startForeground` → 进程被系统以 `ForegroundServiceDidNotStartInTimeException` 终结，`check_capture_instrumentation.py` 报出两个测试都没有通过记录。变异已还原。
+- 设备测试：在真机之外，在模拟器上做过两次带变异的验收：①把内置麦克风当成蓝牙输入 → `CaptureRefusalOnDeviceTest` 以断言失败（期望 `INPUT_DEVICE_MISSING`，实际 `INPUT_ROUTE_UNVERIFIED`）；②让前台服务不调用 `startForeground` → 进程被系统以 `ForegroundServiceDidNotStartInTimeException` 终结，`check_capture_instrumentation.py` 报出两个测试都没有通过记录。变异已还原。（注意：“做过带变异的验收”不等于“没变异的版本全通过”——接手后发现没变异的版本在拒绝路径上就会崩进程，见下。）
 - 状态日志：泄露耳机名、隐藏原因、把任何已观测输入都说成蓝牙——3 个变异各被预期的测试抓住。
 
-`:capture`、`:platform`、`:app` 的 JVM 测试在编写期间同样做过变异验证（改坏实现看测试变红再还原），但没有逐条存档，这里不虚报条数。
+### 接手后复跑并存档的 JVM 变异验证（E2）
+
+前任说 `:capture`、`:platform`、`:app` 的 JVM 测试做过变异验证但没有存档。接手后对清单第 2–7 项各挑了关键的错误重做一遍，每次只改一处、跑对应模块的全部 JVM 测试、记下变红的测试、用 `git checkout` 还原（脚本是一次性的，没有入库；在 Mac mini 上用 `./gradlew :capture:test`、`:platform:testDebugUnitTest`、`:app:testDebugUnitTest` 跑）：
+
+| # | 改坏了什么 | 结果 | 变红的测试 |
+|---|---|---|---|
+| M1 | 路由观测是 `UNKNOWN` 也当作已确认并开闸（`CaptureCoordinator.onRoute`） | 被抓住 | `CaptureGateTest`“系统一直说不清实际输入：超时受阻，确认之前的音频同样被丢弃”、`CaptureStalenessTest`“准备阶段 epoch 更旧的确认被拒绝…” |
+| M2 | 旧 generation 的路由/超时/封存回调不再被拒绝（`currentSession`） | 被抓住 | `CaptureStalenessTest`“旧 generation 的帧、路由与中断，改变不了正在录的新会话” |
+| M3 | 旧 generation 的音频帧仍然写入（`onFrames`） | 被抓住 | 同上 |
+| M4 | epoch 不符的帧仍然写入（`onFrames`） | 被抓住 | `CaptureStalenessTest`“录音中 epoch 不符的帧被丢弃…” |
+| M5 | 封存之后才送到的过时 START/TOGGLE 照常处理（`onCommand`） | 被抓住 | `CaptureStalenessTest`“封存期间发出、封存完成之后才送到的 TOGGLE 同样被丢弃…” |
+| M6 | 空白文字也发布 Revision（`RecordPipeline`） | 被抓住 | `RecordPipelineTest`“转录引擎返回空白文字：同样当作没有语音，不留一条空 Revision” |
+| M7 | 状态机规则 `ROUTING + ROUTE_VERIFIED` 改去 `FINALIZING`（`CaptureMachine`） | 被抓住 | 24 个测试变红，含 `CaptureMachineTableTest`“每一条转移规则都和合同逐条一致” |
+| M8 | 没资格也先向系统发出输入请求、到 BLOCKED 时再取消（`beginSession(true)`） | **第一次没被抓住**；补测试后被抓住 | 只有新增的 `CaptureGateTest`“资格没过：准备任务根本没有发出…” |
+| M9 | 路由确认后不丢弃隔离区（`openGate`） | 被抓住 | `CaptureHappyPathTest`“正常录一段：确认前的音频只进内存，确认后才写入…” |
+| M10 | 录音源改成手机麦克风 `MIC`（`AndroidAudioSystem`） | 被抓住 | `NoPhoneMicPathTest`“录音源只用 VOICE_COMMUNICATION…” |
+| M11 | 前台服务在 `FINALIZING` 时不再保活（`FOREGROUND_SERVICE_STATES`） | 被抓住 | `ForegroundServiceBinderTest` 两个 |
+| M12 | 首页把“耳机已连接”由实际输入推出（`HomeViewModel`） | 被抓住 | `HomeViewModelTest`“耳机已连接但没有任何观测：实际输入是未观测到…” |
+
+M8 是真缺口：原有三个“资格没过 → 0 次请求”的断言在排队的 `StandardTestDispatcher` 下对“先发出、BLOCKED 时再取消”是空的（发出又取消的任务永远没机会运行，计数照样是 0），线上适配器跑在真线程上，这样的任务可能在取消前就已经开始碰系统。新测试让准备任务一发出就当场开始，对三种资格结果断言 0 次。
+
+### 接手后发现并修掉的两个缺陷
+
+1. **`:platform` 清单缺 `MODIFY_AUDIO_SETTINGS`**（对照探针清单发现）：`AudioManager.setMode` 需要它，缺了系统只记警告、`MODE_IN_COMMUNICATION` 切换被悄悄丢掉，真机上录音路由会不对。先红（`PlatformManifestTest` 期望的权限集合）后绿（清单补上）。
+2. **没有耳机的拒绝路径会让进程崩溃**：状态一进 `ROUTING` 就起前台服务，几十毫秒后系统说没有蓝牙输入、状态变 `BLOCKED` 就 `stopService`，抢在服务调用 `startForeground` 之前，系统以 `ForegroundServiceDidNotStartInTimeException` 终结整个进程。系统日志（API 35 模拟器）的时间线：`state=ROUTING` → FGS 启动被允许 → 48 毫秒后 `Bringing down service while still waiting for start foreground` → `state=BLOCKED` → 约 200 毫秒后 `FATAL EXCEPTION`。旧实现上 `CaptureRefusalOnDeviceTest` 跑了两次、两次都崩；新写的“起了立刻连停十次”设备测试在旧实现上崩了一次（红）。修法：停止改发一条 `ACTION_STOP` 命令，服务收到后 `stopSelf(startId)`（见第 5 节），修后四个 `:app` 设备测试与 19 个 `:platform` 设备测试全部通过。前任为什么看到“全通过”不知道（这是时序竞争，服务恰好来得及 `startForeground` 就不崩），我不猜。
 
 ## 9. 已知限制与后续
 
 - **没有耳机手势、音量手势**（Ticket 17）；**没有静音检测与时长之外的限制**（Ticket 18；VAD 只在会话内过滤静音，不决定开始与结束，ADR-0016）；**没有来电/中断处理、没有进程被杀后的录音恢复**（Ticket 19：被杀时已写下的 WAV 不会被回收，也不会产出 `process_terminated` 的 Record）；**没有模型管理界面**（Ticket 20）；**没有配对与同步**（Ticket 21）；**没有改文字与删除**（Ticket 23）。
-- 前台服务里 `startForeground` 若被系统拒绝（`IllegalStateException` / `SecurityException`），服务只是 `stopSelf()`，**不会把失败异步报回**协调器；在“服务起不来就取消采集”这一层，只有 `startForegroundService` 本身同步抛错时才会取消。下一次的资格检查（权限、前台条件）会拦住大部分原因。
+- 前台服务里 `startForeground` 若被系统拒绝（`IllegalStateException` / `SecurityException`），服务只是 `stopSelf()`，**不会把失败异步报回**协调器；在“服务起不来就取消采集”这一层，只有 `startForegroundService` 本身同步抛错时才会取消。下一次的资格检查（权限、前台条件）会拦住大部分原因。这个 `stopSelf()` 自己也可能被系统以同样的异常终结进程（服务还没进前台就被拆）；资格检查已经拦住了这两种原因，所以只当兜底，没做更多。
+- **应用在后台时停服务**：模拟器（API 35）上实测停得掉、进程不崩（`stoppingWhileTheAppIsInTheBackgroundStillStopsTheService`），但**没有区分**走的是 `startForegroundService(ACTION_STOP)` 还是 `stopService` 兜底（两条路结果相同、系统日志里都没有拒绝记录）。兜底在“刚起就进了后台、还没 `startForeground`”的几毫秒里仍可能被系统终结进程（代码里有 `shortcut:` 注释说明）。真机的后台、锁屏场景属于 Ticket 19。
 - 路由观测有一个不超过一个缓冲区（约 100 ms）的窗口：路由刚变而系统还没告诉我们时，同一批帧里可能混着极少量变路由之后的音频。缓解：每批读完后主动查一次 `routedDevice`，且路由事件先于该批帧交付；真机上这个窗口的实际大小需要 E3 才知道。
 - 真机行为（SCO 建立耗时、音频模式副作用、不同耳机的差异、LE Audio）全部 `NOT_RUN`，见第 4 节。
