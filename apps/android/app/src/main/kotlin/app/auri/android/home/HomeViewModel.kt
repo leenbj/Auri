@@ -123,17 +123,14 @@ interface CaptureControls {
     fun stop()
 }
 
-/** 屏幕按钮 → 控制适配器 → 协调器。开始时若还在 DISARMED，先开启控制模式（用户按“开始”就是开启它的明确操作）。 */
+/** 屏幕按钮 → 控制适配器 → 协调器；手动采集不改变耳机控制模式。 */
 class CoordinatorControls(
     private val coordinator: CaptureCoordinator,
     private val screen: ScreenControlAdapter,
 ) : CaptureControls {
     override val snapshot: StateFlow<CaptureSnapshot> get() = coordinator.snapshot
 
-    override fun start() {
-        if (snapshot.value.state == CaptureState.DISARMED) coordinator.enableControlMode()
-        screen.pressStart()
-    }
+    override fun start() = screen.pressStart()
 
     override fun stop() = screen.pressStop()
 }

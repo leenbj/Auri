@@ -111,11 +111,26 @@ execution/acceptance/android-capture/run_emulator_acceptance.sh      # 一次性
 adb logcat -d -s AuriCapture:I                                       # 真机：采集状态变化日志（只有状态、原因、输入类型，没有文字与设备标识）
 ```
 
+Android 耳机手势控制与校准（Ticket 17，同在 `apps/android/`：`:capture` 里是按键归一化与去抖、校准向导与 Headset Profile、反馈映射（纯 Kotlin/JVM），`:platform` 是媒体按键通道（只在控制模式开着时占用）、振动 + 静音通知、锁屏监测的 Android 实现，`:app` 加了“耳机控制”页与校准页；步骤、真机流程（`NOT_RUN`）、**已知限制（没有音频播放时系统不把媒体键交给我们的会话，需要范围决策）**与结果见 `execution/acceptance/android-control/README.md`）：
+
+```bash
+cd apps/android
+./gradlew :capture:test :platform:testDebugUnitTest :app:testDebugUnitTest :asr:testDebugUnitTest   # JVM 单测（225 + 136 + 92 + 112），不需要设备；输入没变的测试会被判 UP-TO-DATE 而不执行，要强制重跑先 :capture:cleanTest 等（见该 README 第 3 节）
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest :platform:assembleDebugAndroidTest         # 构建 APK 与两个仪器测试 APK
+cd ../..
+AURI_GRADLE_ARGS=--no-daemon .venv/bin/pytest execution/acceptance/android-control                   # Python 验收工具（106 个；含真实调用 Gradle 的合同输出校验，需要 JAVA_HOME）
+.venv/bin/python execution/acceptance/android-control/control_contract_check.py <输出目录> --preset jvm            # 校验向导与归一化器写出的 JSON 符合合同
+.venv/bin/python execution/acceptance/android-control/control_contract_check.py --profile <headset-profile.json>   # 校验从真机取回的校准档案
+execution/acceptance/android-control/run_emulator_acceptance.sh        # 一次性无头模拟器验收（E2）：同样先取共享锁 ~/.cache/auri/emulator.lock，无论成败都杀模拟器、删 AVD、放锁
+adb shell run-as app.auri.android cat files/headset-profile.json > headset-profile.json   # 真机（debug 构建）：取回校准档案
+adb logcat -d -s AuriControl:I AuriCapture:I                           # 真机：耳机控制与采集状态日志（只有状态与原因，没有设备名、文字或标识）
+```
+
 Android 模型管理与转录调度（Ticket 20，同在 `apps/android/`：`:modelmgmt` 是模型目录、可暂停可续传的下载、校验后原子启用（全应用唯一声明 `INTERNET` 的模块，只为下载模型），转录调度器在 `:capture`，任务库与资源监视器在 `:platform`，模型与转录页在 `:app`；步骤、真机流程（`NOT_RUN`）与结果见 `execution/acceptance/android-models/README.md`）：
 
 ```bash
 cd apps/android
-./gradlew :capture:test :modelmgmt:testDebugUnitTest :platform:testDebugUnitTest :app:testDebugUnitTest :asr:testDebugUnitTest   # JVM 单测（158 + 71 + 108 + 66 + 112），不需要设备；:modelmgmt 是 Android 库，要用 testDebugUnitTest（写 test 会 debug 与 release 各跑一遍）；多个工作树共用一台机器时，`./gradlew --stop` 会停掉别人正在跑的构建，给构建与 --stop 都加私有的 -Dorg.gradle.daemon.registry.base=<目录>
+./gradlew :capture:test :modelmgmt:testDebugUnitTest :platform:testDebugUnitTest :app:testDebugUnitTest :asr:testDebugUnitTest   # JVM 单测（158 + 71 + 108 + 66 + 112），不需要设备；:modelmgmt 是 Android 库，要用 testDebugUnitTest（写 test 会 debug 与 release 各跑一遍）；多个工作树共用机器时不要执行 `./gradlew --stop`，它会停掉别人的构建
 ./gradlew :modelmgmt:realDownloadCheck -PauriRealDownload=$HOME/.cache/auri/models   # 联网真实下载一次 163 MB 的占位模型：约 5% 时暂停、Range 续传、独立重算 SHA-256；不是单元测试，目录必须在仓库外
 execution/acceptance/android-capture/run_emulator_acceptance.sh      # 模拟器验收（同上）：:platform 的仪器测试现在还包含任务库与资源监视器的设备端测试
 ```

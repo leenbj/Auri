@@ -11,32 +11,21 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.auri.android.control.ControlViewModel
 import app.auri.android.home.HomeViewModel
 import app.auri.android.modelui.ModelsViewModel
+import app.auri.android.ui.AppRoot
+import app.auri.android.ui.ControlScreen
 import app.auri.android.ui.HomeScreen
 import app.auri.android.ui.ModelsScreen
-
-private enum class Page { HOME, MODELS }
 
 class MainActivity : ComponentActivity() {
     private val runtime get() = (application as AuriApplication).runtime
 
     private val viewModel: HomeViewModel by viewModels { runtime.homeViewModelFactory }
+    private val controlViewModel: ControlViewModel by viewModels { runtime.controlViewModelFactory }
     private val modelsViewModel: ModelsViewModel by viewModels { runtime.modelsViewModelFactory }
 
     // 不管用户给不给权限都继续开始：协调器会按实际情况拒绝并给出原因（PERMISSION_MIC_DENIED 等），界面如实显示
@@ -46,29 +35,24 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             val state by viewModel.state.collectAsStateWithLifecycle()
+            val controlState by controlViewModel.state.collectAsStateWithLifecycle()
             val models by modelsViewModel.state.collectAsStateWithLifecycle()
-            var page by rememberSaveable { mutableStateOf(Page.HOME) }
-            Column(Modifier.fillMaxSize()) {
-                Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { page = Page.HOME }, enabled = page != Page.HOME) { Text("录音") }
-                    Button(onClick = { page = Page.MODELS }, enabled = page != Page.MODELS) { Text("模型与转录") }
-                }
-                Box(Modifier.weight(1f)) {
-                    when (page) {
-                        Page.HOME -> HomeScreen(state, onStart = ::onStartPressed, onStop = viewModel::stop, onDismissNotice = viewModel::dismissNotice)
-                        Page.MODELS -> ModelsScreen(
-                            models,
-                            onStart = modelsViewModel::start,
-                            onPause = modelsViewModel::pause,
-                            onCancelDownload = modelsViewModel::cancelDownload,
-                            onOpenLicense = ::openLicense,
-                            onCancelJob = modelsViewModel::cancelJob,
-                            onRetranscribe = modelsViewModel::retranscribe,
-                            onRecheck = modelsViewModel::recheckResources,
-                        )
-                    }
-                }
-            }
+            AppRoot(
+                home = { HomeScreen(state, onStart = ::onStartPressed, onStop = viewModel::stop, onDismissNotice = viewModel::dismissNotice) },
+                control = { ControlScreen(controlState, controlViewModel, onStart = ::onStartPressed) },
+                models = {
+                    ModelsScreen(
+                        models,
+                        onStart = modelsViewModel::start,
+                        onPause = modelsViewModel::pause,
+                        onCancelDownload = modelsViewModel::cancelDownload,
+                        onOpenLicense = ::openLicense,
+                        onCancelJob = modelsViewModel::cancelJob,
+                        onRetranscribe = modelsViewModel::retranscribe,
+                        onRecheck = modelsViewModel::recheckResources,
+                    )
+                },
+            )
         }
     }
 
