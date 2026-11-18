@@ -678,6 +678,29 @@ class ControlViewModelTest {
     }
 
     @Test
+    fun `unknown lock reading between two locked readings invalidates the later no effect claim`() = runUnconfined {
+        val rig = rig(CaptureState.ARMED)
+        rig.viewModel.setRealDeviceConfirmed(true)
+        rig.viewModel.startCalibration()
+        repeat(3) { rig.viewModel.skipStep() }
+        rig.gesture(PlatformEvent.SCREEN_BUTTON, BusinessCommand.START, ControlSource.SCREEN_CONTROL)
+        rig.decide(CaptureEvent.START, CaptureState.ROUTING)
+        rig.decide(CaptureEvent.ROUTE_VERIFIED, CaptureState.RECORDING)
+        rig.lock.value = true
+        rig.gesture(PlatformEvent.TOGGLE, BusinessCommand.TOGGLE)
+        rig.decide(CaptureEvent.TOGGLE, CaptureState.FINALIZING)
+        rig.decide(CaptureEvent.FINALIZE_COMPLETE, CaptureState.ARMED)
+
+        rig.lock.value = null
+        rig.lock.value = true
+        rig.viewModel.reportNoEffect()
+        rig.viewModel.nextStep()
+        rig.viewModel.saveProfile()
+
+        assertEquals(CapabilityRecord.untested, rig.store.saves.single().capabilities.restartAfterStopWhenLocked)
+    }
+
+    @Test
     fun `声明没效果时，界面把实际的采集状态交给向导：向导所知的状态落后于实际，就不算“开始手势没效果”`() = runUnconfined {
         val rig = rig(CaptureState.ARMED)
         rig.viewModel.setRealDeviceConfirmed(true)

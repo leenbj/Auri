@@ -169,13 +169,13 @@ MUTANTS = [
     ("N8", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "事件已经到了、决定还没到时点", [
         (CAPTURE + "calibration/CalibrationWizard.kt", "if (pairing.size > 0) return false", "if (false) return false"),
     ]),
-    ("N9", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "重做这一步之后，上一次尝试的事件晚到的决定", [
+    ("N9", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "重做之后旧的决定才送到", [
         (CAPTURE + "calibration/CalibrationWizard.kt", "pairing.discard()\n        if (now != null)", "pairing.clear()\n        if (now != null)"),
     ]),
     ("N10", "capture", "app.auri.capture.calibration.CalibrationObservationTest", "步骤边界：上一步里还没等到决定的屏幕停止", [
         (CAPTURE + "calibration/CalibrationWizard.kt", "pairing.discard()\n        val following", "pairing.clear()\n        val following"),
     ]),
-    ("N11", "app", "app.auri.android.control.ControlViewModelTest", "锁屏读数变成读不出来", [
+    ("N11", "app", "app.auri.android.control.ControlViewModelTest", "unknown lock reading between two locked readings", [
         (APP + "control/ControlViewModel.kt", "screenLocked.collect { locked -> wizard.onScreenLockChanged(locked, controls.snapshot.value.state) }", "screenLocked.collect { locked -> if (locked != null) wizard.onScreenLockChanged(locked, controls.snapshot.value.state) }"),
     ]),
     ("N12", "app", "app.auri.android.control.ControlViewModelTest", "声明没效果时，界面把实际的采集状态交给向导", [
@@ -198,6 +198,63 @@ MUTANTS = [
     ]),
     ("S1b", "capture", "app.auri.capture.calibration.CalibrationObservationTest", "有触发器的内部错误", [
         (CAPTURE + "calibration/CalibrationWizard.kt", "if (decision.trigger == null && decision.cause == Cause.INTERNAL_ERROR) pairing.clear()", "if (decision.cause == Cause.INTERNAL_ERROR) pairing.clear()"),
+    ]),
+    ("N2", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "锁屏变化之后又有了新的采集决定", [
+        (CAPTURE + "calibration/CalibrationWizard.kt", "lockMovedSinceBaseline = screenLocked == null", "lockMovedSinceBaseline = lockMovedSinceBaseline || screenLocked == null"),
+    ]),
+    ("N3", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "第二步里中途锁了屏", [
+        (CAPTURE + "calibration/CalibrationWizard.kt", "if (locked != knownLock) lockMovedSinceBaseline = true", "if (locked != knownLock) lockMovedSinceBaseline = false"),
+    ]),
+    ("N4", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "锁屏步骤里解锁时读不出锁屏状态", [
+        (CAPTURE + "calibration/CalibrationWizard.kt", "if (locked != knownLock) lockMovedSinceBaseline = true", "if (locked == null) return\n        if (locked != knownLock) lockMovedSinceBaseline = true"),
+    ]),
+    ("N6", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "前台手势开始，路由到锁屏之后才确认", [
+        (CAPTURE + "calibration/CalibrationFindings.kt", "it.stateAfter == CaptureState.RECORDING && it.screenLocked == locked", "it.stateAfter == CaptureState.RECORDING"),
+    ]),
+    ("Q5", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "一个不改变状态的无关决定", [
+        (CAPTURE + "calibration/CalibrationWizard.kt", "knownLock = screenLocked\n            lockMovedSinceBaseline = true", "knownLock = screenLocked\n            lockMovedSinceBaseline = false"),
+    ]),
+    ("Q6", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "锁屏通知还没送到，但一个没有状态变化的决定", [
+        (CAPTURE + "calibration/CalibrationWizard.kt", "knownLock = screenLocked\n            lockMovedSinceBaseline = true", "knownLock = screenLocked\n            lockMovedSinceBaseline = false"),
+    ]),
+    ("Q7", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "第四步：锁屏后读数读不出来", [
+        (CAPTURE + "calibration/CalibrationFindings.kt", "o.stateBefore == CaptureState.RECORDING && o.stateAfter != CaptureState.RECORDING -> lockedWithRecording = false", "o.stateBefore == CaptureState.RECORDING && o.stateAfter != CaptureState.RECORDING -> Unit"),
+    ]),
+    ("Q8", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "声明那一刻界面读到的锁屏状态与向导所知的对不上", [
+        (CAPTURE + "calibration/CalibrationWizard.kt", "now.state == trackedState && now.screenLocked == knownLock", "now.state == trackedState"),
+    ]),
+    ("Q10", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "中途锁过屏再解锁之后点“重做”", [
+        (CAPTURE + "calibration/CalibrationWizard.kt", "pairing.discard()\n        if (now != null) {", "pairing.discard()\n        if (false && now != null) {"),
+    ]),
+    ("Q10a", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "点“重做”时界面读到的环境与向导所知的都不同", [
+        (CAPTURE + "calibration/CalibrationWizard.kt", "trackedState = now.state", "Unit"),
+    ]),
+    ("Q10b", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "点“重做”时界面读到的环境与向导所知的都不同", [
+        (CAPTURE + "calibration/CalibrationWizard.kt", "knownLock = now.screenLocked", "Unit"),
+    ]),
+    ("Q10c", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "点“重做”时界面读到的环境与向导所知的都不同", [
+        (CAPTURE + "calibration/CalibrationWizard.kt", "lockMovedSinceBaseline = now.screenLocked == null", "Unit"),
+    ]),
+    ("Q16", "app", "app.auri.android.control.ControlViewModelTest", "声明没效果时，界面也把实际的锁屏状态交给向导", [
+        (APP + "control/ControlViewModel.kt", "runningWizard()?.reportNoEffect(currentEnvironment())", "runningWizard()?.reportNoEffect()"),
+    ]),
+    ("Q17", "app", "app.auri.android.control.ControlViewModelTest", "中途锁过屏再解锁之后点“重做”", [
+        (APP + "control/ControlViewModel.kt", "runningWizard()?.repeat(currentEnvironment())", "runningWizard()?.repeat()"),
+    ]),
+    ("Q18", "platform", "app.auri.platform.storage.FileProfileStoreTest", "替换这一步抛的不是 IOException", [
+        (PLATFORM + "storage/FileProfileStore.kt", 'temp.delete()\n            throw e', 'temp.delete()\n            throw UnsupportedOperationException("mutant")'),
+    ]),
+    ("S1-old", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "命令处理时适配器抛了异常", [
+        (CAPTURE + "calibration/CalibrationWizard.kt", "if (decision.trigger == null && decision.cause == Cause.INTERNAL_ERROR) pairing.clear()", "if (decision.trigger == null && decision.cause == Cause.INTERNAL_ERROR) Unit"),
+    ]),
+    ("S2-old", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "锁屏通知送到时，界面读到的实际采集状态", [
+        (CAPTURE + "calibration/CalibrationWizard.kt", "val state = if (observedState == null || observedState == trackedState) trackedState else null", "val state = trackedState"),
+    ]),
+    ("S3-old", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "锁屏通知送到时，界面读到的实际采集状态", [
+        (CAPTURE + "calibration/CalibrationWizard.kt", "val state = if (observedState == null || observedState == trackedState) trackedState else null", "val state = observedState ?: trackedState"),
+    ]),
+    ("S4-old", "app", "app.auri.android.control.ControlViewModelTest", "锁屏通知送到向导时，界面把此刻实际的采集状态", [
+        (APP + "control/ControlViewModel.kt", "wizard.onScreenLockChanged(locked, controls.snapshot.value.state)", "wizard.onScreenLockChanged(locked)"),
     ]),
 ]
 

@@ -495,6 +495,15 @@ class CalibrationFindingsTest {
         assertEquals(CapabilityRecord.untested, noObservation.continueRecordingWhenLocked)
         assertEquals("锁屏中根本没有停下过录音：重新开始没有试过", CapabilityRecord.untested, noObservation.restartAfterStopWhenLocked)
 
+        // 重做建立稳定的锁屏基准：声明确实是锁屏中的停止手势，仍不能说明录音是否撑过锁屏。
+        val steady = Run(real)
+        steady.toLockStep()
+        steady.wizard.onScreenLockChanged(true)
+        steady.wizard.repeat(CurrentEnvironment(RECORDING, true))
+        steady.wizard.reportNoEffect()
+        steady.wizard.next()
+        assertEquals(CapabilityRecord.untested, steady.profile().capabilities.continueRecordingWhenLocked)
+
         // 解锁时录音还在：撑过锁屏是观察到的；重新开始仍然没试过，不能因为手势没反应就写成不支持
         val survived = Run(real)
         survived.toLockStep()
@@ -514,6 +523,8 @@ class CalibrationFindingsTest {
         run.feed.gesture(PlatformEvent.TOGGLE, TOGGLE, FINALIZING, locked = false) // 还没锁屏就停了，不是这一步要的流程
         run.feed.other(CaptureEvent.FINALIZE_COMPLETE, ARMED)
         run.wizard.onScreenLockChanged(true)
+        run.feed.gesture(PlatformEvent.SCREEN_BUTTON, START, ROUTING, locked = true, source = ControlSource.SCREEN_CONTROL)
+        run.feed.other(CaptureEvent.ROUTE_UNVERIFIED, BLOCKED, locked = true)
         run.wizard.reportNoEffect()
         run.wizard.next()
         assertEquals(CapabilityRecord.untested, run.profile().capabilities.restartAfterStopWhenLocked)
