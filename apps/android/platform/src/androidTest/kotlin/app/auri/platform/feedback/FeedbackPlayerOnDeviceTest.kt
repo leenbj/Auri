@@ -39,33 +39,44 @@ class FeedbackPlayerOnDeviceTest {
         manager.cancel(AndroidFeedbackPlayer.NOTIFICATION_ID)
     }
 
-    private fun posted(): Notification? {
+    private fun Notification.text(): String? = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
+
+    /**
+     * 等到我们的通知文字变成 [expectedText]。通知的发出与取消都由系统异步处理：读得太早，会读到上一次留下的同标识通知
+     * （这个测试以前每轮先 cancel 再立刻读：连跑四次设备验收，有两次读到的是上一轮那一种的文字）。
+     * 等满 5 秒仍不是这段文字，就返回最后读到的那条，让断言报出实际的文字；一条都没有才是 null。
+     */
+    private fun posted(expectedText: String): Notification? {
+        var last: Notification? = null
         repeat(50) {
-            manager.activeNotifications.firstOrNull { it.id == AndroidFeedbackPlayer.NOTIFICATION_ID }?.let { return it.notification }
+            last = manager.activeNotifications.firstOrNull { it.id == AndroidFeedbackPlayer.NOTIFICATION_ID }?.notification
+            if (last?.text() == expectedText) return last
             Thread.sleep(100)
         }
-        return null
+        return last
     }
 
     @Test
     fun eachFeedbackKindPostsItsOwnSilentNotification() {
-        FeedbackKind.entries.forEach { kind ->
+        // 与真实使用一样，两次之间不取消：后一条通知按同一个标识替换前一条。顺序让每一种都跟在另一种之后（没有相邻重复）
+        val order = FeedbackKind.entries + FeedbackKind.entries.reversed().drop(1)
+        order.forEach { kind ->
             val feedback = Feedbacks.of(kind)
-            clear()
 
             player.play(feedback)
 
-            val notification = posted()
+            val notification = posted(feedback.notificationText)
             assertNotNull("$kind：应当发出一条通知", notification)
-            assertEquals("$kind：通知文字", feedback.notificationText, notification!!.extras.getCharSequence(Notification.EXTRA_TEXT).toString())
+            assertEquals("$kind：通知文字", feedback.notificationText, notification!!.text())
         }
     }
 
     @Suppress("DEPRECATION") // Notification.sound 在有渠道的系统上不起作用，这里只是确认没人往里塞声音
     @Test
     fun theNotificationChannelHasNoSoundNoVibrationAndLowImportance() {
-        player.play(Feedbacks.of(FeedbackKind.STARTED))
-        val notification = checkNotNull(posted())
+        val started = Feedbacks.of(FeedbackKind.STARTED)
+        player.play(started)
+        val notification = checkNotNull(posted(started.notificationText))
 
         val channel = checkNotNull(manager.getNotificationChannel(notification.channelId))
 
