@@ -193,6 +193,31 @@ class SchedulerWaitingTest : BoundedSchedulerTest() {
     }
 
     @Test
+    fun `配置过短或递减的资源重查间隔也要有下限且退避`() = runTest {
+        val rig = SchedulerRig(this, config = SchedulerConfig(resourceRecheckMs = listOf(1, 1)))
+        val id = rig.addRecord(1)
+        rig.resources.setSilently(ResourceStatus.Low(ResourceReason.LOW_MEMORY))
+        rig.scheduler.submit(id)
+        rig.settle()
+        val initialChecks = rig.resources.checks.get()
+
+        rig.advance(100)
+
+        assertEquals("不能每毫秒重查", initialChecks, rig.resources.checks.get())
+        assertEquals(WAITING_RESOURCES, rig.jobOf(id).state)
+
+        val descending = SchedulerRig(this, config = SchedulerConfig(resourceRecheckMs = listOf(30_000, 1)))
+        val nextId = descending.addRecord(2)
+        descending.resources.setSilently(ResourceStatus.Low(ResourceReason.LOW_MEMORY))
+        descending.scheduler.submit(nextId)
+        descending.settle()
+        descending.advance(30_000)
+        val afterFirstCheck = descending.resources.checks.get()
+        descending.advance(100)
+        assertEquals("退避间隔不能递减", afterFirstCheck, descending.resources.checks.get())
+    }
+
+    @Test
     fun `配置较长的资源重查间隔也不能超过五分钟`() = runTest {
         val rig = SchedulerRig(this, config = SchedulerConfig(resourceRecheckMs = listOf(900_000)))
         val id = rig.addRecord(1)

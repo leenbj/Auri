@@ -5,6 +5,7 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.OutputStream
+import java.nio.file.Files
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -102,6 +103,25 @@ class ModelManagerTest {
         assertTrue("不能因为指针不可读而删除已安装的模型", old.dir.isDirectory)
         assertEquals(ModelErrorKind.STORAGE_ERROR, failedOf(restarted.entry(rig.id)).kind)
         pointer.writeText(validPointer)
+        ModelVerifier().verify(ready(rig.manager()).manifest, old.dir)
+    }
+
+    @Test
+    fun `指针读取发生实际文件权限错误时保留旧版本`() {
+        val rig = Rig()
+        val first = rig.manager().apply { start(rig.id); awaitInstalled(rig.id) }
+        val old = ready(first)
+        val pointer = File(rig.root, "model-store/${rig.id}/active.json").toPath()
+        val originalPermissions = Files.getPosixFilePermissions(pointer)
+        try {
+            Files.setPosixFilePermissions(pointer, emptySet())
+            assertFalse("测试需要真实的读取权限错误", Files.isReadable(pointer))
+            val restarted = rig.manager()
+            assertTrue(old.dir.isDirectory)
+            assertEquals(ModelErrorKind.STORAGE_ERROR, failedOf(restarted.entry(rig.id)).kind)
+        } finally {
+            Files.setPosixFilePermissions(pointer, originalPermissions)
+        }
         ModelVerifier().verify(ready(rig.manager()).manifest, old.dir)
     }
 

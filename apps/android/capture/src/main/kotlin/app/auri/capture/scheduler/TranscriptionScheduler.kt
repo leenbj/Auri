@@ -187,9 +187,9 @@ class TranscriptionScheduler(
                 } catch (e: Exception) {
                     mailbox.trySend(Message.ResourcesUnavailable)
                     System.err.println("Resource monitor unavailable")
-                    val delayMs = config.resourceRecheckMs.getOrElse(failures) { config.resourceRecheckMs.lastOrNull() ?: 15_000L }
+                    val delayMs = resourceDelay(failures)
                     failures = (failures + 1).coerceAtMost(config.resourceRecheckMs.size)
-                    delay(delayMs.coerceAtMost(300_000L))
+                    delay(delayMs)
                 }
             }
         }
@@ -360,6 +360,10 @@ class TranscriptionScheduler(
     }
 
     private fun backoffFor(attempts: Int): Long = config.retryBackoffMs[(attempts - 1).coerceIn(0, config.retryBackoffMs.lastIndex)]
+
+    private fun resourceDelay(checks: Int): Long =
+        (config.resourceRecheckMs.take((checks + 1).coerceIn(0, config.resourceRecheckMs.size)).maxOrNull() ?: 15_000L)
+            .coerceIn(15_000L, 300_000L)
 
     // ---------------------------------------------------------------- 唤醒：先过模型这一关，再过资源这一关，最后才开始
 
@@ -680,7 +684,7 @@ class TranscriptionScheduler(
         timers.remove(job.jobId)?.cancel()
         val (delayMs, token) = when {
             job.state == TranscriptionState.WAITING_RESOURCES ->
-                (config.resourceRecheckMs.getOrNull(job.waitChecks) ?: config.resourceRecheckMs.lastOrNull() ?: 300_000L).coerceAtMost(300_000L) to job.waitChecks
+                resourceDelay(job.waitChecks) to job.waitChecks
             job.state == TranscriptionState.RETRY_SCHEDULED -> maxOf(0L, (job.retryAt ?: clock.now()).toEpochMilli() - clock.now().toEpochMilli()) to job.attempts
             else -> return
         }
