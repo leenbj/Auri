@@ -53,6 +53,13 @@ android {
     }
 }
 
+// NoNetworkManifestTest 读清单合并报告。不把它声明成输入的话，报告变了而合并后的清单本身没变时（比如某个库多声明了一个同样的权限），
+// Gradle 会把测试判成“最新”而不跑，变异验证实测过。
+tasks.matching { it.name == "testDebugUnitTest" }.configureEach {
+    dependsOn("processDebugMainManifest")
+    inputs.file(layout.buildDirectory.file("outputs/logs/manifest-merger-debug-report.txt")).withPropertyName("manifestMergerReport")
+}
+
 dependencies {
     implementation(project(":asr"))
     implementation(project(":capture"))

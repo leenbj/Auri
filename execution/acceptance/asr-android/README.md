@@ -32,7 +32,7 @@
 | 1 | 引擎经原生绑定集成，版本固定，构建里有 AAR 哈希检查 | `test_engine_pin_guard.py`（7 个，真实跑 Gradle：翻一个字节、截断、缺失都拒绝构建，只接受固定的那份）；设备上 `EnginePinTest`（原生库自报版本、ONNX Runtime 版本、提交都等于固定值） | E2（模拟器），AAR 守卫是构建期检查，与设备无关 |
 | 2 | 模型按清单加载，哈希不符在碰引擎之前拒绝 | JVM：`ModelManifestTest`（17）、`ModelVerifierTest`（10，含篡改、截断文件与读取失败：读不了也按 `MODEL_INTEGRITY_FAILED` 拒绝，不会让异常漏到引擎那一步）、`ModelLoaderTest`（4）、`ShippedManifestTest`（4，真清单）；设备：`ModelRefusalOnDeviceTest`（4，真 239 MB 模型翻一个字节 / 截断到 1 MiB / 未安装，用计数包装器证明引擎一次都没被创建，随后完好模型仍能用） | E2 |
 | 3 | 真正的重采样：48 kHz / 44.1 kHz 16 位 → 16 kHz float | `ResamplerTest`（16：合成正弦保频保幅、带外成分被抑制、不折叠、不产生镜像、直流增益为 1、零相位等）；设备上 `RealEngineTranscriptionTest.speechResampledFrom48kAnd44k1TranscribesLikeTheOriginal`；算法与引用见第 8 节 | E2 |
-| 4 | 飞行模式下可用；证明模型路径不联网 | 三层证据，见 `OfflineProofTest`（3）与 JVM `NoNetworkManifestTest`（3）：①合并后的清单与已安装的包都没有 INTERNET 权限；②系统对该 UID 的网络 socket 一律“权限被拒”（同时用 AF_UNIX 做正对照）；③模拟器系统飞行模式下整条转录 SUCCEEDED，且该 UID 的收发字节增量为 0。真机飞行模式：`NOT_RUN`，步骤见第 4 节 | ①②③ 都是 E2；真机 E3 `NOT_RUN` |
+| 4 | 飞行模式下可用；证明模型路径不联网 | 三层证据，见 `OfflineProofTest`（3）与 JVM `NoNetworkManifestTest`（3）：①合并后的清单与已安装的包都没有 INTERNET 权限；②系统对该 UID 的网络 socket 一律“权限被拒”（同时用 AF_UNIX 做正对照）；③模拟器系统飞行模式下整条转录 SUCCEEDED，且该 UID 的收发字节增量为 0。真机飞行模式：`NOT_RUN`，步骤见第 4 节。**Ticket 20 起 ①② 不可能再成立**（应用要下载模型，必须申请 INTERNET）：这两个设备测试已换成“申请的网络类权限只有 INTERNET”“飞行模式下 socket 建得出来但连不出去”，没有网络路径的主证据改为静态分层证据（`NetworkIsolationTest`、`NoNetworkManifestTest` 里 INTERNET 的唯一来源是 `:modelmgmt`）加 ③ 的零字节实测，说明见 `execution/acceptance/android-models/README.md` | ①②③ 都是 E2；真机 E3 `NOT_RUN`；Ticket 20 起 ①② 的系统层证明已失去 |
 | 5 | 记录 RTF、峰值内存、冷启动 | `run_device_acceptance.sh` 三次 `am start -S -W` 冷进程各跑一次样例音频，`benchmark_summary.py` 校验并出表；结果在第 5.2 节 | 模拟器 E2；真机列 `NOT_RUN` |
 | 6 | 输出用合同类型，JSON 通过真实合同校验 | JVM：`ContractJsonTest`（5）、`ContractOutputTest`（9：7 个场景导出 JSON，外加“同一目录复用时不留上一次的正文或错误文件”“清理时有文件删不掉也继续删其余的再抛异常”）；Python：`test_contract_output.py`（3，真实跑 Gradle 再用 `jsonschema` 校验，含 Kotlin 与 Python 对含 😀 文本的 SHA-256 一致）；设备输出：`contract_check.py --preset device`（15 个场景）与 `--preset runs`（5 个场景）全部 0 问题；JSON 里的正文按合同 SR-06 以 UTF-8 **字节数**限 1 MiB（schema 的 `maxLength` 数的是字符，两者不等价，校验器两个都查） | E2 |
 
@@ -136,9 +136,9 @@ avdmanager delete avd -n auri-t14-asr
 | 合同 / 集成 / 安全（全仓库） | `.venv/bin/pytest tests/contract tests/integration tests/security` | 492 通过，0 失败，0 跳过（189 秒；本票没有改动 `contracts/`、`tests/`、`services/`） |
 
 **变异验证**（证明测试真能失败；每次改完立即还原，已用 `diff` 核对）：
-- 设备：关掉加载器的哈希比对 → `oneFlippedByteInTheRealModelIsRefusedBeforeTheEngineIsTouched` 失败（实际终态是 `FAILED`：被篡改的模型进了引擎）；不真正打开飞行模式 → `transcriptionSucceedsInAirplaneModeWithoutAnyNetworkBytes` 以“飞行模式没有生效”失败；给应用加上 INTERNET 权限 → `theInstalledPackageRequestsNoInternetPermission` 与 `theKernelRefusesEveryNetworkSocketButStillAllowsLocalOnes` 两个失败（注意这时飞行模式那条仍然通过：单靠飞行模式不能证明不联网，所以才要三层证据）。
+- 设备：关掉加载器的哈希比对 → `oneFlippedByteInTheRealModelIsRefusedBeforeTheEngineIsTouched` 失败（实际终态是 `FAILED`：被篡改的模型进了引擎）；不真正打开飞行模式 → `transcriptionSucceedsInAirplaneModeWithoutAnyNetworkBytes` 以“飞行模式没有生效”失败；给应用加上 INTERNET 权限 → `theInstalledPackageRequestsNoInternetPermission` 与 `theKernelRefusesEveryNetworkSocketButStillAllowsLocalOnes` 两个失败（注意这时飞行模式那条仍然通过：单靠飞行模式不能证明不联网，所以才要三层证据）。**这条是 Ticket 14 时的记录**：这两个测试在 Ticket 20 被换掉了（原因见 `OfflineProofTest` 的文件头），这次变异不再适用。
 - Python：`benchmark_summary.py` 六种变异（关掉 RTF 定义检查、允许非零网络字节、允许未知字段、允许峰值内存下降、忽略终态、把 KiB 当 1000）全部被抓；开发时还手工变异验证过 `contract_check.py`（5 种）与 `prepare_model.py`（3 种），全部被抓。
-- JVM：Kotlin 侧对 SR-01 用 UTF-16 算哈希的变异被 `test_contract_output.py` 抓到；合并清单里加 INTERNET 被 `NoNetworkManifestTest` 抓到。
+- JVM：Kotlin 侧对 SR-01 用 UTF-16 算哈希的变异被 `test_contract_output.py` 抓到；合并清单里加 INTERNET 被 `NoNetworkManifestTest` 抓到（Ticket 14 时的记录；Ticket 20 起该测试改为检查 INTERNET 的来源只有 `:modelmgmt`，新的变异记录在 `android-models/README.md`）。
 - 以上变异都是开发时手工做的，变异本身不入库（入库的是能抓住它们的测试）。三轮外部评审（`codex exec`，见第 7 节“外部评审”一条）之后新增的那批测试（读取上限、校验读取失败、`LinkageError`、热运行失败、Activity 重建、`check_instrumentation.py`、`install_on_device.sh`、下载封顶、清理的先后与保护输入、时长超限先于加载、`.old` 命名冲突、`.part` 链接、字符串里的注释标记等）都是先看着它因正确的原因失败、再改绿，没有再逐个做变异；例外是 Activity 重建守卫（去掉守卫 → 重建测试失败）与 `EnginePinTest` 的固定提交格式检查（把固定提交清空 → 失败），这两处做过变异验证并已还原。
 
 ### 5.2 性能
