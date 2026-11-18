@@ -102,7 +102,8 @@ class RealGatewayOnDeviceTest {
         assertEquals(0, status.counts.needsUser)
 
         // 4. 重复提交同一版：网关回 duplicate（幂等），设备端不会弄出第二条
-        val version = application.packageManager.getPackageInfo(application.packageName, 0).versionName.orEmpty()
+        // 与 SyncRuntime.create 同一条路：仪器测试包没有 versionName，deviceInfo 把空版本补成 "unknown"，直接用空串会被 SubmissionBuilder 拒收
+        val version = deviceInfo(application.packageManager.getPackageInfo(application.packageName, 0).versionName.orEmpty()).appVersion
         val submission = checkNotNull(SubmissionBuilder(version).build(checkNotNull(library.get(recordId)), revision))
         val replay = GatewayClient(PinnedHttpsClient(paired.pin)).putRevision(paired.addresses.first(), paired.token, submission)
         assertTrue("重复提交的结果：$replay", replay is GatewayResult.Success)

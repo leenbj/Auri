@@ -32,11 +32,13 @@
 | 1 | 引擎经原生绑定集成，版本固定，构建里有 AAR 哈希检查 | `test_engine_pin_guard.py`（7 个，真实跑 Gradle：翻一个字节、截断、缺失都拒绝构建，只接受固定的那份）；设备上 `EnginePinTest`（原生库自报版本、ONNX Runtime 版本、提交都等于固定值） | E2（模拟器），AAR 守卫是构建期检查，与设备无关 |
 | 2 | 模型按清单加载，哈希不符在碰引擎之前拒绝 | JVM：`ModelManifestTest`（17）、`ModelVerifierTest`（10，含篡改、截断文件与读取失败：读不了也按 `MODEL_INTEGRITY_FAILED` 拒绝，不会让异常漏到引擎那一步）、`ModelLoaderTest`（4）、`ShippedManifestTest`（4，真清单）；设备：`ModelRefusalOnDeviceTest`（4，真 239 MB 模型翻一个字节 / 截断到 1 MiB / 未安装，用计数包装器证明引擎一次都没被创建，随后完好模型仍能用） | E2 |
 | 3 | 真正的重采样：48 kHz / 44.1 kHz 16 位 → 16 kHz float | `ResamplerTest`（16：合成正弦保频保幅、带外成分被抑制、不折叠、不产生镜像、直流增益为 1、零相位等）；设备上 `RealEngineTranscriptionTest.speechResampledFrom48kAnd44k1TranscribesLikeTheOriginal`；算法与引用见第 8 节 | E2 |
-| 4 | 飞行模式下可用；证明模型路径不联网 | 三层证据，见 `OfflineProofTest`（3）与 JVM `NoNetworkManifestTest`（3）：①合并后的清单与已安装的包都没有 INTERNET 权限；②系统对该 UID 的网络 socket 一律“权限被拒”（同时用 AF_UNIX 做正对照）；③模拟器系统飞行模式下整条转录 SUCCEEDED，且该 UID 的收发字节增量为 0。真机飞行模式：`NOT_RUN`，步骤见第 4 节 | ①②③ 都是 E2；真机 E3 `NOT_RUN` |
+| 4 | 飞行模式下可用；证明模型路径不联网 | **（Ticket 21 起口径已改，见本表之后的“Ticket 21 更新”；以下是 Ticket 14 当时的证据）** 三层证据，见 `OfflineProofTest`（3）与 JVM `NoNetworkManifestTest`（3）：①合并后的清单与已安装的包都没有 INTERNET 权限；②系统对该 UID 的网络 socket 一律“权限被拒”（同时用 AF_UNIX 做正对照）；③模拟器系统飞行模式下整条转录 SUCCEEDED，且该 UID 的收发字节增量为 0。真机飞行模式：`NOT_RUN`，步骤见第 4 节 | ①②③ 都是 E2；真机 E3 `NOT_RUN` |
 | 5 | 记录 RTF、峰值内存、冷启动 | `run_device_acceptance.sh` 三次 `am start -S -W` 冷进程各跑一次样例音频，`benchmark_summary.py` 校验并出表；结果在第 5.2 节 | 模拟器 E2；真机列 `NOT_RUN` |
 | 6 | 输出用合同类型，JSON 通过真实合同校验 | JVM：`ContractJsonTest`（5）、`ContractOutputTest`（9：7 个场景导出 JSON，外加“同一目录复用时不留上一次的正文或错误文件”“清理时有文件删不掉也继续删其余的再抛异常”）；Python：`test_contract_output.py`（3，真实跑 Gradle 再用 `jsonschema` 校验，含 Kotlin 与 Python 对含 😀 文本的 SHA-256 一致）；设备输出：`contract_check.py --preset device`（15 个场景）与 `--preset runs`（5 个场景）全部 0 问题；JSON 里的正文按合同 SR-06 以 UTF-8 **字节数**限 1 MiB（schema 的 `maxLength` 数的是字符，两者不等价，校验器两个都查） | E2 |
 
 另：`README`（本文件）、`CLAUDE.md` “命令”一节、`.gitignore` 都已更新。
+
+> **Ticket 21 更新（改了第 4 项的证据口径）**：Ticket 21 让应用把文字发到局域网网关，必须声明 `INTERNET`，所以上表第 4 项里的 ① 与 ② 不再成立：`theInstalledPackageRequestsNoInternetPermission` 与 `theKernelRefusesEveryNetworkSocketButStillAllowsLocalOnes` 已被换掉，换成“已安装的包申请的网络权限恰好是 `INTERNET` 与 `ACCESS_NETWORK_STATE`”“网络可用时转录全程零字节”“飞行模式（不变）”以及代码层的 `NoNetworkCodeGuardTest`。保证比原来弱（原来是内核层面禁止联网，现在是代码里没有网络类加实测零字节），是否要出不带 `INTERNET` 的构建变体由产品负责人定。细节、理由与设备上的复测结果见 `execution/acceptance/android-sync/README.md` 第 8、12 节。下面第 5 节起的实测数字是 Ticket 14 当时的历史记录，没有改动。
 
 ## 3. 在本机怎么跑
 
@@ -136,6 +138,7 @@ avdmanager delete avd -n auri-t14-asr
 | 合同 / 集成 / 安全（全仓库） | `.venv/bin/pytest tests/contract tests/integration tests/security` | 492 通过，0 失败，0 跳过（189 秒；本票没有改动 `contracts/`、`tests/`、`services/`） |
 
 **变异验证**（证明测试真能失败；每次改完立即还原，已用 `diff` 核对）：
+- （历史记录：其中“给应用加上 INTERNET 权限”那一条所对应的两个测试已在 Ticket 21 被换掉，见上方“Ticket 21 更新”。）
 - 设备：关掉加载器的哈希比对 → `oneFlippedByteInTheRealModelIsRefusedBeforeTheEngineIsTouched` 失败（实际终态是 `FAILED`：被篡改的模型进了引擎）；不真正打开飞行模式 → `transcriptionSucceedsInAirplaneModeWithoutAnyNetworkBytes` 以“飞行模式没有生效”失败；给应用加上 INTERNET 权限 → `theInstalledPackageRequestsNoInternetPermission` 与 `theKernelRefusesEveryNetworkSocketButStillAllowsLocalOnes` 两个失败（注意这时飞行模式那条仍然通过：单靠飞行模式不能证明不联网，所以才要三层证据）。
 - Python：`benchmark_summary.py` 六种变异（关掉 RTF 定义检查、允许非零网络字节、允许未知字段、允许峰值内存下降、忽略终态、把 KiB 当 1000）全部被抓；开发时还手工变异验证过 `contract_check.py`（5 种）与 `prepare_model.py`（3 种），全部被抓。
 - JVM：Kotlin 侧对 SR-01 用 UTF-16 算哈希的变异被 `test_contract_output.py` 抓到；合并清单里加 INTERNET 被 `NoNetworkManifestTest` 抓到。
@@ -188,7 +191,7 @@ avdmanager delete avd -n auri-t14-asr
 - **SenseVoice 对纯数字静音也会出字**：3 秒全零音频不会返回空文本，而是编出一两个字（观察到韩文 “그.”），合同状态是 `SUCCEEDED` 而不是 `NO_SPEECH`。所以 `NO_SPEECH` 只能靠“引擎返回空文本”触发，静音过滤必须由会话内的 VAD 在送进引擎前做（ADR-0016），否则静音会变成幻觉文本入库。**这是 T-026 / FR-ASR-008 的缺口，不是通过**：`RealEngineTranscriptionTest.knownGapT026DigitalSilenceMakesTheEngineInventText` 把当前事实钉成测试（名字里带 `knownGap`，断言的是“编出了短文本”）；换了模型或加了前置闸门导致它不成立时测试会失败，到那时应当把它改成断言 `NO_SPEECH`，而不是删掉。`NO_SPEECH` 的状态映射本身（引擎返回空文本、空音频、纯空白）由 `LocalTranscriberTest` 用假引擎覆盖。只测了数字静音一个样本，没有测过真实环境噪声；这也是 `docs/research/asr-candidates.md` U15（静音/噪声幻觉）至今缺的实测数据，Ticket 15 评测时应当补上。
 - **逆文本规范化（ITN）已开启**：输出里数字是阿拉伯数字（“9点”“5点”）。关掉会改变文本，这个选择留给 Ticket 15。
 - **模型校验是每次加载都算一遍 SHA-256**：对 239 MB 模型，模拟器上 390–497 ms；真机会更慢。是否缓存校验结果（例如记录 mtime+大小）没有做，留给产品化时决定。
-- **Android 对缺 INTERNET 的应用，创建网络 socket 返回的 errno 因内核机制而异**：API 35 模拟器实测是 `EPERM`，旧内核是 `EACCES`。测试接受这两种“权限被拒”，其他错误码（如 `EAFNOSUPPORT`）不算数。
+- （Ticket 21 之后不再有这项测试：应用现在合法持有 `INTERNET`。以下是 Ticket 14 当时的结论。）**Android 对缺 INTERNET 的应用，创建网络 socket 返回的 errno 因内核机制而异**：API 35 模拟器实测是 `EPERM`，旧内核是 `EACCES`。测试接受这两种“权限被拒”，其他错误码（如 `EAFNOSUPPORT`）不算数。
 
 **限制 / 取舍**
 - 模型文件校验发生在加载时，校验通过到引擎真正读取之间存在同 UID 进程替换文件的窗口（TOCTOU）。模型放在应用私有目录，同 UID 的恶意进程不在本票的威胁模型内。

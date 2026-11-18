@@ -62,6 +62,7 @@ EXPECTED_DEVICE_SCENARIOS = {
     "refused-then-ok-1": "WAITING_MODEL:MODEL_NOT_INSTALLED",
     "refused-then-ok-2": "SUCCEEDED",
     "airplane-zh": "SUCCEEDED",
+    "online-zh": "SUCCEEDED",  # Ticket 21：应用有了 INTERNET，网络可用时转录仍要零字节（OfflineProofTest）
 }
 
 # 调试入口 TranscribeFileActivity 写在 files/runs/ 下的场景：仪器测试的 activity-zh 与 activity-recreate，
