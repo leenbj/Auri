@@ -83,7 +83,7 @@ class HeadsetControlChainTest {
         }
 
         fun key(kind: MediaKind, issuedAtNs: Long? = null, external: Boolean? = true) {
-            source.press(kind, issuedAtNs = issuedAtNs, external = external)
+            source.press(kind, issuedAtNs = issuedAtNs ?: clock.monotonicNs(), external = external)
             settle()
         }
 
@@ -292,5 +292,61 @@ class HeadsetControlChainTest {
         rig.key(MediaKind.PLAY_PAUSE)
         assertEquals(CaptureState.ROUTING, rig.state)
         assertEquals(2, rig.capture.requests.size)
+    }
+
+    @Test
+    fun `start and toggle pressed while finalizing cannot restart after delivery over five seconds late`() = runTest {
+        listOf(126, 85).forEach { keyCode ->
+            val rig = Rig(this)
+            rig.store.sealGate = CompletableDeferred()
+            rig.controlModeOn()
+            rig.record()
+            rig.advance(1_000)
+            rig.key(MediaKind.PLAY_PAUSE)
+            assertEquals(CaptureState.FINALIZING, rig.state)
+            rig.advance(100)
+            val pressedAtMs = rig.clock.monotonicNs() / 1_000_000
+            rig.advance(100)
+            rig.store.sealGate!!.complete(Unit)
+            rig.settle()
+            rig.advance(6_000)
+
+            assertTrue(rig.source.pressPlatformKey(keyCode, pressedAtMs))
+            rig.settle()
+
+            assertEquals("key $keyCode must not restart", CaptureState.ARMED, rig.state)
+            assertEquals(1, rig.capture.requests.size)
+        }
+    }
+
+    @Test
+    fun `a stop delivered over five seconds late can still stop recording`() = runTest {
+        val rig = Rig(this)
+        rig.controlModeOn()
+        rig.record()
+        rig.advance(500)
+        val pressedAtMs = rig.clock.monotonicNs() / 1_000_000
+        rig.advance(6_000)
+
+        assertTrue(rig.source.pressPlatformKey(86, pressedAtMs))
+        rig.settle()
+
+        assertEquals(CaptureState.ARMED, rig.state)
+        assertEquals(1, rig.output.recordings.size)
+    }
+
+    @Test
+    fun `start and toggle without trustworthy event times do not start recording`() = runTest {
+        listOf(126, 85).forEach { keyCode ->
+            val rig = Rig(this)
+            rig.controlModeOn()
+            assertTrue(rig.source.pressPlatformKey(keyCode, 0))
+            rig.settle()
+            assertEquals("key $keyCode with no event time", CaptureState.ARMED, rig.state)
+            assertTrue(rig.source.pressPlatformKey(keyCode, rig.clock.monotonicNs() / 1_000_000 + 1_000))
+            rig.settle()
+            assertEquals("key $keyCode with future event time", CaptureState.ARMED, rig.state)
+            assertTrue(rig.capture.requests.isEmpty())
+        }
     }
 }

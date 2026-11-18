@@ -34,6 +34,7 @@ import app.auri.capture.contract.RequestStatus
 import app.auri.capture.contract.RouteChangeEvent
 import app.auri.capture.contract.TimeRange
 import app.auri.capture.contract.VerificationState
+import app.auri.capture.control.ControlConfig
 import app.auri.capture.machine.CaptureEvent
 import app.auri.capture.machine.CaptureMachine
 import app.auri.capture.machine.MachineRule
@@ -96,6 +97,7 @@ class CaptureCoordinator(
     private var publishVersion = 0L
     private var lastFinalizedNs: Long? = null
     private var durationLimitMs: Long? = null
+    private var controlModeEnabled = false
 
     // ---- 对外可观察 ----
     private val snapshotFlow = MutableStateFlow(buildSnapshot())
@@ -189,6 +191,7 @@ class CaptureCoordinator(
         val errorCode: ErrorCode? = null,
         val evidence: RouteChangeEvent? = null,
         val cause: Cause = Cause.MACHINE,
+        val manual: Boolean = false,
     )
 
     private inner class TaggedSink(private val tag: Tag) : CaptureSink {
@@ -225,7 +228,14 @@ class CaptureCoordinator(
     private fun handle(message: Message) {
         when (message) {
             is Message.Command -> onCommand(message.event)
-            Message.EnableControlMode -> dispatch(CaptureEvent.ENABLE_CONTROL_MODE)
+            Message.EnableControlMode -> {
+                if (!controlModeEnabled && state != DISARMED) {
+                    if (control.enableUserControlMode()) controlModeEnabled = true
+                    else reject(CaptureEvent.ENABLE_CONTROL_MODE, Cause.CONTROL_NOT_AVAILABLE, ErrorCode.CONTROL_NOT_AVAILABLE)
+                } else {
+                    dispatch(CaptureEvent.ENABLE_CONTROL_MODE)
+                }
+            }
             Message.DisableControlMode -> dispatch(CaptureEvent.DISABLE_CONTROL_MODE)
             Message.UserCancel -> dispatch(CaptureEvent.USER_CANCEL)
             Message.ForegroundServiceFailed -> when (state) {
@@ -263,9 +273,23 @@ class CaptureCoordinator(
         // 封存期间（或更早）发出、封存完成之后才送到的 START/TOGGLE 是过时命令：不能因为它开始下一段。
         // 命令的时间戳与 lastFinalizedNs 来自同一个单调时钟；封存完成之后新按下的命令时间戳不会更早（相等也算有效：分辨不出先后）。
         val finalizedAt = lastFinalizedNs
+        val now = clock.monotonicNs()
+        if ((machineEvent == CaptureEvent.START || machineEvent == CaptureEvent.TOGGLE) &&
+            (event.monotonicNs > now || now - event.monotonicNs > ControlConfig().maxIssuedAgeNs)
+        ) {
+            reject(machineEvent, Cause.STALE_COMMAND)
+            return
+        }
         if ((machineEvent == CaptureEvent.START || machineEvent == CaptureEvent.TOGGLE) && finalizedAt != null && event.monotonicNs < finalizedAt) {
             emit(CaptureDecision(machineEvent, Outcome.IGNORED, state, state, Cause.STALE_COMMAND))
             return
+        }
+        if (event.source != ControlSource.SCREEN_CONTROL && !controlModeEnabled) {
+            emit(CaptureDecision(machineEvent, Outcome.IGNORED, state, state, Cause.MACHINE))
+            return
+        }
+        if (event.source == ControlSource.SCREEN_CONTROL && machineEvent == CaptureEvent.START && state == DISARMED) {
+            dispatch(CaptureEvent.ENABLE_CONTROL_MODE, Context(manual = true))
         }
         dispatch(machineEvent, Context(endReason = endReasonFor(event.source)))
     }
@@ -417,9 +441,12 @@ class CaptureCoordinator(
         var eligibilityDenied: ErrorCode? = null
         var eligibilityEvent: CaptureEvent? = null
         when (rule.event) {
-            CaptureEvent.ENABLE_CONTROL_MODE -> if (!control.enableUserControlMode()) {
-                reject(rule.event, Cause.CONTROL_NOT_AVAILABLE, ErrorCode.CONTROL_NOT_AVAILABLE)
-                return
+            CaptureEvent.ENABLE_CONTROL_MODE -> {
+                if (!context.manual && !control.enableUserControlMode()) {
+                    reject(rule.event, Cause.CONTROL_NOT_AVAILABLE, ErrorCode.CONTROL_NOT_AVAILABLE)
+                    return
+                }
+                controlModeEnabled = !context.manual
             }
 
             CaptureEvent.START, CaptureEvent.TOGGLE -> when (rule.from) {
@@ -469,6 +496,7 @@ class CaptureCoordinator(
             CaptureEvent.DISABLE_CONTROL_MODE -> {
                 if (rule.from == ROUTING) abandonSession()
                 control.disableUserControlMode()
+                controlModeEnabled = false
             }
 
             CaptureEvent.DURATION_LIMIT, CaptureEvent.ROUTE_LOST, CaptureEvent.SYSTEM_INTERRUPTION ->
@@ -493,11 +521,15 @@ class CaptureCoordinator(
                     else -> Unit
                 }
                 control.disableUserControlMode()
+                controlModeEnabled = false
             }
         }
         state = rule.to
         blockedReason = if (rule.to == BLOCKED) errorCode ?: ErrorCode.INPUT_ROUTE_UNVERIFIED else null
         emit(CaptureDecision(rule.event, Outcome.TRANSITION, before, rule.to, context.cause, errorCode))
+        if (!controlModeEnabled && state == ARMED && rule.event != CaptureEvent.ENABLE_CONTROL_MODE) {
+            dispatch(CaptureEvent.DISABLE_CONTROL_MODE)
+        }
         if (eligibilityEvent != null) {
             dispatch(eligibilityEvent, Context(errorCode = eligibilityDenied, cause = Cause.NOT_ELIGIBLE))
         }
@@ -680,6 +712,7 @@ class CaptureCoordinator(
             counters = counters.copy(quarantinedSamples = current?.quarantine?.size ?: 0),
             version = publishVersion,
             durationLimitMs = durationLimitMs,
+            controlModeEnabled = controlModeEnabled,
         )
     }
 }

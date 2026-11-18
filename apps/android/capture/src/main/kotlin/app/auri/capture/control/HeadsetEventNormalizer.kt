@@ -8,7 +8,7 @@ import app.auri.capture.coordinator.IdGenerator
 import kotlin.math.abs
 
 /** 一个原始输入没有变成事件的原因。供日志与校准向导区分“没收到”与“收到了但被去抖合并”。 */
-enum class DropReason { KEY_UP, KEY_REPEAT, UNMAPPED_KEY, DUPLICATE_RAW_EVENT, SAME_GESTURE_BURST }
+enum class DropReason { KEY_UP, KEY_REPEAT, UNMAPPED_KEY, DUPLICATE_RAW_EVENT, SAME_GESTURE_BURST, INVALID_EVENT_TIME }
 
 sealed interface NormalizeResult {
     data class Emit(val event: NormalizedControlEvent) : NormalizeResult
@@ -25,7 +25,7 @@ sealed interface NormalizeResult {
  *  3. 一次手势同时发出的一串事件只产生第一个：与上一个产生的事件相隔不足 [ControlConfig.gestureWindowNs] 的都丢弃，
  *     所以一次手势绝不会先开始再立刻停止。窗口只管这一件事——窗口过后的停止 / 切换照常通过，
  *     录音准备中（ROUTING）的取消不会被去抖吞掉。
- *  4. 时间戳是手势发生的时刻（平台给了且可信），否则是接收时刻：协调器靠它丢掉封存期间发出、封存之后才送到的过时命令。
+ *  4. START/TOGGLE 必须带可信且未过期的发生时刻；STOP 即使时间不可信也可以停止。
  *  5. 命令只经过档案的映射；停止键（MEDIA_STOP）永远只能停止，即使档案把 pause 映射成了切换。
  *  6. 来源：系统能证明来自外接设备才是 headset_remote，其余都是 unknown_remote。不猜左右耳，不假设存在原始双击。
  *
@@ -47,6 +47,11 @@ class HeadsetEventNormalizer(
             KeyPhase.DOWN -> Unit
         }
         val platformEvent = platformEventOf(input.kind) ?: return NormalizeResult.Drop(DropReason.UNMAPPED_KEY)
+        val command = commandFor(input.kind, platformEvent, profile)
+        val issued = input.issuedAtNs?.takeIf { it >= 0 && it <= input.receivedAtNs }
+        if ((command == BusinessCommand.START || command == BusinessCommand.TOGGLE) &&
+            (issued == null || input.receivedAtNs - issued > config.maxIssuedAgeNs)
+        ) return NormalizeResult.Drop(DropReason.INVALID_EVENT_TIME)
 
         val rawId = input.rawId?.takeIf { it.isNotEmpty() }?.take(MAX_RAW_ID_LENGTH)
         if (rawId != null) {
@@ -55,7 +60,7 @@ class HeadsetEventNormalizer(
             while (recentRawIds.size > config.rawIdMemory) recentRawIds.removeFirst()
         }
 
-        val gestureNs = gestureTimeNs(input)
+        val gestureNs = issued ?: input.receivedAtNs
         val last = lastEmittedNs
         if (last != null && abs(gestureNs - last) < config.gestureWindowNs) return NormalizeResult.Drop(DropReason.SAME_GESTURE_BURST)
 
@@ -63,7 +68,7 @@ class HeadsetEventNormalizer(
             eventId = ids.newUuid(),
             source = if (input.fromExternalDevice == true) ControlSource.HEADSET_REMOTE else ControlSource.UNKNOWN_REMOTE,
             platformEvent = platformEvent,
-            command = commandFor(input.kind, platformEvent, profile),
+            command = command,
             monotonicNs = gestureNs,
             sequence = sequence,
             profileId = profile.profileId,
@@ -80,12 +85,6 @@ class HeadsetEventNormalizer(
     fun resetGestureState() {
         lastEmittedNs = null
         recentRawIds.clear()
-    }
-
-    private fun gestureTimeNs(input: RawMediaInput): Long {
-        val issued = input.issuedAtNs
-        val trustworthy = issued != null && issued >= 0 && issued <= input.receivedAtNs && input.receivedAtNs - issued <= config.maxIssuedAgeNs
-        return if (trustworthy) issued!! else input.receivedAtNs
     }
 
     private fun commandFor(kind: MediaKind, platformEvent: PlatformEvent, profile: ControlProfile): BusinessCommand {

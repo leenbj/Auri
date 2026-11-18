@@ -145,4 +145,6 @@ data class CaptureSnapshot(
     val version: Long,
     /** 最近一次因时长上限停止时的上限，毫秒；下一次开始时清除。 */
     val durationLimitMs: Long? = null,
+    /** 耳机控制由用户显式开启；手动采集不改变它。 */
+    val controlModeEnabled: Boolean = state != CaptureState.DISARMED,
 )

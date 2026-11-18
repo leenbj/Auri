@@ -1,6 +1,9 @@
 package app.auri.android.home
 
 import app.auri.capture.contract.CaptureState
+import app.auri.capture.control.ControlProfile
+import app.auri.capture.control.MediaKind
+import app.auri.capture.control.RawMediaInput
 import app.auri.capture.contract.ErrorCode
 import app.auri.capture.contract.ObservedInputRouteType
 import app.auri.capture.coordinator.CaptureCoordinator
@@ -15,6 +18,9 @@ import app.auri.capture.testing.SequentialIds
 import app.auri.platform.audio.HeadsetPresence
 import app.auri.platform.audio.HeadsetStatus
 import app.auri.platform.control.ScreenControlAdapter
+import app.auri.platform.control.CompositeControlAdapter
+import app.auri.platform.control.HeadsetControlAdapter
+import app.auri.platform.control.MediaButtonSource
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -23,6 +29,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -38,9 +45,21 @@ class HomeFlowTest {
         override val status: StateFlow<HeadsetStatus> = flow
     }
 
+    private class FakeMediaSource(private val clock: FakeClock) : MediaButtonSource {
+        var listener: ((RawMediaInput) -> Unit)? = null
+        override fun activate(listener: (RawMediaInput) -> Unit): Boolean {
+            this.listener = listener
+            return true
+        }
+        override fun deactivate() { listener = null }
+        fun press() { listener?.invoke(RawMediaInput(MediaKind.PLAY_PAUSE, issuedAtNs = clock.monotonicNs(), receivedAtNs = clock.monotonicNs())) }
+    }
+
     private class Rig(scope: TestScope, headsetConnected: Boolean) {
         val clock = FakeClock(scope.testScheduler)
         val screen = ScreenControlAdapter(clock, SequentialIds(1))
+        val remote = FakeMediaSource(clock)
+        val headsetControl = HeadsetControlAdapter(remote, SequentialIds(3), { ControlProfile.generic() })
         val capture = FakeCaptureAdapter()
         val store = FakeRecordingStore()
         val transcription = FakeTranscriptionAdapter()
@@ -48,7 +67,7 @@ class HomeFlowTest {
         val pipeline = RecordPipeline(library, transcription, clock, scope.backgroundScope)
         val output = CollectingOutput().also { it.forwardTo = pipeline }
         val coordinator = CaptureCoordinator(
-            control = screen,
+            control = CompositeControlAdapter(screen, headsetControl),
             capture = capture,
             store = store,
             output = output,
@@ -63,6 +82,44 @@ class HomeFlowTest {
     }
 
     private fun TestScope.settle() = testScheduler.runCurrent()
+
+    @Test
+    fun `manual capture while control mode is off does not activate the media session`() = runTest {
+        val rig = Rig(this, headsetConnected = true)
+        rig.viewModel.start()
+        settle()
+        assertEquals(CaptureState.ROUTING, rig.state.capture.state)
+        assertFalse("manual capture must not activate the media session", rig.remote.listener != null)
+        assertFalse(rig.coordinator.snapshot.value.controlModeEnabled)
+        rig.capture.verifiedRoute()
+        settle()
+        rig.viewModel.stop()
+        settle()
+        rig.remote.press()
+        settle()
+        assertEquals(CaptureState.DISARMED, rig.state.capture.state)
+        assertEquals(1, rig.capture.requests.size)
+    }
+
+    @Test
+    fun `manual capture while control mode is on leaves the media session active`() = runTest {
+        val rig = Rig(this, headsetConnected = true)
+        rig.coordinator.enableControlMode()
+        settle()
+        rig.viewModel.start()
+        settle()
+        rig.capture.verifiedRoute()
+        settle()
+        rig.viewModel.stop()
+        settle()
+        assertEquals(CaptureState.ARMED, rig.state.capture.state)
+        assertTrue(rig.remote.listener != null)
+        assertTrue(rig.coordinator.snapshot.value.controlModeEnabled)
+        rig.remote.press()
+        settle()
+        assertEquals(CaptureState.ROUTING, rig.state.capture.state)
+        assertEquals(2, rig.capture.requests.size)
+    }
 
     @Test
     fun `没有耳机麦克风时按开始：什么都不录、给出原因，没有 Record，没有转录，没有写下一个字节`() = runTest {
@@ -89,7 +146,7 @@ class HomeFlowTest {
 
         rig.viewModel.start()
         settle()
-        assertEquals("按开始就开启控制模式并开始准备", CaptureState.ROUTING, rig.state.capture.state)
+        assertEquals("按开始就开始准备", CaptureState.ROUTING, rig.state.capture.state)
         assertTrue(rig.state.stopEnabled)
 
         rig.capture.verifiedRoute()
@@ -106,7 +163,8 @@ class HomeFlowTest {
         val item = rig.state.records.single()
         assertEquals(TextState.Done("你好，这是转录出的文字。", "fixture-model", "1.0.0"), item.text)
         assertEquals("自动转录，没有人触发", 1, rig.transcription.requests.size)
-        assertEquals(CaptureState.ARMED, rig.state.capture.state)
+        assertEquals(CaptureState.DISARMED, rig.state.capture.state)
+        assertFalse(rig.coordinator.snapshot.value.controlModeEnabled)
     }
 
     @Test
@@ -119,7 +177,8 @@ class HomeFlowTest {
         rig.viewModel.stop()
         settle()
 
-        assertEquals(CaptureState.ARMED, rig.state.capture.state)
+        assertEquals(CaptureState.DISARMED, rig.state.capture.state)
+        assertFalse(rig.coordinator.snapshot.value.controlModeEnabled)
         assertTrue(rig.state.records.isEmpty())
         assertTrue(rig.transcription.requests.isEmpty())
         assertTrue(rig.store.events.isEmpty())

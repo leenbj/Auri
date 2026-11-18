@@ -52,7 +52,7 @@ import kotlinx.coroutines.launch
  *
  *   ControlUiState
  *   ├─ controlMode: ControlModeUi     控制模式（耳机手势能不能开始 / 停止录音）。三个互相独立的事实，不要合并成一句话：
- *   │    ├─ on                        控制模式开着吗 = 采集状态不是 DISARMED。关着时耳机的媒体按键不会触发任何东西。
+ *   │    ├─ on                        用户是否开启了耳机控制模式。关着时耳机的媒体按键不会触发任何东西。
  *   │    ├─ headset                   耳机按键通道：OFF 没占着 / ACTIVE 向系统要到了、在等按键 / UNAVAILABLE 系统没给。
  *   │    │                            ACTIVE 不等于“耳机手势一定能到”（系统不会通知应用别的应用抢走了媒体按键，要靠校准结果说话）；
  *   │    │                            UNAVAILABLE 时控制模式照样开着、屏幕按钮照样能用。
@@ -224,10 +224,10 @@ class ControlViewModel(
         val captureState = controls.snapshot.value.state
         if (on) {
             local.update { it.copy(turningOff = false) }
-            if (captureState == CaptureState.DISARMED) controls.enableControlMode()
+            if (!controls.snapshot.value.controlModeEnabled) controls.enableControlMode()
             return
         }
-        if (captureState == CaptureState.DISARMED) return
+        if (!controls.snapshot.value.controlModeEnabled) return
         abortCalibration()
         when (captureState) {
             // 协调器只在这三个状态接受“关闭”
@@ -263,7 +263,7 @@ class ControlViewModel(
     fun startCalibration() {
         // 正在等录音保存完再关闭控制模式：此时开出来的校准，保存一完成就没有控制模式了
         if (local.value.phase !is Phase.Setup || local.value.turningOff) return
-        if (controls.snapshot.value.state == CaptureState.DISARMED) controls.enableControlMode()
+        if (!controls.snapshot.value.controlModeEnabled) controls.enableControlMode()
         val wizard = CalibrationWizard(newRunId(), currentSetting(local.value))
         val run = Run(wizard)
         wizard.start()
@@ -387,7 +387,7 @@ class ControlViewModel(
     ).map { (capability, record) -> CapabilityLine(capability, record.status, record.evidenceLevel) }
 
     private fun buildState(snapshot: CaptureSnapshot, headset: HeadsetControlStatus, latest: Feedback?, locked: Boolean?, current: Local) = ControlUiState(
-        controlMode = ControlModeUi(on = snapshot.state != CaptureState.DISARMED, headset = headset, turningOff = current.turningOff),
+        controlMode = ControlModeUi(on = snapshot.controlModeEnabled, headset = headset, turningOff = current.turningOff),
         capture = CaptureFact(snapshot.state, snapshot.blockedReason),
         manual = ManualControls(startEnabled = snapshot.state in START_STATES, stopEnabled = snapshot.state in STOP_STATES),
         feedback = latest?.let { FeedbackUi(it.kind, it.screenText) },

@@ -113,7 +113,7 @@ class ControlContractOutputTest {
         // 名字 -> (输入, 期望的来源, 期望的命令)；系统确认来自外接设备才是 headset_remote，没说清就是 unknown_remote
         val inputs = listOf(
             Triple("headset-hook-external", RawMediaInput(MediaKind.HEADSET_HOOK, rawId = "key:79:a:0:t:1200", issuedAtNs = 1_200_000_000L, fromExternalDevice = true, receivedAtNs = 1_210_000_000L), ControlSource.HEADSET_REMOTE to TOGGLE),
-            Triple("play-unknown-source", RawMediaInput(MediaKind.PLAY, rawId = null, issuedAtNs = null, fromExternalDevice = null, receivedAtNs = 5_000_000_000L), ControlSource.UNKNOWN_REMOTE to START),
+            Triple("play-unknown-source", RawMediaInput(MediaKind.PLAY, rawId = null, issuedAtNs = 5_000_000_000L, fromExternalDevice = null, receivedAtNs = 5_000_000_000L), ControlSource.UNKNOWN_REMOTE to START),
             Triple("stop-key-is-pause", RawMediaInput(MediaKind.STOP, rawId = "key:86:a:0:t:9000", issuedAtNs = 9_000_000_000L, fromExternalDevice = true, receivedAtNs = 9_003_000_000L), ControlSource.HEADSET_REMOTE to STOP),
             Triple("next-is-ignored", RawMediaInput(MediaKind.NEXT, rawId = "key:87:a:0:t:20000", issuedAtNs = 20_000_000_000L, fromExternalDevice = true, receivedAtNs = 20_001_000_000L), ControlSource.HEADSET_REMOTE to IGNORE),
         )

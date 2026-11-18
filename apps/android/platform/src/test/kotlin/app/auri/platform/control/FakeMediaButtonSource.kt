@@ -49,7 +49,7 @@ class FakeMediaButtonSource(private val clock: Clock) : MediaButtonSource {
         kind: MediaKind,
         phase: KeyPhase = KeyPhase.DOWN,
         rawId: String? = null,
-        issuedAtNs: Long? = null,
+        issuedAtNs: Long? = clock.monotonicNs(),
         external: Boolean? = true,
         receivedAtNs: Long = clock.monotonicNs(),
     ): Boolean {
@@ -60,6 +60,13 @@ class FakeMediaButtonSource(private val clock: Clock) : MediaButtonSource {
 
     /** 第 [index] 次激活留下的监听器收到一个按键：释放之后才送到的旧回调。 */
     fun pressViaStaleListener(index: Int, kind: MediaKind, receivedAtNs: Long = clock.monotonicNs()) {
-        everRegistered[index](RawMediaInput(kind, receivedAtNs = receivedAtNs, fromExternalDevice = true))
+        everRegistered[index](RawMediaInput(kind, issuedAtNs = receivedAtNs, receivedAtNs = receivedAtNs, fromExternalDevice = true))
+    }
+
+    fun pressPlatformKey(keyCode: Int, eventTimeMs: Long): Boolean {
+        val listener = active ?: return false
+        val receivedAtNs = clock.monotonicNs()
+        listener(rawInputOf(keyCode, 0, 0, eventTimeMs, true, receivedAtNs / 1_000_000, receivedAtNs))
+        return true
     }
 }

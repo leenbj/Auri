@@ -27,7 +27,7 @@ class HeadsetEventNormalizerTest {
         atMs: Long,
         phase: KeyPhase = KeyPhase.DOWN,
         rawId: String? = null,
-        issuedAtMs: Long? = null,
+        issuedAtMs: Long? = atMs,
         external: Boolean? = true,
     ) = RawMediaInput(kind, phase, rawId, issuedAtMs?.times(ms), external, atMs * ms)
 
@@ -260,15 +260,17 @@ class HeadsetEventNormalizerTest {
     }
 
     @Test
-    fun `手势时刻不可信时退回接收时刻：未来的、过老的、负的、没有的`() {
+    fun `开始时拒绝未来的、过老的、负的或缺失的时间，停止仍可递送`() {
         val config = ControlConfig(maxIssuedAgeNs = 5_000 * ms)
         val n = normalizer(config)
 
-        assertEquals("比接收时刻还晚：时钟对不上", 10_000 * ms, n.emit(input(MediaKind.PLAY, 10_000, issuedAtMs = 10_500)).monotonicNs)
-        assertEquals("比接收时刻早太多：不可信", 30_000 * ms, n.emit(input(MediaKind.PLAY, 30_000, issuedAtMs = 20_000)).monotonicNs)
-        assertEquals("负数", 50_000 * ms, n.emit(input(MediaKind.PLAY, 50_000, issuedAtMs = -1)).monotonicNs)
-        assertEquals("没有", 70_000 * ms, n.emit(input(MediaKind.PLAY, 70_000, issuedAtMs = null)).monotonicNs)
+        assertEquals(DropReason.INVALID_EVENT_TIME, n.dropReason(input(MediaKind.PLAY, 10_000, issuedAtMs = 10_500)))
+        assertEquals(DropReason.INVALID_EVENT_TIME, n.dropReason(input(MediaKind.PLAY, 30_000, issuedAtMs = 20_000)))
+        assertEquals(DropReason.INVALID_EVENT_TIME, n.dropReason(input(MediaKind.PLAY, 50_000, issuedAtMs = -1)))
+        assertEquals(DropReason.INVALID_EVENT_TIME, n.dropReason(input(MediaKind.PLAY, 70_000, issuedAtMs = null)))
         assertEquals("刚好在上限内", 85_000 * ms, n.emit(input(MediaKind.PLAY, 90_000, issuedAtMs = 85_000)).monotonicNs)
+        assertEquals("停止键保留较早的可信发生时刻", 95_000 * ms, n.emit(input(MediaKind.STOP, 105_000, issuedAtMs = 95_000)).monotonicNs)
+        assertEquals("停止键没有可信时间时仍可送达", 120_000 * ms, n.emit(input(MediaKind.STOP, 120_000, issuedAtMs = null)).monotonicNs)
     }
 
     @Test
