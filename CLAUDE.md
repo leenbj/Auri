@@ -115,12 +115,12 @@ Android 配对网关并把文字送过去（Ticket 21，同在 `apps/android/`�
 
 ```bash
 cd apps/android
-./gradlew :sync:test :syncplatform:testDebugUnitTest :app:testDebugUnitTest              # JVM 单测（218 + 10 + 89；:app 现为 89，其中 Ticket 21 加了 37 个），不需要设备
+./gradlew :sync:test :syncplatform:testDebugUnitTest :app:testDebugUnitTest              # JVM 单测（221 + 10 + 89；:app 现为 89，其中 Ticket 21 加了 37 个），不需要设备
 ./gradlew :sync:realGatewayTest                                                          # 对着真实的 Python 网关进程（仓库 .venv、自签 TLS、临时数据目录、随机端口）跑配对、入库、幂等、结果不确定、换网关、吊销（12 个，E2）；不进 :sync:test，找不到解释器就失败
 ./gradlew :app:assembleDebug :syncplatform:assembleDebugAndroidTest                      # 构建 APK 与同步层的仪器测试 APK
 cd ../..
-.venv/bin/pytest execution/acceptance/android-sync                                       # Python 验收工具（527 个，其中 482 个是变异表自检；含真实调用 Gradle 的 :sync:realGatewayTest 逐个核对，需要 JAVA_HOME）
-.venv/bin/python execution/acceptance/android-sync/mutation_check.py --list              # 变异检查（158 条）：只在仓库外的快照里改源码，绝不改工作树；--only <id…> / --match <子串> 选条目
+.venv/bin/pytest execution/acceptance/android-sync                                       # Python 验收工具（539 个，其中 494 个是变异表自检；含真实调用 Gradle 的 :sync:realGatewayTest 逐个核对，需要 JAVA_HOME）
+.venv/bin/python execution/acceptance/android-sync/mutation_check.py --list              # 变异检查（162 条）：只在仓库外的快照里改源码，绝不改工作树；--only <id…> / --match <子串> 选条目
 AURI_ALSO_ASR_ACCEPTANCE=1 execution/acceptance/android-sync/run_emulator_acceptance.sh  # 一次性无头模拟器验收（E2）：先取共享锁，宿主机起真网关（模拟器经 10.0.2.2 访问），无论成败都停网关、杀模拟器、删 AVD、放锁；AURI_ALSO_ASR_ACCEPTANCE=1 在同一台模拟器上再跑 Ticket 14 的验收（离线证明已被 Ticket 21 改写）
 adb logcat -d -s AuriSync:I                                                              # 真机：同步层日志（只有状态与原因，没有令牌、配对码、网关地址、文字）
 ```
