@@ -135,6 +135,34 @@ class CompositeControlAdapterTest {
     }
 
     @Test
+    fun `旁听者先于所有命令订阅者收到事件，不管谁先登记（校准向导必须在协调器处理这个命令之前看到它）`() {
+        val order = mutableListOf<String>()
+        composite.onCommand { order += "命令订阅者#${it.sequence}" }
+        composite.observe { order += "旁听者#${it.sequence}" }
+
+        headset.emit(ControlSource.HEADSET_REMOTE, sequence = 0)
+
+        assertEquals(listOf("旁听者#0", "命令订阅者#0"), order)
+    }
+
+    @Test
+    fun `旁听者抛异常，命令照样递送；取消旁听后不再收到`() {
+        val observed = mutableListOf<NormalizedControlEvent>()
+        val delivered = mutableListOf<NormalizedControlEvent>()
+        composite.observe { error("旁听者的 bug") }
+        val subscription = composite.observe { observed += it }
+        composite.onCommand { delivered += it }
+
+        headset.emit(ControlSource.HEADSET_REMOTE, sequence = 0)
+        subscription.cancel()
+        headset.emit(ControlSource.HEADSET_REMOTE, sequence = 1)
+
+        assertEquals("旁听者抛异常不能吞掉命令", 2, delivered.size)
+        assertEquals(listOf(0L), observed.map { it.sequence })
+        assertTrue(logs.any { it.startsWith("control_observer_failed") })
+    }
+
+    @Test
     fun `合成只向每个来源订阅一次，不管有多少个订阅者`() {
         composite.onCommand { }
         composite.onCommand { }
