@@ -246,11 +246,10 @@ class CalibrationFindingsTest {
         assertEquals(CompatStatus.PARTIAL, partial.profile().capabilities.foregroundStartStop.status)
         assertEquals("停止本身是支持的", CompatStatus.SUPPORTED_FOREGROUND, partial.profile().capabilities.stopWhileBluetoothMicActive.status)
 
-        // 两项都声明没效果 -> UNSUPPORTED
+        // 两项都声明没效果 -> UNSUPPORTED（第二步在录音中声明停止没效果，第三步在待命时声明开始没效果：声明要对着它所指的那次手势）
         val unsupported = Run(real)
         unsupported.idle()
-        unsupported.wizard.reportNoEffect()
-        unsupported.wizard.next()
+        unsupported.stopNoEffect()
         unsupported.wizard.reportNoEffect()
         unsupported.wizard.next()
         unsupported.wizard.next()
@@ -259,8 +258,7 @@ class CalibrationFindingsTest {
         // 一项声明没效果、另一项根本没做 -> 未测试
         val half = Run(real)
         half.idle()
-        half.wizard.reportNoEffect()
-        half.wizard.next()
+        half.stopNoEffect()
         half.wizard.skip()
         half.wizard.next()
         assertEquals(CapabilityRecord.untested, half.profile().capabilities.foregroundStartStop)
@@ -295,8 +293,7 @@ class CalibrationFindingsTest {
     fun `模拟器上的“没效果”声明也只是 E2，不写成 UNSUPPORTED`() {
         val run = Run(EvidenceSetting.EMULATOR)
         run.idle()
-        run.wizard.reportNoEffect()
-        run.wizard.next()
+        run.stopNoEffect() // 录音中做了停止手势，没反应，声明没效果（环境对得上，只是取证环境不是真机）
         run.wizard.next()
         run.wizard.next()
         val c = run.profile().capabilities
@@ -439,11 +436,179 @@ class CalibrationFindingsTest {
         run.toLockStep()
         run.wizard.onScreenLockChanged(true)
         run.feed.gesture(PlatformEvent.TOGGLE, TOGGLE, FINALIZING, locked = true) // 录音在锁屏时被手势停下
+        run.feed.other(CaptureEvent.FINALIZE_COMPLETE, ARMED, locked = true)
         run.wizard.reportNoEffect() // 但之后再开始没有反应
         run.wizard.next()
         val c = run.profile().capabilities
         assertEquals(CompatStatus.SUPPORTED_RECORDING_IN_BACKGROUND, c.continueRecordingWhenLocked.status)
         assertEquals(CompatStatus.UNSUPPORTED, c.restartAfterStopWhenLocked.status)
+    }
+
+    @Test
+    fun `锁屏步骤只声明没效果、没观察到锁屏中手势停掉过录音：声明说的是手势，既说明不了录音撑没撑过锁屏，也说明不了重新开始`() {
+        // 屏幕锁着，手势没反应，没解锁就点完成：录音撑没撑过没有观察到，不能写成“不能继续”
+        val stillLocked = Run(real)
+        stillLocked.toLockStep()
+        stillLocked.wizard.onScreenLockChanged(true)
+        stillLocked.wizard.reportNoEffect()
+        stillLocked.wizard.next()
+        val noObservation = stillLocked.profile().capabilities
+        assertEquals(CapabilityRecord.untested, noObservation.continueRecordingWhenLocked)
+        assertEquals("锁屏中根本没有停下过录音：重新开始没有试过", CapabilityRecord.untested, noObservation.restartAfterStopWhenLocked)
+
+        // 解锁时录音还在：撑过锁屏是观察到的；重新开始仍然没试过，不能因为手势没反应就写成不支持
+        val survived = Run(real)
+        survived.toLockStep()
+        survived.wizard.onScreenLockChanged(true)
+        survived.wizard.reportNoEffect()
+        survived.wizard.onScreenLockChanged(false)
+        survived.wizard.next()
+        val observed = survived.profile().capabilities
+        assertEquals(CompatStatus.SUPPORTED_RECORDING_IN_BACKGROUND, observed.continueRecordingWhenLocked.status)
+        assertEquals(CapabilityRecord.untested, observed.restartAfterStopWhenLocked)
+    }
+
+    @Test
+    fun `锁屏步骤里手势停止发生在没锁屏的时候：之后锁屏、没反应，也不是对“锁屏时重新开始”的否定`() {
+        val run = Run(real)
+        run.toLockStep()
+        run.feed.gesture(PlatformEvent.TOGGLE, TOGGLE, FINALIZING, locked = false) // 还没锁屏就停了，不是这一步要的流程
+        run.feed.other(CaptureEvent.FINALIZE_COMPLETE, ARMED)
+        run.wizard.onScreenLockChanged(true)
+        run.wizard.reportNoEffect()
+        run.wizard.next()
+        assertEquals(CapabilityRecord.untested, run.profile().capabilities.restartAfterStopWhenLocked)
+    }
+
+    @Test
+    fun `锁屏步骤里先声明没效果、重试之后锁屏中停止成功了：声明说的是更早那次尝试，不是对“重新开始”的否定`() {
+        val run = Run(real)
+        run.toLockStep()
+        run.wizard.onScreenLockChanged(true)
+        run.wizard.reportNoEffect() // 第一次手势没反应
+        run.feed.gesture(PlatformEvent.TOGGLE, TOGGLE, FINALIZING, locked = true) // 又试了一次，这次停下来了
+        run.feed.other(CaptureEvent.FINALIZE_COMPLETE, ARMED, locked = true)
+        run.wizard.next()
+        val c = run.profile().capabilities
+        assertEquals("锁屏时手势停下了录音，是观察到的", CompatStatus.SUPPORTED_RECORDING_IN_BACKGROUND, c.continueRecordingWhenLocked.status)
+        assertEquals("重新开始没有试过", CapabilityRecord.untested, c.restartAfterStopWhenLocked)
+    }
+
+    // ---- 声明说的是哪一次手势：由声明那一刻的环境决定（录音中的手势是想停止，就绪时的是想开始；锁没锁屏） ----
+
+    @Test
+    fun `锁屏步骤里手势停止之后，解锁用屏幕按钮重新开始，再声明耳机停止没效果：那是一次停止手势，不是对“锁屏时重新开始”的否定`() {
+        val run = Run(real)
+        run.toLockStep()
+        run.wizard.onScreenLockChanged(true)
+        run.feed.gesture(PlatformEvent.TOGGLE, TOGGLE, FINALIZING, locked = true) // 锁屏中手势停下了录音
+        run.feed.other(CaptureEvent.FINALIZE_COMPLETE, ARMED, locked = true)
+        run.wizard.onScreenLockChanged(false)
+        run.feed.gesture(PlatformEvent.SCREEN_BUTTON, START, ROUTING, source = ControlSource.SCREEN_CONTROL) // 解锁后用屏幕按钮重新开始
+        run.feed.other(CaptureEvent.ROUTE_VERIFIED, RECORDING)
+        run.wizard.onScreenLockChanged(true)
+        run.wizard.reportNoEffect() // 录音中，这次做的是停止手势
+        run.wizard.next()
+        assertEquals(CapabilityRecord.untested, run.profile().capabilities.restartAfterStopWhenLocked)
+    }
+
+    @Test
+    fun `锁屏步骤里手势停止之后先解锁了，再声明手势开始没效果：那是亮屏时做的手势，不是对“锁屏时重新开始”的否定`() {
+        val run = Run(real)
+        run.toLockStep()
+        run.wizard.onScreenLockChanged(true)
+        run.feed.gesture(PlatformEvent.TOGGLE, TOGGLE, FINALIZING, locked = true)
+        run.feed.other(CaptureEvent.FINALIZE_COMPLETE, ARMED, locked = true)
+        run.wizard.onScreenLockChanged(false) // 解锁了
+        run.wizard.reportNoEffect() // 亮屏时手势再开始，没反应
+        run.wizard.next()
+        assertEquals(CapabilityRecord.untested, run.profile().capabilities.restartAfterStopWhenLocked)
+    }
+
+    @Test
+    fun `第二步还没开始录音就声明“停止手势没效果”：没有录音就没有什么可停，不写成停止不支持`() {
+        val run = Run(real)
+        run.idle()
+        run.wizard.reportNoEffect() // 就绪状态，不可能是一次停止手势
+        run.wizard.next()
+        run.wizard.next()
+        run.wizard.next()
+        assertEquals(CapabilityRecord.untested, run.profile().capabilities.stopWhileBluetoothMicActive)
+    }
+
+    @Test
+    fun `第二步里屏幕已经锁了，声明停止手势没效果：前台停止要求亮屏，锁屏时的失败不算它`() {
+        val run = Run(real)
+        run.idle()
+        run.feed.gesture(PlatformEvent.SCREEN_BUTTON, START, ROUTING, source = ControlSource.SCREEN_CONTROL)
+        run.feed.other(CaptureEvent.ROUTE_VERIFIED, RECORDING)
+        run.wizard.onScreenLockChanged(true)
+        run.wizard.reportNoEffect()
+        run.wizard.next()
+        run.wizard.next()
+        run.wizard.next()
+        assertEquals(CapabilityRecord.untested, run.profile().capabilities.stopWhileBluetoothMicActive)
+    }
+
+    @Test
+    fun `第三步里录音还在进行就声明“开始手势没效果”：那是一次停止手势，不是对“停止之后再开始”的否定`() {
+        val run = Run(real)
+        run.idle()
+        run.stopByGesture()
+        run.feed.gesture(PlatformEvent.SCREEN_BUTTON, START, ROUTING, source = ControlSource.SCREEN_CONTROL)
+        run.feed.other(CaptureEvent.ROUTE_VERIFIED, RECORDING)
+        run.wizard.reportNoEffect() // 录音中
+        run.wizard.next()
+        run.wizard.next()
+        val c = run.profile().capabilities
+        assertEquals("第二步手势停止是观察到的", CompatStatus.SUPPORTED_FOREGROUND, c.stopWhileBluetoothMicActive.status)
+        assertEquals("开始没有试过，不能写成 PARTIAL", CapabilityRecord.untested, c.foregroundStartStop)
+    }
+
+    @Test
+    fun `第三步里屏幕已经锁了，声明开始手势没效果：前台开始要求亮屏，锁屏时的失败不算它`() {
+        val run = Run(real)
+        run.idle()
+        run.stopByGesture()
+        run.wizard.onScreenLockChanged(true)
+        run.wizard.reportNoEffect()
+        run.wizard.next()
+        run.wizard.next()
+        assertEquals(CapabilityRecord.untested, run.profile().capabilities.foregroundStartStop)
+    }
+
+    // ---- 一次手势开始的结局属于它自己 ----
+
+    @Test
+    fun `手势开始之后准备没成功，之后用屏幕按钮重试才录上：录上的是屏幕按钮这一次，不能记成手势开始成功`() {
+        val run = Run(real)
+        run.idle()
+        run.stopByGesture()
+        // 第三步：手势让录音进入准备，路由没确认（受阻）；用户改点屏幕按钮重试，这次录上了
+        run.feed.gesture(PlatformEvent.TOGGLE, TOGGLE, ROUTING)
+        run.feed.other(CaptureEvent.ROUTE_UNVERIFIED, BLOCKED)
+        run.feed.gesture(PlatformEvent.SCREEN_BUTTON, START, ROUTING, source = ControlSource.SCREEN_CONTROL)
+        run.feed.other(CaptureEvent.ROUTE_VERIFIED, RECORDING)
+        run.wizard.next()
+        run.wizard.next()
+        val c = run.profile().capabilities
+        assertEquals("第二步手势停止是观察到的", CompatStatus.SUPPORTED_FOREGROUND, c.stopWhileBluetoothMicActive.status)
+        assertEquals("手势开始这一次没成，不能拿屏幕按钮的那一次顶替", CapabilityRecord.untested, c.foregroundStartStop)
+    }
+
+    @Test
+    fun `锁屏中手势开始之后准备被取消，随后的开始也不算：只有紧接着那次准备的结局是录音中才算`() {
+        val run = Run(real)
+        run.toLockStep(recordingAtLock = false)
+        run.wizard.onScreenLockChanged(true)
+        run.feed.gesture(PlatformEvent.TOGGLE, TOGGLE, ROUTING, locked = true)
+        run.feed.gesture(PlatformEvent.TOGGLE, TOGGLE, ARMED, locked = true) // 又按了一次：取消准备
+        run.feed.gesture(PlatformEvent.TOGGLE, TOGGLE, ROUTING, locked = true) // 又开始，但这一次被受阻结束
+        run.feed.other(CaptureEvent.ROUTE_UNVERIFIED, BLOCKED, locked = true)
+        run.feed.gesture(PlatformEvent.SCREEN_BUTTON, START, ROUTING, locked = true, source = ControlSource.SCREEN_CONTROL)
+        run.feed.other(CaptureEvent.ROUTE_VERIFIED, RECORDING, locked = true)
+        run.wizard.next()
+        assertEquals(CapabilityRecord.untested, run.profile().capabilities.restartAfterStopWhenLocked)
     }
 
     // ---- 档案本身与命令映射 ----

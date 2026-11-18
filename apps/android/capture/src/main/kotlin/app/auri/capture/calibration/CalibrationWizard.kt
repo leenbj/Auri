@@ -77,7 +77,8 @@ class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
     private class StepData {
         var outcome: StepOutcome = StepOutcome.PENDING
         var attempt: Int = 1
-        var noEffect: Boolean = false
+        /** 用户声明“没效果”那一刻的环境；没声明为 null。 */
+        var declared: DeclaredAttempt? = null
         val observations = ArrayList<Observation>()
 
         fun add(observation: Observation) {
@@ -86,7 +87,7 @@ class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
         }
 
         fun reset() {
-            noEffect = false
+            declared = null
             observations.clear()
         }
     }
@@ -99,6 +100,9 @@ class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
     private val pairing = ControlDecisionPairing()
     private var trackedState: CaptureState? = null
     private var finalizeSeen = false
+
+    // 最近一次知道的锁屏状态（锁屏变化，或决定处理时附带的；读不出来不覆盖）：声明时记下那次手势是不是在锁屏时做的
+    private var knownLock: Boolean? = null
 
     private val flow = MutableStateFlow(snapshot())
     val state: StateFlow<CalibrationState> = flow.asStateFlow()
@@ -132,12 +136,16 @@ class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
         return true
     }
 
-    /** 用户声明这一步“做了手势，没有任何效果”。第一个场景只观察事件，没有“效果”可言，不适用。 */
+    /**
+     * 用户声明这一步“做了手势，没有任何效果”。第一个场景只观察事件，没有“效果”可言，不适用。
+     * 声明说的是用户刚做的那次手势，并且记下这一刻的采集状态与锁屏状态，结论据此判断那次手势想做什么；
+     * 之后又收到耳机事件（用户又试了一次），声明作废，要再声明一次才算最近这次。
+     */
     @Synchronized
     fun reportNoEffect(): Boolean {
         val step = current ?: return false
         if (step == CalibrationStep.IDLE_EVENTS) return false
-        steps.getValue(step).noEffect = true
+        steps.getValue(step).declared = DeclaredAttempt(trackedState, knownLock)
         publish()
         return true
     }
@@ -162,7 +170,13 @@ class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
     fun onControlEvent(event: NormalizedControlEvent) {
         val step = current ?: return
         pairing.offer(event)
-        if (event.source.isRemote()) steps.getValue(step).add(Observation.Arrived(event.source, event.platformEvent))
+        if (event.source.isRemote()) {
+            steps.getValue(step).apply {
+                add(Observation.Arrived(event.source, event.platformEvent))
+                // 又收到一次耳机事件 = 用户又试了一次：之前“没反应”的声明说的是更早那次尝试，作废
+                declared = null
+            }
+        }
         publish()
     }
 
@@ -182,6 +196,7 @@ class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
             ),
         )
         trackedState = decision.stateAfter
+        if (screenLocked != null) knownLock = screenLocked
         if (decision.stateBefore == CaptureState.FINALIZING && decision.stateAfter == CaptureState.ARMED) finalizeSeen = true
         publish()
     }
@@ -190,6 +205,7 @@ class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
     @Synchronized
     fun onScreenLockChanged(locked: Boolean) {
         val step = current ?: return
+        knownLock = locked
         steps.getValue(step).add(Observation.LockChanged(locked, trackedState))
         publish()
     }
@@ -212,7 +228,7 @@ class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
         if (phase != CalibrationPhase.COMPLETED) return null
         val records = CalibrationStep.entries.map {
             val data = steps.getValue(it)
-            StepRecord(it, data.attempt, data.noEffect, data.observations.toList())
+            StepRecord(it, data.attempt, data.declared, data.observations.toList())
         }
         return CalibrationFindings.profile(runId, setting, records, profileId, profileVersion, modelHint)
     }
@@ -256,7 +272,7 @@ class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
             eventCounts = data.observations.filterIsInstance<Observation.Arrived>().groupingBy { it.platformEvent }.eachCount(),
             startedByGesture = decided.any { it.isRemoteStart() },
             stoppedByGesture = decided.any { it.isRemoteStop() },
-            ownerReportedNoEffect = data.noEffect,
+            ownerReportedNoEffect = data.declared != null,
         )
     }
 

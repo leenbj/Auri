@@ -201,6 +201,22 @@ class CalibrationObservationTest {
         w.skip()
         assertEquals(StepSummary(), w.summary)
     }
+
+    @Test
+    fun `声明没效果之后又收到一次耳机事件：声明作废，它说的是更早那次尝试；屏幕按钮的事件不作废它`() {
+        val w = wizardAt(1)
+        val feed = Feed(w)
+        w.reportNoEffect()
+
+        feed.gesture(PlatformEvent.SCREEN_BUTTON, BusinessCommand.START, ROUTING, source = ControlSource.SCREEN_CONTROL)
+        assertTrue("屏幕按钮不是耳机手势，不能作废“耳机手势没反应”的声明", w.summary.ownerReportedNoEffect)
+
+        feed.gesture(PlatformEvent.TOGGLE, BusinessCommand.TOGGLE, ARMED)
+        assertFalse("用户又试了一次耳机手势：之前的声明说的是更早的那次", w.summary.ownerReportedNoEffect)
+
+        w.reportNoEffect()
+        assertTrue("之后再声明一次，是对最近这次尝试的声明", w.summary.ownerReportedNoEffect)
+    }
 }
 
 class ControlDecisionPairingTest {
