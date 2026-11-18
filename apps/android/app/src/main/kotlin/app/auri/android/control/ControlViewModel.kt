@@ -95,6 +95,8 @@ interface ControlModeControls : CaptureControls {
     fun enableControlMode()
 
     fun disableControlMode()
+
+    fun stopAndDisableControlMode()
 }
 
 class CoordinatorControlModeControls(
@@ -106,6 +108,8 @@ class CoordinatorControlModeControls(
     override fun enableControlMode() = coordinator.enableControlMode()
 
     override fun disableControlMode() = coordinator.disableControlMode()
+
+    override fun stopAndDisableControlMode() = coordinator.stopAndDisableControlMode()
 }
 
 data class ControlUiState(
@@ -197,6 +201,8 @@ class ControlViewModel(
         val modelText: String = "",
         val phase: Phase = Phase.Setup,
         val turningOff: Boolean = false,
+        val offRequestedAfterVersion: Long = 0,
+        val rearmAfterOff: Boolean = false,
         val notice: ControlNotice? = null,
         val profile: ProfileFact = ProfileFact.Generic,
     )
@@ -209,47 +215,42 @@ class ControlViewModel(
 
     init {
         // 等待“保存完再关”的请求，在回到待命（或受阻）时兑现；已经没有控制模式了就只是撤销请求
-        scope.launch(start = CoroutineStart.UNDISPATCHED) { controls.snapshot.collect { onCaptureState(it.state) } }
+        scope.launch(start = CoroutineStart.UNDISPATCHED) { controls.snapshot.collect(::onCaptureState) }
     }
 
     // ---- 屏幕按钮 ----
 
-    fun start() = controls.start()
+    fun start() { if (!local.value.turningOff) controls.start() }
 
     fun stop() = controls.stop()
 
     // ---- 控制模式 ----
 
     fun setControlMode(on: Boolean) {
-        val captureState = controls.snapshot.value.state
         if (on) {
-            local.update { it.copy(turningOff = false) }
+            if (local.value.turningOff) {
+                local.update { it.copy(rearmAfterOff = true) }
+                return
+            }
             if (!controls.snapshot.value.controlModeEnabled) controls.enableControlMode()
+            return
+        }
+        if (local.value.turningOff) {
+            local.update { it.copy(rearmAfterOff = false) }
             return
         }
         if (!controls.snapshot.value.controlModeEnabled) return
         abortCalibration()
-        when (captureState) {
-            // 协调器只在这三个状态接受“关闭”
-            CaptureState.ARMED, CaptureState.ROUTING, CaptureState.BLOCKED -> controls.disableControlMode()
-            // 录音中与保存中被拒绝：先停止（保存中已经在停了），等回到待命再关，这次录音不丢
-            CaptureState.RECORDING, CaptureState.FINALIZING -> {
-                local.update { it.copy(turningOff = true) }
-                if (captureState == CaptureState.RECORDING) controls.stop()
-                // 读状态到登记请求之间，保存可能已经完成：收集器那时还没有请求可兑现，这里按最新状态补一次
-                onCaptureState(controls.snapshot.value.state)
-            }
-            CaptureState.DISARMED -> Unit
-        }
+        local.update { it.copy(turningOff = true, offRequestedAfterVersion = controls.snapshot.value.version, rearmAfterOff = false) }
+        controls.stopAndDisableControlMode()
+        onCaptureState(controls.snapshot.value)
     }
 
-    private fun onCaptureState(captureState: CaptureState) {
-        if (!local.value.turningOff) return
-        when (captureState) {
-            CaptureState.ARMED, CaptureState.BLOCKED -> if (local.getAndUpdate { it.copy(turningOff = false) }.turningOff) controls.disableControlMode()
-            CaptureState.DISARMED -> local.update { it.copy(turningOff = false) }
-            CaptureState.ROUTING, CaptureState.RECORDING, CaptureState.FINALIZING -> Unit
-        }
+    private fun onCaptureState(snapshot: CaptureSnapshot) {
+        fun confirmed(current: Local) = current.turningOff && snapshot.state == CaptureState.DISARMED &&
+            !snapshot.controlModeEnabled && snapshot.version > current.offRequestedAfterVersion
+        val previous = local.getAndUpdate { if (confirmed(it)) it.copy(turningOff = false, rearmAfterOff = false) else it }
+        if (confirmed(previous) && previous.rearmAfterOff) controls.enableControlMode()
     }
 
     // ---- 校准：设置页 ----

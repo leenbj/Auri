@@ -25,6 +25,7 @@ data class RawMediaInput(
     val issuedAtNs: Long? = null,
     val fromExternalDevice: Boolean? = null,
     val receivedAtNs: Long,
+    val deviceId: Int? = null,
 ) {
     init {
         require(receivedAtNs >= 0) { "received_at_ns 不能为负" }
@@ -32,18 +33,15 @@ data class RawMediaInput(
 }
 
 /**
- * 去抖与时间戳的参数。默认值是**没有实测依据的假设**，要按真机事件日志（FreeClip × 手机）校准后再定：
- *  - [gestureWindowNs]：同一次手势产生的一串事件（同一个手势同时发出 play 与 pause，或两个通道各递送一次）合并成一次的窗口。
- *    取 400 ms：长于两次点按之间的典型间隔，又远短于一个有意的第二次手势；窗口过后的停止 / 切换照常通过。
+ * 去重与时间戳的参数：
  *  - [maxIssuedAgeNs]：开始或切换命令在接收时允许的最大年龄；过期命令不再开始采集。
  *  - [rawIdMemory]：记住最近多少个原始事件标识用来去重（有上限，不会无限增长）。
  */
 data class ControlConfig(
-    val gestureWindowNs: Long = 400_000_000L,
     val maxIssuedAgeNs: Long = 5_000_000_000L,
     val rawIdMemory: Int = 16,
 ) {
     init {
-        require(gestureWindowNs > 0 && maxIssuedAgeNs > 0 && rawIdMemory > 0) { "去抖参数必须为正" }
+        require(maxIssuedAgeNs > 0 && rawIdMemory > 0) { "去重参数必须为正" }
     }
 }

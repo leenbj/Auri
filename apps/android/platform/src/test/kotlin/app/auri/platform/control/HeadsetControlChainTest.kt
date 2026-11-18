@@ -181,17 +181,18 @@ class HeadsetControlChainTest {
     }
 
     @Test
-    fun `一次手势发出一串事件：只开始一次，之后的录音不会被同一手势的余波停掉`() = runTest {
+    fun `同一按键事件重复递送只开始一次，不会立刻停止`() = runTest {
         val rig = Rig(this)
         rig.controlModeOn()
 
-        rig.source.press(MediaKind.PLAY)
+        val issuedAt = rig.clock.monotonicNs()
+        rig.source.press(MediaKind.PLAY, issuedAtNs = issuedAt)
         rig.advance(20)
-        rig.source.press(MediaKind.PAUSE)
+        rig.source.press(MediaKind.PLAY, issuedAtNs = issuedAt)
         rig.advance(25)
-        rig.source.press(MediaKind.PLAY_PAUSE)
+        rig.source.press(MediaKind.PLAY, issuedAtNs = issuedAt)
         rig.advance(45)
-        rig.source.press(MediaKind.STOP)
+        rig.source.press(MediaKind.PLAY, issuedAtNs = issuedAt)
         rig.settle()
 
         assertEquals("只有第一个事件进了协调器", 1, rig.events.size)
@@ -347,6 +348,45 @@ class HeadsetControlChainTest {
             rig.settle()
             assertEquals("key $keyCode with future event time", CaptureState.ARMED, rig.state)
             assertTrue(rig.capture.requests.isEmpty())
+        }
+    }
+
+    @Test
+    fun `turning control mode off rejects a racing headset start until disarmed`() = runTest {
+        val rig = Rig(this)
+        rig.store.sealGate = CompletableDeferred()
+        rig.controlModeOn()
+        rig.record()
+        rig.advance(500)
+
+        rig.coordinator.stopAndDisableControlMode()
+        assertTrue(rig.source.press(MediaKind.PLAY))
+        rig.settle()
+        assertEquals(CaptureState.FINALIZING, rig.state)
+        assertEquals(Outcome.REJECTED, rig.decisions.last { it.trigger == CaptureEvent.START }.outcome)
+        assertEquals(1, rig.capture.requests.size)
+
+        rig.store.sealGate!!.complete(Unit)
+        rig.settle()
+        assertEquals(CaptureState.DISARMED, rig.state)
+        assertFalse(rig.source.isActive)
+        assertFalse(rig.source.press(MediaKind.PLAY))
+        assertEquals(1, rig.capture.requests.size)
+    }
+
+    @Test
+    fun `distinct stop pause and toggle inside the debounce window cancel routing`() = runTest {
+        listOf(MediaKind.STOP, MediaKind.PAUSE, MediaKind.PLAY_PAUSE).forEach { cancel ->
+            val rig = Rig(this)
+            rig.controlModeOn()
+            rig.key(if (cancel == MediaKind.PLAY_PAUSE) MediaKind.PLAY_PAUSE else MediaKind.PLAY)
+            assertEquals(CaptureState.ROUTING, rig.state)
+            rig.advance(100)
+
+            rig.key(cancel)
+
+            assertEquals("$cancel must cancel preparation", CaptureState.ARMED, rig.state)
+            assertEquals(1, rig.capture.releases.size)
         }
     }
 }

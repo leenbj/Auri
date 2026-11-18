@@ -61,8 +61,15 @@ class ControlViewModelTest {
         override val decisions = MutableSharedFlow<CaptureDecision>(extraBufferCapacity = 64)
         val calls = mutableListOf<String>()
         private var version = 0L
+        private var closing = false
+        private var disableSent = false
 
         fun move(state: CaptureState) {
+            if (closing && state == CaptureState.ARMED && !disableSent) {
+                calls += "disable"
+                disableSent = true
+            }
+            if (state == CaptureState.DISARMED) closing = false
             flow.value = snapshot(state, ++version)
         }
 
@@ -80,6 +87,16 @@ class ControlViewModelTest {
 
         override fun disableControlMode() {
             calls += "disable"
+        }
+
+        override fun stopAndDisableControlMode() {
+            closing = true
+            disableSent = false
+            when (snapshot.value.state) {
+                CaptureState.RECORDING -> calls += "stop"
+                CaptureState.FINALIZING -> Unit
+                else -> { calls += "disable"; disableSent = true }
+            }
         }
     }
 
@@ -273,10 +290,27 @@ class ControlViewModelTest {
 
         rig.controls.move(CaptureState.ARMED)
         assertEquals(listOf("stop", "disable"), rig.controls.calls)
-        assertFalse(rig.state.controlMode.turningOff)
+        assertTrue(rig.state.controlMode.turningOff)
 
         rig.controls.move(CaptureState.ARMED)
         assertEquals("关闭只发出一次", listOf("stop", "disable"), rig.controls.calls)
+        rig.controls.move(CaptureState.DISARMED)
+        assertFalse(rig.state.controlMode.turningOff)
+    }
+
+    @Test
+    fun `turning off stays pending until disarmed even when a new recording races the disable`() = runUnconfined {
+        val rig = rig(CaptureState.RECORDING)
+        rig.viewModel.setControlMode(false)
+        rig.controls.move(CaptureState.FINALIZING)
+        rig.controls.move(CaptureState.ARMED)
+
+        assertTrue("the asynchronous disable is not yet confirmed", rig.state.controlMode.turningOff)
+        rig.controls.move(CaptureState.RECORDING)
+        assertTrue("a racing start must not forget the off request", rig.state.controlMode.turningOff)
+        rig.controls.move(CaptureState.FINALIZING)
+        rig.controls.move(CaptureState.DISARMED)
+        assertFalse(rig.state.controlMode.turningOff)
     }
 
     @Test
@@ -290,15 +324,17 @@ class ControlViewModelTest {
     }
 
     @Test
-    fun `等待关闭期间用户又打开了控制模式：不再关`() = runUnconfined {
+    fun `等待关闭期间用户又打开控制模式：确认关闭之后再打开`() = runUnconfined {
         val rig = rig(CaptureState.RECORDING)
         rig.viewModel.setControlMode(false)
 
         rig.viewModel.setControlMode(true)
         rig.controls.move(CaptureState.FINALIZING)
         rig.controls.move(CaptureState.ARMED)
+        assertEquals(listOf("stop", "disable"), rig.controls.calls)
+        rig.controls.move(CaptureState.DISARMED)
 
-        assertEquals(listOf("stop"), rig.controls.calls)
+        assertEquals(listOf("stop", "disable", "enable"), rig.controls.calls)
         assertFalse(rig.state.controlMode.turningOff)
     }
 
@@ -312,7 +348,9 @@ class ControlViewModelTest {
         rig.viewModel.setControlMode(false)
 
         assertEquals(listOf("disable"), rig.controls.calls)
-        assertFalse("没有“等保存完”这回事了，不能一直显示正在关闭", rig.state.controlMode.turningOff)
+        assertTrue(rig.state.controlMode.turningOff)
+        rig.controls.move(CaptureState.DISARMED)
+        assertFalse(rig.state.controlMode.turningOff)
     }
 
     @Test

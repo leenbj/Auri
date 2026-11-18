@@ -145,46 +145,54 @@ class HeadsetEventNormalizerTest {
         val n = normalizer()
 
         n.emit(input(MediaKind.PLAY_PAUSE, 0, rawId = "key:85:0:t:1"))
-        assertEquals(DropReason.DUPLICATE_RAW_EVENT, n.dropReason(input(MediaKind.PLAY_PAUSE, 2_000, rawId = "key:85:0:t:1")))
+        assertEquals(DropReason.DUPLICATE_RAW_EVENT, n.dropReason(input(MediaKind.PLAY_PAUSE, 2_000, rawId = "key:85:0:t:1", issuedAtMs = 0)))
     }
 
     @Test
-    fun `一次手势发出一串事件：先开始再立刻停止永远不会发生，只产生第一个`() {
+    fun `same event time from a different key or device is not a duplicate`() {
+        val n = normalizer()
+        n.emit(input(MediaKind.PLAY, 1_000).copy(deviceId = 1))
+        assertEquals(BusinessCommand.STOP, n.emit(input(MediaKind.STOP, 1_000).copy(deviceId = 1)).command)
+        assertEquals(BusinessCommand.START, n.emit(input(MediaKind.PLAY, 1_000).copy(deviceId = 2)).command)
+        assertEquals(DropReason.DUPLICATE_RAW_EVENT, n.dropReason(input(MediaKind.PLAY, 1_001, issuedAtMs = 1_000).copy(deviceId = 1)))
+    }
+
+    @Test
+    fun `同一个平台事件多次递送只产生一个命令`() {
         val n = normalizer()
         val burst = listOf(
-            input(MediaKind.PLAY, 0),
-            input(MediaKind.PAUSE, 20),
-            input(MediaKind.PLAY_PAUSE, 45),
-            input(MediaKind.HEADSET_HOOK, 90),
-            input(MediaKind.STOP, 200),
+            input(MediaKind.PLAY, 0, rawId = "same", issuedAtMs = 0),
+            input(MediaKind.PLAY, 20, rawId = "same", issuedAtMs = 0),
+            input(MediaKind.PLAY, 45, rawId = "same", issuedAtMs = 0),
+            input(MediaKind.PLAY, 90, rawId = "same", issuedAtMs = 0),
+            input(MediaKind.PLAY, 200, rawId = "same", issuedAtMs = 0),
         )
 
         val results = burst.map { n.normalize(it, generic) }
 
         assertEquals(1, results.count { it is NormalizeResult.Emit })
         assertEquals(BusinessCommand.START, (results.first() as NormalizeResult.Emit).event.command)
-        assertTrue(results.drop(1).all { it is NormalizeResult.Drop && it.reason == DropReason.SAME_GESTURE_BURST })
+        assertTrue(results.drop(1).all { it is NormalizeResult.Drop && it.reason == DropReason.DUPLICATE_RAW_EVENT })
     }
 
     @Test
-    fun `窗口边界：差一纳秒还是同一次手势，刚好满窗口就是新的手势`() {
-        val config = ControlConfig(gestureWindowNs = 300 * ms)
-        val n = normalizer(config)
+    fun `不同时间的取消在旧窗口边界两边都被递送`() {
+        val n = normalizer()
         n.emit(input(MediaKind.PLAY, 1_000))
 
-        assertEquals(DropReason.SAME_GESTURE_BURST, n.dropReason(RawMediaInput(MediaKind.PAUSE, receivedAtNs = 1_000 * ms + 300 * ms - 1)))
-        val next = n.emit(RawMediaInput(MediaKind.PAUSE, receivedAtNs = 1_000 * ms + 300 * ms))
+        val before = 1_000 * ms + 300 * ms - 1
+        assertEquals(BusinessCommand.STOP, n.emit(RawMediaInput(MediaKind.PAUSE, issuedAtNs = before, receivedAtNs = before)).command)
+        val boundary = 1_000 * ms + 300 * ms
+        val next = n.emit(RawMediaInput(MediaKind.PAUSE, issuedAtNs = boundary, receivedAtNs = boundary))
         assertEquals(BusinessCommand.STOP, next.command)
     }
 
     @Test
-    fun `被去抖丢掉的事件不会延长窗口：窗口从最近一个真正产生的事件算起`() {
-        val config = ControlConfig(gestureWindowNs = 300 * ms)
-        val n = normalizer(config)
-        n.emit(input(MediaKind.PLAY, 0))
-        n.dropReason(input(MediaKind.PAUSE, 250))
+    fun `重复事件不会吞掉随后不同的取消`() {
+        val n = normalizer()
+        n.emit(input(MediaKind.PLAY, 0, issuedAtMs = 0))
+        assertEquals(DropReason.DUPLICATE_RAW_EVENT, n.dropReason(input(MediaKind.PLAY, 250, issuedAtMs = 0)))
 
-        // 如果被丢掉的 250ms 那个也续了窗口，350ms 的这个会被误吞
         assertEquals(BusinessCommand.STOP, n.emit(input(MediaKind.PAUSE, 350)).command)
     }
 
@@ -213,13 +221,13 @@ class HeadsetEventNormalizerTest {
     fun `原始标识的记忆有上限：太久以前的标识会被忘掉，不会无限增长`() {
         val n = normalizer(ControlConfig(rawIdMemory = 2))
 
-        n.emit(input(MediaKind.PLAY, 0, rawId = "a"))
-        n.emit(input(MediaKind.PLAY, 10_000, rawId = "b"))
-        n.emit(input(MediaKind.PLAY, 20_000, rawId = "c"))
+        n.emit(input(MediaKind.PLAY, 1_000, rawId = "a"))
+        n.emit(input(MediaKind.PLAY, 2_000, rawId = "b"))
+        n.emit(input(MediaKind.PLAY, 3_000, rawId = "c"))
 
         // a 已被挤出记忆：同一个标识再来会被当作新事件；b、c 还记得
-        n.emit(input(MediaKind.PLAY, 30_000, rawId = "a"))
-        assertEquals(DropReason.DUPLICATE_RAW_EVENT, n.dropReason(input(MediaKind.PLAY, 40_000, rawId = "c")))
+        n.emit(input(MediaKind.PLAY, 4_000, rawId = "a", issuedAtMs = 1_000))
+        assertEquals(DropReason.DUPLICATE_RAW_EVENT, n.dropReason(input(MediaKind.PLAY, 5_000, rawId = "c", issuedAtMs = 3_000)))
     }
 
     @Test
@@ -246,7 +254,7 @@ class HeadsetEventNormalizerTest {
 
         n.resetGestureState()
 
-        val again = n.emit(input(MediaKind.PLAY, 10, rawId = "k"))
+        val again = n.emit(input(MediaKind.PLAY, 10, rawId = "k", issuedAtMs = 0))
         assertEquals("序号在适配器的整个生命期内单调递增", 1L, again.sequence)
     }
 
@@ -274,11 +282,11 @@ class HeadsetEventNormalizerTest {
     }
 
     @Test
-    fun `去抖按手势时刻比较，不按递送时刻：延迟递送的同一次手势也算同一次`() {
+    fun `去重按平台发生时刻比较，不按递送时刻`() {
         val n = normalizer()
         // 同一次手势在 1000ms 发生，两个事件分别在 1200ms 与 2500ms 才递送（主线程卡住）
         n.emit(input(MediaKind.PLAY, atMs = 1_200, issuedAtMs = 1_000))
 
-        assertEquals(DropReason.SAME_GESTURE_BURST, n.dropReason(input(MediaKind.PAUSE, atMs = 2_500, issuedAtMs = 1_010)))
+        assertEquals(DropReason.DUPLICATE_RAW_EVENT, n.dropReason(input(MediaKind.PLAY, atMs = 2_500, issuedAtMs = 1_000)))
     }
 }

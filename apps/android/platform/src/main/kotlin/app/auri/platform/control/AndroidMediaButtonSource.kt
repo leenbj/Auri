@@ -105,6 +105,7 @@ class AndroidMediaButtonSource(
                     fromExternalDevice = event.device?.isExternal,
                     uptimeNowMs = uptimeNowMs,
                     receivedAtNs = receivedAtNs,
+                    deviceId = event.deviceId,
                 ),
             )
         } catch (e: Exception) {

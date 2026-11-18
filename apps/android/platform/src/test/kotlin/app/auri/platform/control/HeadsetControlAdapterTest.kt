@@ -201,8 +201,9 @@ class HeadsetControlAdapterTest {
         adapter.enableUserControlMode()
 
         source.press(MediaKind.PLAY)
+        val issuedAt = clock.monotonicNs()
         clock.advanceMs(30)
-        source.press(MediaKind.PAUSE)
+        source.press(MediaKind.PLAY, issuedAtNs = issuedAt)
         source.press(MediaKind.PLAY_PAUSE, phase = KeyPhase.UP)
         source.press(MediaKind.PLAY_PAUSE, phase = KeyPhase.REPEAT)
         source.press(MediaKind.OTHER)

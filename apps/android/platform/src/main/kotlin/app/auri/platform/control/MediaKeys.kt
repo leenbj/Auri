@@ -49,6 +49,7 @@ fun rawInputOf(
     fromExternalDevice: Boolean?,
     uptimeNowMs: Long,
     receivedAtNs: Long,
+    deviceId: Int? = null,
 ): RawMediaInput {
     val phase = when (action) {
         ACTION_DOWN -> if (repeatCount > 0) KeyPhase.REPEAT else KeyPhase.DOWN
@@ -64,5 +65,6 @@ fun rawInputOf(
         issuedAtNs = if (hasEventTime && clocksAgree) eventTimeMs * 1_000_000L else null,
         fromExternalDevice = fromExternalDevice,
         receivedAtNs = receivedAtNs,
+        deviceId = deviceId,
     )
 }
