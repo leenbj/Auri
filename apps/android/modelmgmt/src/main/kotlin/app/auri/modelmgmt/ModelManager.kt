@@ -207,11 +207,13 @@ class ModelManager(
     /**
      * 引擎加载前的校验器拒绝了已装的模型（比如文件被改了、大小没变，重启时的快速检查查不出来）：判为损坏，
      * [active] 不再给出它，界面提示重新下载。重新安装成功后会换新的代。
+     * [model] 是出事的那个引擎用的那一份：如果它已经被换掉（引擎加载时恰好装了新版本），这条上报对现在的模型没有证据，忽略。
      */
-    fun reportIntegrityFailure(modelId: String) {
+    fun reportIntegrityFailure(model: ActiveModel) {
         synchronized(lock) {
-            if (installed[modelId] == null) return
-            updateEntry(modelId) { it.copy(damaged = true) }
+            val id = model.manifest.modelId
+            if (model.generation != generation || installed[id] == null) return
+            updateEntry(id) { it.copy(damaged = true) }
             publishActive(bumpGeneration = false)
         }
     }
@@ -311,8 +313,8 @@ class ModelManager(
 
             // 启用：校验过的暂存目录一次原子改名成全新的目录，再原子换掉指针。两步之间被杀，旧指针原样有效
             val directory = "${ModelStore.safeName(manifest.modelVersion)}-${newNonce()}"
+            store.storeDir(id).mkdirs()
             val target = File(store.storeDir(id), directory)
-            target.parentFile.mkdirs()
             try {
                 Files.move(staging.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE)
             } catch (e: IOException) {

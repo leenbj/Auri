@@ -355,7 +355,7 @@ class ModelManagerTest {
         File(installed.dir, "model.bin").writeBytes(rig.model.modelBytes.copyOf().also { it[10] = (it[10] + 1).toByte() })
         assertTrue("重启时的快速检查只看文件在不在、大小对不对", rig.manager().active.value is ActiveModelStatus.Ready)
 
-        manager.reportIntegrityFailure(rig.id)
+        manager.reportIntegrityFailure(installed)
 
         assertEquals(ActiveModelStatus.Damaged(rig.id), manager.active.value)
         manager.start(rig.id)
@@ -363,6 +363,25 @@ class ModelManagerTest {
         val repaired = ready(manager)
         assertTrue("新的代，被拒绝过的旧代不会再被复用", repaired.generation > installed.generation)
         ModelVerifier().verify(repaired.manifest, repaired.dir)
+    }
+
+    @Test
+    fun `引擎加载时模型刚好被换掉：对旧一代的完整性上报被忽略，新模型不会被冤枉成损坏`() {
+        val v1 = TestModel(tmp.newFolder(newFolderName("v1")), version = "1.0.0", seed = 1)
+        val v2 = TestModel(tmp.newFolder(newFolderName("v2")), version = "2.0.0", seed = 2)
+        val rig = Rig(model = v1)
+        rig.manager().apply { start(rig.id); awaitInstalled(rig.id) }
+        rig.urls[v2.url] = server(v2.archiveBytes).url
+        val updating = rig.manager(catalog = rig.catalog(v2))
+        val old = ready(updating)
+        updating.start(rig.id)
+        updating.awaitInstalled(rig.id)
+        val now = ready(updating)
+
+        updating.reportIntegrityFailure(old) // 旧引擎迟到的上报
+
+        assertEquals(ActiveModelStatus.Ready(now), updating.active.value)
+        assertFalse(updating.entry(rig.id).damaged)
     }
 
     @Test
