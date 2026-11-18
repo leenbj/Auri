@@ -81,6 +81,40 @@ if [ "$1" = "-x" ]; then [ "${FAKE_ADB_RUNNING:-0}" = "1" ]; else [ "${FAKE_EMUL
 """
 
 
+# 宿主机上真网关辅助脚本的替身（真的那个有自己的测试，见 test_real_gateway_host.py）：
+# start 写交接文件后一直等到被通知或父进程没了；verify 按 FAKE_VERIFY_STATUS 退出。
+FAKE_GATEWAY_HELPER = r"""
+import json, os, pathlib, signal, sys, time
+
+command = sys.argv[1]
+args = dict(zip(sys.argv[2::2], sys.argv[3::2]))
+state = pathlib.Path(os.environ["FAKE_STATE"])
+
+
+def note(line):
+    with open(os.environ["FAKE_LOG"], "a") as log:
+        log.write(line + "\n")
+
+
+if command == "start":
+    note("gateway-helper start dir=" + args["--dir"])
+    (state / "gateway.pid").write_text(str(os.getpid()))
+    if os.environ.get("FAKE_GATEWAY_START_FAIL") == "1":
+        print("网关起不来", file=sys.stderr)
+        sys.exit(1)
+    stopping = []
+    signal.signal(signal.SIGTERM, lambda *_: stopping.append(1))
+    pathlib.Path(args["--handoff"]).write_text(json.dumps({"port": 12345, "payload": "{}", "payload_b64": "e30=", "public_key_sha256": "0" * 64}))
+    parent = os.getppid()
+    while not stopping and os.getppid() == parent:
+        time.sleep(0.1)
+    note("gateway-helper stopped")
+else:
+    note("gateway-helper verify " + " ".join(sys.argv[2:]))
+    sys.exit(int(os.environ.get("FAKE_VERIFY_STATUS", "0")))
+"""
+
+
 class Env:
     def __init__(self, root: pathlib.Path):
         self.root = root
@@ -96,6 +130,9 @@ class Env:
             (self.bin / name).write_text(body)
             (self.bin / name).chmod(0o755)
         self.log.write_text("")
+        self.gateway_helper = root / "gateway_helper.py"
+        self.gateway_helper.write_text(FAKE_GATEWAY_HELPER)
+        (root / "tmp").mkdir()
         (root / "syncplatform-test.apk").write_bytes(b"not a real apk")
         self.syncplatform_log = root / "syncplatform.log"
         self.syncplatform_log.write_text(instrumentation_log(all_pass(ci.expected_tests([SYNCPLATFORM_SRC]))))
@@ -107,6 +144,8 @@ class Env:
             "JAVA_HOME": str(self.root),
             "AURI_SKIP_BUILD": "1",
             "AURI_SYNCPLATFORM_TEST_APK": str(self.root / "syncplatform-test.apk"),
+            "AURI_REAL_GATEWAY_HELPER": str(self.gateway_helper),
+            "TMPDIR": str(self.root / "tmp"),
             "AURI_EMULATOR_LOCK": str(self.lock),
             "AURI_AVD_NAME": "auri-test-avd",
             "AURI_DEVICE_OUT": str(self.out),
@@ -137,7 +176,19 @@ class Env:
         except ProcessLookupError:
             return False
 
+    def gateway_alive(self) -> bool:
+        pid_file = self.state / "gateway.pid"
+        if not pid_file.exists():
+            return False
+        try:
+            os.kill(int(pid_file.read_text()), 0)
+            return True
+        except ProcessLookupError:
+            return False
+
     def assert_clean(self):
+        assert not self.gateway_alive(), "宿主机上的真网关（辅助脚本）必须停掉"
+        assert not list((self.root / "tmp").glob("auri-t21-gateway.*")), "真网关的临时数据目录必须删掉"
         assert not self.lock.exists(), "锁必须释放"
         assert not (self.avd_home / "auri-test-avd.avd").exists() and not (self.avd_home / "auri-test-avd.ini").exists(), "AVD 与磁盘镜像必须删掉"
         assert not self.emulator_alive(), "模拟器进程必须退出"
@@ -290,4 +341,76 @@ def test_interrupting_the_script_mid_run_still_kills_the_emulator_and_releases_t
     proc.communicate(timeout=60)
 
     assert proc.returncode != 0
+    env.assert_clean()
+
+
+def test_the_real_gateway_is_up_before_the_device_tests_and_is_checked_and_stopped_after(env):
+    result = env.run()
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    env.assert_clean()
+    calls = env.calls()
+    start_at = next(i for i, c in enumerate(calls) if c.startswith("gateway-helper start"))
+    instrument_at = next(i for i, c in enumerate(calls) if c.startswith("adb shell am instrument"))
+    verify_at = next(i for i, c in enumerate(calls) if c.startswith("gateway-helper verify"))
+    stopped_at = next(i for i, c in enumerate(calls) if c == "gateway-helper stopped")
+    assert start_at < instrument_at < verify_at < stopped_at, "先起网关，再跑设备测试，再回头查网关数据库，最后停网关"
+    instrument = calls[instrument_at]
+    assert "-e auri.gateway.payload_b64 e30=" in instrument, "配对载荷以 base64 交给设备端测试"
+    record_id = instrument.split("-e auri.gateway.record_id ")[1].split()[0]
+    text = instrument.split("-e auri.gateway.text ")[1].split()[0]
+    assert len(record_id) == 36 and text == f"auri-real-gateway-{record_id.split('-')[0]}"
+    verify = calls[verify_at]
+    assert f"--record-id {record_id}" in verify and f"--text {text}" in verify, "核对的是设备端被要求发布的那一条"
+    assert (env.out / "real-gateway-verify.txt").exists()
+
+
+def test_a_failed_gateway_database_check_fails_the_run_but_still_cleans_up(env):
+    result = env.run(FAKE_VERIFY_STATUS="1")
+
+    assert result.returncode != 0
+    assert "网关数据库核对没通过" in result.stderr
+    env.assert_clean()
+
+
+def test_a_gateway_that_never_comes_up_fails_the_run_before_any_device_test_and_cleans_up(env):
+    result = env.run(FAKE_GATEWAY_START_FAIL="1")
+
+    assert result.returncode != 0
+    assert "真网关没有起来" in result.stderr
+    assert not any(c.startswith("adb shell am instrument") for c in env.calls()), "网关没起来就不能跑依赖它的设备测试"
+    env.assert_clean()
+
+
+FAKE_ASR_ACCEPTANCE = r"""#!/usr/bin/env bash
+echo "asr-acceptance serial=${ANDROID_SERIAL:-} out=${AURI_DEVICE_OUT:-}" >> "$FAKE_LOG"
+exit "${FAKE_ASR_STATUS:-0}"
+"""
+
+
+def _asr_script(env) -> pathlib.Path:
+    script = env.root / "asr-acceptance.sh"
+    script.write_text(FAKE_ASR_ACCEPTANCE)
+    script.chmod(0o755)
+    return script
+
+
+def test_the_ticket_14_acceptance_is_not_run_unless_asked(env):
+    done = env.run(AURI_ASR_ACCEPTANCE_SCRIPT=_asr_script(env))
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert not any(c.startswith("asr-acceptance") for c in env.calls())
+    env.assert_clean()
+
+
+def test_the_ticket_14_acceptance_runs_on_the_same_emulator_and_its_output_goes_into_this_runs_directory(env):
+    done = env.run(AURI_ASR_ACCEPTANCE_SCRIPT=_asr_script(env), AURI_ALSO_ASR_ACCEPTANCE="1")
+    assert done.returncode == 0, done.stdout + done.stderr
+    call = next(c for c in env.calls() if c.startswith("asr-acceptance"))
+    assert "serial=emulator-5554" in call and f"out={env.out}/asr" in call
+    env.assert_clean()
+
+
+def test_a_failing_ticket_14_acceptance_fails_the_run_and_still_cleans_up(env):
+    done = env.run(AURI_ASR_ACCEPTANCE_SCRIPT=_asr_script(env), AURI_ALSO_ASR_ACCEPTANCE="1", FAKE_ASR_STATUS="3")
+    assert done.returncode != 0
     env.assert_clean()
