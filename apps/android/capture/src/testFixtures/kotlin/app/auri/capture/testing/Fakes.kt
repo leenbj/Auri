@@ -46,6 +46,7 @@ import java.security.MessageDigest
 import java.time.Instant
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.toCollection
 import kotlinx.coroutines.launch
@@ -347,7 +348,13 @@ class FakeTranscriptionAdapter(var capabilities: AsrCapabilities = Samples.capab
  * 需要让时间流逝时用 [advance]。
  */
 @OptIn(ExperimentalCoroutinesApi::class)
-class CaptureRig(private val scope: TestScope, config: CaptureConfig = CaptureConfig()) {
+class CaptureRig(
+    private val scope: TestScope,
+    config: CaptureConfig = CaptureConfig(),
+    // 默认排队：准备任务要等 settle 才开始，“发出又立刻取消”的请求永远不会运行，测试看不见它；
+    // 传 UnconfinedTestDispatcher 则一发出就当场开始（线上的适配器跑在真线程上，取消可能来不及）
+    adapterDispatcher: CoroutineDispatcher = StandardTestDispatcher(scope.testScheduler),
+) {
     val clock = FakeClock(scope.testScheduler)
     val ids = SequentialIds()
     val control = FakeControlAdapter(clock)
@@ -366,7 +373,7 @@ class CaptureRig(private val scope: TestScope, config: CaptureConfig = CaptureCo
         ids = ids,
         config = config,
         scope = scope.backgroundScope,
-        adapterDispatcher = StandardTestDispatcher(scope.testScheduler),
+        adapterDispatcher = adapterDispatcher,
     )
 
     init {

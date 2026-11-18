@@ -17,7 +17,9 @@ import app.auri.capture.testing.CaptureRig
 import app.auri.capture.testing.StoreEvent
 import java.io.File
 import java.io.IOException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -208,6 +210,29 @@ class CaptureGateTest {
         assertEquals(CaptureState.BLOCKED, rig.state)
         assertEquals(ErrorCode.BACKGROUND_START_DENIED, rig.coordinator.snapshot.value.blockedReason)
         assertEquals(0, rig.capture.requests.size)
+    }
+
+    /**
+     * 上面三个“资格没过 → 0 次请求”的测试对“没资格也先发出请求、随后在 BLOCKED 时取消”这种错误是空的：
+     * 默认的排队调度器下，发出又取消的准备任务永远没机会运行，requests 照样是 0。线上适配器跑在真线程上，
+     * 这样的任务可能在取消之前就已经开始碰系统（改音频模式、请求通信设备）。这里让准备任务一发出就当场开始，
+     * 于是只有“根本没发出”才能得到 0（变异验证：把 beginSession(eligible) 改成 beginSession(true) 时它变红）。
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `资格没过：准备任务根本没有发出，而不是发出之后赶在它开始之前取消`() = runTest {
+        val denied = CaptureEligibility(PermissionState.DENIED, LifecycleState.FOREGROUND, CanStart.NO, ErrorCode.PERMISSION_MIC_DENIED)
+        val unknown = CaptureEligibility(PermissionState.GRANTED, LifecycleState.LOCKED, CanStart.UNKNOWN, null)
+        val background = CaptureEligibility(PermissionState.GRANTED, LifecycleState.BACKGROUND, CanStart.NO, ErrorCode.BACKGROUND_START_DENIED)
+        for (eligibility in listOf(denied, unknown, background)) {
+            val rig = armed(CaptureRig(this, adapterDispatcher = UnconfinedTestDispatcher(testScheduler)))
+            rig.capture.eligibility = eligibility
+
+            rig.start()
+
+            assertEquals("$eligibility", CaptureState.BLOCKED, rig.state)
+            assertEquals("$eligibility：不该发出任何输入请求", 0, rig.capture.requests.size)
+        }
     }
 
     @Test
