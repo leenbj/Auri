@@ -21,6 +21,8 @@ import app.auri.capture.library.TranscriptionStatus
 import app.auri.capture.machine.TranscriptionState
 import app.auri.capture.scheduler.InMemoryJobStore
 import app.auri.capture.scheduler.ResourcesAlwaysOk
+import app.auri.capture.scheduler.ResourceMonitor
+import app.auri.capture.scheduler.ResourceStatus
 import app.auri.capture.scheduler.WaitReason
 import app.auri.capture.testing.InMemoryRecordLibrary
 import app.auri.capture.testing.Samples
@@ -34,9 +36,12 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -171,6 +176,64 @@ class LocalTranscriptionStackTest {
         while (!condition()) {
             if (System.nanoTime() > deadline) fail("等不到：$what")
             Thread.sleep(10)
+        }
+    }
+
+    @Test
+    fun `关闭转录栈会停止资源监听，而调用方作用域仍然存活`() {
+        val subscribed = CountDownLatch(1)
+        val stopped = CountDownLatch(1)
+        val monitor = object : ResourceMonitor {
+            override fun check() = ResourceStatus.Ok
+            override val changes = flow<Unit> {
+                subscribed.countDown()
+                try { awaitCancellation() } finally { stopped.countDown() }
+            }
+        }
+        val stack = LocalTranscriptionStack(
+            library, MutableStateFlow(ActiveModelStatus.NotInstalled), capabilities(), {}, { error("no model") },
+            SystemClock, scope, InMemoryJobStore(), monitor,
+        )
+        this.stack = stack
+        assertTrue(subscribed.await(5, TimeUnit.SECONDS))
+
+        stack.close()
+
+        assertTrue("关闭栈必须停止资源流并释放监听", stopped.await(1, TimeUnit.SECONDS))
+        assertTrue("不能取消调用方的作用域", scope.coroutineContext[Job]!!.isActive)
+    }
+
+    @Test
+    fun `关闭栈时仍在运行的引擎完成后在专用线程关闭`() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val closed = CountDownLatch(1)
+        val closeThreads = CopyOnWriteArrayList<Thread>()
+        val base = ThreadRecordingEngine()
+        val blocking = object : LocalSpeechEngine {
+            override val capabilities = base.capabilities
+            override fun transcribe(audio: PcmAudio): app.auri.asr.TranscriptionResult {
+                entered.countDown()
+                check(release.await(10, TimeUnit.SECONDS))
+                return base.transcribe(audio)
+            }
+        }
+        val stack = LocalTranscriptionStack(
+            library, MutableStateFlow(ActiveModelStatus.Ready(model(1))), capabilities(), {}, {
+                LoadedEngine(blocking, AutoCloseable { closeThreads += Thread.currentThread(); closed.countDown() })
+            }, SystemClock, scope, InMemoryJobStore(), ResourcesAlwaysOk,
+        )
+        this.stack = stack
+        try {
+            stack.scheduler.submit(addRecord(1))
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            stack.close()
+            assertEquals(1L, closed.count)
+            release.countDown()
+            assertTrue(closed.await(5, TimeUnit.SECONDS))
+            assertEquals("auri-transcribe", closeThreads.single().name)
+        } finally {
+            release.countDown()
         }
     }
 

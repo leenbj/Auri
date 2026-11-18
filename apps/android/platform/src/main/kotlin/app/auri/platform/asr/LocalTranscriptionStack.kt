@@ -11,7 +11,12 @@ import app.auri.capture.scheduler.TranscriptionScheduler
 import app.auri.capture.scheduler.lowPriorityTranscriptionDispatcher
 import app.auri.modelmgmt.ActiveModel
 import app.auri.modelmgmt.ActiveModelStatus
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -21,7 +26,7 @@ import kotlinx.coroutines.flow.StateFlow
  * 所以测试证明的是线上的接法，而不是另一套手工拼的。
  *
  * 模型没装、或判为损坏：调度器让任务等模型（带原因），适配器不创建引擎；模型装好、修好之后调度器自动放行。
- * 用完 [close]：先关引擎，再关线程池（不打断正在跑的引擎调用）。
+ * 用完 [close]：取消自己的监听，再在正在跑的引擎结束后关闭线程池。
  */
 class LocalTranscriptionStack(
     library: RecordLibrary,
@@ -36,12 +41,15 @@ class LocalTranscriptionStack(
     config: SchedulerConfig = SchedulerConfig(),
 ) : AutoCloseable {
     private val dispatcher = lowPriorityTranscriptionDispatcher()
+    private val lifetime = SupervisorJob(scope.coroutineContext[Job])
+    private val schedulerScope = CoroutineScope(scope.coroutineContext + lifetime)
+    private val closed = AtomicBoolean()
     private val adapter = ActiveModelTranscriptionAdapter(active, fallbackCapabilities, onIntegrityFailure, dispatcher, loadEngine)
     private val runtime = TranscriptionRuntime(
         library = library,
         adapter = adapter,
         clock = clock,
-        scope = scope,
+        scope = schedulerScope,
         store = store,
         models = ModelManagerAvailability(active),
         resources = resources,
@@ -52,7 +60,9 @@ class LocalTranscriptionStack(
     val scheduler: TranscriptionScheduler get() = runtime.scheduler
 
     override fun close() {
+        if (!closed.compareAndSet(false, true)) return
+        schedulerScope.cancel()
         adapter.close()
-        runtime.close()
+        dispatcher.dispatch(EmptyCoroutineContext, Runnable { runtime.close() })
     }
 }
