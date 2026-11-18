@@ -384,4 +384,16 @@ AURI_GRADLE_ARGS=--no-daemon execution/acceptance/android-control/run_emulator_a
 
 ## 10. 本次运行结果（2026-11-18）
 
-⟦RESULTS⟧
+基线 `origin/integration/auri-v2` = `e92cfa7`（`git fetch` 后没有前进，分支已包含它）；被测代码 = 提交 `3bbf754`（之后只有文档提交）。完整对照表、共享文件改动清单与保留事项见 [`results/2026-11-18-ticket17-final-verification.md`](results/2026-11-18-ticket17-final-verification.md)。下面都是这次在本机上全新跑的（E2），没有任何一项是 E3。
+
+| 套件 | 结果 |
+|---|---|
+| JVM 单测 `:capture` / `:platform` / `:app` / `:asr`（`cleanTest` 之后重跑，数字取自 Gradle XML） | 225 / 136 / 92 / 112，共 **565**，0 失败、0 跳过（35 秒） |
+| 构建 debug APK 与两个仪器测试 APK | 通过（20 秒） |
+| 模拟器验收（API 35 arm64 google_apis，无头，E2，115 秒） | `:platform` 仪器测试 7 个、`:app` 仪器测试 2 个全部 OK，逐个核对每个 `@Test` 都真的跑了；锁、AVD、进程已清理 |
+| Python 验收工具 `execution/acceptance/android-control` | **106 passed**（58 秒） |
+| 全仓库 `tests/contract tests/integration tests/security` | **492 passed**（205 秒） |
+
+模拟器上测得的事实（测量值，不是判据）：`media_button_session=null injected=4 delivered=0`，应用接线下 `media_key_decisions=0`——系统里有我们声明 `PAUSED` 的会话，但没有任何音频在播放时，注入的 4 个媒体键一个都没交给它。这就是第 6 节的阻断问题；真机上要用第 4 节第 6 步的 `dumpsys media_session` 测量。
+
+清单对照（覆盖测试见结果文件）：第 1–4 项 E2；第 5 项 E2（合同校验与 Python 工具），真机档案的校验 `NOT_RUN`；第 6 项 E2，凭振动手感分清三种反馈 `NOT_RUN`；第 7 项（真手机 + FreeClip）`NOT_RUN`。

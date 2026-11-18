@@ -115,7 +115,7 @@ Android 耳机手势控制与校准（Ticket 17，同在 `apps/android/`：`:cap
 
 ```bash
 cd apps/android
-./gradlew :capture:test :platform:testDebugUnitTest :app:testDebugUnitTest :asr:testDebugUnitTest   # JVM 单测（193 + 134 + 87 + 112），不需要设备；输入没变的测试会被判 UP-TO-DATE 而不执行，要强制重跑先 :capture:cleanTest 等（见该 README 第 3 节）
+./gradlew :capture:test :platform:testDebugUnitTest :app:testDebugUnitTest :asr:testDebugUnitTest   # JVM 单测（225 + 136 + 92 + 112），不需要设备；输入没变的测试会被判 UP-TO-DATE 而不执行，要强制重跑先 :capture:cleanTest 等（见该 README 第 3 节）
 ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest :platform:assembleDebugAndroidTest         # 构建 APK 与两个仪器测试 APK
 cd ../..
 AURI_GRADLE_ARGS=--no-daemon .venv/bin/pytest execution/acceptance/android-control                   # Python 验收工具（106 个；含真实调用 Gradle 的合同输出校验，需要 JAVA_HOME）
