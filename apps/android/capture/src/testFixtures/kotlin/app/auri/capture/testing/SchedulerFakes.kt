@@ -96,6 +96,8 @@ class SchedulerRig(
     schedulerScope: CoroutineScope = scope.backgroundScope,
     /** 两套调度器共用一个任务库（模拟重启）时用不同的前缀，免得新任务的标识撞上旧的。 */
     idPrefix: Int = 0x5C,
+    /** 调度器实际用的监视器，默认就是 [resources]；要测装饰器（比如录音优先）时传一个包着它的。 */
+    monitor: ResourceMonitor = resources,
 ) {
     val clock = FakeClock(scope.testScheduler)
     val decisions = CopyOnWriteArrayList<JobDecision>()
@@ -106,7 +108,7 @@ class SchedulerRig(
         scope = schedulerScope,
         store = store,
         models = models,
-        resources = resources,
+        resources = monitor,
         ids = SequentialIds(idPrefix),
         config = config,
     )
