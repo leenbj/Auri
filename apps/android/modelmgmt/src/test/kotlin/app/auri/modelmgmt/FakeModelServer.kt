@@ -156,7 +156,7 @@ class FakeModelServer(content: ByteArray, private val path: String = "/archive")
                 val stall = stallAfterBytes
                 if (stall != null && sent >= stall) {
                     out.flush()
-                    stallGate.await(60, TimeUnit.SECONDS)
+                    stallGate.await()
                     stallAfterBytes = null
                     continue
                 }

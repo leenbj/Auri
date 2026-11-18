@@ -11,10 +11,13 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -39,8 +42,10 @@ class ModelManagerTest {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val servers = mutableListOf<FakeModelServer>()
+    private val heldSinks = mutableListOf<HeldFirstSink>()
 
     @After fun cleanUp() {
+        heldSinks.forEach { it.letFirstClose() }
         scope.cancel()
         servers.forEach { it.close() }
     }
@@ -599,7 +604,7 @@ class ModelManagerTest {
                 override fun close() {
                     if (isFirst) {
                         firstIsClosing.countDown()
-                        release.await(20, TimeUnit.SECONDS)
+                        release.await()
                     }
                     out.close()
                     open.decrementAndGet()
@@ -608,10 +613,12 @@ class ModelManagerTest {
         }
     }
 
+    private fun heldFirstSink() = HeldFirstSink().also { heldSinks += it }
+
     @Test
     fun `暂停等待中的第二次传输后再开始，第三次仍须等待第一次关闭`() {
         val rig = Rig()
-        val held = HeldFirstSink()
+        val held = heldFirstSink()
         val manager = rig.manager(openSink = held::openSink)
         rig.server.stallAfterBytes = 60_000
         try {
@@ -643,7 +650,7 @@ class ModelManagerTest {
     @Test
     fun `取消等待中的第二次传输后，第三次在清理残片之后从头开始`() {
         val rig = Rig()
-        val held = HeldFirstSink()
+        val held = heldFirstSink()
         val manager = rig.manager(openSink = held::openSink)
         rig.server.stallAfterBytes = 60_000
         try {
@@ -672,7 +679,7 @@ class ModelManagerTest {
     @Test
     fun `暂停之后旧的传输还在收尾时又点开始：新的传输等旧的放开残片才开始，不会两个一起写，也不会脱离暂停的控制`() {
         val rig = Rig()
-        val held = HeldFirstSink()
+        val held = heldFirstSink()
         val manager = rig.manager(openSink = held::openSink)
         rig.server.stallAfterBytes = 60_000
 
@@ -707,7 +714,7 @@ class ModelManagerTest {
     @Test
     fun `取消之后旧的传输还在收尾时又点开始：旧的先把放弃的残片清掉，新的传输从头开始，不接着一个已经放弃的残片`() {
         val rig = Rig()
-        val held = HeldFirstSink()
+        val held = heldFirstSink()
         val manager = rig.manager(openSink = held::openSink)
         rig.server.stallAfterBytes = 60_000
 
@@ -790,9 +797,12 @@ class ModelManagerTest {
     @Test
     fun `进度只增不减，最后等于压缩包大小`() {
         val rig = Rig(model = TestModel(tmp.newFolder(newFolderName("big")), modelSize = 2_000_000))
-        val manager = rig.manager()
+        val tick = CompletableDeferred<Unit>()
+        val manager = ModelManager(rig.catalog(rig.model), rig.root, rig.transport, scope, awaitProgressTick = { tick.await() }).also { it.restore() }
         val seen = CopyOnWriteArrayList<Long>()
-        val collector = scope.launch { manager.state.collect { s -> (s.entry(rig.id).transfer as? Transfer.Downloading)?.let { seen += it.bytesDone } } }
+        val collector = scope.launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
+            manager.state.collect { s -> (s.entry(rig.id).transfer as? Transfer.Downloading)?.let { seen += it.bytesDone } }
+        }
 
         manager.start(rig.id)
         manager.awaitInstalled(rig.id)
@@ -800,5 +810,92 @@ class ModelManagerTest {
 
         assertTrue(seen.isNotEmpty())
         assertEquals(seen.sorted(), seen.toList())
+        assertEquals(rig.model.archiveBytes.size.toLong(), seen.last())
+        assertEquals(1, seen.count { it == rig.model.archiveBytes.size.toLong() })
+    }
+
+    @Test
+    fun `定时器已经显示全部字节时，完成不会重复发布`() {
+        val rig = Rig()
+        val tickReady = Channel<Unit>(Channel.UNLIMITED)
+        val ticks = Channel<Unit>(Channel.UNLIMITED)
+        val closing = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val manager = ModelManager(
+            rig.catalog(rig.model), rig.root, rig.transport, scope,
+            openSink = { file ->
+                object : OutputStream() {
+                    private val out = FileOutputStream(file, true)
+                    override fun write(b: Int) = out.write(b)
+                    override fun write(b: ByteArray, off: Int, len: Int) = out.write(b, off, len)
+                    override fun close() {
+                        closing.countDown()
+                        release.await()
+                        out.close()
+                    }
+                }
+            },
+            awaitProgressTick = { tickReady.send(Unit); ticks.receive() },
+        ).also { it.restore() }
+        val seen = CopyOnWriteArrayList<Long>()
+        val collector = scope.launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
+            manager.state.collect { s -> (s.entry(rig.id).transfer as? Transfer.Downloading)?.let { seen += it.bytesDone } }
+        }
+        try {
+            manager.start(rig.id)
+            assertTrue(closing.await(10, TimeUnit.SECONDS))
+            runBlocking { withTimeout(10_000) { tickReady.receive(); ticks.send(Unit); tickReady.receive() } }
+            assertEquals(rig.model.archiveBytes.size.toLong(), seen.last())
+        } finally {
+            release.countDown()
+        }
+        manager.awaitInstalled(rig.id)
+        collector.cancel()
+        assertEquals(1, seen.count { it == rig.model.archiveBytes.size.toLong() })
+    }
+
+    @Test
+    fun `续传被服务器改为从头下载时，显示的进度不倒退`() {
+        val rig = Rig()
+        rig.server.dropAfterBytes = 140_000
+        val first = rig.manager()
+        first.start(rig.id)
+        assertEquals(140_000L, (first.await(rig.id) { it.transfer is Transfer.Failed }.transfer as Transfer.Failed).bytesDone)
+
+        rig.server.dropAfterBytes = null
+        rig.server.supportRange = false
+        val tickReady = Channel<Unit>(Channel.UNLIMITED)
+        val ticks = Channel<Unit>(Channel.UNLIMITED)
+        val secondWrite = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val writes = AtomicInteger()
+        val manager = ModelManager(
+            rig.catalog(rig.model), rig.root, rig.transport, scope,
+            openSink = { file ->
+                object : OutputStream() {
+                    private val out = FileOutputStream(file, true)
+                    override fun write(b: Int) = out.write(b)
+                    override fun write(b: ByteArray, off: Int, len: Int) {
+                        if (writes.incrementAndGet() == 2) {
+                            secondWrite.countDown()
+                            release.await()
+                        }
+                        out.write(b, off, len)
+                    }
+                    override fun close() = out.close()
+                }
+            },
+            awaitProgressTick = { tickReady.send(Unit); ticks.receive() },
+        ).also { it.restore() }
+        try {
+            manager.start(rig.id)
+            assertTrue(secondWrite.await(10, TimeUnit.SECONDS))
+            runBlocking { withTimeout(10_000) { tickReady.receive(); ticks.send(Unit); tickReady.receive() } }
+
+            assertEquals(140_000L, (manager.entry(rig.id).transfer as Transfer.Downloading).bytesDone)
+        } finally {
+            release.countDown()
+        }
+        manager.awaitInstalled(rig.id)
     }
 }

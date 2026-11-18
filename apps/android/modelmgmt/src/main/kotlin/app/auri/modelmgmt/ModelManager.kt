@@ -21,6 +21,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -124,6 +125,7 @@ class ModelManager(
     openSink: (File) -> OutputStream = { FileOutputStream(it, /* append = */ true) },
     private val verifier: ModelVerifier = ModelVerifier(),
     private val newNonce: () -> String = { UUID.randomUUID().toString().take(8) },
+    private val awaitProgressTick: suspend () -> Unit = { delay(PROGRESS_INTERVAL_MS) },
 ) {
     private val store = ModelStore(root)
     private val downloader = ResumableDownloader(transport, openSink)
@@ -145,6 +147,7 @@ class ModelManager(
     private val mutableState = MutableStateFlow(
         ModelsState(catalog.entries.map { ModelEntryState(it.info, it.modelId == catalog.defaultModelId, null, false, Transfer.Idle) }),
     )
+    /** StateFlow 可能合并相邻更新；Installing 表示已下载 [ModelInfo.archiveSizeBytes] 个字节。 */
     val state: StateFlow<ModelsState> = mutableState.asStateFlow()
 
     private val mutableActive = MutableStateFlow<ActiveModelStatus>(ActiveModelStatus.NotInstalled)
@@ -437,13 +440,14 @@ class ModelManager(
     /**
      * 下载并定时发布进度：回调只记下最新的字节数，由一个定时器每 [PROGRESS_INTERVAL_MS] 毫秒把它发布到界面状态。
      * 不在回调里按时间节流：节流会把“停顿之前的最后一次更新”吞掉，网速掉到零时界面就一直显示一个过时的数。
+     * 完成时先等定时器退出，再发布最终字节数，避免旧进度晚到。
      */
     private suspend fun downloadWithProgress(id: String, archive: ManifestArchive, workDir: File, start: Long): File = coroutineScope {
         val latest = AtomicLong(start)
         val ticker = launch {
             var shown = start
             while (true) {
-                delay(PROGRESS_INTERVAL_MS)
+                awaitProgressTick()
                 val now = latest.get()
                 if (now != shown) {
                     shown = now
@@ -452,7 +456,11 @@ class ModelManager(
             }
         }
         try {
-            downloader.download(archive, workDir) { latest.set(it) }
+            // 服务器可能丢弃残片从头下载：保持显示的进度，直到新下载追上它。
+            val file = downloader.download(archive, workDir) { latest.set(maxOf(latest.get(), it)) }
+            ticker.cancelAndJoin()
+            setTransfer(id, Transfer.Downloading(archive.sizeBytes, archive.sizeBytes))
+            file
         } finally {
             ticker.cancel()
         }
