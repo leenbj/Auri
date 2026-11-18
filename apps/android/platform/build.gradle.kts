@@ -1,0 +1,45 @@
+// :platform —— Android 实现：控制适配器、采集适配器、录音存储、转录适配器、Record 库、前台服务。
+// 依赖 :capture（接口与协调器）与 :asr（本地转录，Ticket 14）。
+plugins {
+    alias(libs.plugins.android.library)
+    alias(libs.plugins.kotlin.android)
+}
+
+android {
+    namespace = "app.auri.platform"
+    compileSdk = 35
+
+    defaultConfig {
+        // 与 :asr、探针一致；API 31 才有 setCommunicationDevice / getCommunicationDevice
+        minSdk = 31
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+
+    testOptions {
+        unitTests.all { it.useJUnit() }
+    }
+}
+
+dependencies {
+    api(project(":capture"))
+    implementation(project(":asr"))
+    implementation(libs.kotlinx.coroutines.android)
+
+    testImplementation(libs.junit)
+    testImplementation(testFixtures(project(":capture")))
+
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.rules)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(testFixtures(project(":capture")))
+}
