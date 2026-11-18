@@ -572,6 +572,20 @@ MUTATIONS += (
         ("默认网络换了一个",),
     ),
     Mutation(
+        "loop-network-event-keeps-backoff",
+        "网络恢复或换了网络时探测的退避要从头开始：刚连上的那一刻网关未必已经应答，下一次探测不能还按之前涨到的间隔",
+        (Edit(LOOP, "            online = available\n            probeAttempt = 0\n", "            online = available\n"),),
+        LOOP_TESTS, SYNC_TEST[0],
+        ("网络恢复或默认网络换了一个",),
+    ),
+    Mutation(
+        "loop-network-event-does-not-rearm",
+        "网络事件要让已经睡着的旧探测计时器重新计时，否则它还按旧的间隔响",
+        (Edit(LOOP, "            probeAttempt = 0\n            rearm.value += 1\n            when {", "            probeAttempt = 0\n            when {"),),
+        LOOP_TESTS, SYNC_TEST[0],
+        ("网络恢复或默认网络换了一个",),
+    ),
+    Mutation(
         "loop-offline-keeps-probing",
         "断网期间不探测、不重试",
         (
@@ -613,6 +627,16 @@ MUTATIONS += (
         "loop-pass-inside-collectlatest",
         "一轮同步绝不能跑在会被任务表变化取消的协程里（取消发到一半的请求会留下“结果不确定”的任务）",
         (Edit(LOOP, ".collectLatest { list -> sleepThenWake(list) }", ".collectLatest { list -> sleepThenWake(list); engine.runOnce() }"),),
+        LOOP_TESTS, SYNC_TEST[0],
+        ("别的任务正占着这一轮时重试计时器响了",),
+    ),
+    Mutation(
+        "loop-wake-cancels-running-pass",
+        "新的触发不能取消正在跑的一轮（取消发到一半的请求会留下“结果不确定”的任务）：一轮在跑时来的触发只合并成之后的一轮",
+        (
+            Edit(LOOP, "        for (signal in wake) {\n            log.event(\"loop.pass\")\n            engine.runOnce()\n        }\n", "        wake.receiveAsFlow().collectLatest {\n            log.event(\"loop.pass\")\n            engine.runOnce()\n        }\n"),
+            Edit(LOOP, "import kotlinx.coroutines.flow.onEach\n", "import kotlinx.coroutines.flow.onEach\nimport kotlinx.coroutines.flow.receiveAsFlow\n"),
+        ),
         LOOP_TESTS, SYNC_TEST[0],
         ("正在发送的请求不会被任务表的变化打断",),
     ),

@@ -259,6 +259,28 @@ class SyncLoopTest {
         assertEquals(SyncState.STORED, rig.job(key).state)
     }
 
+    @Test
+    fun `网络恢复或默认网络换了一个：立刻探一次，并且退避从头开始（刚连上的那一刻网关未必已经应答）`() = loopRig(gatewayOnLan = false) { rig, network, loop ->
+        val key = rig.publish()
+        loop.start(backgroundScope)
+        runCurrent()
+        val perPass = rig.lan.attempts.size
+        after(5_000 + 10_000 + 20_000) // 已经探了三次，下一次要等 40 秒
+        assertEquals(perPass * 4, rig.lan.attempts.size)
+
+        network.switchToAnotherNetwork() // 刚连上 Wi-Fi：网关还没应答
+        runCurrent()
+        assertEquals("换了网络马上探一次", perPass * 5, rig.lan.attempts.size)
+        after(4_999)
+        assertEquals(perPass * 5, rig.lan.attempts.size)
+        after(1)
+        assertEquals("退避从头开始：5 秒后再探，不是 40 秒（也不是已经睡着的旧计时器的剩余时间）", perPass * 6, rig.lan.attempts.size)
+
+        rig.bringGatewayUp() // 网关应答了：下一次探测（再过 10 秒）就能补传
+        after(10_000)
+        assertEquals(SyncState.STORED, rig.job(key).state)
+    }
+
     // ---- 不出错 ----
 
     @Test
@@ -280,6 +302,43 @@ class SyncLoopTest {
         assertEquals(listOf(SyncState.STORED, SyncState.STORED), listOf(first, second).map { rig.job(it).state })
         assertEquals("每条只发了一次", 2, rig.server.putCount)
         assertEquals(1, rig.job(first).attempts)
+    }
+
+    // 上一条测试里在途的请求总是专用循环发的，碰不到“一轮跑在会被取消的协程里”这种写法。
+    // 真正会出事的是这一条：专用循环正忙着发别的任务时重试计时器响了，锁（先来先得）先交给后者，请求就发在会被取消的协程里。
+    @Test
+    fun `别的任务正占着这一轮时重试计时器响了：轮到重试的那条照常只发一次，不会因为任务表又变了而被取消、再多发一遍`() = loopRig { rig, _, loop ->
+        rig.server.faults += Fault.Reject(503, "GATEWAY_UNREACHABLE", retryable = true)
+        val retried = rig.publish(SyncSamples.RECORD_ID, 1)
+        loop.start(backgroundScope)
+        runCurrent()
+        assertEquals(SyncState.RETRY_SCHEDULED, rig.job(retried).state) // 5 秒后重试
+
+        val busyGate = CompletableDeferred<Fault?>()
+        rig.server.holdNext = busyGate
+        val busy = rig.publish(SyncSamples.OTHER_RECORD_ID, 1)
+        runCurrent()
+        assertEquals("另一条正占着这一轮", SyncState.SENDING, rig.job(busy).state)
+
+        after(5_000) // 重试计时器响了，可这一轮还没结束
+        val retryGate = CompletableDeferred<Fault?>()
+        rig.server.holdNext = retryGate // 重试的那条先问网关结果（上次可能已送到），这个请求停在这里
+        busyGate.complete(null)
+        runCurrent()
+
+        assertEquals("占着的那条发完了", SyncState.STORED, rig.job(busy).state)
+        assertEquals("轮到重试的那条，它的请求还在途中，任务表的每次变化都不能打断它", SyncState.SENDING, rig.job(retried).state)
+
+        retryGate.complete(null)
+        runCurrent()
+
+        assertEquals(listOf(SyncState.STORED, SyncState.STORED), listOf(retried, busy).map { rig.job(it).state })
+        assertEquals(
+            "重试的那条：被 503 一次，之后问一次、提交一次；没有因为被取消而多出一次状态查询和一次重发",
+            listOf("PUT ${retried.recordId}#1", "PUT ${busy.recordId}#1", "GET status ${retried.recordId}", "PUT ${retried.recordId}#1"),
+            rig.server.calls.toList(),
+        )
+        assertEquals(2, rig.job(retried).attempts)
     }
 
     @Test
