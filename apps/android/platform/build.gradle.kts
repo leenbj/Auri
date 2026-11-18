@@ -46,7 +46,10 @@ dependencies {
     androidTestImplementation(testFixtures(project(":capture")))
 }
 
-// The privacy guard scans compiled production classes in all four modules.
+// The privacy and network-isolation guards scan compiled production classes in all five modules.
 tasks.matching { it.name == "testDebugUnitTest" }.configureEach {
-    dependsOn(":app:compileDebugKotlin", ":app:compileDebugJavaWithJavac")
+    dependsOn(
+        ":app:compileDebugKotlin", ":app:compileDebugJavaWithJavac",
+        ":modelmgmt:compileDebugKotlin", ":modelmgmt:compileDebugJavaWithJavac",
+    )
 }

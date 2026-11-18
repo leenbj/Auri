@@ -17,6 +17,11 @@ compose-ui = "1.7.5"
 compose-material3 = "1.3.1"
 androidx-activity = "1.9.3"
 androidx-lifecycle = "2.8.7"
+# 模型包是 .tar.bz2（Ticket 20，:modelmgmt）：JDK 与 Android 都没有 bzip2 解码。commons-io 与 commons-lang3 是 compress 1.28.0 POM 里的必需依赖，
+# 这里写成与它的 POM 完全相同的精确版本，免得构建悄悄解析成别的版本；三个 jar 的 SHA-256 固定在 :modelmgmt 的 DependencyPinTest 里。
+commons-compress = "1.28.0"
+commons-io = "2.20.0"
+commons-lang3 = "3.18.0"
 
 [libraries]
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization-json" }
@@ -34,6 +39,9 @@ androidx-compose-material3 = { module = "androidx.compose.material3:material3", 
 androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "androidx-activity" }
 androidx-lifecycle-viewmodel = { module = "androidx.lifecycle:lifecycle-viewmodel-ktx", version.ref = "androidx-lifecycle" }
 androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "androidx-lifecycle" }
+commons-compress = { module = "org.apache.commons:commons-compress", version.ref = "commons-compress" }
+commons-io = { module = "commons-io:commons-io", version.ref = "commons-io" }
+commons-lang3 = { module = "org.apache.commons:commons-lang3", version.ref = "commons-lang3" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
