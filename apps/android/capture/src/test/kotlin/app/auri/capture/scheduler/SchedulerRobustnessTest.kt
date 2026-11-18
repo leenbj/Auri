@@ -171,7 +171,7 @@ class SchedulerRobustnessTest : BoundedSchedulerTest() {
     }
 
     @Test
-    fun `重转录一个失败过的 Record：转的期间 Record 仍显示失败和原来的原因，成功之后才变成已转录`() = runTest {
+    fun `重转录没有 Revision 的失败 Record：转录期间显示进行中，成功后变成已转录`() = runTest {
         val rig = SchedulerRig(this)
         val id = rig.addRecord(1)
         rig.adapter.outcome = { TranscriptionOutcome.Failed(ErrorCode.ASR_RESOURCE_LIMIT) }
@@ -185,8 +185,8 @@ class SchedulerRobustnessTest : BoundedSchedulerTest() {
         rig.settle()
 
         val whileRunning = rig.library.get(id)!!
-        assertEquals("重转录没有把 Record 改成转录中", TranscriptionStatus.FAILED, whileRunning.transcription)
-        assertEquals(ErrorCode.ASR_RESOURCE_LIMIT, whileRunning.failureCode)
+        assertEquals(TranscriptionStatus.PENDING, whileRunning.transcription)
+        assertNull(whileRunning.failureCode)
 
         gate.complete(TranscriptionOutcome.Text("这次转出来了", "zh", null))
         rig.settle()

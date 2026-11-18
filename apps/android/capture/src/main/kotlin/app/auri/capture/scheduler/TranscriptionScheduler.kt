@@ -707,7 +707,10 @@ class TranscriptionScheduler(
 
     /** Record 上那个粗粒度的转录状态是任务状态的投影：写不进去不影响任务（重启对账时会补上）。 */
     private suspend fun syncRecord(job: TranscriptionJob) {
-        if (job.kind == JobKind.RETRANSCRIBE) return // 重转录不改 Record 的状态：它已经有文字了，失败或取消都不能让它退回去
+        if (job.kind == JobKind.RETRANSCRIBE) {
+            val record = (lookup(job.recordId) as? Lookup.Found)?.entry ?: return
+            if (record.revisions.isNotEmpty()) return // 已有文字时保留 DONE
+        }
         val (status, code) = when (job.state) {
             TranscriptionState.QUEUED, TranscriptionState.RUNNING, TranscriptionState.RETRY_SCHEDULED, TranscriptionState.WAITING_RESOURCES ->
                 TranscriptionStatus.PENDING to null

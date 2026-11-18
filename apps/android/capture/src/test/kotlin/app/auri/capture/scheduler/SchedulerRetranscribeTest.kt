@@ -26,6 +26,42 @@ import org.junit.Test
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class SchedulerRetranscribeTest : BoundedSchedulerTest() {
+    @Test
+    fun `第一次失败且没有 Revision，重转录无语音时 Record 显示无语音`() = runTest {
+        val rig = SchedulerRig(this)
+        val id = rig.addRecord(1)
+        rig.adapter.outcome = { TranscriptionOutcome.Failed(ErrorCode.ASR_RESOURCE_LIMIT) }
+        rig.scheduler.submit(id)
+        rig.settle()
+        assertEquals(TranscriptionStatus.FAILED, rig.library.get(id)!!.transcription)
+        assertTrue(rig.library.get(id)!!.revisions.isEmpty())
+
+        rig.adapter.outcome = { TranscriptionOutcome.NoSpeech }
+        rig.scheduler.retranscribe(id)
+        rig.settle()
+
+        assertEquals(TranscriptionStatus.NO_SPEECH, rig.library.get(id)!!.transcription)
+        assertTrue(rig.library.get(id)!!.revisions.isEmpty())
+    }
+
+    @Test
+    fun `第一次无语音且没有 Revision，重转录失败时 Record 显示本次失败`() = runTest {
+        val rig = SchedulerRig(this)
+        val id = rig.addRecord(1)
+        rig.adapter.outcome = { TranscriptionOutcome.NoSpeech }
+        rig.scheduler.submit(id)
+        rig.settle()
+        assertEquals(TranscriptionStatus.NO_SPEECH, rig.library.get(id)!!.transcription)
+
+        rig.adapter.outcome = { TranscriptionOutcome.Failed(ErrorCode.ASR_RESOURCE_LIMIT) }
+        rig.scheduler.retranscribe(id)
+        rig.settle()
+
+        val record = rig.library.get(id)!!
+        assertEquals(TranscriptionStatus.FAILED, record.transcription)
+        assertEquals(ErrorCode.ASR_RESOURCE_LIMIT, record.failureCode)
+        assertTrue(record.revisions.isEmpty())
+    }
     private val newerModel = Samples.capabilities.copy(modelId = "newer-model", modelVersion = "2.0.0")
 
     @Test
