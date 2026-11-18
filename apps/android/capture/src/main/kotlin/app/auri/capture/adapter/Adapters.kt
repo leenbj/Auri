@@ -136,7 +136,11 @@ sealed interface TranscriptionOutcome {
     /** 模型没装好（缺失或校验没过），等装好再转；录音保留。 */
     class WaitingModel(val code: ErrorCode) : TranscriptionOutcome
 
-    class Failed(val code: ErrorCode?) : TranscriptionOutcome
+    /**
+     * 转录失败。[retryable] 是引擎自己的判断（合同 error.retryable）：只有它说“可以重试”才会按有界的退避重试，
+     * 默认不可重试，与原来的行为一致。
+     */
+    class Failed(val code: ErrorCode?, val retryable: Boolean = false) : TranscriptionOutcome
 }
 
 /** 一次转录任务的结果：任务句柄与实际用的引擎、模型（Revision 要写明用了哪个模型）一起返回。 */
