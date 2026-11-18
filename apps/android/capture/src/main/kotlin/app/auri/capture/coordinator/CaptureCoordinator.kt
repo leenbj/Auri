@@ -95,6 +95,7 @@ class CaptureCoordinator(
     private var counters = FrameCounters()
     private var publishVersion = 0L
     private var lastFinalizedNs: Long? = null
+    private var durationLimitMs: Long? = null
 
     // ---- 对外可观察 ----
     private val snapshotFlow = MutableStateFlow(buildSnapshot())
@@ -137,6 +138,9 @@ class CaptureCoordinator(
     /** 用户在屏幕上取消准备（ROUTING → ARMED）。 */
     fun userCancel() = post(Message.UserCancel)
 
+    /** 前台服务启动或提升失败：准备时受阻，录音时按系统中断封存。 */
+    fun foregroundServiceFailed() = post(Message.ForegroundServiceFailed)
+
     /** 进程被杀后恢复时调用：一律回到 DISARMED，不自动开麦（第 12 章）。 */
     fun processRestored() = post(Message.ProcessRestored)
 
@@ -166,6 +170,7 @@ class CaptureCoordinator(
         data object EnableControlMode : Message
         data object DisableControlMode : Message
         data object UserCancel : Message
+        data object ForegroundServiceFailed : Message
         data object ProcessRestored : Message
         data object PermissionRevoked : Message
         data object Close : Message
@@ -223,6 +228,11 @@ class CaptureCoordinator(
             Message.EnableControlMode -> dispatch(CaptureEvent.ENABLE_CONTROL_MODE)
             Message.DisableControlMode -> dispatch(CaptureEvent.DISABLE_CONTROL_MODE)
             Message.UserCancel -> dispatch(CaptureEvent.USER_CANCEL)
+            Message.ForegroundServiceFailed -> when (state) {
+                ROUTING -> dispatch(CaptureEvent.ROUTE_UNVERIFIED, Context(errorCode = ErrorCode.BACKGROUND_START_DENIED))
+                RECORDING -> dispatch(CaptureEvent.SYSTEM_INTERRUPTION, Context(errorCode = ErrorCode.BACKGROUND_START_DENIED))
+                else -> Unit
+            }
             Message.ProcessRestored -> dispatch(CaptureEvent.PROCESS_RESTORED)
             Message.PermissionRevoked -> dispatch(CaptureEvent.PERMISSION_REVOKED, Context(errorCode = ErrorCode.PERMISSION_MIC_DENIED))
             Message.Close -> {
@@ -341,7 +351,7 @@ class CaptureCoordinator(
         val current = session
         if (current == null || current.generation != message.tag.generation) {
             // 这次准备所属的会话已经取消：把它可能已经打开的采集关掉（被系统拒绝的没有打开过任何东西）
-            message.prepared?.takeIf { it.requestStatus != RequestStatus.REJECTED_BY_SYSTEM }?.let { capture.release(it.operationId) }
+            message.prepared?.takeIf { it.requestStatus != RequestStatus.REJECTED_BY_SYSTEM }?.let { releaseCapture(it.operationId) }
             return
         }
         val prepared = message.prepared
@@ -497,6 +507,7 @@ class CaptureCoordinator(
 
     /** 创建新的 Capture Session：分配标识与 generation，起路由确认超时，资格通过时请求蓝牙输入。 */
     private fun beginSession(eligible: Boolean) {
+        durationLimitMs = null
         generation += 1
         val created = Session(
             id = ids.newUuid(),
@@ -529,7 +540,7 @@ class CaptureCoordinator(
     private fun abandonSession() {
         val current = session ?: return
         current.cancelJobs()
-        capture.release(current.operationId)
+        releaseCapture(current.operationId)
         check(current.writer == null) { "路由确认之前不可能有写入器" }
         discardQuarantine(current)
         session = null
@@ -568,10 +579,11 @@ class CaptureCoordinator(
 
     /** 关闸、立刻释放麦克风，然后在后台封存；封存结果以消息回到邮箱。 */
     private fun stopRecording(endReason: EndReason) {
+        durationLimitMs = if (endReason == EndReason.DURATION_LIMIT) config.maxDurationMs else null
         val current = session ?: error("RECORDING 必有会话")
         current.cancelJobs()
         current.handle = (current.handle ?: error("RECORDING 必有句柄")).closed()
-        capture.release(current.operationId)
+        releaseCapture(current.operationId)
 
         val writer = current.writer ?: error("RECORDING 必有写入器")
         val recordId = current.recordId ?: error("RECORDING 必有 Record 标识")
@@ -610,6 +622,14 @@ class CaptureCoordinator(
                 SealOutcome.Failed(recordId, if (e is IOException) Cause.STORAGE_FAILURE else Cause.INTERNAL_ERROR)
             }
             post(Message.Sealed(tag, outcome))
+        }
+    }
+
+    private fun releaseCapture(operationId: String) {
+        try {
+            capture.release(operationId)
+        } catch (e: Exception) {
+            emit(CaptureDecision(null, Outcome.REJECTED, state, state, Cause.INTERNAL_ERROR))
         }
     }
 
@@ -659,6 +679,7 @@ class CaptureCoordinator(
             actualInput = current?.observed,
             counters = counters.copy(quarantinedSamples = current?.quarantine?.size ?: 0),
             version = publishVersion,
+            durationLimitMs = durationLimitMs,
         )
     }
 }

@@ -30,6 +30,7 @@ fun HomeScreen(state: HomeUiState, onStart: () -> Unit, onStop: () -> Unit, onDi
         Text("耳机：" + if (state.headset.connected) "已连接" + (state.headset.name?.let { "（$it）" } ?: "") else "未连接")
         Text("实际输入：" + describeInput(state.input.source, state.input.deviceName))
         Text("采集状态：" + describeCapture(state.capture.state) + (state.capture.blockedReason?.let { "（原因：$it）" } ?: ""))
+        state.durationLimit?.let { Text("已达到录音时长上限（${it.limitSeconds} 秒），录音已自动停止") }
         state.notice?.let {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(describeNotice(it))

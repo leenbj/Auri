@@ -3,6 +3,7 @@ package app.auri.android.home
 import androidx.lifecycle.ViewModel
 import app.auri.capture.contract.CaptureState
 import app.auri.capture.contract.ErrorCode
+import app.auri.capture.contract.EndReason
 import app.auri.capture.contract.ObservedInputRouteType
 import app.auri.capture.coordinator.CaptureCoordinator
 import app.auri.capture.coordinator.CaptureSnapshot
@@ -41,6 +42,7 @@ import kotlinx.coroutines.launch
  *   ├─ records: List<RecordItem>     已录下的 Record，最新的在前；每条有时长与文字状态（TextState：转录中 / 已转出文字 /
  *   │                                没有语音 / 等待模型 / 失败）。已转出文字的带模型名与版本。
  *   └─ notice: Notice?               需要告诉用户的一次性消息（录音没能保存等）；界面显示后调用 dismissNotice()。
+ *   durationLimit: DurationLimitStop? 最近一次因时长上限自动停止的原因和上限秒数；下一次开始时清除。
  *
  *   这三个事实互相独立，界面必须分开显示，不能合并成一句“已连接并录音中”：
  *   耳机已连接 ≠ 正在用耳机麦克风（FR-REC-001）。例如：耳机已连接、实际输入却是手机麦克风（路由被系统切走）；
@@ -65,7 +67,10 @@ data class HomeUiState(
     val stopEnabled: Boolean,
     val records: List<RecordItem>,
     val notice: Notice?,
+    val durationLimit: DurationLimitStop?,
 )
+
+data class DurationLimitStop(val reason: EndReason, val limitSeconds: Double)
 
 /** 事实 1：耳机是否连接。 */
 data class HeadsetFact(val connected: Boolean, val name: String?)
@@ -180,6 +185,7 @@ class HomeViewModel(
         stopEnabled = snapshot.state in STOP_STATES,
         records = records.map(::toItem),
         notice = notice,
+        durationLimit = snapshot.durationLimitMs?.let { DurationLimitStop(EndReason.DURATION_LIMIT, it / 1000.0) },
     )
 
     private fun toItem(entry: RecordEntry) = RecordItem(

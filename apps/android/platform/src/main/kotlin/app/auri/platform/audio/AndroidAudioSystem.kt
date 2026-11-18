@@ -48,9 +48,13 @@ class AndroidAudioSystem(context: Context) : AudioSystem {
 
     @Synchronized
     override fun clearCommunicationRoute() {
-        audioManager.clearCommunicationDevice()
-        modeBefore?.let { audioManager.mode = it }
+        val previous = modeBefore ?: return
         modeBefore = null
+        try {
+            audioManager.clearCommunicationDevice()
+        } finally {
+            audioManager.mode = previous
+        }
     }
 
     override fun requestAudioFocus(onLost: () -> Unit): Subscription? {
@@ -85,11 +89,15 @@ class AndroidAudioSystem(context: Context) : AudioSystem {
             )
             .setBufferSizeInBytes(maxOf(minBytes * 2, 4096))
             .build()
-        if (record.state != AudioRecord.STATE_INITIALIZED || !record.setPreferredDevice(info)) {
-            record.release()
-            error("录音没能指向蓝牙输入设备")
+        try {
+            if (record.state != AudioRecord.STATE_INITIALIZED || !record.setPreferredDevice(info)) {
+                error("录音没能指向蓝牙输入设备")
+            }
+            return AndroidRecorder(record, handler)
+        } catch (e: Exception) {
+            try { record.release() } catch (_: Exception) { }
+            throw e
         }
-        return AndroidRecorder(record, handler)
     }
 
     private fun inputInfo(input: BluetoothInput): AudioDeviceInfo? =

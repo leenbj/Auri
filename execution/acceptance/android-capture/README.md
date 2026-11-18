@@ -2,7 +2,7 @@
 
 对应 `.scratch/auri-v1/issues/16-android-record-and-transcribe.md`（GitHub issue #17），PRD 引用：FR-REC-001/002（严格蓝牙输入、路由确认前不落盘）、FR-ASR-001（本地转录）、FR-TXT-002（Revision 不可变）、SEC-004（转录文字是数据）、ADR-0014/0016/0020。这是手机端的第一条完整路径，也是 iOS、鸿蒙两端的样板，所以模块边界比界面重要。
 
-**状态（2026-11-18）**：代码、JVM 单元测试、Python 验收工具、模拟器仪器测试全部通过。接手后这些全部重新跑过，并因此改掉了此前记录里的一处不实：“模拟器仪器测试全部通过”**复现不了**——没有耳机的拒绝路径会让整个进程崩溃（前台服务被系统以 `ForegroundServiceDidNotStartInTimeException` 终结），已修，见第 8 节。**没有任何真机（E3）结果**：本机没有 Android 手机，也没有 FreeClip，所以清单最后一项“真机上用 FreeClip 录一段并得到文字”是 **`NOT_RUN`**；产品负责人的真机步骤在第 4 节。模拟器没有蓝牙耳机，它证明的是**拒绝路径、存储、前台服务**，不是“用耳机录到音”。
+**状态（2026-11-18）**：下文第 2、8 节保留此前的验收和变异记录；本次审查修复与重新运行的结果见第 10 节。**没有任何真机（E3）结果**：本机没有 Android 手机，也没有 FreeClip，所以清单最后一项“真机上用 FreeClip 录一段并得到文字”是 **`NOT_RUN`**；产品负责人的真机步骤在第 4 节。模拟器没有蓝牙耳机，它证明的是**拒绝路径、存储、前台服务**，不是“用耳机录到音”。
 
 证据等级沿用 PRD 第 5.2 节：JVM 单测与模拟器 = **E2**；真机 = E3。没有真机/账号/签名的项标 `NOT_RUN` 或 `BLOCKED_EXTERNAL`，不用模拟或伪造替代。
 
@@ -22,7 +22,7 @@
 
 ## 2. 清单逐项对照
 
-JVM 测试数是 2026-11-18 在 Mac 上 `./gradlew :capture:test :platform:testDebugUnitTest :app:testDebugUnitTest :asr:testDebugUnitTest` 的结果：`:capture` 71、`:platform` 56、`:app` 51（其中 Ticket 14 的 28 个）、`:asr` 112，全部通过，0 失败 0 跳过。
+此前的 JVM 基线为 `:capture` 71、`:platform` 56、`:app` 51、`:asr` 112；本次新测试及重新运行的结果见第 10 节。
 
 | # | 清单项（Ticket 16） | 覆盖它的测试 / 文件 | 证据等级 |
 |---|---|---|---|
@@ -59,18 +59,18 @@ JVM 测试数是 2026-11-18 在 Mac 上 `./gradlew :capture:test :platform:testD
 source ~/.config/auri/android-env.sh
 cd apps/android
 
-# JVM 单元测试（不需要设备）：:capture 71、:platform 56、:app 51、:asr 112
-./gradlew :capture:test :platform:testDebugUnitTest :app:testDebugUnitTest :asr:testDebugUnitTest
+# JVM 单元测试（不需要设备）
+./gradlew :capture:test :platform:testDebugUnitTest :app:testDebugUnitTest :asr:testDebugUnitTest --no-daemon
 
 # 构建 debug APK 与两个仪器测试 APK
-./gradlew :app:assembleDebug :app:assembleDebugAndroidTest :platform:assembleDebugAndroidTest
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest :platform:assembleDebugAndroidTest --no-daemon
 
 # Python 验收工具（含真实调用 Gradle 的合同输出校验；约 1 分钟）
 cd ../..
-.venv/bin/pytest execution/acceptance/android-capture
+AURI_GRADLE_ARGS=--no-daemon .venv/bin/pytest execution/acceptance/android-capture
 
 # 模拟器验收（E2；会取共享锁、建并删除一次性 AVD；约 3–4 分钟）
-execution/acceptance/android-capture/run_emulator_acceptance.sh
+AURI_GRADLE_ARGS=--no-daemon execution/acceptance/android-capture/run_emulator_acceptance.sh
 ```
 
 单独校验某个输出目录：`.venv/bin/python execution/acceptance/android-capture/capture_contract_check.py <目录> --preset jvm`。
@@ -111,8 +111,8 @@ execution/acceptance/android-capture/run_emulator_acceptance.sh
 - **四个接缝**：`ControlAdapter`（控制命令）、`CaptureAdapter`（资格检查、请求蓝牙输入、路由证据、帧）、`RecordingStore`（封存的音频）、`TranscriptionAdapter`（转录）；外加 `RecordLibrary`。协调器是纯逻辑，只认这些接口，另外两端用 Swift / ArkTS 重写协调器时，应当回放**同一份** `capture.scenarios.json` 与 `capture.machine.json`，并复用同一套 `RecordLibrary` 契约测试的思路（`RecordLibraryContract` 的 11 条）。
 - **协调器**：所有命令与回调进同一个邮箱、由一个循环串行处理；每个 Capture Session 带 `capture_session_id` + generation + route epoch；旧 generation 的回调、epoch 不符的帧、会话标识不对的路由观测，都不能改写当前会话；进程恢复后回到 DISARMED，不自动开麦。
 - **Route Evidence 只来自系统的观测**：“已配对 / 已连接 / 偏好设备”都不是证据。路由确认前的帧只进内存隔离区（有上限，只丢弃不落盘），确认后才写存储；路由一变就立刻关闸；确认前的采样永远不会被补写。
-- **Android 实现**：`AudioRecord` + `getRoutedDevice()` + `OnRoutingChangedListener`，另外每次读完帧后主动查一次 `routedDevice`，并保证“路由事件先于该批帧交付”；`setCommunicationDevice` + `MODE_IN_COMMUNICATION`（结束时恢复原来的音频模式；`AudioManager.setMode` 要 `MODIFY_AUDIO_SETTINGS`，它是安装即授予的普通权限，缺了系统只记一条警告、模式切换被悄悄丢掉——清单里有，`PlatformManifestTest` 钉住）；`AudioSource.VOICE_COMMUNICATION`；偏好设备必须设上，设不上就释放并报错，绝不留下一个“默认输入”的录音；设备地址只在内部用来把输入设备对上同一个耳机的通信设备，不外传、不记录。
-- **前台服务**是第二层：运行时麦克风权限与 `FOREGROUND_SERVICE_MICROPHONE`（API 34+）是两层，`BLUETOOTH_CONNECT`（API 31+）另算；服务在 `ROUTING`…`FINALIZING` 期间存在，`startForeground` 放在 `onCreate`，`START_NOT_STICKY`，通知里没有任何转录内容；服务起不来就取消这次采集。**停止是一条命令（`ACTION_STOP`，经 `startForegroundService` 发出，服务收到后 `stopSelf(startId)`），不是 `stopService`**：服务连 `onCreate` 都没执行时 `stopService` 会让系统终结整个进程（第 8 节）；系统按顺序投递命令，停止总在 `startForeground` 之后。
+- **Android 实现**：每批读取前后核对 `routedDevice` 与所请求输入的设备 ID，并核对读取期间没有路由回调；不确定的批次计数并丢弃。`setCommunicationDevice` 使用类型和地址把输入对应到同一耳机的通信设备，地址只留内部、不记录、不外传；结束及失败时恢复原来的音频模式。录音源是 `VOICE_COMMUNICATION`，偏好蓝牙设备设置失败就释放并拒绝。
+- **前台服务**是第二层：`startForeground` 放在 `onCreate`；同步启动拒绝或异步提升失败都会通知协调器，分别在 ROUTING 受阻或在 RECORDING 按系统中断封存。停止通常用 `ACTION_STOP`；若后台拒收该命令，直到确认已进入前台才允许 `stopService`，避免抢在提升前终止服务。
 - **Record 库**：一个 Record 对应一次已确认路由的录音，与音频文件共用 `record_id`；文字是只增不改的 Revision 链（SQLite 触发器在数据库层面拒绝 `UPDATE`/`DELETE`）；发布 Revision 是**一个本地事务**，事务里留了一个发布步骤（`publicationStep`），Ticket 21 的“待同步任务”入队就放在那里，保证“已发布”与“待同步”不会分家。字段名与枚举值照 `revision.schema.json` 的 `capture` / `content` 两段，`ContractOutputTest` 证明本地库里存的字段足够组装它们。
 - **转录文字是数据**：界面只显示，不执行，日志里没有正文。日志只有一行状态（`AuriCapture` 标签：状态、受阻原因、系统观测到的输入类型），不带耳机名、设备地址、标识、文字或音频。
 
@@ -141,6 +141,7 @@ execution/acceptance/android-capture/run_emulator_acceptance.sh
 | G3 | 没有蓝牙连接权限被拒的错误码，只能把“从未授予”并进 `PERMISSION_REVOKED`、蓝牙权限被拒并进 `INPUT_DEVICE_MISSING` | `common.schema.json#/$defs/error_code` | 增加 `PERMISSION_BLUETOOTH_DENIED`，并区分“撤销”和“从未授予” |
 | G4 | `route_change_event` 没有 `route_evidence_id`，但 `revision.capture.route_evidence_id` 必填：二者无法互相校验，实现自己生成这个 UUID 并存进 Record | `adapter.schema.json#/$defs/route_change_event`、`revision.schema.json#/$defs/capture.route_evidence_id` | 给 `route_change_event` 加 `route_evidence_id`，或规定它由 `(capture_session_id, epoch)` 派生 |
 | G5 | ASR 没有“音频超过模型单次上限”的错误码，实现里用 `ASR_RESOURCE_LIMIT` 表达；引擎内部失败也没有码（Ticket 14 已记） | `error.schema.json` 的 `code` 枚举 | 增加 `ASR_AUDIO_TOO_LONG` 与 `ASR_ENGINE_FAILED`，分段（Ticket 18/20）落地后再决定是否需要前者 |
+| G6 | 路由边界丢弃的采样有累计计数，但没有原始单调时间范围；目前结果里的 `discarded_ranges` 为空，无法还原这些丢弃区间 | `adapter.schema.json#/$defs/recording_result/properties/discarded_ranges` 和 `capture_duration_ms` | 明确确认前丢弃区间相对录音起点如何表示，并为采集回调提供原始单调时间范围，和 G2 一起对齐时间线 |
 
 ## 8. 测试的牙齿（变异验证）与 TDD 的诚实说明
 
@@ -181,7 +182,24 @@ M8 是真缺口：原有三个“资格没过 → 0 次请求”的断言在排�
 ## 9. 已知限制与后续
 
 - **没有耳机手势、音量手势**（Ticket 17）；**没有静音检测与时长之外的限制**（Ticket 18；VAD 只在会话内过滤静音，不决定开始与结束，ADR-0016）；**没有来电/中断处理、没有进程被杀后的录音恢复**（Ticket 19：被杀时已写下的 WAV 不会被回收，也不会产出 `process_terminated` 的 Record）；**没有模型管理界面**（Ticket 20）；**没有配对与同步**（Ticket 21）；**没有改文字与删除**（Ticket 23）。
-- 前台服务里 `startForeground` 若被系统拒绝（`IllegalStateException` / `SecurityException`），服务只是 `stopSelf()`，**不会把失败异步报回**协调器；在“服务起不来就取消采集”这一层，只有 `startForegroundService` 本身同步抛错时才会取消。下一次的资格检查（权限、前台条件）会拦住大部分原因。这个 `stopSelf()` 自己也可能被系统以同样的异常终结进程（服务还没进前台就被拆）；资格检查已经拦住了这两种原因，所以只当兜底，没做更多。
-- **应用在后台时停服务**：模拟器（API 35）上实测停得掉、进程不崩（`stoppingWhileTheAppIsInTheBackgroundStillStopsTheService`），但**没有区分**走的是 `startForegroundService(ACTION_STOP)` 还是 `stopService` 兜底（两条路结果相同、系统日志里都没有拒绝记录）。兜底在“刚起就进了后台、还没 `startForeground`”的几毫秒里仍可能被系统终结进程（代码里有 `shortcut:` 注释说明）。真机的后台、锁屏场景属于 Ticket 19。
-- 路由观测有一个不超过一个缓冲区（约 100 ms）的窗口：路由刚变而系统还没告诉我们时，同一批帧里可能混着极少量变路由之后的音频。缓解：每批读完后主动查一次 `routedDevice`，且路由事件先于该批帧交付；真机上这个窗口的实际大小需要 E3 才知道。
+- **临时时长上限**：当前 SenseVoice 单次录音在约 **29.5 秒**自动停止并在首页显示原因和秒数；这是引擎单次上限 30 秒减 0.5 秒余量。真实时长限制和长录音分段由 **Ticket 18、20** 负责。
+- 前台服务提升本身遭系统拒绝时会报告失败，服务仍需调用 `stopSelf()`；这种系统级拒绝与进程行为没有真机证据。后台、锁屏属于 Ticket 19。
+- 两次实际路由观测和读取期间的回调都无法证明系统尚未通报的路由变化；此限制需要 E3 真机证据，不能据 JVM 或模拟器宣称严格模式已获认证。
 - 真机行为（SCO 建立耗时、音频模式副作用、不同耳机的差异、LE Audio）全部 `NOT_RUN`，见第 4 节。
+
+## 10. Ticket 16 审查修复
+
+- F1：读取前后实际路由必须一致且读取期间没有回调，否则计数并丢弃整批；边界帧不进入存储或转录。
+- F2：只有实际输入设备 ID 等于所请求蓝牙输入的 ID 才是 verified；不同耳机判 mismatch。
+- F3：到达临时上限时首页显示 `DURATION_LIMIT` 原因和上限秒数；真实时长上限和长录音分段归 Ticket 18、20。
+- F4：取消与资源取得交错时清理晚到的路由、焦点、录音和订阅；旧路由清理完成后才允许下一次路由请求。
+- F5：同步拒绝和异步提升失败都报回协调器；ROUTING 进入 BLOCKED，RECORDING 封存为系统中断。
+- F6：后台拒收停止命令时，直到服务确认 `startForeground` 成功才执行兜底停止。
+- F7：采集适配器释放抛错时，停止、路由丢失和时长到期仍封存已写音频并结束服务。
+- F8：请求路由前先登记清理责任，失败或异常恢复之前的音频模式；清理可重复调用。
+- F9：WAV 的采样数按交错采样计数，立体声时长与录音文件一致。
+- F10：扫描四个生产模块的编译类文件；录音源及偏好设备另检查允许类的字节码，并用测试内 Kotlin import alias 反例验证。
+
+设备 ID 的比较采用保守假设：录音输入的系统 ID 在会话中保持不变；如果系统为同一物理输入重分配 ID，也会拒绝而不是猜测。输入与通信设备的 ID 可以不同，Android 实现只在内部用设备类型与地址匹配通信设备。平台可能延迟或不通知实际路由变化；是否满足严格输入规则仍需对应耳机与手机的 E3 真机测量。
+
+本次在 Mac mini 重新跑的 JVM 测试为 `:capture` 72、`:platform` 84、`:app` 52、`:asr` 112，共 **320 通过、0 失败、0 跳过**；API 35 arm64 一次性模拟器的仪器测试为平台 19、应用 4，共 **23 通过、0 失败**（E2）；Python 验收 **57 通过**，合同、集成与安全套件 **492 通过**。先前的 M1–M12 与新增 F1/F2/F4 共 **15 个变异**均被对应测试的断言抓住。完整逐项红绿记录与命令见 [审查修复报告](results/2026-11-18-ticket16-review-fixes.md)。

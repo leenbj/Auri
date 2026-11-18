@@ -19,6 +19,7 @@ import app.auri.capture.contract.VerificationState
 import app.auri.capture.coordinator.Clock
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Android 的采集适配器，只做协调器要求的三件事：向系统请求**蓝牙**输入、报告系统观测到的真实路由、递送音频帧。
@@ -29,7 +30,7 @@ import java.util.concurrent.CopyOnWriteArrayList
  *    [AudioSystem.openRecorder] 只接受 [BluetoothInput]，类型上就没有别的设备可传。
  *  - Route Evidence 只来自系统的观测（录音的 routedDevice 与路由变化通知）。“已请求蓝牙”“已配对”“已连接”都不是证据：
  *    请求之后系统还没说清就报 unknown，系统说是手机麦克风就报 mismatch。
- *  - 每次读到音频都再问系统一次实际路由，先报观测、再递送这批帧；路由一变，epoch 递增，旧 epoch 的帧会被协调器拒收。
+ *  - 每批读取前后核对实际路由；读取时有回调或两次观测不一致就丢弃，只有稳定的所选耳机帧才递送。
  *
  * 移植自 execution/p0-spikes/android-probe 的 CaptureProbe（setCommunicationDevice + 偏好设备 + routedDevice 的做法），
  * 没有照搬的：探针里日志带设备地址尾号（这里不记任何设备标识）、探针把蓝牙权限被拒映射成独立流程（这里统一由资格检查给出原因）。
@@ -42,7 +43,11 @@ class BluetoothCaptureAdapter(
     private val startReader: (Runnable) -> Unit = { Thread(it, "auri-capture-reader").apply { isDaemon = true }.start() },
 ) : CaptureAdapter {
     private val captures = ConcurrentHashMap<String, Capture>()
+    private val routeLock = Any()
     private val permissionHandlers = CopyOnWriteArrayList<() -> Unit>()
+    private val discardedSamples = AtomicLong()
+    /** Samples discarded because their input route was ambiguous. */
+    val droppedAmbiguousSamples: Long get() = discardedSamples.get()
 
     @Volatile
     private var micWasGranted = environment.micPermissionGranted()
@@ -68,21 +73,16 @@ class BluetoothCaptureAdapter(
         val input = audio.bluetoothInputs().firstOrNull() ?: return refuse(request, sink, ErrorCode.INPUT_DEVICE_MISSING, null)
         val capture = Capture(request, sink, input)
         captures[request.operationId] = capture
-        val recorder = try {
-            if (!audio.requestCommunicationRoute(input)) return capture.fail(ErrorCode.INPUT_ROUTE_UNVERIFIED)
-            capture.routeRequested = true
-            capture.focus = audio.requestAudioFocus { sink.interrupted() }
+        try {
+            if (!capture.requestRoute()) return capture.fail(ErrorCode.INPUT_ROUTE_UNVERIFIED)
+            if (!capture.attachFocus(audio.requestAudioFocus { sink.interrupted() })) return capture.fail(ErrorCode.INPUT_ROUTE_UNVERIFIED)
             val opened = audio.openRecorder(input, request.format)
             if (!capture.attach(opened)) return capture.fail(ErrorCode.INPUT_ROUTE_UNVERIFIED)
-            capture.routingSubscription = opened.onRoutingChanged { capture.observe(opened.routedDevice()) }
-            opened.startRecording()
-            opened
+            capture.observe(opened.routedDevice())
+            startReader { capture.readLoop() }
         } catch (e: Exception) {
             return capture.fail(ErrorCode.INPUT_ROUTE_UNVERIFIED)
         }
-        // 开始之后立刻取一次系统的观测；之后每读一批音频再取一次
-        capture.observe(recorder.routedDevice())
-        startReader { capture.readLoop() }
         return PreparedInput(
             request.operationId,
             request.generation,
@@ -121,11 +121,50 @@ class BluetoothCaptureAdapter(
     private inner class Capture(val request: InputRequest, val sink: CaptureSink, val input: BluetoothInput) {
         private var recorder: Recorder? = null
         private var closed = false
-        var routeRequested = false
-        var routingSubscription: Subscription? = null
-        var focus: Subscription? = null
+        private var routeRequested = false
+        private var routePending = false
+        private var routingSubscription: Subscription? = null
+        private var focus: Subscription? = null
         private var epoch = 0L
         private var lastObservation: Pair<VerificationState, Int?>? = null
+        private val routeChanges = AtomicLong()
+
+        fun requestRoute(): Boolean = synchronized(routeLock) {
+            synchronized(this) {
+                if (closed) return false
+                routeRequested = true
+                routePending = true
+            }
+            val accepted = try {
+                audio.requestCommunicationRoute(input)
+            } finally {
+                val clear = synchronized(this) {
+                    routePending = false
+                    if (closed && routeRequested) {
+                        routeRequested = false
+                        true
+                    } else false
+                }
+                if (clear) audio.clearCommunicationRoute()
+            }
+            accepted && !isClosed()
+        }
+
+        fun attachFocus(acquired: Subscription?): Boolean {
+            synchronized(this) {
+                if (!closed) {
+                    focus = acquired
+                    return true
+                }
+            }
+            acquired?.cancel()
+            return false
+        }
+
+        fun routeChanged(device: () -> InputDevice?) {
+            routeChanges.incrementAndGet()
+            observe(device())
+        }
 
         /** 把打开的录音交给这次采集；已经被关闭（取消）就立刻释放它并返回 false。 */
         @Synchronized
@@ -135,6 +174,8 @@ class BluetoothCaptureAdapter(
                 return false
             }
             recorder = opened
+            routingSubscription = opened.onRoutingChanged { routeChanged { opened.routedDevice() } }
+            opened.startRecording()
             return true
         }
 
@@ -146,15 +187,27 @@ class BluetoothCaptureAdapter(
 
         fun close() {
             val rec: Recorder?
+            val clearRoute: Boolean
             synchronized(this) {
                 if (closed) return
                 closed = true
                 rec = recorder
+                clearRoute = routeRequested && !routePending
+                if (clearRoute) routeRequested = false
             }
-            routingSubscription?.cancel()
-            rec?.stopAndRelease()
-            focus?.cancel()
-            if (routeRequested) audio.clearCommunicationRoute()
+            try {
+                routingSubscription?.cancel()
+            } finally {
+                try {
+                    rec?.stopAndRelease()
+                } finally {
+                    try {
+                        focus?.cancel()
+                    } finally {
+                        if (clearRoute) synchronized(routeLock) { audio.clearCommunicationRoute() }
+                    }
+                }
+            }
         }
 
         /** 系统观测到 [device]（null 表示系统还没说清）：与上一次不同才报告，epoch 随之递增。 */
@@ -163,7 +216,7 @@ class BluetoothCaptureAdapter(
             if (closed) return
             val verification = when {
                 device == null -> VerificationState.UNKNOWN
-                BluetoothInput.from(device) != null -> VerificationState.VERIFIED
+                device.id == input.device.id && BluetoothInput.from(device) != null -> VerificationState.VERIFIED
                 else -> VerificationState.MISMATCH
             }
             val observation = verification to device?.id
@@ -185,19 +238,49 @@ class BluetoothCaptureAdapter(
         private fun currentEpoch() = epoch
 
         fun readLoop() {
+            try {
+                readFrames()
+            } catch (e: Exception) {
+                if (!isClosed()) failRead()
+            }
+        }
+
+        private fun failRead() {
+            try {
+                sink.inputUnavailable(ErrorCode.INPUT_ROUTE_CHANGED)
+            } finally {
+                captures.remove(request.operationId, this)
+                close()
+            }
+        }
+
+        private fun readFrames() {
             val rec = synchronized(this) { recorder } ?: return
             val buffer = ShortArray(request.format.sampleRateHz / 10 * request.format.channels) // 100 ms 一批
             while (true) {
+                val before = rec.routedDevice()
+                observe(before)
+                val version = routeChanges.get()
+                val readEpoch = currentEpoch()
                 val read = rec.read(buffer)
-                if (isClosed()) return
+                if (isClosed()) {
+                    if (read > 0) discardedSamples.addAndGet(read.toLong())
+                    return
+                }
                 if (read < 0) {
-                    sink.inputUnavailable(ErrorCode.INPUT_ROUTE_CHANGED)
+                    failRead()
                     return
                 }
                 if (read == 0) continue
-                // 先报观测、后递送这批帧：路由刚变时，新 epoch 的事件先于这批帧到达协调器
-                observe(rec.routedDevice())
-                sink.frames(AudioFrames(currentEpoch(), buffer.copyOf(read)))
+                val after = rec.routedDevice()
+                observe(after)
+                if (before == null || before.id != input.device.id || BluetoothInput.from(before) == null || before != after ||
+                    version != routeChanges.get() || readEpoch != currentEpoch()
+                ) {
+                    discardedSamples.addAndGet(read.toLong())
+                } else {
+                    sink.frames(AudioFrames(readEpoch, buffer.copyOf(read)))
+                }
             }
         }
 

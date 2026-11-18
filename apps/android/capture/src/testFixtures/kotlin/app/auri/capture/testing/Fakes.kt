@@ -150,6 +150,7 @@ class FakeCaptureAdapter : CaptureAdapter {
 
     /** 每次 prepare 开头执行；测试可以在这里挂起，制造“准备还没返回”的竞态。 */
     var prepareHook: (suspend (InputRequest) -> Unit)? = null
+    var releaseFailure: RuntimeException? = null
 
     val requests = CopyOnWriteArrayList<InputRequest>()
     val releases = CopyOnWriteArrayList<String>()
@@ -173,6 +174,7 @@ class FakeCaptureAdapter : CaptureAdapter {
 
     override fun release(operationId: String) {
         releases += operationId
+        releaseFailure?.let { throw it }
     }
 
     override fun onPermissionRevoked(handler: () -> Unit): Subscription {

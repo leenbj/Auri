@@ -19,9 +19,10 @@ import android.os.IBinder
  * - START_NOT_STICKY：进程被杀后不会被系统自动拉起，更不会自己重新开麦（第 12 章：进程恢复后回到 DISARMED）。
  * - 通知只写“正在录音”，不含任何转录内容。
  * - 对应的权限（FOREGROUND_SERVICE_MICROPHONE）与运行时麦克风权限是两层，开始前的资格检查两层都查；
- *   这两层都过了 startForeground 才不会抛，所以下面 catch 里的 stopSelf 只是兜底（此时系统仍可能因没进前台而终止进程）。
+ *   提升失败时先报告给协调器再 stopSelf；尚未进入前台时系统可能终止进程，真机行为尚未验证。
  */
 class MicCaptureForegroundService : Service() {
+    private var promoted = false
     override fun onCreate() {
         super.onCreate()
         val manager = getSystemService(NotificationManager::class.java)
@@ -34,9 +35,13 @@ class MicCaptureForegroundService : Service() {
             .build()
         try {
             startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+            promoted = true
+            ForegroundPromotionEvents.promoted()
         } catch (e: IllegalStateException) {
+            ForegroundPromotionEvents.failed()
             stopSelf() // 系统不允许此刻启动前台服务
         } catch (e: SecurityException) {
+            ForegroundPromotionEvents.failed()
             stopSelf() // 缺少麦克风前台服务的权限
         }
     }
@@ -45,6 +50,7 @@ class MicCaptureForegroundService : Service() {
         // 带 startId：只在这是最新一条命令时才停，比它新的启动命令还在路上时 stopSelf(startId) 不生效，
         // 新一轮采集的服务不会被上一轮的停止命令连带关掉
         if (intent?.action == ACTION_STOP) stopSelf(startId)
+        if (promoted && intent?.action == ACTION_START) ForegroundPromotionEvents.promoted()
         return START_NOT_STICKY
     }
 

@@ -20,6 +20,25 @@ import org.junit.Test
  */
 class CaptureHappyPathTest {
     @Test
+    fun `duration limit remains visible until the next recording starts`() = runTest {
+        val rig = CaptureRig(this, CaptureConfig(maxDurationMs = 29_500))
+        rig.coordinator.enableControlMode()
+        rig.settle()
+        rig.control.press(BusinessCommand.START)
+        rig.settle()
+        rig.capture.verifiedRoute()
+        rig.settle()
+
+        rig.advance(29_500)
+        assertEquals(CaptureState.ARMED, rig.state)
+        assertEquals(29_500L, rig.coordinator.snapshot.value.durationLimitMs)
+        assertEquals(EndReason.DURATION_LIMIT, rig.output.recordings.single().result.endReason)
+        rig.control.press(BusinessCommand.START)
+        rig.settle()
+        assertEquals(null, rig.coordinator.snapshot.value.durationLimitMs)
+    }
+
+    @Test
     fun `正常录一段：确认前的音频只进内存，确认后才写入，封存后产出一个合同合法的录音结果`() = runTest {
         val rig = CaptureRig(this)
 

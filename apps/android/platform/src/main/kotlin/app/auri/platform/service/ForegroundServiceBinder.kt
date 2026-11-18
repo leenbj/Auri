@@ -2,6 +2,7 @@ package app.auri.platform.service
 
 import app.auri.capture.contract.CaptureState
 import app.auri.capture.coordinator.CaptureSnapshot
+import app.auri.capture.adapter.Subscription
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
@@ -16,6 +17,9 @@ interface ForegroundServiceController {
 
     /** 停止（幂等）。 */
     fun stop()
+
+    /** Reports failure after the system accepted the start request. */
+    fun onFailure(handler: () -> Unit): Subscription = Subscription { }
 }
 
 /**
@@ -34,11 +38,16 @@ fun CoroutineScope.bindForegroundService(
     controller: ForegroundServiceController,
     onStartRefused: () -> Unit,
 ): Job = launch {
-    snapshots.map { it.state in FOREGROUND_SERVICE_STATES }.distinctUntilChanged().collect { needed ->
-        if (!needed) {
-            controller.stop()
-        } else if (!controller.start()) {
-            onStartRefused()
+    val failureSubscription = controller.onFailure(onStartRefused)
+    try {
+        snapshots.map { it.state in FOREGROUND_SERVICE_STATES }.distinctUntilChanged().collect { needed ->
+            if (!needed) {
+                controller.stop()
+            } else if (!controller.start()) {
+                onStartRefused()
+            }
         }
+    } finally {
+        failureSubscription.cancel()
     }
 }

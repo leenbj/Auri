@@ -26,7 +26,13 @@ class FakeRecorder(val input: BluetoothInput, var routed: InputDevice?) : Record
         private set
     var released = false
         private set
+    var releaseCalls = 0
+        private set
+    var subscriptionCancels = 0
+        private set
+    var releaseFailure: RuntimeException? = null
     var startFailure: RuntimeException? = null
+    var onRead: (() -> Unit)? = null
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
 
     override fun startRecording() {
@@ -37,6 +43,7 @@ class FakeRecorder(val input: BluetoothInput, var routed: InputDevice?) : Record
     override fun read(buffer: ShortArray): Int {
         if (released) return -1
         val step = script.removeFirstOrNull() ?: return -1
+        onRead?.invoke()
         val changed = routed != step.routedAfter
         routed = step.routedAfter
         if (changed && step.notify) listeners.forEach { it() }
@@ -48,11 +55,13 @@ class FakeRecorder(val input: BluetoothInput, var routed: InputDevice?) : Record
 
     override fun onRoutingChanged(callback: () -> Unit): Subscription {
         listeners += callback
-        return Subscription { listeners -= callback }
+        return Subscription { subscriptionCancels += 1; listeners -= callback }
     }
 
     override fun stopAndRelease() {
+        releaseCalls += 1
         released = true
+        releaseFailure?.let { throw it }
     }
 
     /** 系统自己改了路由（没有读数据的时候也会通知）。 */
@@ -65,8 +74,11 @@ class FakeRecorder(val input: BluetoothInput, var routed: InputDevice?) : Record
 class FakeAudioSystem : AudioSystem {
     var inputs: List<InputDevice> = listOf(HEADSET)
     var routeRequestAccepted = true
+    var onRouteRequest: (() -> Unit)? = null
+    var mode = 0
     var openFailure: RuntimeException? = null
     var onOpen: (() -> Unit)? = null
+    var onFocus: (() -> Unit)? = null
 
     /** 非空时新打开的录音在 startRecording 时抛它。 */
     var recorderStartFailure: RuntimeException? = null
@@ -86,15 +98,19 @@ class FakeAudioSystem : AudioSystem {
 
     override fun requestCommunicationRoute(input: BluetoothInput): Boolean {
         routeRequests += input
+        mode = 1
+        onRouteRequest?.invoke()
         return routeRequestAccepted
     }
 
     override fun clearCommunicationRoute() {
         routeCleared += 1
+        mode = 0
     }
 
     override fun requestAudioFocus(onLost: () -> Unit): Subscription? {
         focusRequests += onLost
+        onFocus?.invoke()
         return Subscription { focusAbandoned += 1 }
     }
 

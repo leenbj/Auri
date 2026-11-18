@@ -35,6 +35,19 @@ class WavRecordingStoreTest {
     }
 
     @Test
+    fun `one second of stereo audio retains all interleaved samples and its duration`() = runBlocking {
+        val stereo = PcmFormat(16_000, channels = 2)
+        val writer = store().begin(recordId, open, stereo)
+        writer.append(open, ShortArray(32_000))
+
+        val sealed = writer.seal()
+
+        assertEquals(32_000L, sealed.sampleCount)
+        assertEquals(1_000L, sealed.durationMs)
+        assertEquals(2, WavReader.read(File(sealed.location)).channels)
+    }
+
+    @Test
     fun `写完封存：文件名就是 record_id，WAV 能被读回原样，哈希是 PCM 字节的 SHA-256`() = runBlocking {
         val first = ShortArray(800) { (it - 400).toShort() }
         val second = ShortArray(1600) { (it * 7).toShort() }

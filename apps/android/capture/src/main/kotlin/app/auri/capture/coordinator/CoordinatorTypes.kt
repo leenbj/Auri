@@ -143,4 +143,6 @@ data class CaptureSnapshot(
     val counters: FrameCounters,
     /** 每次发布递增，便于测试等待“这次变化已发布”。 */
     val version: Long,
+    /** 最近一次因时长上限停止时的上限，毫秒；下一次开始时清除。 */
+    val durationLimitMs: Long? = null,
 )

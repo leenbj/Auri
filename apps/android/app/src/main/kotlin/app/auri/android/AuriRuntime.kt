@@ -93,7 +93,7 @@ class AuriRuntime(
 
     init {
         // 前台服务跟着采集状态走；服务起不来就取消这次采集（没有前台服务，录音一进后台就会被系统静音）
-        scope.bindForegroundService(coordinator.snapshot, AndroidForegroundServiceController(application)) { coordinator.userCancel() }
+        scope.bindForegroundService(coordinator.snapshot, AndroidForegroundServiceController(application)) { coordinator.foregroundServiceFailed() }
         pipeline.resume() // 上次没转完的、等模型的 Record 重新排队
         scope.launch { coordinator.snapshot.map(::captureLogLine).distinctUntilChanged().collect { Log.i(CAPTURE_LOG_TAG, it) } }
     }

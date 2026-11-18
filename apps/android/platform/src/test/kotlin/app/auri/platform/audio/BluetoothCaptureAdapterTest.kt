@@ -11,6 +11,10 @@ import app.auri.capture.contract.RequestStatus
 import app.auri.capture.contract.VerificationState
 import app.auri.capture.coordinator.Clock
 import java.time.Instant
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -85,6 +89,20 @@ class BluetoothCaptureAdapterTest {
     }
 
     @Test
+    fun `failed and throwing route requests restore the prior audio mode`() {
+        audio.routeRequestAccepted = false
+        assertEquals(RequestStatus.REJECTED_BY_SYSTEM, prepare().requestStatus)
+        assertEquals(0, audio.mode)
+        assertEquals(1, audio.routeCleared)
+
+        audio.routeRequestAccepted = true
+        audio.onRouteRequest = { throw IllegalStateException("route failed") }
+        assertEquals(RequestStatus.REJECTED_BY_SYSTEM, prepare().requestStatus)
+        assertEquals(0, audio.mode)
+        assertEquals(2, audio.routeCleared)
+    }
+
+    @Test
     fun `打开录音失败：拒绝并清理，已请求的通信路由被撤销`() {
         audio.openFailure = IllegalStateException("系统拒绝（测试注入）")
 
@@ -109,6 +127,19 @@ class BluetoothCaptureAdapterTest {
     }
 
     // ---- 路由证据只来自系统的观测 ----
+
+    @Test
+    fun `a different bluetooth headset cannot verify the requested input`() {
+        val other = HEADSET.copy(id = 42, name = "Other headset")
+        audio.initialRouted = other
+
+        prepare()
+
+        assertEquals(VerificationState.MISMATCH, sink.routeEvents.single().verificationState)
+        audio.recorders.single().script += ReadStep(chunk(), other)
+        readers.single().run()
+        assertTrue(sink.frames.isEmpty())
+    }
 
     @Test
     fun `系统确认录音在蓝牙耳机上：报告 verified 的蓝牙路由，之后的帧带这个 epoch`() {
@@ -150,7 +181,7 @@ class BluetoothCaptureAdapterTest {
         readers.single().run()
 
         assertEquals(
-            listOf("route:1:VERIFIED", "frames:1", "route:2:MISMATCH", "frames:2"),
+            listOf("route:1:VERIFIED", "frames:1", "route:2:MISMATCH"),
             routeAndFrameOrder(),
         )
         val mismatch = sink.routeEvents.last()
@@ -165,10 +196,11 @@ class BluetoothCaptureAdapterTest {
         repeat(3) { recorder.script += ReadStep(chunk(), HEADSET) }
         recorder.script += ReadStep(chunk(), null)
         recorder.script += ReadStep(chunk(), HEADSET)
+        recorder.script += ReadStep(chunk(), HEADSET)
         readers.single().run()
 
         assertEquals(
-            listOf("route:1:VERIFIED", "frames:1", "frames:1", "frames:1", "route:2:UNKNOWN", "frames:2", "route:3:VERIFIED", "frames:3"),
+            listOf("route:1:VERIFIED", "frames:1", "frames:1", "frames:1", "route:2:UNKNOWN", "route:3:VERIFIED", "frames:3"),
             routeAndFrameOrder(),
         )
     }
@@ -182,7 +214,151 @@ class BluetoothCaptureAdapterTest {
         assertEquals(listOf(1L, 2L), sink.routeEvents.map { it.epoch })
     }
 
+    @Test
+    fun `a route callback during a read discards that buffer even if the device is unchanged`() {
+        prepare()
+        val recorder = audio.recorders.single()
+        var first = true
+        recorder.onRead = {
+            if (first) {
+                first = false
+                recorder.systemChangesRoute(HEADSET)
+            }
+        }
+        recorder.script += ReadStep(chunk(value = 1), HEADSET)
+        recorder.script += ReadStep(chunk(value = 2), HEADSET)
+
+        readers.single().run()
+
+        assertEquals(listOf(2.toShort()), sink.frames.single().samples.toSet().toList())
+        assertEquals(1600L, adapter.droppedAmbiguousSamples)
+    }
+
+    @Test
+    fun `a buffer returned after cancellation is discarded and counted`() {
+        prepare()
+        val recorder = audio.recorders.single()
+        recorder.script += ReadStep(chunk(), HEADSET)
+        recorder.onRead = { adapter.release(request.operationId) }
+
+        readers.single().run()
+
+        assertTrue(sink.frames.isEmpty())
+        assertEquals(1600L, adapter.droppedAmbiguousSamples)
+    }
+
     // ---- 释放 ----
+
+    @Test
+    fun `cancelling while route request is blocked releases any later acquisition`() {
+        val entered = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        val executor = Executors.newSingleThreadExecutor()
+        audio.onRouteRequest = {
+            entered.countDown()
+            check(resume.await(5, TimeUnit.SECONDS))
+        }
+        try {
+            val pending = executor.submit<app.auri.capture.contract.PreparedInput> { prepare() }
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            adapter.release(request.operationId)
+            resume.countDown()
+
+            assertEquals(RequestStatus.REJECTED_BY_SYSTEM, pending.get(5, TimeUnit.SECONDS).requestStatus)
+            assertEquals(1, audio.routeCleared)
+            assertEquals(audio.focusRequests.size, audio.focusAbandoned)
+            assertTrue(audio.recorders.all { it.released })
+        } finally {
+            resume.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `cancelling during audio focus acquisition abandons the acquired focus`() {
+        audio.onFocus = { adapter.release(request.operationId) }
+        assertEquals(RequestStatus.REJECTED_BY_SYSTEM, prepare().requestStatus)
+        assertEquals(1, audio.focusAbandoned)
+        assertEquals(1, audio.routeCleared)
+        assertTrue(audio.recorders.isEmpty())
+    }
+
+    @Test
+    fun `late cleanup of a cancelled route cannot clear the next session route`() {
+        val entered = CountDownLatch(1)
+        val resume = CountDownLatch(1)
+        val secondEntered = CountDownLatch(1)
+        val calls = AtomicInteger()
+        val executor = Executors.newFixedThreadPool(2)
+        val next = InputRequest(request.captureSessionId, "0c0c0c0c-0000-4000-8000-000000000002", 2, request.format)
+        audio.onRouteRequest = {
+            if (calls.incrementAndGet() == 1) {
+                entered.countDown()
+                check(resume.await(5, TimeUnit.SECONDS))
+            } else secondEntered.countDown()
+        }
+        try {
+            val first = executor.submit<app.auri.capture.contract.PreparedInput> { prepare() }
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            adapter.release(request.operationId)
+            val second = executor.submit<app.auri.capture.contract.PreparedInput> {
+                runBlocking { adapter.prepareBluetoothInput(next, RecordingSink()) }
+            }
+            secondEntered.await(500, TimeUnit.MILLISECONDS)
+            resume.countDown()
+            assertEquals(RequestStatus.REJECTED_BY_SYSTEM, first.get(5, TimeUnit.SECONDS).requestStatus)
+            assertEquals(RequestStatus.ACCEPTED_BY_SYSTEM, second.get(5, TimeUnit.SECONDS).requestStatus)
+            assertEquals("the second session still owns communication mode", 1, audio.mode)
+            adapter.release(next.operationId)
+            assertEquals(2, audio.routeCleared)
+        } finally {
+            resume.countDown()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `reader startup failure releases every acquired resource`() {
+        val brokenReader = BluetoothCaptureAdapter(audio, environment, FixedClock()) { throw IllegalStateException("reader failed") }
+        val prepared = runBlocking { brokenReader.prepareBluetoothInput(request, sink) }
+        assertEquals(RequestStatus.REJECTED_BY_SYSTEM, prepared.requestStatus)
+        assertTrue(audio.recorders.single().released)
+        assertEquals(1, audio.focusAbandoned)
+        assertEquals(1, audio.routeCleared)
+    }
+
+    @Test
+    fun `an unexpected recorder read failure releases resources and reports interruption`() {
+        prepare()
+        val recorder = audio.recorders.single()
+        recorder.script += ReadStep(chunk(), HEADSET)
+        recorder.onRead = { throw IllegalStateException("read failed") }
+
+        readers.single().run()
+
+        assertEquals(listOf(ErrorCode.INPUT_ROUTE_CHANGED), sink.unavailable)
+        assertTrue(recorder.released)
+        adapter.release(request.operationId)
+        assertEquals(1, recorder.releaseCalls)
+        assertEquals(1, recorder.subscriptionCancels)
+        assertEquals(1, audio.focusAbandoned)
+        assertEquals(1, audio.routeCleared)
+    }
+
+    @Test
+    fun `recorder release failure still clears focus route and subscription exactly once`() {
+        prepare()
+        val recorder = audio.recorders.single()
+        recorder.releaseFailure = IllegalStateException("release failed")
+        try {
+            adapter.release(request.operationId)
+        } catch (_: IllegalStateException) { }
+        adapter.release(request.operationId)
+        assertEquals(1, recorder.releaseCalls)
+        assertEquals(1, recorder.subscriptionCancels)
+        assertEquals(1, audio.focusAbandoned)
+        assertEquals(1, audio.routeCleared)
+    }
 
     @Test
     fun `释放：停止录音、撤销路由请求、放弃焦点，读线程退出时不再递送也不报错；重复释放无副作用`() {

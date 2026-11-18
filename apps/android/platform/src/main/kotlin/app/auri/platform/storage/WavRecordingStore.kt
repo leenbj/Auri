@@ -83,7 +83,7 @@ class WavRecordingStore(private val directory: File) : RecordingStore {
             Files.move(part.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE)
             finished = true
             val sha = digest.digest().joinToString("") { "%02x".format(it) }
-            SealedAudio(target.absolutePath, sha, HEADER_BYTES + dataBytes, dataBytes / 2 / format.channels, format)
+            SealedAudio(target.absolutePath, sha, HEADER_BYTES + dataBytes, dataBytes / 2, format)
         }
 
         @Synchronized

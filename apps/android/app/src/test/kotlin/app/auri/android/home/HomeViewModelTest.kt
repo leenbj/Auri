@@ -2,6 +2,7 @@ package app.auri.android.home
 
 import app.auri.capture.contract.CaptureState
 import app.auri.capture.contract.ErrorCode
+import app.auri.capture.contract.EndReason
 import app.auri.capture.contract.ObservedInput
 import app.auri.capture.contract.ObservedInputRouteType
 import app.auri.capture.coordinator.CaptureSnapshot
@@ -212,6 +213,18 @@ class HomeViewModelTest {
     }
 
     // ---- 提示 ----
+
+    @Test
+    fun `duration limit stop is visible with its reason and seconds`() = runUnconfined {
+        val rig = rig(snapshot(CaptureState.ARMED))
+        val audio = Samples.audio(Samples.uuid(7), samples = 16_000L * 29_500 / 1000)
+        rig.library.addRecord(Samples.entry(7, audio = audio).copy(endReason = EndReason.DURATION_LIMIT))
+        rig.controls.emit(snapshot(CaptureState.ARMED).copy(durationLimitMs = 29_500))
+
+        assertTrue("the view state must identify the automatic stop", rig.state.toString().contains("DURATION_LIMIT"))
+        assertTrue("the view state must include the limit in seconds", rig.state.toString().contains("29.5"))
+        assertEquals(DurationLimitStop(EndReason.DURATION_LIMIT, 29.5), rig.state.durationLimit)
+    }
 
     @Test
     fun `录音丢了或没能记入列表：给出提示，关掉之后消失`() = runUnconfined {
