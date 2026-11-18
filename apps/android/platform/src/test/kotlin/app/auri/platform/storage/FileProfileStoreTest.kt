@@ -91,6 +91,24 @@ class FileProfileStoreTest {
     }
 
     @Test
+    fun `写临时文件这一步失败时也要清理：临时位置不留残余（磁盘写满时会留下半份文件），旧档案还在`() {
+        val old = profile("FreeClip")
+        store().save(old)
+        val temp = File(file.parentFile, "headset-profile.json.tmp")
+        temp.mkdirs() // 临时位置被占着：写临时文件必然失败
+
+        try {
+            store().save(profile("FreeClip 2"))
+            fail("写不进去应当抛 IOException")
+        } catch (expected: IOException) {
+            // 预期
+        }
+
+        assertFalse("失败之后临时位置不能留下东西", temp.exists())
+        assertEquals(old, store().load())
+    }
+
+    @Test
     fun `替换这一步失败时抛出，并把写好的临时文件清掉：目录里不留垃圾`() {
         // 目标位置被一个非空目录占着：临时文件写得进去，但替换不了
         File(file, "占位").also { it.parentFile.mkdirs() }.writeText("x")
