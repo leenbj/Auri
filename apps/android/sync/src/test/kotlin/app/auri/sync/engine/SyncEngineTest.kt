@@ -360,6 +360,13 @@ class SyncEngineTest {
         rig.passes(5, advanceMs = 60 * 60_000)
         assertEquals("要用户重新配对之前，不会再去连（没有“忽略并继续”）", attempts, rig.lan.attempts.size)
         assertEquals(SyncState.BLOCKED, rig.job(key).state)
+
+        // 连接还在“要用户处理”：之后新录的任务也不能因为是新的就再去敲一次冒充者（停下的那条任务自己不会再被挑中，拦住新任务的只有这道闸）
+        rig.scope.advanceTimeBy(1)
+        val later = rig.publish(SyncSamples.OTHER_RECORD_ID, 1)
+        rig.passes(3, advanceMs = 60_000)
+        assertEquals("新录的任务也不去连", attempts, rig.lan.attempts.size)
+        assertEquals(SyncState.PENDING, rig.job(later).state)
     }
 
     @Test
