@@ -57,6 +57,7 @@ dependencies {
     implementation(project(":asr"))
     implementation(project(":capture"))
     implementation(project(":platform"))
+    implementation(project(":syncplatform"))
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.activity.compose)

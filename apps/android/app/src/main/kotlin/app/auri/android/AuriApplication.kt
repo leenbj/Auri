@@ -10,5 +10,6 @@ class AuriApplication : Application() {
         super.onCreate()
         // 要在第一个 Activity 启动之前创建：生命周期跟踪器靠它登记回调
         runtime = AuriRuntime(this)
+        runtime.sync.start() // 配对记录读一次；没配对时什么也不会发生（Ticket 21）
     }
 }
