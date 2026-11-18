@@ -69,5 +69,9 @@ dependencies {
     implementation(libs.commons.io)
     implementation(libs.commons.lang3)
 
+    // DNS 必须在实际建立 HTTPS 连接时校验，不能让 URLConnection 再解析一次。
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.squareup.okio:okio:3.6.0")
+
     testImplementation(libs.junit)
 }

@@ -1,6 +1,9 @@
 package app.auri.modelmgmt
 
 import java.net.SocketTimeoutException
+import java.net.InetAddress
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -86,6 +89,62 @@ class UrlConnectionTransportTest {
         server.redirectToPath = "http://203.0.113.5/model"
         assertThrows(TransportException::class.java) { transport.get(server.url) }
         assertEquals(1, server.requests.size)
+    }
+
+    @Test
+    fun `重定向到 HTTPS 回环地址在连接前被拒绝`() {
+        server.redirectToPath = "https://127.0.0.1:${server.port}/private"
+        val guarded = UrlConnectionTransport(policy = UrlPolicy.LOOPBACK_CLEARTEXT_FOR_TESTS, connectTimeoutMs = 500, readTimeoutMs = 500)
+
+        assertThrows(TransportException::class.java) { guarded.get(server.url) }
+        assertEquals(1, server.requests.size)
+    }
+
+    @Test
+    fun `私有网段与本地域名不允许作为 HTTPS 地址`() {
+        val policy = UrlPolicy.HTTPS_ONLY
+        for (url in listOf("https://10.2.3.4/model", "https://127.0.0.1/model", "https://localhost/model", "https://host.local/model", "https://host.internal/model", "https://[fd00::1]/model")) {
+            assertFalse(url, policy.allows(url))
+        }
+    }
+
+    @Test
+    fun `假服务器重定向到私有网段时在连接前拒绝`() {
+        server.redirectToPath = "https://10.2.3.4/model"
+        assertThrows(TransportException::class.java) { transport.get(server.url) }
+        assertEquals(1, server.requests.size)
+    }
+
+    @Test
+    fun `解析结果包含私有地址则拒绝，普通公网地址可连接`() {
+        val public = InetAddress.getByAddress(byteArrayOf(93, 184.toByte(), 216.toByte(), 34))
+        val private = InetAddress.getByAddress(byteArrayOf(10, 1, 2, 3))
+        assertEquals(listOf(public), PublicDns { listOf(public) }.lookup("cdn.example.com"))
+        assertThrows(BlockedAddressException::class.java) { PublicDns { listOf(public, private) }.lookup("cdn.example.com") }
+    }
+
+    @Test
+    fun `假服务器重定向到普通公网名称时继续取得内容`() {
+        server.redirectToPath = "https://cdn.example.com/blob"
+        val visited = mutableListOf<String>()
+        val response = transport.follow(server.url, emptyMap()) { url, headers ->
+            visited += url
+            val target = if (url.startsWith("https://cdn.example.com/")) server.urlOf("/blob") else url
+            val connection = (URL(target).openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = false
+                headers.forEach { (name, value) -> setRequestProperty(name, value) }
+            }
+            val status = connection.responseCode
+            object : TransportResponse {
+                override val status = status
+                override fun header(name: String) = connection.getHeaderField(name)
+                override val body get() = connection.inputStream
+                override fun abort() = connection.disconnect()
+                override fun close() = connection.disconnect()
+            }
+        }
+        response.use { assertTrue(content.contentEquals(it.body.readBytes())) }
+        assertEquals(listOf(server.url, "https://cdn.example.com/blob"), visited)
     }
 
     @Test

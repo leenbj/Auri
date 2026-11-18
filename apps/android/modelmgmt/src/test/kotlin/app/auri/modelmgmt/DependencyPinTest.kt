@@ -26,6 +26,14 @@ class DependencyPinTest {
             "org.apache.commons.lang3.StringUtils",
             "4eeeae8d20c078abb64b015ec158add383ac581571cddc45c68f0c9ae0230720",
         ),
+        "okhttp-4.12.0.jar" to Pin(
+            "okhttp3.OkHttpClient",
+            "b1050081b14bb7a3a7e55a4d3ef01b5dcfabc453b4573a4fc019767191d5f4e0",
+        ),
+        "okio-jvm-3.6.0.jar" to Pin(
+            "okio.Buffer",
+            "67543f0736fc422ae927ed0e504b98bc5e269fda0d3500579337cb713da28412",
+        ),
     )
 
     private class Pin(val className: String, val sha256: String)
