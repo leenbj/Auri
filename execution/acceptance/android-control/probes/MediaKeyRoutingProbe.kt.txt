@@ -1,0 +1,122 @@
+package app.auri.platform.control
+
+// ============================================================================================================
+// 诊断探针（证据附件）——不是产品代码，不是验收测试，**不要提交到任何 src/ 目录下**，也不要接进任何产品路径。
+//
+// 回答一个问题：Android 把媒体键交给哪个会话？只声明 PlaybackState（不播放任何东西）够不够？
+// 做法：分别在“没有音频在播”和“同一进程里有真音频在播（只作正向对照）”两个阶段，创建一个活跃的 MediaSession，
+// 状态分别为 无 / PAUSED / PLAYING，再用两种方式注入播放/暂停键，记录会话回调有没有收到，以及 dumpsys 里系统选了哪个会话。
+// 正向对照的意义：证明注入链路（shell → 系统 → 会话回调）本身是通的，所以阶段 A 的“送不到”是系统规则，不是注入手段的毛病。
+//
+// 为什么放在这里：项目禁止靠播放音频保活（PRD NFR-012），所以产品代码里没有也不会有 AudioTrack；这个探针只在一次性测量里
+// 播放 4 秒的全零 PCM，仅用来区分“注入不通”与“系统不选”，不进任何产品路径。
+//
+// 复现：临时拷成 apps/android/platform/src/androidTest/kotlin/app/auri/platform/control/ZzMediaKeyRoutingProbeTest.kt，
+// 再 execution/acceptance/android-control/run_emulator_acceptance.sh（会取模拟器共享锁）；结果在
+// apps/android/build/device-out-control/logcat-control.txt 的 AuriControlTest 标签下（`probe_summary` 两行是汇总）；跑完删掉拷贝。
+// ============================================================================================================
+
+import android.content.Intent
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.os.ParcelFileDescriptor
+import android.util.Log
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import app.auri.capture.testing.MediaSessionDump
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import org.junit.Test
+import org.junit.runner.RunWith
+
+@RunWith(AndroidJUnit4::class)
+class ZzMediaKeyRoutingProbeTest {
+    private val instrumentation = InstrumentationRegistry.getInstrumentation()
+    private val context = instrumentation.targetContext
+
+    private fun shell(command: String): String =
+        ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation.executeShellCommand(command)).use { String(it.readBytes()) }
+
+    /** 一次测量：创建活跃会话（可选：同时在播真音频），注入一个键，返回会话回调有没有在 2.5 秒内收到。 */
+    private fun measure(stateName: String, state: Int?, withAudio: Boolean, injectName: String, inject: () -> Unit): Boolean {
+        val received = LinkedBlockingQueue<Int>()
+        val stop = AtomicBoolean(false)
+        var track: AudioTrack? = null
+        var writer: Thread? = null
+        if (withAudio) {
+            val minBuffer = AudioTrack.getMinBufferSize(16000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            val t = AudioTrack.Builder()
+                .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
+                .setAudioFormat(AudioFormat.Builder().setSampleRate(16000).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).setEncoding(AudioFormat.ENCODING_PCM_16BIT).build())
+                .setBufferSizeInBytes(minBuffer * 2).setTransferMode(AudioTrack.MODE_STREAM).build()
+            t.play()
+            track = t
+            writer = Thread { val zeros = ByteArray(3200); while (!stop.get()) t.write(zeros, 0, zeros.size) }.also { it.start() }
+        }
+        val tag = "AuriProbe-${if (withAudio) "audio" else "silent"}-$stateName"
+        val session = MediaSession(context, tag)
+        session.setCallback(
+            object : MediaSession.Callback() {
+                override fun onMediaButtonEvent(mediaButtonIntent: Intent): Boolean {
+                    received.add(1)
+                    return true
+                }
+            },
+            Handler(Looper.getMainLooper()),
+        )
+        if (state != null) {
+            session.setPlaybackState(
+                PlaybackState.Builder()
+                    .setActions(PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_PLAY_PAUSE)
+                    .setState(state, PlaybackState.PLAYBACK_POSITION_UNKNOWN, 0f)
+                    .build(),
+            )
+        }
+        session.isActive = true
+        Thread.sleep(800)
+        val mediaButtonSession = MediaSessionDump.parse(shell("dumpsys media_session")).mediaButtonSession
+        inject()
+        val delivered = received.poll(2500, TimeUnit.MILLISECONDS) != null
+        Log.i(TAG, "probe sdk=${Build.VERSION.SDK_INT} audio=$withAudio state=$stateName inject=$injectName media_button_session=${mediaButtonSession ?: "null"} delivered=$delivered")
+        session.isActive = false
+        session.release()
+        stop.set(true)
+        writer?.join(1000)
+        track?.stop()
+        track?.release()
+        Thread.sleep(1200)
+        return delivered
+    }
+
+    @Test
+    fun probe() {
+        val injectors = listOf<Pair<String, () -> Unit>>(
+            "input-keyevent-85" to { shell("input keyevent 85") },
+            "cmd-media_session-dispatch-play-pause" to { shell("cmd media_session dispatch play-pause") },
+        )
+        val states = listOf("none" to null, "paused" to PlaybackState.STATE_PAUSED, "playing" to PlaybackState.STATE_PLAYING)
+        // 阶段 A 必须先于阶段 B：B 里的真音频会让系统记住“最近放过音频的应用”，污染之后的测量
+        for ((phase, withAudio) in listOf("no_audio" to false, "audio_playing" to true)) {
+            var delivered = 0
+            var total = 0
+            for ((injectName, inject) in injectors) {
+                for ((stateName, state) in states) {
+                    total++
+                    if (measure(stateName, state, withAudio, injectName, inject)) delivered++
+                }
+            }
+            Log.i(TAG, "probe_summary phase=$phase delivered=$delivered of $total")
+        }
+    }
+
+    private companion object {
+        const val TAG = "AuriControlTest"
+    }
+}
