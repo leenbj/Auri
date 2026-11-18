@@ -80,7 +80,20 @@ AURI_GRADLE_ARGS=--no-daemon execution/acceptance/android-capture/run_emulator_a
 .venv/bin/pytest tests/contract tests/integration tests/security
 ```
 
-{{COUNTS}}
+**最终运行的结果**（2026-11-18，分支 `ticket/20-model-management`，已合并 `origin/integration/auri-v2` 的 `e92cfa7`；JVM 单测跑之前先清过测试结果，所以不是 `UP-TO-DATE`）：
+
+| 套件 | 命令 | 结果 |
+|---|---|---|
+| `:capture` | `:capture:cleanTest :capture:test` | 158 个，0 失败，0 跳过 |
+| `:modelmgmt` | `:modelmgmt:cleanTestDebugUnitTest :modelmgmt:testDebugUnitTest` | 69 个，0 失败，0 跳过 |
+| `:platform` | `:platform:cleanTestDebugUnitTest :platform:testDebugUnitTest` | 108 个，0 失败，0 跳过 |
+| `:app` | `:app:cleanTestDebugUnitTest :app:testDebugUnitTest` | 66 个，0 失败，0 跳过 |
+| `:asr` | `:asr:cleanTestDebugUnitTest :asr:testDebugUnitTest` | 112 个，0 失败，0 跳过（公共 API 未改） |
+| 构建 | `:app:assembleDebug :app:assembleDebugAndroidTest :platform:assembleDebugAndroidTest` | 成功（两个模拟器脚本各构建过一次） |
+| 模拟器（E2） | 第 7 节 | 全部通过 |
+| Python 验收 | `.venv/bin/pytest execution/acceptance/android-capture execution/acceptance/asr-android` | 189 个通过 |
+| 合同、集成、安全 | `.venv/bin/pytest tests/contract tests/integration tests/security` | 492 个通过（与 Gradle 同时跑，360 秒，比单独跑慢） |
+| 一次真实下载 | `:modelmgmt:realDownloadCheck`（联网） | 通过（第 3 节） |
 
 **Gradle 的一个陷阱**：读源码、合同或构建产物的测试（`NetworkIsolationTest`、`NoNetworkManifestTest`、场景回放）如果没把这些文件声明成输入，改了它们之后 Gradle 会说 `UP-TO-DATE` 而不重跑。做最终验证前先清结果（`:capture:cleanTest`、`:modelmgmt:cleanTestDebugUnitTest` 等）。`realDownloadCheck` 只借单元测试的类路径，不要写成 `tasks.named<Test>(...).map { … }`：`TaskProvider.map` 会把整套单元测试变成它的依赖。
 
@@ -131,7 +144,24 @@ AURI_GRADLE_ARGS=--no-daemon execution/acceptance/android-capture/run_emulator_a
 
 ## 7. 模拟器（E2）与设备端测试
 
-{{EMU}}
+三类会话，都在一次性无头模拟器上（Pixel 6 配置，Android 15 / API 35 / google_apis / arm64-v8a；每次先取共享锁 `~/.cache/auri/emulator.lock`，跑完 `adb emu kill`、删 AVD、放锁）。**全部是 E2，不是 E3**：模拟器没有蓝牙耳机，没有真实的发热与内存压力，也没有真实的移动网络。
+
+| 会话 | 做了什么 | 结果 |
+|---|---|---|
+| A（RAM 2048 MB、data 4G；最终一次） | `AURI_GRADLE_ARGS=--no-daemon execution/acceptance/android-capture/run_emulator_acceptance.sh`（Ticket 16 的脚本，原样） | `:platform` 仪器测试 `OK (30 tests)`，`:app` 采集包 `OK (4 tests)`；核对器 30 + 4 个测试，0 个问题；脚本退出码 0 |
+| B（RAM 4096 MB、data 10G） | Ticket 14 的 `execution/acceptance/asr-android/run_device_acceptance.sh`（取锁、建 AVD、起模拟器、清理由一个一次性包装脚本做，不入库） | `OK (29 tests)`（Ticket 14 的 25 个 + Ticket 16 的 4 个，含重写后的 `OfflineProofTest` 3 个）；核对器 29 个测试，0 个问题；三次冷启动都 `SUCCEEDED`；15 + 5 个场景的合同校验 0 个问题 |
+| C（回归与变异；一次性脚本，不入库） | 同一个 `AndroidResourceMonitorTest` 连跑 15 次，再装两个变异版各跑一次（第 10 节 M-D1、M-D2） | 15 次全过；两个变异各让对应的一个测试红、其余 3 个过 |
+
+会话 A 第一次跑（`OK (30 tests)`）被核对器判了失败，第二次跑里有一个设备测试偶发失败；两件事都在第 10 节“这次发现并修掉的缺陷”第 2、3 条里，修好后 A 重新完整跑到全过。B 跑在这两处修复之前；之后 `:app` 与它依赖的产品代码没有变（`AndroidResourceMonitor` 只改了注释），所以没有重跑 B。
+
+这些会话证明了什么（E2）：
+
+- **任务库**（`SqliteTranscriptionJobStoreContractTest`，7 个）：内存任务库的同一份契约在真实的框架 SQLite 上也过——每个字段读出来一模一样、关库再开同一个文件（模拟重启）之后还在、同一任务再存是更新、按序号排、每种状态与每种等待原因都能存取、不要求 Record 存在。
+- **资源监视器**（`AndroidResourceMonitorTest`，4 个）：读数来自系统（温度 0..6、可用内存、可用存储）；每个读数都接到了策略上（阈值取极端值，写死常数会被抓）；`cmd thermalservice override-status` 改温度、`cmd power set-mode` 改省电模式之后，变化信号**在触发之后**到达，信号到达时读数已是新的，且 `check()` 给出对应的等待原因，恢复后不再等。
+- **飞行模式**（`OfflineProofTest`，会话 B）：应用现在申请了 INTERNET，所以“内核拒绝建 socket”那条旧证据不再成立（第 2 节“联网边界”）；新的事实是：飞行模式下 socket 能建出来、连出去在系统层以 `ENETUNREACH`/`EHOSTUNREACH` 失败（这个此前没在任何设备上验证过的假设**在这个模拟器镜像上成立**），转录照常成功且该 UID 的收发字节数没有变化（拉回的 `airplane-evidence.json`：`airplaneModeOn=1`、`Active default network: none`，等了 635 毫秒进入飞行模式；基准表里“网络字节增量”都是 0）。
+- **新的 `AuriRuntime` 没有弄坏旧的设备测试**：Ticket 14 的 25 个与 Ticket 16 的 4 个设备测试在带着 `:modelmgmt`、调度器的应用上仍全过。冷启动基准（Ticket 14 的工具，模拟器，**数字不代表真机**）：中位冷启动 3760 毫秒、RTF 0.0418、VmHWM 519.4 MiB。
+
+这些会话**没有**证明什么：Android 自带 `HttpURLConnection` 上 `abort()` 有多快（第 3 节）、在设备上真的下载一次模型、真机发热与内存吃紧时的表现、耗电。这些都是 `NOT_RUN`。
 
 ## 8. 假设（做决定时我没有问人，下面每一条都可以推翻）
 
@@ -162,7 +192,7 @@ AURI_GRADLE_ARGS=--no-daemon execution/acceptance/android-capture/run_emulator_a
 
 没有为每个切片严格先红后绿：不少切片是把测试和实现一起写好再跑，测试第一次就通过。补救办法是**变异验证**：每次只改坏被测代码的一处，跑相关测试，记下变红的测试，再用 `git checkout` 还原（驱动脚本是一次性的、在 `/tmp`，没有入库；这里记录的是它实际跑出的结果）。
 
-下表是实际跑出的结果：**21 个变异，全部被抓住**（20 个由驱动脚本跑，M-T 是手工做的）。`:modelmgmt` 的变异跑 `:modelmgmt:testDebugUnitTest` 的全部 69 个；`:capture` 的变异只跑调度器与状态机两个包（89 个）；`:platform` / `:app` 的联网边界与适配器变异只跑对应的守卫测试类。
+下表是实际跑出的结果：**23 个变异，全部被抓住**（20 个由驱动脚本跑，M-T、M-D1、M-D2 是手工做的；M-D1/M-D2 在模拟器上跑设备端测试）。`:modelmgmt` 的变异跑 `:modelmgmt:testDebugUnitTest` 的全部 69 个；`:capture` 的变异只跑调度器与状态机两个包（89 个）；`:platform` / `:app` 的联网边界与适配器变异只跑对应的守卫测试类。
 
 | 编号 | 改坏的规则（清单项） | 改的文件 | 结果 | 变红的测试类 |
 |---|---|---|---|---|
@@ -188,6 +218,9 @@ AURI_GRADLE_ARGS=--no-daemon execution/acceptance/android-capture/run_emulator_a
 | M19 | 引擎加载前校验器拒绝了模型，却不上报给模型管理器（损坏的模型不会被标记） | `ActiveModelTranscriptionAdapter.kt` | CAUGHT | 跑 29，红 3：ActiveModelTranscriptionAdapterTest×3 |
 | M-T | 去掉 `UrlConnectionTransport` 里的 `readTimeout = readTimeoutMs`（手工） | `HttpTransport.kt` | CAUGHT | `UrlConnectionTransportTest` 的读超时测试，在它自己的 10 秒上限（实测 10.029 秒）后失败 |
 
+| M-D1 | `AndroidResourceMonitor` 收到省电模式广播却不发信号（手工；模拟器） | `AndroidResourceMonitor.kt` | CAUGHT | 设备端 4 个跑 1 个红：`batterySaverIsAnnouncedAndMakesTheJobWait`，“触发之后 10 秒内没有收到变化信号”，其余 3 个过 |
+| M-D2 | 温度监听收到变化却不发信号（手工；模拟器） | `AndroidResourceMonitor.kt` | CAUGHT | 设备端 4 个跑 1 个红：`aThermalStatusChangeIsAnnouncedAndMakesTheJobWait`，同样的信息，其余 3 个过 |
+
 两点说明：
 
 - **M12 第一次是对全部调度器测试跑的，结果是 `HANG`**：转移表错了之后调度器在同一个虚拟时刻里 `QUEUED → WAITING_MODEL → QUEUED …` 无限兜圈，每个调度器测试都被 `BoundedSchedulerTest` 的 30 秒看门狗判为失败，整套要 40 分钟以上，撞上了驱动脚本的 420 秒上限。这算“抓住了”（没有一个调度器测试能在错表下通过），但反馈很慢；表的守卫本来就是状态机测试，所以表里记的是只跑状态机包得到的干净的红。看门狗是更早的一次变异（把“引擎拒绝过的模型”忘掉的变体让测试 JVM 空转了十几分钟）之后加的。
@@ -196,6 +229,11 @@ AURI_GRADLE_ARGS=--no-daemon execution/acceptance/android-capture/run_emulator_a
 ### 这次发现并修掉的缺陷
 
 1. **`UrlConnectionTransportTest` 里“abort 立刻让卡在读取上的线程失败”写错了，而且不可靠**：JDK 的 `HttpURLConnection` 里进行中的读占着 `MeteredStream` 的锁，`disconnect()` 与流的 `close()` 都要等这把锁（用独立的小程序抓到了阻塞线程的栈：卡在 `MeteredStream.lock`），所以在 JVM 上 abort 总是晚于读超时。旧测试把读超时设成 60 秒，只是碰巧等满 60 秒才“通过”，并且在假服务器自己的 60 秒停顿同时到期时读到“正常结束”而失败（连跑 6 次失败 3 次，每次都耗 60 秒）。这不是调高超时能修的——断言本身在 JDK 上就不成立。处理：换成传输层真正能保证的性质（停住的连接以读超时失败，不挂住、也不读到“正常结束”；去掉 `readTimeout` 后 10 秒超时失败，见 M-T）；“暂停立刻生效”本来就由 `ResumableDownloaderTest` 用同一个真实传输层证明（读线程被放弃、abort 在别的线程上调）；`TransportResponse.abort()` 与 `Pump.release()` 的注释也不再声称“Android 上立刻生效”，因为没有在设备上验证过。这个测试没有被“削弱后放过”：原来的强断言在 JDK 上不可能成立，Android 上是否成立仍是一个**未验证的假设**（第 5 节末尾）。
+2. **`AndroidResourceMonitorTest` 的省电模式测试偶发失败，而且它的“变化信号”那一半断言是空的**：同一个脚本跑两次，第一次 `OK (30 tests)`，第二次 `Tests run: 30, Failures: 1`（`batterySaverIsAnnouncedAndMakesTheJobWait`：“系统报告省电模式已开”不成立）。单独连跑这个测试：12 次失败 4 次。两层原因：
+   - **竞争**：测试先 `dumpsys battery unplug` 就立刻 `cmd power set-mode 1`。系统过几百毫秒才认到“没插电”，而省电状态机在“插着电”时会**悄悄吞掉**手动开启（读 AOSP android15 `BatterySaverStateMachine.updateStateLocked`：`STATE_OFF` 且 `mIsPowered` 时手动开启什么也不做）。用 shell 直接探：拔电后立刻开，5 次里 4 次被吞（状态机 `mState` 一直是 1）；等到 `dumpsys power` 里 `mIsPowered=false` 再开，5 次 5 次生效。
+   - **断言是空的**：测试用 `changes.first()` 等“变化信号”，但订阅温度监听时系统立刻回报一次当前状态（读 AOSP `ThermalManagerService.registerThermalStatusListener`：注册即 `postStatusListener`），所以什么都没变 `first()` 也会返回。上一版的两个“变化会通知”测试（温度、省电）因此什么也没证明，还把上面那个竞争藏了起来（失败的 4 次各耗时约 2 秒，成功的 3–4.4 秒，与“`first()` 立刻返回、紧接着的第二次开启也落在系统认到拔电之前”一致；没有逐次抓到失败时的时间线，这一句是推断）。
+   修法：先轮询到系统自己说没插电；订阅后先丢掉初始回报，只认**触发之后**的信号；信号来的时候读数必须已经是新的（否则调度器收到信号去重查会读到旧值）。验证：修后同一个测试类在模拟器上连跑 15 次全过（修前同一环境 12 次失败 4 次）；变异 M-D1、M-D2 各自让对应的一个测试红、其余过。**这是 Android 系统行为在模拟器上的观察（E2）**，真机上同一套命令是否一样要真机验证（第 5 节）。
+3. **`check_capture_instrumentation.py`（Ticket 16 的工具）只认 `RecordLibraryContract` 一个契约基类**：`SqliteTranscriptionJobStoreContractTest` 继承来的 7 个测试在设备上都通过了，核对器却把它们判成“源码里找不到”，整个验收脚本以 1 退出。这个工具自己写明“有第二个契约基类时再泛化”；现在登记成 `CONTRACT_BASES`（两个），新增 3 个测试先红后绿，并用保存下来的真实日志重核对（30 + 4 个，0 个问题），之后又把整个脚本完整跑了一遍。
 
 ## 11. 已知限制与后续
 
