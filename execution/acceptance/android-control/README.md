@@ -79,7 +79,7 @@ AURI_GRADLE_ARGS=--no-daemon execution/acceptance/android-control/run_emulator_a
 
 **强制重跑测试**：Gradle 会把输入没变的测试任务判为 `UP-TO-DATE` 而不执行。要确认测试真的重新跑了，先清掉再跑（`./gradlew :capture:cleanTest :platform:cleanTestDebugUnitTest :app:cleanTestDebugUnitTest :asr:cleanTestDebugUnitTest` 加上上面的测试任务），数字以 `build/test-results/**/*.xml` 为准。
 
-**共享机器的规矩**（脚本已经遵守，手工跑时也要）：同一时刻只许一台模拟器，靠 `~/.cache/auri/emulator.lock`（`mkdir` 原子）互斥，owner 写分支名；超过 3 小时且没有 qemu/emulator 进程的锁视为残留；无头启动 `-no-window -no-audio`；用完 `adb emu kill`、删 AVD 与磁盘镜像、释放锁；`export ADB_LIBUSB=1`（macOS 上 adb 可能卡在 IOKit）；Gradle 用 `--no-daemon`，用完 `./gradlew --stop`。
+**共享机器的规矩**（脚本已经遵守，手工跑时也要）：同一时刻只许一台模拟器，靠 `~/.cache/auri/emulator.lock`（`mkdir` 原子）互斥，owner 写分支名；超过 3 小时且没有 qemu/emulator 进程的锁视为残留；无头启动 `-no-window -no-audio`；用完 `adb emu kill`、删 AVD 与磁盘镜像、释放锁；`export ADB_LIBUSB=1`（macOS 上 adb 可能卡在 IOKit）；Gradle 用 `--no-daemon` 并加 `-Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2`，同一时刻只跑一个 Gradle；**不要执行 `./gradlew --stop`**：它作用于整台机器，会把别的 worker 正在跑的构建一起杀掉（实测：别人执行它时，我的构建报 `Gradle build daemon has been stopped: stop command received`）；`--no-daemon` 下本来也没有要停的守护进程。
 
 ## 4. 产品负责人：真机上用 FreeClip 校准（`NOT_RUN`）
 
