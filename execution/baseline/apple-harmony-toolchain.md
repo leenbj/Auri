@@ -103,7 +103,23 @@ execution/baseline/check-apple-harmony-toolchain.sh
 execution/baseline/test-apple-harmony-toolchain.sh
 ```
 
-The check runs every probe, reports one `OK`, `MISSING` or `BLOCKED` line per tool, and exits 0 only if all pass. Its first run before any installation exited 1 with XcodeGen missing; the final real-machine run exits 1 with XcodeGen OK and the other requested tools blocked or missing. The fixture test uses fake tools and SDK metadata solely to verify status and exit behavior; it is not evidence that either actual platform builds. The Harmony installer dry-run and a checksum-mismatch rejection were tested, but installation was not.
+The check runs every probe, reports one `OK`, `MISSING` or `BLOCKED` line per tool, and exits 0 only if all pass. Its first run before any installation exited 1 with XcodeGen missing. The final real-machine output was:
+
+```text
+Xcode: MISSING full Xcode unavailable
+iOS SDK: BLOCKED full Xcode and its first launch are required
+Xcode first launch: BLOCKED license or first launch incomplete
+iOS Simulator: BLOCKED no available iOS runtime
+XcodeGen: OK Version: 2.46.0
+DevEco Studio: MISSING /Applications/DevEco-Studio.app
+HarmonyOS SDK: BLOCKED HarmonyOS API 21 / 6.0.1.112 not verified
+hvigorw: BLOCKED requires 6.21.1; observed none
+ohpm: BLOCKED requires 6.0.1; observed none
+DevEco Node: BLOCKED bundled Node not verified
+exit=1
+```
+
+The fixture test uses fake tools and SDK metadata solely to verify status and exit behavior; it is not evidence that either actual platform builds. The Harmony installer dry-run and a checksum-mismatch rejection were tested, but installation was not.
 
 To remove only this task's Homebrew tools, run `brew uninstall xcodegen xcodes mas` after checking whether anything else now depends on them. The owner may remove the two Auri environment files and, if subsequently installed with this procedure, move the DevEco or Xcode app to the Trash and remove `~/.local/bin/auri-harmony-6.0.1.251`; retain any SDK, runtime, caches or projects that should not be removed. No other project files were changed.
 
