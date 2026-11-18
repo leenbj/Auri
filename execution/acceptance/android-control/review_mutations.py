@@ -49,6 +49,9 @@ MUTANTS = [
     ("F6-evidence", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "unattributed media keys do not certify", [
         (CAPTURE + "calibration/Observation.kt", "internal fun ControlSource?.isHeadset(): Boolean = this == ControlSource.HEADSET_REMOTE", "internal fun ControlSource?.isHeadset(): Boolean = isRemote()"),
     ]),
+    ("F6-lock", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "unattributed stop while locked does not certify", [
+        (CAPTURE + "calibration/CalibrationFindings.kt", "o.source.isHeadset() && o.screenLocked == true && o.stateBefore == CaptureState.RECORDING", "o.source.isRemote() && o.screenLocked == true && o.stateBefore == CaptureState.RECORDING"),
+    ]),
     ("F7", "platform", "app.auri.platform.system.ScreenLockEvidenceTest", "screen off without keyguard is unknown", [
         (PLATFORM + "system/AndroidScreenLockMonitor.kt", "interactive -> false\n    else -> null", "interactive -> false\n    else -> true"),
     ]),
@@ -212,7 +215,7 @@ MUTANTS = [
         (CAPTURE + "calibration/CalibrationFindings.kt", "it.stateAfter == CaptureState.RECORDING && it.screenLocked == locked", "it.stateAfter == CaptureState.RECORDING"),
     ]),
     ("Q5", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "一个不改变状态的无关决定", [
-        (CAPTURE + "calibration/CalibrationWizard.kt", "knownLock = screenLocked\n            lockMovedSinceBaseline = true", "knownLock = screenLocked\n            lockMovedSinceBaseline = false"),
+        (CAPTURE + "calibration/CalibrationWizard.kt", "if (decision.stateBefore != decision.stateAfter) {", "if (true) {"),
     ]),
     ("Q6", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "锁屏通知还没送到，但一个没有状态变化的决定", [
         (CAPTURE + "calibration/CalibrationWizard.kt", "knownLock = screenLocked\n            lockMovedSinceBaseline = true", "knownLock = screenLocked\n            lockMovedSinceBaseline = false"),
@@ -224,7 +227,7 @@ MUTANTS = [
         (CAPTURE + "calibration/CalibrationWizard.kt", "now.state == trackedState && now.screenLocked == knownLock", "now.state == trackedState"),
     ]),
     ("Q10", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "中途锁过屏再解锁之后点“重做”", [
-        (CAPTURE + "calibration/CalibrationWizard.kt", "pairing.discard()\n        if (now != null) {", "pairing.discard()\n        if (false && now != null) {"),
+        (CAPTURE + "calibration/CalibrationWizard.kt", "pairing.discard()\n        if (now != null) {", "pairing.discard()\n        if (now != null && false) {"),
     ]),
     ("Q10a", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "点“重做”时界面读到的环境与向导所知的都不同", [
         (CAPTURE + "calibration/CalibrationWizard.kt", "trackedState = now.state", "Unit"),

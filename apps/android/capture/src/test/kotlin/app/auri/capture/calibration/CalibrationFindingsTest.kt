@@ -188,6 +188,17 @@ class CalibrationFindingsTest {
     }
 
     @Test
+    fun `unattributed stop while locked does not certify recording survived the lock`() {
+        val run = Run(real)
+        run.toLockStep()
+        run.wizard.onScreenLockChanged(true)
+        run.feed.gesture(PlatformEvent.TOGGLE, TOGGLE, FINALIZING, locked = true, source = ControlSource.UNKNOWN_REMOTE)
+        run.wizard.next()
+
+        assertEquals(CapabilityRecord.untested, run.profile().capabilities.continueRecordingWhenLocked)
+    }
+
+    @Test
     fun `停止之后开始，但录音没有真的起来（路由没确认）：不算开始成功`() {
         val run = Run(real)
         run.idle()
