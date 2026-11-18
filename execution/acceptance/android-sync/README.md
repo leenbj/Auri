@@ -64,6 +64,8 @@ adb logcat -d -s AuriSync:I
 
 前置：JDK 17、Android SDK 35、仓库根目录的 `.venv`（`pip install -r tests/contract/requirements.txt -r services/gateway/requirements.txt`）。macOS 上 adb 可能卡在 IOKit，脚本已设 `ADB_LIBUSB=1`。模拟器必须是 arm64（`:asr` 的原生库只有 `arm64-v8a`）。
 
+**要新鲜证据就加 `--rerun`**：Gradle 在输入没变时会把测试任务判为 `UP-TO-DATE` 直接跳过，那不算“重新跑过”（接手这一轮第一次跑全量，六个模块里有三个就是这样被跳过的）。每个任务名后面跟 `--rerun`，例如 `./gradlew --no-daemon :sync:test --rerun :syncplatform:testDebugUnitTest --rerun`。内存紧张的机器（16 GB 且同时有别的工作进程）一次只开一个 Gradle，并加 `-Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2`；验收脚本和 Python 验收测试里的 Gradle 子进程可以经环境变量 `AURI_GRADLE_ARGS` 带上同样的参数。
+
 ## 4. 产品负责人：真机 + 真局域网（`NOT_RUN`）
 
 **目的**：证明三件模拟器给不了的事：①手机在真实局域网里扫真二维码配对并把文字送进网关；②断开 Wi-Fi 后录的文字不丢，界面如实显示“等网关”，重连后自动补传；③网关换了地址（DHCP）时靠 mDNS 找回来。这是 E3 证据。**做不到的步骤标 `BLOCKED_EXTERNAL` 并写原因，不要用模拟或猜测补。**
@@ -186,8 +188,50 @@ Ticket 14 的第 4 项“证明模型路径不联网”当时靠三层证据：�
 - **网关侧没有请求计数**（G10）：“不重发”靠手机侧的请求记录。
 - 配对记录读不出来（密钥丢失）时只能重新配对；没有令牌轮换或续期，合同里也没有。
 - **没有处理删除**：Record 的删除与墓碑是 Ticket 23；`RECORD_DELETED` 的映射有单元测试，但没有真网关测试（网关的删除端点本分支尚未提供）。
-- `CLAUDE.md` “命令”一节里 Ticket 16 那一行写的 `:platform` 56 是 Ticket 16 审查之前的旧基线（Ticket 16 的 README 第 10 节已是 84，本次实测也是 84）；那是别的票留下的数字，我没有改它，只在“命令”里补了本票的命令。
+- `CLAUDE.md` “命令”一节里 Ticket 16 那一行写的 `71 + 56 + 51 + 112` 是 Ticket 16 审查之前的旧基线（Ticket 16 的 README 第 10 节已是 `:capture` 72、`:platform` 84、`:app` 52、`:asr` 112，本次实测 `:capture` 72、`:platform` 84、`:asr` 112 一致，`:app` 是 52 + 本票的 37 = 89）；那是别的票留下的数字，我没有改它，只在“命令”里补了本票的命令。
 
 ## 12. 结果
 
-〔待填〕
+2026-11-18，本机（16 GB 的 Apple silicon Mac，JDK 17、Gradle 8.10.2、Android SDK 35）。前一位 worker 在 Mac 内存耗尽、Orca 重启时中断；这一轮由接手的 worker 从磁盘重建现场，并**把所有套件重新跑了一遍**，不采信提交信息里的数字。每个 Gradle 调用都是 `--no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2`，一次只开一个；测试任务带 `--rerun`（见第 3 节）。验证的代码提交是 `a3ab36c`，之后只改了本文件。
+
+### 12.1 各套件
+
+| 套件 | 命令 | 结果 | 证据等级 |
+|---|---|---|---|
+| JVM 单测，六个模块 | `./gradlew … --continue :capture:test --rerun :platform:testDebugUnitTest --rerun :app:testDebugUnitTest --rerun :asr:testDebugUnitTest --rerun :sync:test --rerun :syncplatform:testDebugUnitTest --rerun` | **585 个全过，0 失败、0 错误、0 跳过**：`:capture` 72、`:platform` 84、`:app` 89、`:asr` 112、`:sync` 218、`:syncplatform` 10（每个 JUnit XML 的时间戳都晚于本轮开始）；编译好之后整轮 14 秒 | E2 |
+| 对着真 Python 网关的 JVM 测试 | `./gradlew … :sync:realGatewayTest --rerun` | **12 个全过**（`.venv` 的 Python 3.12.16、自签 TLS、临时数据目录、随机端口）；Gradle 整个调用 20 秒 | E2 |
+| 构建 | `./gradlew … :app:assembleDebug :app:assembleDebugAndroidTest :syncplatform:assembleDebugAndroidTest :platform:assembleDebugAndroidTest` | 成功（输入没变，大部分任务 `UP-TO-DATE`，对构建产物这是有效的） | — |
+| Python 验收工具（三个目录一起跑） | `AURI_GRADLE_ARGS='…' .venv/bin/pytest execution/acceptance/android-sync execution/acceptance/android-capture execution/acceptance/asr-android -rs` | **715 个全过，没有跳过**（android-sync 527，其中 482 个是变异表自检；android-capture 57；asr-android 131）；3 分 58 秒，含真实调用 Gradle 的几个测试 | E2 |
+| 全仓库 | `.venv/bin/pytest tests/contract tests/integration tests/security -rs` | **492 个全过，没有跳过**；3 分 22 秒 | E2 |
+| 模拟器验收，含 Ticket 14 阶段 | `AURI_ALSO_ASR_ACCEPTANCE=1 execution/acceptance/android-sync/run_emulator_acceptance.sh` | exit 0，两个阶段合计 2 分 47 秒（一次性 AVD：API 35、arm64-v8a、`google_apis`）。`:syncplatform` 仪器测试 **29 个全过，且逐个 `@Test` 核对都真的跑了**（Keystore 10、网络与发现 2、杀进程 3、真网关 1、任务库契约 6、发布事务 7）；宿主机回头查网关库：1 台设备、1 条 Record、1 版，正文与哈希一致、来源设备正确。Ticket 14 的 `:app` 仪器测试 **29 个全过**（包括被本票改写的 `OfflineProofTest` 三个：已安装的包只申请网关链路需要的网络权限、网络可用时转录零字节、飞行模式下转录成功），合同校验 16 个与 5 个场景都是 0 个问题，三次冷启动的网络字节增量都是 0。脚本退出后锁、AVD、宿主机网关进程、adb 服务都已清理 | E2（模拟器，不是 E3） |
+| 变异检查，158 条 | 在 HEAD 的 `git archive` 快照里：`mutation_check.py --in-place`，整张表重跑 | 〔整表重跑进行中，结果见 12.2；写在这里是为了让这个提交本身如实〕 | E2 |
+| 真机、真局域网、真相机扫码、真 mDNS 广播 | 第 4 节 | **`NOT_RUN`**（本机没有手机） | — |
+
+### 12.2 变异检查整表重跑
+
+〔进行中〕
+
+### 12.3 接手这一轮发现并修好的事
+
+- **`SyncEngineTest` 里一条测试管不到新任务**。“网关换了公钥……也没有任何继续的路”原来只数那条已经停下的任务：已停下的任务在 `attempt()` 里被状态机先拒绝，根本走不到 `usableGateway()` 这道闸，所以把闸拿掉，这条测试照样绿。实证：在快照里换回旧版测试再跑变异 `engine-ignores-connection-gate`，结果是 `SURVIVED`（预期变红的“没有任何继续的路”没有变红）；用现在的测试，同一条变异 `CAUGHT`（36 个里 3 个变红，包括这一条）。修复是 `fb96e5d`（测试里再发布一条新任务，几轮同步之后既不能多出连接尝试、也必须仍是 PENDING）。**也就是说，此前“变异检查全部被抓”在那个提交点并不成立**；第 9 节里“全部 CAUGHT”的说法以本节为准。
+- **Gradle 把测试任务判成 `UP-TO-DATE` 不算重新跑过**（第 3 节已写）。
+- 订正了本文件两处与事实不符的话（`.gitignore` 没有改；真机步骤里 `pair` 要加 `--host`，见 `services/gateway/OPERATIONS.md`）。
+
+### 12.4 对既有文件的改动（共享文件，给合并的人）
+
+都是最小的加法，除非注明。没有动 `contracts/`、`services/gateway/`、`tests/`、`.github/`、`.gitignore`、`CaptureCoordinator.kt`、`HomeViewModel.kt`。
+
+| 文件 | 改了什么 |
+|---|---|
+| `apps/android/settings.gradle.kts` | +2：`include(":sync")`、`include(":syncplatform")` |
+| `apps/android/gradle/libs.versions.toml` | +9：ZXing 3.5.4 与 CameraX 1.4.1 的固定版本（哈希见第 10 节） |
+| `apps/android/app/build.gradle.kts` | +1：`implementation(project(":syncplatform"))` |
+| `apps/android/app/…/AuriRuntime.kt` | +17/−2：`library` 改成 `SyncStorage.library(...)`（Record 库与待同步任务表同库）；新增 `sync`、`syncViewModelFactory`、`manualPairingEntryAvailable`（调试版才有手动输入配对载荷） |
+| `apps/android/app/…/ui/HomeScreen.kt` | +2/−1：多一个可选参数 `onOpenSync`（“同步与配对”入口按钮） |
+| `apps/android/app/…/MainActivity.kt`、`AuriApplication.kt` | +15/−1：同步页的导航（`onSyncPage`）、`SyncViewModel`、回到前台时 `sync.syncNow()`；+1：`sync.start()` |
+| `apps/android/platform/…/SqliteRecordLibrary.kt` | +13：追加式接缝 `extraSchema`、`changeSignal`、`withDatabase`，不改 `SCHEMA_VERSION` |
+| `apps/android/platform/build.gradle.kts` | +2/−1：隐私守卫依赖的编译任务从四个模块扩到六个 |
+| `apps/android/platform/…/NoPhoneMicPathTest.kt` | +4/−4：守卫扫描的模块从四个扩到六个（`:sync`、`:syncplatform`） |
+| Ticket 14 的 `OfflineProofTest.kt`（`:app` 仪器测试）、`NoNetworkManifestTest.kt`（`:app` JVM 测试） | **改写，不是加法**：应用必须声明 `INTERNET`，原来“包里没有 `INTERNET`”的整体证据不再成立（冲突与替代证据见第 8 节） |
+| `execution/acceptance/asr-android/` 的 `README.md`、`contract_check.py`、`test_check_instrumentation.py`、`test_contract_check.py` | 登记被改写的离线证明新增的场景 `online-zh` 与新的测试名；README 加指向第 8 节的说明 |
+| `CLAUDE.md` | +14：只动“命令”一节，补上本票的命令 |
