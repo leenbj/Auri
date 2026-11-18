@@ -926,6 +926,62 @@ class CalibrationFindingsTest {
         assertEquals(CompatStatus.UNSUPPORTED, run.profile().capabilities.stopWhileBluetoothMicActive.status)
     }
 
+    @Test
+    fun `命令处理时适配器抛了异常（内部错误决定，没有触发器）：那个命令的决定永远不会来，队列要清空，之后的配对不会整体错开一格，保存的映射不会和实际相反`() {
+        val run = Run(real)
+        run.idle()
+        run.wizard.skip() // 第二步不做，进入第三步
+        run.wizard.onControlEvent(run.feed.event(PlatformEvent.PLAY, TOGGLE)) // 耳机的播放键到了协调器，处理时适配器抛了异常：它的决定永远不会来
+        run.wizard.onDecision(run.feed.decision(null, Outcome.REJECTED, ARMED, Cause.INTERNAL_ERROR), false)
+        run.wizard.repeat() // 用户点“重做”
+        run.feed.gesture(PlatformEvent.PAUSE, TOGGLE, ROUTING) // 重做之后：暂停键开始了录音
+        run.feed.other(CaptureEvent.ROUTE_VERIFIED, RECORDING)
+        run.feed.gesture(PlatformEvent.PLAY, TOGGLE, FINALIZING) // 播放键把它停下来
+        run.feed.other(CaptureEvent.FINALIZE_COMPLETE, ARMED)
+        run.wizard.next()
+        run.wizard.skip()
+        val mapping = run.profile().commandMapping
+        assertEquals("暂停键开始了录音", BusinessCommand.START, mapping.getValue(PlatformEvent.PAUSE))
+        assertEquals("播放键停止了录音", BusinessCommand.STOP, mapping.getValue(PlatformEvent.PLAY))
+    }
+
+    @Test
+    fun `锁屏通知送到时，界面读到的实际采集状态与向导所知的对不上：当作不知道，解锁不算“录音撑过了锁屏”；一致时照常算数`() {
+        fun survival(block: Run.() -> Unit): CapabilityRecord {
+            val run = Run(real)
+            run.toLockStep() // 第四步开始时录音着
+            run.block()
+            run.wizard.next()
+            return run.profile().capabilities.continueRecordingWhenLocked
+        }
+        assertEquals(
+            "对照：界面读到的与向导所知的一致，录音一直在",
+            CompatStatus.SUPPORTED_RECORDING_IN_BACKGROUND,
+            survival {
+                wizard.onScreenLockChanged(true, RECORDING)
+                wizard.onScreenLockChanged(false, RECORDING)
+            }.status,
+        )
+        assertEquals(
+            "录音已因路由丢失而结束，决定还没送到向导；解锁通知先到，界面读到的已经是封存中",
+            CapabilityRecord.untested,
+            survival {
+                wizard.onScreenLockChanged(true, RECORDING)
+                wizard.onScreenLockChanged(false, FINALIZING)
+                feed.other(CaptureEvent.ROUTE_LOST, FINALIZING)
+            },
+        )
+        assertEquals(
+            "向导已经知道录音结束了，界面读到的快照还没更新（落后）：两个读数对不上，不能当作录音着",
+            CapabilityRecord.untested,
+            survival {
+                feed.other(CaptureEvent.ROUTE_LOST, FINALIZING)
+                wizard.onScreenLockChanged(true, RECORDING)
+                wizard.onScreenLockChanged(false, RECORDING)
+            },
+        )
+    }
+
     // ---- 档案本身与命令映射 ----
 
     @Test

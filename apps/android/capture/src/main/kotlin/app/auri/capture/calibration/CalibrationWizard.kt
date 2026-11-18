@@ -5,6 +5,7 @@ import app.auri.capture.contract.NormalizedControlEvent
 import app.auri.capture.contract.PlatformEvent
 import app.auri.capture.control.ControlProfile
 import app.auri.capture.coordinator.CaptureDecision
+import app.auri.capture.coordinator.Cause
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -216,6 +217,9 @@ class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
     fun onDecision(decision: CaptureDecision, screenLocked: Boolean?) {
         val step = current ?: return
         val cause = pairing.match(decision)
+        // 协调器处理某条输入时抛了异常（没有触发器的内部错误）：不知道是哪个命令，但正在处理的命令的决定永远不会来了，
+        // 它的事件会一直占着队列，让之后的配对整体错开一格——清空队列，宁可漏记，不可错记
+        if (decision.trigger == null && decision.cause == Cause.INTERNAL_ERROR) pairing.clear()
         steps.getValue(step).add(
             Observation.Decided(
                 source = cause?.source,
@@ -242,13 +246,20 @@ class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
         publish()
     }
 
-    /** 屏幕锁定或解锁；null = 这次读不出来（不算观察，但之前知道的锁屏状态从此不可信）。 */
+    /**
+     * 屏幕锁定或解锁；null = 这次读不出来（不算观察，但之前知道的锁屏状态从此不可信）。
+     *
+     * [observedState] 是界面此刻读到的实际采集状态。向导自己所知的来自协调器的决定，送到有时延：
+     * 录音可能已经结束而结束的决定还没送到。给了而且与向导所知的对不上，就当不知道这一刻的采集状态，
+     * 这次锁屏 / 解锁不会被算作“录音着时锁屏、录音着时解锁”；不给就只用向导所知的。
+     */
     @Synchronized
-    fun onScreenLockChanged(locked: Boolean?) {
+    fun onScreenLockChanged(locked: Boolean?, observedState: CaptureState? = null) {
         val step = current ?: return
         if (locked != knownLock) lockMovedSinceBaseline = true
         knownLock = locked
-        if (locked != null) steps.getValue(step).add(Observation.LockChanged(locked, trackedState))
+        val state = if (observedState == null || observedState == trackedState) trackedState else null
+        if (locked != null) steps.getValue(step).add(Observation.LockChanged(locked, state))
         publish()
     }
 

@@ -215,6 +215,16 @@ class CalibrationObservationTest {
     }
 
     @Test
+    fun `有触发器的内部错误（比如封存失败）不是“命令处理时抛了异常”：不清空队列，待决事件的决定照常配对`() {
+        val w = wizardAt(1) // 第二步
+        val feed = Feed(w, state = RECORDING)
+        w.onControlEvent(feed.event(PlatformEvent.PAUSE, BusinessCommand.STOP)) // 耳机的停止键到了，决定还没送到
+        w.onDecision(feed.decision(CaptureEvent.FINALIZE_COMPLETE, Outcome.REJECTED, RECORDING, Cause.INTERNAL_ERROR), false) // 与它无关的一个封存失败
+        w.onDecision(feed.decision(CaptureEvent.STOP, Outcome.TRANSITION, FINALIZING), false) // 停止键自己的决定
+        assertTrue("停止键的决定仍然配得上它的事件", w.summary.stoppedByGesture)
+    }
+
+    @Test
     fun `声明没效果之后又收到一次耳机事件：声明作废，它说的是更早那次尝试；屏幕按钮的事件不作废它`() {
         val w = wizardAt(1)
         val feed = Feed(w)

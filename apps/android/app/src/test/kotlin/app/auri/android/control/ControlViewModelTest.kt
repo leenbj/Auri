@@ -707,6 +707,30 @@ class ControlViewModelTest {
     }
 
     @Test
+    fun `锁屏通知送到向导时，界面把此刻实际的采集状态一起交给向导：快照说录音已结束、决定还没送到，解锁不算“录音撑过了锁屏”`() = runUnconfined {
+        fun survived(recordingEndsBeforeUnlock: Boolean): Boolean {
+            val rig = rig(CaptureState.ARMED)
+            rig.viewModel.setRealDeviceConfirmed(true)
+            rig.viewModel.startCalibration()
+            repeat(3) { rig.viewModel.skipStep() } // 第四步：锁屏
+            rig.gesture(PlatformEvent.SCREEN_BUTTON, BusinessCommand.START, ControlSource.SCREEN_CONTROL)
+            rig.decide(CaptureEvent.START, CaptureState.ROUTING)
+            rig.decide(CaptureEvent.ROUTE_VERIFIED, CaptureState.RECORDING)
+            rig.lock.value = true // 录音中锁屏
+            if (recordingEndsBeforeUnlock) rig.controls.move(CaptureState.FINALIZING) // 路由丢失，录音结束了，快照已更新，决定还没送到向导
+            rig.lock.value = false // 解锁
+            if (recordingEndsBeforeUnlock) {
+                rig.controls.decisions.tryEmit(CaptureDecision(CaptureEvent.ROUTE_LOST, Outcome.TRANSITION, CaptureState.RECORDING, CaptureState.FINALIZING, Cause.MACHINE))
+            }
+            rig.viewModel.nextStep()
+            return (rig.state.calibration as CalibrationUi.Finished).canSave
+        }
+
+        assertTrue("对照：录音一直在，撑过了锁屏，有可保存的结论", survived(recordingEndsBeforeUnlock = false))
+        assertFalse("录音在解锁之前已经结束：不能算撑过了锁屏", survived(recordingEndsBeforeUnlock = true))
+    }
+
+    @Test
     fun `校准进行中或已完成时再点开始校准：不理会，不会多出一路旁听，也不会回到第一步`() = runUnconfined {
         val rig = rig(CaptureState.ARMED)
         rig.viewModel.startCalibration()
