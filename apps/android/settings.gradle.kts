@@ -38,4 +38,6 @@ rootProject.name = "AuriAndroid"
 include(":asr")
 include(":capture")
 include(":platform")
+include(":sync")
+include(":syncplatform")
 include(":app")
