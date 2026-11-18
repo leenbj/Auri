@@ -161,11 +161,6 @@ hvigorw assembleHap -p buildMode=debug --no-daemon
    Replace the placeholders with the actual downloaded filename and Huawei-published hashes. The installer refuses to overwrite an existing target and its real Huawei archive layout remains unverified. If the needed API 21 SDK is absent, install HarmonyOS 6.0.1 Release/API 21 including ETS, native and toolchains via DevEco Studio's SDK Manager. Re-run the check and the temporary Harmony build above. The present compiler errors may also require a separate probe-code fix; installing the pinned version has not been shown to fix them.
 3. **`BLOCKED_EXTERNAL`: quit the pre-existing Xcode GUI.** PID 80211 started at 11:53:41, before this survey; a graceful `osascript` request to quit timed out with `AppleEvent已超时 (-1712)`, and the process remained. In Xcode choose **Xcode → Quit Xcode** and resolve any save dialog; if it is unresponsive, use **Apple menu → Force Quit → Xcode** after preserving needed work. No Simulator GUI, DevEco GUI, hvigor or emulator process was found in the final process check, and no booted simulator was listed. CoreSimulator services and the Xcode developer policy service were present and had started before this survey. This verification did not force-terminate a pre-existing app or another worker's processes.
 
-4. **`BLOCKED_EXTERNAL`: coordinate Gradle shutdown with the Android worker.** A Gradle 8.10.2 daemon, PID 35342, started at 12:04:28 after the earlier process check. This task ran no Gradle build and the Android worker is active, so it was left alone to avoid interrupting that work. Once the Android worker has finished, the owner can run:
-
-   ```sh
-   "$HOME/.gradle/wrapper/dists/gradle-8.10.2-bin/a04bxjujx95o3nb99gddekhwo/gradle-8.10.2/bin/gradle" --stop
-   ps -p 35342 -o pid,command
-   ```
+A Gradle 8.10.2 daemon, PID 35342, appeared at 12:04:28 while the Android worker was active; this task ran no Gradle build and did not interrupt it. A subsequent `ps -p 80211,35342 -o pid,ppid,lstart,command` listed only Xcode PID 80211, so that Gradle daemon had exited by the last check.
 
 Device signing, simulator execution, hardware behavior, and a successful HarmonyOS HAP remain unverified.
