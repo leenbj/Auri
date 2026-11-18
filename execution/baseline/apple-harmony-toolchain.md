@@ -1,71 +1,124 @@
 # Apple and HarmonyOS toolchains on the Mac mini
 
-Surveyed 2026-11-18 on branch `ticket/00-apple-harmony-toolchain`, based on `origin/integration/auri-v2` at `93b902450027d5c4073a8cd55a3bd72dcddd8a59`. The full toolchains are **not installed**: their external blockers and the owner steps are below. No credentials or license acceptances were supplied by the worker.
+Verified on 2026-11-18 on `ticket/00-verify-apple-harmony`, initially based on `origin/integration/auri-v2` at `8389344a3f6aa0a81e2299bf44a5ba9b49bedcf2`. The earlier survey and installation history remain in this file at that commit. This verification did not accept a licence, run sudo, sign in, edit a shell profile, or change probe source.
 
-## Machine and initial survey
+**The iOS simulator build succeeded. The HarmonyOS build failed at ArkTS compilation with the installed API 26 Beta1 SDK; the probe's pinned API 21 release toolchain is still missing.** A pre-existing Xcode GUI process did not quit on request and needs owner attention, as described below.
 
-macOS 27.2 (26B123), arm64, Apple M4, 16 GiB RAM. `df -h /` showed 954 GiB total and **735 GiB available before, 734 GiB on the final survey**; the requested Xcode (~35 GB plus ~8 GB Simulator) and DevEco/SDK (~15 GB) budgets fit. Other work was running on the host, so the change is not attributable solely to these installs. Only one of this task's downloads, installs or builds ran at a time.
+## Survey
 
-At the start, `/Applications` and `~/Applications` had no Xcode or DevEco Studio app; `xcode-select -p` returned `/Library/Developer/CommandLineTools`. `xcodebuild -version` said that full Xcode is required, and `xcrun simctl list runtimes` could not find `simctl`. `ohpm`, `hvigorw`, `mas`, `xcodes` and `xcodegen` were absent; `node -v` was `v24.22.2`. Passwordless sudo was unavailable: `sudo -n true` returned `sudo: a password is required`.
-
-Initial `brew list --versions`, before this task installed three formulae:
+The following are actual command outputs; an empty output with exit 0 is noted explicitly.
 
 ```text
-brotli 1.2.1; bun 1.4.4_1; c-ares 1.34.9; ca-certificates 2026-11-05; cairo 1.18.6; cmake 4.5.0; fontconfig 2.18.3; freetype 2.15.0; gettext 1.0; gh 2.103.3; giflib 6.1.3; glib 2.90.1; graphite2 1.3.15; harfbuzz 15.1.0; hdrhistogram_c 0.12.1; icu4c@78 78.3_1; icu4c@79 79.1; jpeg-turbo 3.2.1; json-c 0.19; krb5 1.22.2_2; libnghttp2 1.71.0; libnghttp3 1.19.0; libpng 1.6.59; libpq 18.6_2; libtiff 4.7.2; libunistring 1.5; libuv 1.53.0; libx11 1.8.14; libxau 1.0.12; libxcb 1.17.0; libxdmcp 1.1.5; libxext 1.3.7; libxrender 0.9.13; little-cms2 2.20; lz4 1.11.0; lzo 2.10; ninja 1.13.2; node@22 22.23.4_2; node@24 24.22.2_2; openjdk@17 17.0.21.0.3; openssl@3 3.5.9; openssl@4 4.1.0; pcre2 10.49; pixman 0.46.4; readline 8.3.1; redis 8.10.3; simdjson 5.1.1; sqlite 3.54.1; supabase 3.0.0; uv 0.13.7; uvwasi 0.0.23; webp 1.6.0; xorgproto 2026.1; xz 5.8.4; zstd 1.5.7_1; android-commandlinetools 15859902
+$ ls /Applications | grep -iE "xcode|deveco"
+DevEco-Studio.app
+Xcode.app
+$ xcode-select -p
+/Applications/Xcode.app/Contents/Developer
+$ xcodebuild -version
+Xcode 27.2
+Build version 27B52
+$ xcodebuild -license check
+<no output; exit 0>
+$ xcrun --sdk iphoneos --show-sdk-version
+27.2
+$ xcrun simctl list runtimes
+== Runtimes ==
+$ xcrun simctl list devices booted
+== Devices ==
+$ git --version
+git version 2.54.0 (Apple Git-157)
+$ /usr/bin/git --version
+git version 2.54.0 (Apple Git-157)
+$ /usr/bin/python3 --version
+Python 3.9.6
+$ DEVELOPER_DIR=/Library/Developer/CommandLineTools git --version
+git version 2.54.0 (Apple Git-157)
+$ DEVELOPER_DIR=/Library/Developer/CommandLineTools /usr/bin/git --version
+git version 2.54.0 (Apple Git-157)
+$ DEVELOPER_DIR=/Library/Developer/CommandLineTools /usr/bin/python3 --version
+Python 3.9.6
+$ DEVELOPER_DIR=/Library/Developer/CommandLineTools xcrun --version
+xcrun version 72.
+$ defaults read /Applications/DevEco-Studio.app/Contents/Info CFBundleShortVersionString
+26.0.1
+$ xcodegen --version
+Version: 2.46.0
+$ df -h /
+Filesystem        Size    Used   Avail Capacity iused ifree %iused  Mounted on
+/dev/disk5s2s1   954Gi    13Gi   697Gi     2%    487k  4.3G    0%   /
 ```
 
-The shell's system Node is available, but its compatibility with DevEco 6.0.1 is **not verified**; the Harmony environment selects the vendor-bundled Node when installed.
+The default `DEVELOPER_DIR` was unset. System Git and Python work both with the selected Xcode and with Command Line Tools selected; no licence or selection fix is currently needed for other workers. `xcodebuild -checkFirstLaunchStatus` also succeeded through the check script. No iOS Simulator runtime is installed, though the simulator SDK was sufficient for the generic build below. Available disk was 695 GiB on the later check; other work was running concurrently on the host.
 
-## Current results
+DevEco's executable is `/Applications/DevEco-Studio.app/Contents/MacOS/devecostudio`. The tools found inside the app are:
 
-| Component | Status | Evidence |
-| --- | --- | --- |
-| Xcode | `BLOCKED_EXTERNAL: Apple ID sign-in` | No full Xcode; `xcodes install --latest --no-superuser --no-aria2` selected 27.2 and stopped at `Apple ID: Missing username or a password`. No username or password was entered. `mas account` cannot establish App Store state: mas 7.0.0 returns `Unexpected argument 'account'`. |
-| Xcode selection, first launch and license | `BLOCKED_EXTERNAL: sudo password / owner license` | `sudo -n true` requires a password. The worker did not run privileged setup or accept the license. |
-| iOS SDK / Simulator | `BLOCKED_EXTERNAL` | `xcrun --sdk iphoneos --show-sdk-version` reports SDK not found; `xcrun simctl list runtimes` reports `simctl` not found. No iOS Simulator runtime was downloaded. |
-| XcodeGen | **OK**, 2.46.0 | `xcodegen --version` returned `Version: 2.46.0`; it generated the probe project in a temporary copy. |
-| DevEco Studio | `BLOCKED_EXTERNAL: Huawei download access` | Not installed; version command **NOT_RUN**. Huawei download pages returned HTTP 403 to this machine, so an official 6.0.1.251 Mac ARM file URL and Studio archive filename could not be verified. Whether sign-in alone resolves the 403 is unknown. |
-| HarmonyOS SDK | `BLOCKED_EXTERNAL` | Not installed; API 21 / `Ohos_sdk_public 6.0.1.112` is the probe's pinned target, not an observed installed version. |
-| `hvigorw` / `ohpm` | `BLOCKED_EXTERNAL` | Neither is installed, so their version commands are **NOT_RUN**. Huawei documents 6.21.1 and 6.0.1 respectively for the 6.0.1.251 command-line bundle. |
-| DevEco-bundled Node | `BLOCKED_EXTERNAL` | Not installed; version command **NOT_RUN**. |
+```text
+/Applications/DevEco-Studio.app/Contents/tools/hvigor/bin/hvigorw
+/Applications/DevEco-Studio.app/Contents/tools/ohpm/bin/ohpm
+/Applications/DevEco-Studio.app/Contents/tools/node/bin/node
+/Applications/DevEco-Studio.app/Contents/sdk
+```
 
-`xcodes list` offered stable Xcode 27.2 (27B52); Apple's [27.2 release notes](https://developer.apple.com/documentation/xcode-release-notes/xcode-27_2-release-notes) require macOS 26.6 or later, so this host meets the OS requirement. The existing probe README pins Xcode 27.1, so a build on 27.2 remains unverified. Huawei's [6.0.1 compatibility table](https://developer.huawei.com/consumer/en/doc/harmonyos-releases/deveco-studio-new-features-601/) identifies the matching 6.0.1.251 tools, and its [6.0.1 release notes](https://developer.huawei.com/consumer/cn/doc/harmonyos-releases/overview-601) identify API 21 / `6.0.1.112`. The probe's minimum compatible system is API 12; the application specification requires the SDK version to be pinned.
+The searched Auri command-line-tools target, `~/.local/bin/auri-harmony-6.0.1.251/command-line-tools`, and `~/Library/Huawei` and `~/Library/HarmonyOS` were absent. In the app SDK, all ten `default/{openharmony,hms}/{ets,js,native,previewer,toolchains}` package metadata files reported `apiVersion=26 platformVersion=26.0.1 releaseType=Beta1 version=26.0.1.120`. For example, both ETS metadata files contain:
 
-As an additional direct-download probe, `curl -I` of the official `contentcenter-vali-drcn.dbankcdn.cn` Mac ARM DevEco 4.0.0.600 archive linked from the [OpenHarmony 4.0 release notes](https://api.gitee.com/openharmony/docs/blob/master/zh-cn/release-notes/OpenHarmony-v4.0-release.md) also returned `HTTP/1.1 403 Forbidden`. That legacy archive cannot satisfy the required 6.0.1 toolchain; no official 6.0.1 direct asset URL was discoverable from this host.
+```json
+"apiVersion": "26",
+"platformVersion": "26.0.1",
+"releaseType": "Beta1",
+"version": "26.0.1.120"
+```
 
-## Installed files, sources and SHA-256
+This is not the probe's pinned DevEco Studio 6.0.1 Release and HarmonyOS 6.0.1.112/API 21 Release SDK. Reading the app metadata and executable proves they exist, not that the DevEco GUI was opened or tested.
 
-Homebrew installed these bottles, with automatic cleanup disabled. Sizes below are measured installed directories; the SHA-256 values are measured on the corresponding cached bottle archives.
+## Environment and checks
 
-| Tool | Version / installed size | Bottle SHA-256 |
-| --- | --- | --- |
-| [XcodeGen](https://formulae.brew.sh/formula/xcodegen) | 2.46.0, 7.3 MiB, `/opt/homebrew/Cellar/xcodegen/2.46.0` | `cc5980a1ffd679edf00e4204473b1cfa8c3abcce69c22c084d4d079b277e248b` |
-| [mas](https://formulae.brew.sh/formula/mas) | 7.0.0, 11 MiB, `/opt/homebrew/Cellar/mas/7.0.0` | `641455eac9e2dfeaa0cff4238d4d644f6c2b91d25492e95c1ebc4461967eab97` |
-| [xcodes](https://formulae.brew.sh/formula/xcodes) | 2.2.0, 10 MiB, `/opt/homebrew/Cellar/xcodes/2.2.0` | `81c13eb2a30b3eaaa45888af463df13ca68dca033d665dfc92be4544ad65b199` |
+The reviewable files `ios-env.sh` and `harmony-env.sh` beside this record were copied to `~/.config/auri/`. Their existing selection logic already resolves the actual app paths on this host; the Harmony comment was corrected because the current installation is not the pinned release. No other environment logic or check expectations changed. The optional older CLI target remains supported if the owner installs it later. Both files were sourced twice in fresh `bash -lc` and `zsh -lc` sessions; each printed `PATH idempotency: OK` and selected:
 
-Homebrew provided the exact pinned XcodeGen version. The upstream [2.46.0 GitHub release](https://github.com/yonaskolb/XcodeGen/releases/tag/2.46.0) reports `xcodegen.zip` SHA-256 `4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806`; that zip was **not** downloaded, so this is its published hash, not the installed bottle hash. No Xcode, Simulator, DevEco or Harmony archive was downloaded, so no installed archive size or hash is available for them.
+```text
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+DEVECO_APP=/Applications/DevEco-Studio.app
+DEVECO_SDK_HOME=/Applications/DevEco-Studio.app/Contents/sdk
+NODE_HOME=/Applications/DevEco-Studio.app/Contents/tools/node
+$ xcodebuild -version
+Xcode 27.2
+Build version 27B52
+$ hvigorw --version
+6.26.20
+$ ohpm -v
+26.0.1.220
+$ node -v
+v24.14.1
+```
 
-## Owner completion: Xcode and Simulator
+Each version command exited 0 in both shells. The executable commands work, but this does not establish compatibility of these newer Harmony tools with the pinned release.
 
-1. In **App Store → Sign In**, sign in with your Apple ID. Search for **Xcode**, choose **Get/Install**, and wait for the app to finish installing at `/Applications/Xcode.app`. Alternatively, after signing in and obtaining Xcode in the App Store, `sudo mas install 497799835` can install it; mas 7 reports that installation needs root. Do not use `mas signin`, which this mas version does not provide.
-2. In Terminal, run the following. The license commands are for the owner to review and, only if they agree, accept; no agent has accepted it.
+`execution/baseline/check-apple-harmony-toolchain.sh` exited 1 and reported:
+
+```text
+Xcode: OK Xcode 27.2 Build version 27B52
+iOS SDK: OK 27.2
+Xcode first launch: OK completed
+iOS Simulator: BLOCKED no available iOS runtime
+XcodeGen: OK Version: 2.46.0
+DevEco Studio: BLOCKED requires an executable 6.0.1 app; observed 26.0.1
+HarmonyOS SDK: BLOCKED HarmonyOS API 21 / 6.0.1.112 not verified
+hvigorw: BLOCKED requires 6.21.1; observed 6.26.20
+ohpm: BLOCKED requires 6.0.1; observed 26.0.1.220
+DevEco Node: OK v24.14.1
+```
+
+`execution/baseline/test-apple-harmony-toolchain.sh` exited 0: `Toolchain check fixture passed (fake tools; not an installation proof).` The requirements were left unchanged: the installed Harmony versions differ from the probe's pin and the attempted build failed, so compatibility has not been established.
+
+## Real builds
+
+Only one of these builds ran at a time. Both used temporary copies and no signing credentials.
+
+### iOS simulator: OK
+
+The following commands ran from a temporary copy, as in the earlier record:
 
 ```sh
-sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-sudo xcodebuild -license
-# If you have reviewed and agree to the license and it is still pending:
-sudo xcodebuild -license accept
-sudo xcodebuild -runFirstLaunch
-xcodebuild -downloadPlatform iOS
 source ~/.config/auri/ios-env.sh
-xcodebuild -version
-xcrun --sdk iphoneos --show-sdk-version
-xcrun simctl list runtimes
-```
-
-To prove the probe builds without changing its tracked directory, from the repository root run:
-
-```sh
 probe_tmp=$(mktemp -d "${TMPDIR:-/tmp}/auri-ios-build.XXXXXXXX")
 ditto execution/p0-spikes/ios-probe "$probe_tmp/ios-probe"
 cd "$probe_tmp/ios-probe"
@@ -75,52 +128,37 @@ xcodebuild -project AuriProbeIOS.xcodeproj -scheme AuriProbeIOS \
   CODE_SIGNING_ALLOWED=NO build
 ```
 
-No simulator build or device signing was attempted here.
+`xcodegen` exited 0 and `xcodebuild` exited 0 with `** BUILD SUCCEEDED **`, producing `derived/Build/Products/Debug-iphonesimulator/AuriProbeIOS.app`. This is a compile/build result, not a simulator run or a device test. The probe README pins Xcode 27.1 (27A9275) and iOS SDK 27.1; this build used Xcode 27.2 (27B52) and the 27.2 simulator SDK.
 
-## Owner completion: HarmonyOS
+### HarmonyOS: FAILED
 
-1. Visit the official [Huawei download center](https://developer.huawei.com/consumer/cn/download/), sign in if required, and locate **DevEco Studio 6.0.1.251 for Mac ARM** and the matching **Command Line Tools 6.0.1.251 for Mac ARM**. Download both into `~/Downloads`, and copy each archive's SHA-256 from Huawei's page. The expected CLI filename is `commandline-tools-mac-arm64-6.0.1.251.zip`; this name was observed in public package metadata, but the inaccessible Huawei page did not independently confirm it. The Studio archive's exact filename could not be observed: use the actual name displayed by Huawei. If that older version or its official hashes are unavailable, keep this item `BLOCKED_EXTERNAL` rather than substituting an unverified download.
-2. From the repository root, substitute the actual Studio filename and both **Huawei-published** SHA-256 values in the one command below. Never paste credentials or tokens into the command.
-
-```sh
-execution/baseline/finish-deveco-install.sh \
-  "$HOME/Downloads/<actual Studio archive name>" '<Studio SHA-256>' \
-  "$HOME/Downloads/commandline-tools-mac-arm64-6.0.1.251.zip" '<CLI SHA-256>'
-```
-
-The script verifies both hashes, checks the Studio signature and architecture, stages the archives, validates the bundled API 21 SDK metadata, installs the app and CLI tools without overwriting existing targets, installs the Harmony environment file, and runs the complete check. It expects the SDK to be bundled in the CLI archive, as described by Huawei; it does **not** automatically accept any license or sign into Huawei. Its archive-layout, signature and actual installation paths are **NOT_RUN** with real Huawei archives; if the vendor package differs, or an SDK/license click is required, it stops and needs owner attention. `--dry-run` works without downloads and makes no changes.
-
-The CLI installation target is `~/.local/bin/auri-harmony-6.0.1.251/command-line-tools`; the Studio target is `/Applications/DevEco-Studio.app`, falling back to `~/Applications` if `/Applications` is not writable. If the archive lacks SDK components, use DevEco Studio's SDK manager to install the HarmonyOS 6.0.1 API 21 Release SDK, including ArkTS/ETS, native and toolchains, then rerun the check; do not assume an OpenHarmony-only SDK is sufficient. Further GUI or license steps have not been verified on this machine.
-
-## Verification and removal
-
-The environment files are `~/.config/auri/ios-env.sh` and `~/.config/auri/harmony-env.sh`, with reviewable copies beside this record. Source each as needed; sourcing twice was checked in bash and zsh. No shell profile was edited. Run:
+A separate temporary copy ran:
 
 ```sh
-source ~/.config/auri/ios-env.sh
 source ~/.config/auri/harmony-env.sh
-execution/baseline/check-apple-harmony-toolchain.sh
-execution/baseline/test-apple-harmony-toolchain.sh
+probe_tmp=$(mktemp -d "${TMPDIR:-/tmp}/auri-harmony-build.XXXXXXXX")
+ditto execution/p0-spikes/harmonyos-probe "$probe_tmp/harmonyos-probe"
+cd "$probe_tmp/harmonyos-probe"
+ohpm install
+hvigorw assembleHap -p buildMode=debug --no-daemon
 ```
 
-The check runs every probe, reports one `OK`, `MISSING` or `BLOCKED` line per tool, and exits 0 only if all pass. Its first run before any installation exited 1 with XcodeGen missing. The final real-machine output was:
+`ohpm install` exited 0 (`install completed in 0s 26ms`). `hvigorw` exited 255 after `Execution failed for task 'default@CompileArkTS'`, `COMPILE RESULT:FAIL {ERROR:70 WARN:17}` and `BUILD FAILED`; no HAP was produced. Its generated build log identified `apiVersion: 26` and SDK path `/Applications/DevEco-Studio.app/Contents/sdk`, even though the project targets `6.0.1(21)`. The compiler printed 69 numbered diagnostics: 67 reject untyped object literals, one says `Property 'pressedTime' does not exist on type 'KeyEvent'` in `AVSessionProbe.ets:120:43`, and one rejects an `ARMED`/`BLOCKED` versus `ROUTING` comparison in `CaptureProbe.ets:224:11`. The complete captured output, with terminal colours and trailing whitespace removed and the temporary path normalized, is in [harmonyos-probe-build-2026-11-18.log](harmonyos-probe-build-2026-11-18.log). The build stopped before signing, so signing or account requirements were not established. It also printed `Installing pnpm@10.28.2...` followed by `1 high severity vulnerability`; no audit fix was run.
 
-```text
-Xcode: MISSING full Xcode unavailable
-iOS SDK: BLOCKED full Xcode and its first launch are required
-Xcode first launch: BLOCKED license or first launch incomplete
-iOS Simulator: BLOCKED no available iOS runtime
-XcodeGen: OK Version: 2.46.0
-DevEco Studio: MISSING /Applications/DevEco-Studio.app
-HarmonyOS SDK: BLOCKED HarmonyOS API 21 / 6.0.1.112 not verified
-hvigorw: BLOCKED requires 6.21.1; observed none
-ohpm: BLOCKED requires 6.0.1; observed none
-DevEco Node: BLOCKED bundled Node not verified
-exit=1
-```
+## Owner actions and remaining work
 
-The fixture test uses fake tools and SDK metadata solely to verify status and exit behavior; it is not evidence that either actual platform builds. The Harmony installer dry-run and a checksum-mismatch rejection were tested, but installation was not.
+1. **`BLOCKED_EXTERNAL`: install an iOS Simulator runtime** for simulator execution/tests. The owner can run `xcodebuild -downloadPlatform iOS`, then `xcrun simctl list runtimes`. A runtime was not needed for the successful generic build.
+2. **`BLOCKED_EXTERNAL`: provide the pinned Harmony toolchain.** Obtain Huawei's DevEco Studio 6.0.1.251 for Mac ARM and matching Command Line Tools 6.0.1.251 archive and their Huawei-published SHA-256 values. The earlier survey could not verify the official download page or archive hashes from this host. If sign-in is required, the owner must sign in on Huawei's download page. The existing 26.0.1 app occupies the installer's target; preserve it first rather than overwrite it. At this survey `/Applications` was writable and `~/Applications/DevEco-Studio-26.0.1.app` did not exist. After obtaining the archives and verifying that destination is still free, the owner can run:
 
-To remove only this task's Homebrew tools, run `brew uninstall xcodegen xcodes mas` after checking whether anything else now depends on them. The owner may remove the two Auri environment files and, if subsequently installed with this procedure, move the DevEco or Xcode app to the Trash and remove `~/.local/bin/auri-harmony-6.0.1.251`; retain any SDK, runtime, caches or projects that should not be removed. No other project files were changed.
+   ```sh
+   mkdir -p "$HOME/Applications"
+   mv /Applications/DevEco-Studio.app "$HOME/Applications/DevEco-Studio-26.0.1.app"
+   execution/baseline/finish-deveco-install.sh \
+     "$HOME/Downloads/<actual Studio archive name>" '<Huawei Studio SHA-256>' \
+     "$HOME/Downloads/commandline-tools-mac-arm64-6.0.1.251.zip" '<Huawei CLI SHA-256>'
+   ```
 
-Both requested skills were found and read at `~/.claude/plugins/cache/claude-plugins-official/mattpocock-skills/1.3.1/skills/engineering/{implement-spec,tdd}/SKILL.md`; the task's explicit prohibition on helpers, PRs and questions overrides the generic skill workflow.
+   Replace the placeholders with the actual downloaded filename and Huawei-published hashes. The installer refuses to overwrite an existing target and its real Huawei archive layout remains unverified. If the needed API 21 SDK is absent, install HarmonyOS 6.0.1 Release/API 21 including ETS, native and toolchains via DevEco Studio's SDK Manager. Re-run the check and the temporary Harmony build above. The present compiler errors may also require a separate probe-code fix; installing the pinned version has not been shown to fix them.
+3. **`BLOCKED_EXTERNAL`: quit the pre-existing Xcode GUI.** PID 80211 started at 11:53:41, before this survey; a graceful `osascript` request to quit timed out with `AppleEvent已超时 (-1712)`, and the process remained. In Xcode choose **Xcode → Quit Xcode** and resolve any save dialog; if it is unresponsive, use **Apple menu → Force Quit → Xcode** after preserving needed work. No Simulator GUI, DevEco GUI, hvigor, emulator or Gradle process was found in the final process check, and no booted simulator was listed. CoreSimulator services and the Xcode developer policy service were present and had started before this survey. This verification did not force-terminate a pre-existing app or another worker's processes.
+
+Device signing, simulator execution, hardware behavior, and a successful HarmonyOS HAP remain unverified.
