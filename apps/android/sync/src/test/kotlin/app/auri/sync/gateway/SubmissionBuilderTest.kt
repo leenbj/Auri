@@ -1,13 +1,11 @@
 package app.auri.sync.gateway
 
 import app.auri.capture.contract.CaptureStatus
-import app.auri.capture.contract.ContractJson
 import app.auri.capture.contract.EndReason
 import app.auri.capture.contract.ExecutionLocation
 import app.auri.capture.contract.ObservedInputRouteType
 import app.auri.capture.contract.RevisionSource
 import app.auri.capture.contract.ReviewState
-import app.auri.capture.contract.TimeRange
 import app.auri.capture.library.RecordEntry
 import app.auri.capture.library.Revision
 import app.auri.capture.library.RevisionDraft
@@ -16,6 +14,7 @@ import app.auri.capture.testing.RepoContracts
 import app.auri.capture.testing.Samples
 import app.auri.sync.engine.JobKey
 import app.auri.sync.engine.RecordLibrarySubmissionSource
+import app.auri.sync.testing.FixtureRecords
 import app.auri.sync.testing.SyncSamples
 import java.time.Instant
 import kotlinx.coroutines.runBlocking
@@ -29,7 +28,6 @@ import kotlinx.serialization.json.double
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.long
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -283,47 +281,6 @@ class SubmissionBuilderTest {
         Unit
     }
 
-    // ---- 把合同样本里的值还原成手机本地数据 ----
-
-    private inline fun <reified E : Enum<E>> JsonElement.asEnum(): E = ContractJson.json.decodeFromString<E>("\"${jsonPrimitive.content}\"")
-
-    private fun JsonElement.nullableString(): String? = if (this is JsonNull) null else jsonPrimitive.content
-
-    private fun localDataFrom(instance: JsonObject): Pair<RecordEntry, Revision> {
-        val capture = instance.getValue("capture").jsonObject
-        val content = instance.getValue("content").jsonObject
-        val recordId = instance.getValue("record_id").jsonPrimitive.content
-        val entry = RecordEntry(
-            recordId = recordId,
-            captureSessionId = Samples.uuid(1),
-            startedAt = Instant.parse(capture.getValue("started_at").jsonPrimitive.content),
-            status = capture.getValue("status").asEnum(),
-            endReason = capture.getValue("end_reason").asEnum(),
-            captureDurationMs = capture.getValue("capture_duration_ms").jsonPrimitive.long,
-            speechDurationMs = capture.getValue("speech_duration_ms").jsonPrimitive.long,
-            speechSegments = capture.getValue("speech_segments").jsonArray.map {
-                TimeRange(it.jsonObject.getValue("start_ms").jsonPrimitive.long, it.jsonObject.getValue("end_ms").jsonPrimitive.long)
-            },
-            audio = Samples.audio(Samples.uuid(1)),
-            routeEvidenceId = capture.getValue("route_evidence_id").jsonPrimitive.content,
-            inputRouteType = capture.getValue("input_route_type").asEnum(),
-            headsetDisplayName = capture.getValue("headset_display_name").nullableString(),
-        )
-        val revision = Revision(
-            recordId = recordId,
-            number = instance.getValue("revision").jsonPrimitive.long.toInt(),
-            text = content.getValue("text").jsonPrimitive.content,
-            textSha256 = SyncSamples.sha256Hex(content.getValue("text").jsonPrimitive.content),
-            source = content.getValue("source").asEnum(),
-            language = content.getValue("language").jsonPrimitive.content,
-            reviewState = content.getValue("review_state").asEnum(),
-            executionLocation = content.getValue("execution_location").asEnum(),
-            engine = content.getValue("engine").nullableString(),
-            modelId = content.getValue("model_id").nullableString(),
-            modelVersion = content.getValue("model_version").nullableString(),
-            confidence = content.getValue("confidence").let { if (it is JsonNull) null else it.jsonPrimitive.double },
-            createdAt = Instant.parse("2026-11-15T02:31:00Z"),
-        )
-        return entry to revision
-    }
+    // 把合同样本里的值还原成手机本地数据：与真实网关测试共用（testFixtures 里的 FixtureRecords）
+    private fun localDataFrom(instance: JsonObject): Pair<RecordEntry, Revision> = FixtureRecords.localDataFrom(instance)
 }

@@ -43,3 +43,25 @@ tasks.test {
     inputs.files(fileTree(repoRoot.resolve("contracts")) { include("schemas/**", "fixtures/**") })
         .withPropertyName("contracts")
 }
+
+// 真实网关测试：起 services/gateway 里的 Python 网关进程（自签 TLS、临时数据目录、随机端口），用 :sync 的真实代码与它对话。
+// 要仓库的 .venv（CLAUDE.md 里的 pip install），所以不进 :sync:test；找不到解释器就直接失败，不会悄悄跳过。每次都跑，不用缓存。
+val gatewayPython: File = repoRoot.resolve(".venv/bin/python")
+tasks.register<Test>("realGatewayTest") {
+    group = "verification"
+    description = "对着真实的 Python 网关进程跑配对、入库、幂等、结果不确定、网关换机/吊销（E2，不是真机）"
+    val unitTests = sourceSets.getByName("test")
+    testClassesDirs = unitTests.output.classesDirs
+    classpath = unitTests.runtimeClasspath
+    useJUnit()
+    include("**/realgateway/**")
+    systemProperty("auri.repo.root", repoRoot.path)
+    systemProperty("auri.python", gatewayPython.path)
+    systemProperty("auri.gateway.src", repoRoot.resolve("services/gateway").path)
+    // 契约样本与网关源码都是输入：改了它们必须重跑
+    inputs.files(fileTree(repoRoot.resolve("contracts")) { include("schemas/**", "fixtures/**") }).withPropertyName("contracts")
+    inputs.files(fileTree(repoRoot.resolve("services/gateway")) { include("auri_gateway/**/*.py", "auri_gateway/**/*.sql") }).withPropertyName("gatewaySource")
+    outputs.upToDateWhen { false }
+    doFirst { check(gatewayPython.canExecute()) { "找不到 ${gatewayPython.path}：先建仓库的 Python 环境（见 CLAUDE.md“命令”一节）" } }
+    testLogging { events("passed", "failed", "skipped") }
+}
