@@ -4,6 +4,7 @@ import android.app.Application
 import app.auri.capture.coordinator.Clock
 import app.auri.platform.library.SqliteRecordLibrary
 import app.auri.platform.system.SystemClock
+import app.auri.sync.SyncController
 import app.auri.sync.SyncLog
 import app.auri.sync.discovery.GatewayDiscovery
 import app.auri.sync.discovery.GatewayLocator
@@ -68,7 +69,7 @@ class SyncRuntime(
     network: NetworkSignal,
     http: HttpExchangeFactory = HttpExchangeFactory { pin -> PinnedHttpsClient(pin) },
     log: SyncLog = SyncLog.None,
-) {
+) : SyncController {
     val jobs = SqliteSyncJobStore(library)
 
     /** 配对状态（可观察）。读它之前先 [start]：启动时才读第一次，之前没有任何状态。 */
@@ -87,7 +88,7 @@ class SyncRuntime(
     private val loop = SyncLoop(engine, jobs, network, clock, log = log)
 
     /** 界面要的同步状态汇总：配对状态与任务表任何一边变了都重新汇总。 */
-    val status: Flow<SyncStatus> = combine(pairing.states, jobs.observe()) { pairingState, list -> SyncStatus.of(pairingState, list) }.distinctUntilChanged()
+    override val status: Flow<SyncStatus> = combine(pairing.states, jobs.observe()) { pairingState, list -> SyncStatus.of(pairingState, list) }.distinctUntilChanged()
 
     fun start(): Job = scope.launch {
         pairing.refresh()
@@ -97,7 +98,7 @@ class SyncRuntime(
     }
 
     /** 用二维码里的载荷配对。成功之后，因公钥不符或令牌被拒而停下的任务回到队列，并立刻同步一轮。 */
-    suspend fun pair(payload: PairingPayload): PairingOutcome {
+    override suspend fun pair(payload: PairingPayload): PairingOutcome {
         val outcome = pairingService.pair(payload)
         if (outcome is PairingOutcome.Paired) {
             // 令牌已经存下：即使调用方此刻被取消，也要把任务放回队列，否则它们会一直停着
@@ -108,7 +109,7 @@ class SyncRuntime(
     }
 
     /** 回到前台、用户点了“现在同步”：立刻跑一轮，并让探测的退避从头开始。 */
-    fun syncNow() = loop.nudge()
+    override fun syncNow() = loop.nudge()
 
     companion object {
         private const val PAIRING_KEY_ALIAS = "auri.sync.pairing.v1"
