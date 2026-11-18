@@ -105,7 +105,9 @@ class TranscriptionDoesNotDropFramesTest : BoundedSchedulerTest() {
             assertTrue("第一段的推理已开始", engineStarted.await(5, TimeUnit.SECONDS))
 
             control.press(BusinessCommand.START)
-            awaitUntil("竞争推理时开始录音", timeoutMs = 1_000) { coordinator.snapshot.value.state == CaptureState.ROUTING }
+            awaitUntil("竞争推理时开始录音", timeoutMs = 1_000) {
+                coordinator.snapshot.value.state == CaptureState.ROUTING && capture.requests.size >= 2
+            }
             capture.verifiedRoute(epoch = 1)
             awaitUntil("竞争推理时确认路由", timeoutMs = 1_000) { coordinator.snapshot.value.state == CaptureState.RECORDING }
             measuring.set(true)
@@ -277,7 +279,9 @@ class TranscriptionDoesNotDropFramesTest : BoundedSchedulerTest() {
         expectedRecordings: Int,
     ) {
         control.press(BusinessCommand.START)
-        awaitUntil("开始后等路由确认") { coordinator.snapshot.value.state == CaptureState.ROUTING }
+        awaitUntil("开始后等路由确认") {
+            coordinator.snapshot.value.state == CaptureState.ROUTING && capture.requests.size >= expectedRecordings
+        }
         capture.verifiedRoute(epoch = 1)
         awaitUntil("路由确认后录音中") { coordinator.snapshot.value.state == CaptureState.RECORDING }
         repeat(frames) {
