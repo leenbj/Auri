@@ -27,6 +27,8 @@ import kotlinx.coroutines.flow.callbackFlow
  *  - 内存：`ActivityManager.MemoryInfo` 的 `availMem` 与 `lowMemory`；
  *  - 存储：应用私有目录所在分区的 `StatFs.availableBytes`。
  * 内存与存储没有变化回调，所以 [changes] 只管温度与省电模式，其余靠调度器按有界的间隔自己重查（见 [app.auri.capture.scheduler.SchedulerConfig.resourceRecheckMs]）。
+ * 订阅 [changes] 时系统会立刻回报一次当前温度状态（`addThermalStatusListener` 注册即回调），所以订阅方先收到一个信号：只是多重查一次，无害；
+ * 但要证明“变化会通知”的人必须丢掉它（见 AndroidResourceMonitorTest）。
  * 读数不含任何内容或标识。读不出来就抛异常：调度器把监视器故障当作“可用”处理（不让一个读不出来的传感器永远挡住转录，
  * 引擎自己的失败路径兜底；SchedulerWaitingTest 钉住这一条）。
  *
