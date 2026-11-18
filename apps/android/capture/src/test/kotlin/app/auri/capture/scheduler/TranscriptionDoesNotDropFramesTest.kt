@@ -3,6 +3,10 @@ package app.auri.capture.scheduler
 import app.auri.capture.contract.BusinessCommand
 import app.auri.capture.contract.CaptureState
 import app.auri.capture.contract.CaptureStatus
+import app.auri.capture.contract.CaptureHandle
+import app.auri.capture.adapter.PcmFormat
+import app.auri.capture.adapter.RecordingStore
+import app.auri.capture.adapter.RecordingWriter
 import app.auri.capture.coordinator.CaptureConfig
 import app.auri.capture.coordinator.CaptureCoordinator
 import app.auri.capture.pipeline.RecordPipeline
@@ -18,8 +22,12 @@ import app.auri.capture.testing.InMemoryRecordLibrary
 import app.auri.capture.testing.SequentialIds
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.locks.LockSupport
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -32,6 +40,8 @@ import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 /**
@@ -46,6 +56,97 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class TranscriptionDoesNotDropFramesTest : BoundedSchedulerTest() {
     private val frameSamples = 320 // 20 ms @ 16 kHz
+
+    @Test
+    fun `真实低优先级 CPU 推理并发时，实时生产的录音帧零丢失且延迟有界`() {
+        val appExecutor = Executors.newSingleThreadExecutor { runnable -> Thread(runnable, "capture-mailbox").apply { isDaemon = true } }
+        val appScope = CoroutineScope(SupervisorJob() + appExecutor.asCoroutineDispatcher())
+        val clock = FakeClock(TestCoroutineScheduler())
+        val control = FakeControlAdapter(clock)
+        val capture = FakeCaptureAdapter()
+        val stored = FakeRecordingStore()
+        val measuring = AtomicBoolean(false)
+        val sent = ConcurrentLinkedQueue<Long>()
+        val latencies = CopyOnWriteArrayList<Long>()
+        val store = object : RecordingStore {
+            override fun begin(recordId: String, handle: CaptureHandle, format: PcmFormat): RecordingWriter {
+                val writer = stored.begin(recordId, handle, format)
+                return object : RecordingWriter by writer {
+                    override fun append(handle: CaptureHandle, samples: ShortArray) {
+                        if (measuring.get()) latencies += System.nanoTime() - checkNotNull(sent.poll())
+                        writer.append(handle, samples)
+                    }
+                }
+            }
+        }
+        val output = CollectingOutput()
+        val coordinator = CaptureCoordinator(control, capture, store, output, clock, SequentialIds(), CaptureConfig(), appScope, Dispatchers.IO)
+        val library = InMemoryRecordLibrary()
+        val engineStarted = CountDownLatch(1)
+        val burning = AtomicBoolean(true)
+        val result = AtomicLong()
+        val engineThreads = CopyOnWriteArrayList<Thread>()
+        val adapter = FakeTranscriptionAdapter().apply {
+            hook = {
+                engineThreads += Thread.currentThread()
+                engineStarted.countDown()
+                var value = 1L
+                while (burning.get()) value = value * 1_664_525 + 1_013_904_223
+                result.set(value)
+            }
+        }
+        val runtime = TranscriptionRuntime(library, adapter, clock, appScope)
+        output.forwardTo = RecordPipeline(library, runtime.scheduler, appScope)
+        var producer: Thread? = null
+        try {
+            coordinator.enableControlMode()
+            awaitUntil("进入待命") { coordinator.snapshot.value.state == CaptureState.ARMED }
+            recordSegmentLive(control, coordinator, capture, output, frames = 5, expectedRecordings = 1)
+            assertTrue("第一段的推理已开始", engineStarted.await(5, TimeUnit.SECONDS))
+
+            control.press(BusinessCommand.START)
+            awaitUntil("竞争推理时开始录音", timeoutMs = 1_000) { coordinator.snapshot.value.state == CaptureState.ROUTING }
+            capture.verifiedRoute(epoch = 1)
+            awaitUntil("竞争推理时确认路由", timeoutMs = 1_000) { coordinator.snapshot.value.state == CaptureState.RECORDING }
+            measuring.set(true)
+            val productionStarted = System.nanoTime()
+            producer = Thread({
+                var due = System.nanoTime()
+                repeat(150) {
+                    while (System.nanoTime() < due) LockSupport.parkNanos(due - System.nanoTime())
+                    sent.add(due)
+                    capture.frames(samples = frameSamples, epoch = 1)
+                    due += TimeUnit.MILLISECONDS.toNanos(20)
+                }
+            }, "real-time-frame-producer").apply { isDaemon = true; start() }
+            producer.join(5_000)
+            assertFalse("生产线程按实时节奏结束", producer.isAlive)
+            val durationMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - productionStarted)
+            assertTrue("150 帧按 20 ms 间隔生产至少需 2.9 秒", durationMs >= 2_900)
+            awaitUntil("所有帧已送达", timeoutMs = 2_000) { latencies.size == 150 }
+            val maxLatencyMs = TimeUnit.NANOSECONDS.toMillis(latencies.max())
+            println("contention_frames=150 producer_duration_ms=$durationMs max_delivery_latency_ms=$maxLatencyMs")
+            assertTrue("每帧到达写入的最大延迟低于 500 ms", maxLatencyMs < 500)
+            assertTrue("推理在整个录音期间持续占用 CPU", engineThreads.single().isAlive && burning.get())
+            control.press(BusinessCommand.STOP)
+            awaitUntil("第二段封存") { coordinator.snapshot.value.state == CaptureState.ARMED && output.recordings.size == 2 }
+
+            val counters = coordinator.snapshot.value.counters
+            assertEquals(0L, counters.droppedStale)
+            assertEquals(0L, counters.droppedGate)
+            assertEquals(0L, counters.discardedQuarantineSamples)
+            assertEquals(155L * frameSamples, counters.writtenSamples)
+            assertEquals(155 * frameSamples, stored.written.size)
+            assertEquals(Thread.MIN_PRIORITY, engineThreads.single().priority)
+        } finally {
+            burning.set(false)
+            producer?.join(5_000)
+            appScope.cancel()
+            runtime.close()
+            appExecutor.shutdownNow()
+            appExecutor.awaitTermination(5, TimeUnit.SECONDS)
+        }
+    }
 
     private fun recordSegment(rig: CaptureRig, frames: Int) {
         rig.control.press(BusinessCommand.START)
