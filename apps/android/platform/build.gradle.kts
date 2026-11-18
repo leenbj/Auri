@@ -12,6 +12,8 @@ android {
     defaultConfig {
         // 与 :asr、探针一致；API 31 才有 setCommunicationDevice / getCommunicationDevice
         minSdk = 31
+        // 与 :app 一致：引擎只带 arm64-v8a 的原生库
+        ndk { abiFilters += "arm64-v8a" }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

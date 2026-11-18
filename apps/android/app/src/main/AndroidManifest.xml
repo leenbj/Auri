@@ -1,9 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- 本模块只是 Ticket 14 的宿主：不声明任何权限（尤其是 INTERNET）。真正的录音界面是 Ticket 16。 -->
+<!--
+  主清单本身不声明任何权限（尤其是 INTERNET）：采集需要的权限与前台服务在 :platform 的清单里，合并进来；
+  NoNetworkManifestTest 检查合并后的清单里没有 INTERNET。
+  allowBackup=false：录音与文字不进系统备份。
+-->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <application
+        android:name=".AuriApplication"
         android:allowBackup="false"
         android:label="Auri"
-        android:supportsRtl="true" />
+        android:supportsRtl="true"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
 </manifest>
