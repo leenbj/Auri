@@ -6,6 +6,10 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.io.OutputStream
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -484,6 +488,105 @@ class ModelManagerTest {
         rig.server.releaseStall()
         manager.awaitInstalled(rig.id)
         assertEquals(1, rig.server.requests.size)
+    }
+
+    /**
+     * 把“旧传输被暂停或取消之后、还没收完尾”的那一刻留住：第一个被打开的残片写入流在被关闭时卡住，直到 [letFirstClose]。
+     * 同时数着任何时刻最多有几个写入流开着（一个残片不许有两个写入者）。
+     */
+    private class HeldFirstSink {
+        private val open = AtomicInteger()
+        private val firstIsNext = AtomicBoolean(true)
+        val mostOpen = AtomicInteger()
+        val firstIsClosing = CountDownLatch(1)
+        private val release = CountDownLatch(1)
+
+        val openNow: Int get() = open.get()
+
+        fun letFirstClose() = release.countDown()
+
+        fun openSink(file: File): OutputStream {
+            val isFirst = firstIsNext.getAndSet(false)
+            mostOpen.accumulateAndGet(open.incrementAndGet()) { a, b -> maxOf(a, b) }
+            return object : OutputStream() {
+                private val out = FileOutputStream(file, true)
+
+                override fun write(b: Int) = out.write(b)
+
+                override fun write(b: ByteArray, off: Int, len: Int) = out.write(b, off, len)
+
+                override fun close() {
+                    if (isFirst) {
+                        firstIsClosing.countDown()
+                        release.await(20, TimeUnit.SECONDS)
+                    }
+                    out.close()
+                    open.decrementAndGet()
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `暂停之后旧的传输还在收尾时又点开始：新的传输等旧的放开残片才开始，不会两个一起写，也不会脱离暂停的控制`() {
+        val rig = Rig()
+        val held = HeldFirstSink()
+        val manager = rig.manager(openSink = held::openSink)
+        rig.server.stallAfterBytes = 60_000
+
+        manager.start(rig.id)
+        manager.await(rig.id) { (it.transfer as? Transfer.Downloading)?.let { d -> d.bytesDone >= 60_000 } == true }
+        manager.pause(rig.id)
+        assertTrue("第一个传输应当卡在放开残片文件这一步", held.firstIsClosing.await(10, TimeUnit.SECONDS))
+
+        manager.start(rig.id) // 旧传输还没收完尾，用户（或调用方）又点了“开始”
+        Thread.sleep(500) // 给一个过早开始的新传输足够的时间去联网、去打开残片
+
+        assertEquals("旧传输还没放开残片，新传输不能先去联网", 1, rig.server.requests.size)
+        assertEquals("旧传输还没放开残片，不能已经有第二个写入者", 1, held.openNow)
+        held.letFirstClose()
+
+        // 旧传输收完尾之后新传输从残片接着下（服务器的停顿也让它卡在中途）；对它按暂停必须生效：它没有被旧传输的收尾“摘掉”
+        manager.await(rig.id) { (it.transfer as? Transfer.Downloading)?.let { d -> d.bytesDone >= 120_000 } == true }
+        manager.pause(rig.id)
+        val paused = manager.await(rig.id) { it.transfer is Transfer.Paused }.transfer as Transfer.Paused
+        assertEquals(120_000L, paused.bytesDone)
+
+        rig.server.stallAfterBytes = null
+        rig.server.releaseStall()
+        manager.start(rig.id)
+        manager.awaitInstalled(rig.id)
+
+        assertEquals(listOf(null, "bytes=60000-", "bytes=120000-"), rig.server.requests.map { it.range })
+        assertEquals("任何时候一个残片都只有一个写入者", 1, held.mostOpen.get())
+        assertTrue(manager.active.value is ActiveModelStatus.Ready)
+    }
+
+    @Test
+    fun `取消之后旧的传输还在收尾时又点开始：旧的先把放弃的残片清掉，新的传输从头开始，不接着一个已经放弃的残片`() {
+        val rig = Rig()
+        val held = HeldFirstSink()
+        val manager = rig.manager(openSink = held::openSink)
+        rig.server.stallAfterBytes = 60_000
+
+        manager.start(rig.id)
+        manager.await(rig.id) { (it.transfer as? Transfer.Downloading)?.let { d -> d.bytesDone >= 60_000 } == true }
+        manager.cancel(rig.id)
+        assertTrue("第一个传输应当卡在放开残片文件这一步", held.firstIsClosing.await(10, TimeUnit.SECONDS))
+
+        manager.start(rig.id) // 取消还没收完尾就又点了“开始”
+        Thread.sleep(500)
+        assertEquals("旧传输还没放开残片，新传输不能先去联网", 1, rig.server.requests.size)
+        held.letFirstClose()
+
+        // 新传输是从头开始的（取消就是放弃那个残片）：服务器收到的第二个请求没有 Range
+        rig.server.awaitRequests(2)
+        assertEquals(listOf(null, null), rig.server.requests.map { it.range })
+
+        rig.server.stallAfterBytes = null
+        rig.server.releaseStall()
+        manager.awaitInstalled(rig.id)
+        assertEquals("任何时候一个残片都只有一个写入者", 1, held.mostOpen.get())
     }
 
     @Test

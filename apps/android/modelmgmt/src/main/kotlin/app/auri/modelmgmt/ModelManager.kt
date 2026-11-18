@@ -170,11 +170,14 @@ class ModelManager(
     fun start(modelId: String) {
         val entry = catalog.entry(modelId) ?: return
         synchronized(lock) {
-            if (jobs[modelId]?.isActive == true) return
+            val previous = jobs[modelId]
+            if (previous?.isActive == true) return
             val current = mutableState.value.entry(modelId)
             if (current.isInstalled && current.transfer == Transfer.Idle) return
-            stops.remove(modelId)
-            jobs[modelId] = scope.launch(Dispatchers.IO) { runTransfer(entry) }
+            // 上一个传输刚被暂停或取消、还在收尾（残片文件还没放开）：它停下的原因留给它自己去读，新的传输等它收完才开始，
+            // 绝不与它同时碰同一个残片。收尾已经结束（或根本没跑起来）时，没人会读的旧原因在这里清掉
+            if (previous == null || previous.isCompleted) stops.remove(modelId)
+            jobs[modelId] = scope.launch(Dispatchers.IO) { runTransfer(entry, after = previous) }
         }
     }
 
@@ -218,12 +221,15 @@ class ModelManager(
         }
     }
 
-    private suspend fun runTransfer(entry: CatalogEntry) {
+    private suspend fun runTransfer(entry: CatalogEntry, after: Job?) {
         val id = entry.modelId
         val manifest = entry.manifest
         val workDir = store.downloadDir(id, manifest.modelVersion)
+        val self = currentCoroutineContext()[Job]
         var outcome: Outcome = Outcome.Unchanged
         try {
+            // 在 try 里等：等的时候被暂停或取消，走的是下面同一套善后
+            after?.join()
             val have = downloader.partialBytes(manifest.archive, workDir)
             val needed = SpaceRule.needed(manifest.archive.sizeBytes, manifest.files.sumOf { it.sizeBytes }, have)
             val available = space.usableBytes()
@@ -252,7 +258,7 @@ class ModelManager(
             // 不认识的失败也要让界面有个交代，而不是永远停在“下载中”
             outcome = Outcome.Moved(Transfer.Failed(ModelError(ModelErrorKind.STORAGE_ERROR), downloader.partialBytes(manifest.archive, workDir)))
         } finally {
-            finish(id, outcome)
+            finish(id, self, outcome)
         }
     }
 
@@ -264,10 +270,13 @@ class ModelManager(
         data class Moved(val transfer: Transfer) : Outcome
     }
 
-    /** 传输结束的唯一出口：同一个临界区里摘掉任务并发布最终状态，之后马上又能 [start]。 */
-    private fun finish(modelId: String, outcome: Outcome) {
+    /**
+     * 传输结束的唯一出口：同一个临界区里摘掉任务并发布最终状态，之后马上又能 [start]。
+     * 只摘自己（[self]）：收尾期间 [start] 已经登记了接班的新传输时，不能把它摘掉，否则它会脱离暂停与取消的控制。
+     */
+    private fun finish(modelId: String, self: Job?, outcome: Outcome) {
         synchronized(lock) {
-            jobs.remove(modelId)
+            if (jobs[modelId] === self) jobs.remove(modelId)
             when (outcome) {
                 Outcome.Unchanged -> Unit
                 Outcome.Installed -> updateEntry(modelId) { it.copy(transfer = Transfer.Idle) }
