@@ -9,6 +9,7 @@ import app.auri.capture.contract.PlatformEvent
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -196,6 +197,42 @@ class CompositeControlAdapterTest {
 
         assertEquals(listOf(0L, 1L), observed)
         assertEquals("命令订阅者的顺序必须和旁听者、和编号一致", listOf(0L, 1L), delivered)
+    }
+
+    @Test
+    fun `编号也在锁里取：卡在“取得编号”这一步的事件，不会被另一个来源的事件超过——序号必须和递送的先后一致`() {
+        val numbered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val counter = AtomicLong(0)
+        val nextSequence = {
+            val number = counter.getAndIncrement()
+            if (number == 0L) {
+                numbered.countDown()
+                release.await(5, TimeUnit.SECONDS)
+            }
+            number
+        }
+        val screenSource = StubAdapter()
+        val headsetSource = StubAdapter()
+        val own = CompositeControlAdapter(screenSource, headsetSource, nextSequence = nextSequence)
+        val delivered = CopyOnWriteArrayList<Long>()
+        own.onCommand { delivered += it.sequence }
+
+        val first = thread { screenSource.emit(ControlSource.SCREEN_CONTROL, sequence = 0) }
+        val second = thread(start = false) { headsetSource.emit(ControlSource.HEADSET_REMOTE, sequence = 0) }
+        try {
+            assertTrue("第一个事件已取得编号 0，卡在编号这一步", numbered.await(5, TimeUnit.SECONDS))
+            second.start()
+            // 编号若在锁外，第二个事件会取到 1、直接递送完（TERMINATED），先于编号 0 到达订阅者
+            awaitBlockedOrDone(second)
+            assertEquals("第二个事件必须被挡在第一个后面，连编号都不能先取", Thread.State.BLOCKED, second.state)
+        } finally {
+            release.countDown()
+        }
+        first.join(5_000)
+        second.join(5_000)
+
+        assertEquals("序号与递送的先后一致", listOf(0L, 1L), delivered)
     }
 
     @Test

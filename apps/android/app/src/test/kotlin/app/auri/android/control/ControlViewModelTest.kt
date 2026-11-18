@@ -6,6 +6,7 @@ import androidx.lifecycle.ViewModelStore
 import app.auri.android.home.CaptureFact
 import app.auri.capture.adapter.Subscription
 import app.auri.capture.calibration.CalibrationStep
+import app.auri.capture.calibration.CapabilityRecord
 import app.auri.capture.calibration.CompatStatus
 import app.auri.capture.calibration.EvidenceLevel
 import app.auri.capture.calibration.EvidenceSetting
@@ -587,6 +588,56 @@ class ControlViewModelTest {
         val survived = rig.store.saves.single().capabilities.continueRecordingWhenLocked
         assertEquals(CompatStatus.SUPPORTED_RECORDING_IN_BACKGROUND, survived.status)
         assertEquals(EvidenceLevel.E3, survived.evidenceLevel)
+    }
+
+    @Test
+    fun `锁屏读数变成读不出来：向导不再沿用之前的“锁着”，之后声明手势开始没效果，档案里不写“锁屏时重新开始”不支持`() = runUnconfined {
+        val rig = rig(CaptureState.ARMED)
+        rig.viewModel.setRealDeviceConfirmed(true)
+        rig.viewModel.startCalibration()
+        repeat(3) { rig.viewModel.skipStep() }
+        // 第四步：录音中锁屏，锁屏时耳机手势停下了录音，封存完成
+        rig.gesture(PlatformEvent.SCREEN_BUTTON, BusinessCommand.START, ControlSource.SCREEN_CONTROL)
+        rig.decide(CaptureEvent.START, CaptureState.ROUTING)
+        rig.decide(CaptureEvent.ROUTE_VERIFIED, CaptureState.RECORDING)
+        rig.lock.value = true
+        rig.gesture(PlatformEvent.TOGGLE, BusinessCommand.TOGGLE)
+        rig.decide(CaptureEvent.TOGGLE, CaptureState.FINALIZING)
+        rig.decide(CaptureEvent.FINALIZE_COMPLETE, CaptureState.ARMED)
+        rig.lock.value = null // 解锁了，系统这次没读出来
+        rig.viewModel.reportNoEffect() // 之后手势再开始，没反应——不知道是不是还在锁屏
+        rig.viewModel.nextStep()
+        rig.viewModel.saveProfile()
+
+        val capabilities = rig.store.saves.single().capabilities
+        assertEquals("锁屏时手势停下了录音，是观察到的", CompatStatus.SUPPORTED_RECORDING_IN_BACKGROUND, capabilities.continueRecordingWhenLocked.status)
+        assertEquals(CapabilityRecord.untested, capabilities.restartAfterStopWhenLocked)
+    }
+
+    @Test
+    fun `声明没效果时，界面把实际的采集状态交给向导：向导所知的状态落后于实际，就不算“开始手势没效果”`() = runUnconfined {
+        val rig = rig(CaptureState.ARMED)
+        rig.viewModel.setRealDeviceConfirmed(true)
+        rig.viewModel.startCalibration()
+        rig.viewModel.skipStep()
+        // 第二步：屏幕按钮开始录音，耳机手势停止成功
+        rig.gesture(PlatformEvent.SCREEN_BUTTON, BusinessCommand.START, ControlSource.SCREEN_CONTROL)
+        rig.decide(CaptureEvent.START, CaptureState.ROUTING)
+        rig.decide(CaptureEvent.ROUTE_VERIFIED, CaptureState.RECORDING)
+        rig.gesture(PlatformEvent.TOGGLE, BusinessCommand.TOGGLE)
+        rig.decide(CaptureEvent.TOGGLE, CaptureState.FINALIZING)
+        rig.decide(CaptureEvent.FINALIZE_COMPLETE, CaptureState.ARMED)
+        rig.viewModel.nextStep()
+        // 第三步：用户用屏幕按钮开始了录音（实际状态已是录音中），那个决定还没送到向导
+        rig.controls.move(CaptureState.RECORDING)
+        rig.viewModel.reportNoEffect() // 随后耳机手势没反应：那是一次停止手势
+        rig.viewModel.nextStep()
+        rig.viewModel.skipStep()
+        rig.viewModel.saveProfile()
+
+        val capabilities = rig.store.saves.single().capabilities
+        assertEquals("第二步手势停止是观察到的", CompatStatus.SUPPORTED_FOREGROUND, capabilities.stopWhileBluetoothMicActive.status)
+        assertEquals("失败的是停止手势，不能写成开始不支持", CapabilityRecord.untested, capabilities.foregroundStartStop)
     }
 
     @Test

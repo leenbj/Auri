@@ -19,10 +19,11 @@ class CompositeControlAdapter(
     private val screen: ControlAdapter,
     private val headset: ControlAdapter,
     private val log: (String) -> Unit = {},
+    /** 取下一个序号；测试替换它，在“取得编号”这一步卡住一个线程，验证编号发生在递送锁里。 */
+    private val nextSequence: () -> Long = AtomicLong(0)::getAndIncrement,
 ) : ControlAdapter {
     private val handlers = CopyOnWriteArrayList<(NormalizedControlEvent) -> Unit>()
     private val observers = CopyOnWriteArrayList<(NormalizedControlEvent) -> Unit>()
-    private val sequence = AtomicLong(0)
     private val deliveryLock = Any()
 
     init {
@@ -54,7 +55,7 @@ class CompositeControlAdapter(
     private fun forward(event: NormalizedControlEvent) {
         // 编号、旁听、递送是一个不可分的整体：两个来源同时来事件时，旁听者与命令订阅者必须看到同一个先后顺序
         synchronized(deliveryLock) {
-            val numbered = event.copy(sequence = sequence.getAndIncrement())
+            val numbered = event.copy(sequence = nextSequence())
             observers.forEach {
                 try {
                     it(numbered)

@@ -17,11 +17,14 @@ internal class StepRecord(
 /**
  * 用户声明“做了手势，没有任何效果”那一刻的环境。声明说的是刚做的那次手势，而那次手势想停止还是想开始、
  * 是不是在锁屏时做的，只有这一刻说得清：录音中的手势是想停止，就绪或受阻时的手势是想开始。不知道（null）一律不算。
+ *
+ * [lockSteady]：自上一个采集决定以来，锁屏状态没有变过（也没有读不出来过）。变过的话，声明时的锁屏状态代表不了那次手势做的时候——
+ * 比如锁屏时做了手势没反应、解锁回来才点“没反应”，声明时屏幕是亮的，手势却是在锁屏时做的。
  */
-internal class DeclaredAttempt(val state: CaptureState?, val screenLocked: Boolean?) {
-    fun wasStop(locked: Boolean) = state == CaptureState.RECORDING && screenLocked == locked
+internal class DeclaredAttempt(val state: CaptureState?, val screenLocked: Boolean?, val lockSteady: Boolean) {
+    fun wasStop(locked: Boolean) = lockSteady && state == CaptureState.RECORDING && screenLocked == locked
 
-    fun wasStart(locked: Boolean) = (state == CaptureState.ARMED || state == CaptureState.BLOCKED) && screenLocked == locked
+    fun wasStart(locked: Boolean) = lockSteady && (state == CaptureState.ARMED || state == CaptureState.BLOCKED) && screenLocked == locked
 }
 
 private enum class Verdict { POSITIVE, NEGATIVE, UNDETERMINED }
@@ -38,8 +41,10 @@ private class Finding(val verdict: Verdict, val evidenceId: String? = null)
  *    录音中的手势想停止，就绪或受阻时的手势想开始；亮屏的检查（第二、三步）不采纳锁屏时的声明，锁屏的检查反之。
  *    第四步里它还说不了“录音撑没撑过锁屏”；对“锁屏时重新开始”，还要求锁屏中手势真的停下过录音（那才是这一步的流程）。
  *    声明之后又收到耳机事件（用户又试了一次）则声明作废，由 CalibrationWizard 在收到事件时清掉。
- *  - 一次手势开始的结局属于它自己：手势让录音进入准备之后，紧接着离开准备的决定必须是“到达录音中”才算开始成功；
- *    准备被取消或受阻后，用户改点屏幕按钮录上的那一段，不能算在手势头上。
+ *    声明那一刻的环境还要“站得住”才采纳：向导所知的采集状态与界面给的实际状态一致、锁屏状态自上一个采集决定以来没变过也没读不出来过
+ *    （[DeclaredAttempt]）；这一步结束时还有事件没等到协调器的决定，这一步的声明作废（那次手势也许其实成功了，结局晚到）。
+ *  - 一次手势开始的结局属于它自己：手势让录音进入准备之后，紧接着离开准备的决定必须是“到达录音中”才算开始成功，
+ *    并且到达那一刻的锁屏状态与开始时一致；准备被取消或受阻后，用户改点屏幕按钮录上的那一段，不能算在手势头上。
  *  - 一项能力由一或两项检查决定：全部成功 = 支持；全部声明没效果 = 不支持；成功与没效果混合 = PARTIAL；
  *    只要有一项没有结论，整项能力就保持 NOT_TESTED。
  *  - 耳机手势指来自遥控的事件（耳机，或系统没说清来源的媒体键）；屏幕上的点击从不算。
@@ -172,7 +177,8 @@ internal object CalibrationFindings {
             o is Observation.Decided && o.isRemoteStart() && o.afterFinalize && o.screenLocked == locked &&
                 observations.drop(i + 1).filterIsInstance<Observation.Decided>()
                     .firstOrNull { it.stateBefore == CaptureState.ROUTING && it.stateAfter != CaptureState.ROUTING }
-                    ?.stateAfter == CaptureState.RECORDING
+                    // 录音到达“录音中”的那一刻，屏幕状态也要和开始时一致：中途解锁 / 锁屏的，没观察到在那种状态下真的录起来
+                    ?.let { it.stateAfter == CaptureState.RECORDING && it.screenLocked == locked } == true
         }
 
     /**

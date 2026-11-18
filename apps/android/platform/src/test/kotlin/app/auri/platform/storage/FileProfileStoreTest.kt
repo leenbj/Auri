@@ -109,6 +109,23 @@ class FileProfileStoreTest {
     }
 
     @Test
+    fun `替换这一步抛的不是 IOException（框架的运行时异常）：照样清掉写好的临时文件，异常原样抛出，旧档案还在`() {
+        val old = profile("FreeClip")
+        store().save(old)
+        val broken = FileProfileStore(file) { _, _ -> throw UnsupportedOperationException("文件系统不支持这种替换") }
+
+        try {
+            broken.save(profile("FreeClip 2"))
+            fail("运行时异常不能被吞掉，调用方要据此告诉用户“没保存上”")
+        } catch (expected: UnsupportedOperationException) {
+            // 预期
+        }
+
+        assertEquals("临时文件不能留在目录里", listOf("headset-profile.json"), file.parentFile.list()!!.toList())
+        assertEquals(old, store().load())
+    }
+
+    @Test
     fun `替换这一步失败时抛出，并把写好的临时文件清掉：目录里不留垃圾`() {
         // 目标位置被一个非空目录占着：临时文件写得进去，但替换不了
         File(file, "占位").also { it.parentFile.mkdirs() }.writeText("x")

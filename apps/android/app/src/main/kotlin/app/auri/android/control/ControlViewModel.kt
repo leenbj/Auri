@@ -270,8 +270,8 @@ class ControlViewModel(
         // 旁听在协调器之前看到每个控制事件（合成适配器保证），所以协调器的决定到达时向导一定已经见过对应的事件
         run.observer = observeControlEvents { wizard.onControlEvent(it) }
         run.jobs += scope.launch(start = CoroutineStart.UNDISPATCHED) { controls.decisions.collect { wizard.onDecision(it, screenLocked.value) } }
-        // 读不出来（null）不算观察
-        run.jobs += scope.launch(start = CoroutineStart.UNDISPATCHED) { screenLocked.collect { locked -> if (locked != null) wizard.onScreenLockChanged(locked) } }
+        // 读不出来（null）不算观察，但向导之前知道的锁屏状态从此不可信，要让它知道
+        run.jobs += scope.launch(start = CoroutineStart.UNDISPATCHED) { screenLocked.collect { locked -> wizard.onScreenLockChanged(locked) } }
         run.jobs += scope.launch(start = CoroutineStart.UNDISPATCHED) {
             wizard.state.collect { latest ->
                 local.update { current -> (current.phase as? Phase.Running)?.takeIf { it.run === run }?.let { current.copy(phase = it.copy(wizard = latest)) } ?: current }
@@ -291,7 +291,8 @@ class ControlViewModel(
     }
 
     fun reportNoEffect() {
-        runningWizard()?.reportNoEffect()
+        // 把此刻实际的采集状态交给向导：它自己所知的状态来自协调器的决定，决定送到有时延
+        runningWizard()?.reportNoEffect(controls.snapshot.value.state)
     }
 
     fun abortCalibration() {
