@@ -69,6 +69,11 @@ data class CalibrationState(
  * 结论只来自观察：没做的、跳过的、没观察到的能力保持 NOT_TESTED；“已连接 / 已配对”不是证据。
  */
 class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
+    init {
+        // 编号会写进证据标识（用冒号分隔），所以只允许短的字母数字串；不能带设备名之类的东西
+        require(RUN_ID_PATTERN.matches(runId)) { "校准编号只能是 1 到 80 个字母、数字、点、下划线或连字符" }
+    }
+
     private class StepData {
         var outcome: StepOutcome = StepOutcome.PENDING
         var attempt: Int = 1
@@ -205,17 +210,11 @@ class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
     @Synchronized
     fun buildProfile(profileId: String, profileVersion: Int, modelHint: String?): HeadsetProfile? {
         if (phase != CalibrationPhase.COMPLETED) return null
-        return HeadsetProfile(
-            profileId = profileId,
-            profileVersion = profileVersion,
-            manufacturerHint = null,
-            modelHint = modelHint,
-            firmwareConstraint = null,
-            platform = ProfilePlatform.ANDROID,
-            rawGestureVisible = false,
-            commandMapping = ControlProfile.generic().mapping,
-            capabilities = HeadsetCapabilities.allUntested,
-        )
+        val records = CalibrationStep.entries.map {
+            val data = steps.getValue(it)
+            StepRecord(it, data.attempt, data.noEffect, data.observations.toList())
+        }
+        return CalibrationFindings.profile(runId, setting, records, profileId, profileVersion, modelHint)
     }
 
     private fun finishStep(outcome: StepOutcome): Boolean {
@@ -263,6 +262,7 @@ class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
 
     private companion object {
         const val MAX_OBSERVATIONS_PER_STEP = 200
+        val RUN_ID_PATTERN = Regex("^[A-Za-z0-9._-]{1,80}$")
 
         val OBSERVE_ONLY: ControlProfile = ControlProfile.generic().observeOnly().copy(profileId = "calibration-observe-only")
         val TOGGLE_ALL: ControlProfile = ControlProfile.generic()
