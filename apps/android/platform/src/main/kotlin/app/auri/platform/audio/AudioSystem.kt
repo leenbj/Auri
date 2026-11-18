@@ -22,6 +22,7 @@ object AudioDeviceTypes {
     const val BUILTIN_MIC = 15
     const val USB_HEADSET = 22
     const val BLE_HEADSET = 26
+    const val BLE_SPEAKER = 27
 }
 
 /** 系统观测到的输入设备类型 → 合同里的 route_type。 */

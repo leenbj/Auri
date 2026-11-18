@@ -1,2 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" />
+<!--
+  采集所需的权限与前台服务放在这个库模块里，随它一起合并进应用。
+  没有 INTERNET：本地转录没有任何网络路径（NFR-008），应用的 NoNetworkManifestTest 检查合并后的清单。
+  麦克风运行时权限（RECORD_AUDIO）与麦克风类前台服务权限（FOREGROUND_SERVICE_MICROPHONE，API 34+）是两层，都要有。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application>
+        <service
+            android:name=".service.MicCaptureForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+    </application>
+</manifest>
