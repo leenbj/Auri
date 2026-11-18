@@ -100,5 +100,5 @@ export interface ProbeLogRecord {
   wall: string;
   kind: string;
   app_state: string;
-  data: Record<string, string | number | boolean | null | Array<string> | Array<Record<string, string | number | boolean | null>>>;
+  data: Record<string, string | number | boolean | null | undefined | Array<string> | Array<Record<string, string | number | boolean | null>>>;
 }

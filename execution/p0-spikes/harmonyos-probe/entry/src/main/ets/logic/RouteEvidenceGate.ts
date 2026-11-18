@@ -70,6 +70,7 @@ export class RouteEvidenceGate {
     if (generation !== this.generation) {
       return;
     }
+    this.generation += 1;
     this.routingActive = false;
     this.gateOpen = false;
   }

@@ -14,10 +14,82 @@ export type LogDataValue =
   | number
   | boolean
   | null
+  | undefined
   | Array<string>
   | Array<Record<string, string | number | boolean | null>>;
 
-export type LogDataMap = Record<string, LogDataValue>;
+export interface LogDataMap extends Record<string, LogDataValue> {
+  accepted_bytes?: LogDataValue;
+  accepted_duration_ms?: LogDataValue;
+  attribute_keys?: LogDataValue;
+  available_inputs?: LogDataValue;
+  business_command?: LogDataValue;
+  capture_state?: LogDataValue;
+  change_reason?: LogDataValue;
+  change_type?: LogDataValue;
+  channel?: LogDataValue;
+  channels?: LogDataValue;
+  code?: LogDataValue;
+  command?: LogDataValue;
+  contract_gap_note?: LogDataValue;
+  deduplicated?: LogDataValue;
+  device_id?: LogDataValue;
+  device_type?: LogDataValue;
+  devices?: LogDataValue;
+  discarded_bytes?: LogDataValue;
+  enabled?: LogDataValue;
+  epoch?: LogDataValue;
+  error_code?: LogDataValue;
+  error_message?: LogDataValue;
+  event?: LogDataValue;
+  first_accepted_mono_ns?: LogDataValue;
+  force_type?: LogDataValue;
+  gate_open?: LogDataValue;
+  generation?: LogDataValue;
+  gesture?: LogDataValue;
+  granted?: LogDataValue;
+  hint_type?: LogDataValue;
+  host_address?: LogDataValue;
+  key_action?: LogDataValue;
+  key_code?: LogDataValue;
+  last_accepted_mono_ns?: LogDataValue;
+  mapping?: LogDataValue;
+  market_name?: LogDataValue;
+  message?: LogDataValue;
+  mode?: LogDataValue;
+  normalized_platform_event?: LogDataValue;
+  note?: LogDataValue;
+  observed_devices?: LogDataValue;
+  observed_route_type?: LogDataValue;
+  os_full_name?: LogDataValue;
+  platform_command?: LogDataValue;
+  playback_state_contrast?: LogDataValue;
+  port?: LogDataValue;
+  product_model?: LogDataValue;
+  quarantined_bytes?: LogDataValue;
+  quarantined_bytes_discarded?: LogDataValue;
+  raw_action_code?: LogDataValue;
+  raw_event?: LogDataValue;
+  reason?: LogDataValue;
+  rejection_reason?: LogDataValue;
+  route_epoch?: LogDataValue;
+  route_verified_after_capturer_start?: LogDataValue;
+  sample_rate?: LogDataValue;
+  screen_state?: LogDataValue;
+  sdk_api_version?: LogDataValue;
+  sequence?: LogDataValue;
+  service_name?: LogDataValue;
+  service_type?: LogDataValue;
+  session_id?: LogDataValue;
+  source?: LogDataValue;
+  state?: LogDataValue;
+  stream_count?: LogDataValue;
+  target_device_id?: LogDataValue;
+  trigger?: LogDataValue;
+  unmapped_detail?: LogDataValue;
+  verification_state?: LogDataValue;
+  write_failures?: LogDataValue;
+}
 
 /**
  * Append-only JSON Lines logger writing into the app sandbox (`filesDir/probe-log.jsonl`).

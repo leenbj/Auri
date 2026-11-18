@@ -164,3 +164,41 @@ hvigorw assembleHap -p buildMode=debug --no-daemon
 A Gradle 8.10.2 daemon, PID 35342, appeared at 12:04:28 while the Android worker was active; this task ran no Gradle build and did not interrupt it. A subsequent `ps -p 80211,35342 -o pid,ppid,lstart,command` listed only Xcode PID 80211, so that Gradle daemon had exited by the last check.
 
 Device signing, simulator execution, hardware behavior, and a successful HarmonyOS HAP remain unverified.
+
+## 2026-11-18: HarmonyOS probe build on the installed toolchain
+
+This update supersedes the HarmonyOS build failure and HarmonyOS SDK-install owner action above. The selected build baseline is the owner's installed DevEco Studio 26.0.1, bundled SDK API 26 Beta1 (`26.0.1.120`), hvigor `6.26.20`, ohpm `26.0.1.220` and bundled JBR. This Studio's SDK settings offered API 26 Beta1 rather than the previously pinned API 21 Release SDK. The project still declares `targetSdkVersion: 6.0.1(21)` and `compatibleSdkVersion: 5.0.0(12)`; the SDK used to compile is not a change to those device targets. **Risk:** a Beta SDK is not a suitable final release baseline; a final release must be revalidated using a suitable Release SDK. The older toolchain-check script still tests the earlier pins, so its HarmonyOS version failures do not reflect this later decision.
+
+The original 69 diagnostics reproduced in a temporary copy: 67 untyped logging and device-data literals, one incorrect `KeyEvent.pressedTime` lookup, and one stale capture-state comparison. The literals now use the declared `LogDataMap` and `LogDevice` interfaces; the key time is read from `event.key.pressedTime`, with no deduplication ID when the key/time is missing. The installed declaration marks `KeyEvent.key` and `Key.pressedTime` `@since 9` (atomic service since 12); actual device behavior remains untested. Capture now enters `ROUTING` before asynchronous permission checks, invalidates a cancelled generation, checks it across asynchronous steps, and waits for any background-task start during cancellation. The Bluetooth route gate and log fields are preserved.
+
+The successful clean build used a fresh `ditto` copy, no signing credentials, and no parallel build from this worker:
+
+```sh
+probe_tmp=$(mktemp -d /tmp/auri-harmony-ticket10-clean.XXXXXXXX)
+ditto execution/p0-spikes/harmonyos-probe "$probe_tmp/harmonyos-probe"
+cd "$probe_tmp/harmonyos-probe"
+source ~/.config/auri/harmony-env.sh
+export JAVA_HOME=/Applications/DevEco-Studio.app/Contents/jbr/Contents/Home
+ohpm install
+node --import ./tests/resolve-ts.mjs --test tests/*.test.ts
+hvigorw assembleHap -p buildMode=debug --no-daemon
+```
+
+Actual output (the temporary directory was subsequently removed):
+
+```text
+install completed in 0s 32ms
+ℹ tests 25
+ℹ suites 4
+ℹ pass 25
+ℹ fail 0
+ℹ skipped 0
+> hvigor WARN: No signingConfig found for product default
+> hvigor BUILD SUCCESSFUL in 4 s 756 ms
+34 tasks in total: 34 executed, 0 up-to-date
+entry/build/default/outputs/default/entry-default-unsigned.hap  210392 bytes
+```
+
+The packager initially could not locate Java until `JAVA_HOME` was pointed at the Studio's bundled JBR; no system Java installation or account was needed. The build also emitted warnings that the Audio API's system capability is not supported on every device. The unsigned artifact proves compilation and packaging only. HarmonyOS owner-visible blockers now concern real-device work: obtaining local debug signing as needed, installation, and running the phone/headset, background, routing and mDNS scenarios. They remain `NOT_RUN`; no certificates, agreements, or sign-in were created or accepted here.
+
+Assumptions for this code-only result: the installed SDK declarations describe the API levels to report; a missing key time must produce no raw ID rather than an invented duplicate ID; generations need only be unique/monotonic, not consecutive; optional absent log fields stay absent when serialized; and the existing E2 tests and unsigned HAP cannot establish any real-device outcome.
