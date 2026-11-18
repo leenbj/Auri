@@ -34,7 +34,7 @@
 | 7 | 提交结果不确定时**先查询再决定是否重发**，不产生重复记录 | `SyncEngineTest`（35，假网关的六种故障）、`GatewayClientTest`（18）、`ProcessKillSurvivalTest`“发送途中被杀”。**对着真实网关**（`RealGatewayTest`）：“响应在路上丢了、网关其实已经入库”——先查询得知已入库，**不重发**，库里只有一条；“请求没送到网关”——先查询得知没有，才重新提交一次，库里恰好一条；“重复提交同一版”——网关回 `duplicate`，库里仍是一条；“同一版号、正文不同”——版本冲突，永久停下，库里留着最初的那一版。故障注入在 `HttpExchange` 边界、包着真实的 `PinnedHttpsClient` 与真网关（网关不留请求日志），并用 TCP 转发器的连接计数做独立证据 | E2 |
 | 8 | 真机上验证：在局域网内入库；断开 Wi-Fi 后录音，重连后自动补传 | **`NOT_RUN`**：本机没有手机。产品负责人的步骤在第 4 节；模拟器侧能证明的部分（任务表、事务、杀进程、飞行模式下网络信号变化、对真网关入库）在上面几行 | `NOT_RUN`（E3） |
 
-另：`README`（本文件）、`CLAUDE.md` “命令”一节、`.gitignore` 已更新；`:platform` 的隐私守卫（`NoPhoneMicPathTest`）从四个模块扩到六个——**同步层里任何地方都不能引用 `AudioRecord` / `MediaRecorder` 等向系统要麦克风的类**（变异验证见第 9 节）。
+另：本文件与 `CLAUDE.md` “命令”一节已更新（`.gitignore` 没有改：已有的 `execution/**/raw/` 就覆盖真机原始日志目录）；`:platform` 的隐私守卫（`NoPhoneMicPathTest`）从四个模块扩到六个——**同步层里任何地方都不能引用 `AudioRecord` / `MediaRecorder` 等向系统要麦克风的类**（变异验证见第 9 节）。
 
 ## 3. 在本机怎么跑
 
@@ -74,7 +74,7 @@ adb logcat -d -s AuriSync:I
 
 1. **起网关（Mac）**。`PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway serve --data-dir ~/auri-gateway-data --port 8443`（默认只绑回环和私网局域网地址，并广播 mDNS `_auri-gateway._tcp`，见 `services/gateway/OPERATIONS.md`）。macOS 防火墙询问是否允许 Python 接受传入连接时选允许；记下 Mac 的局域网 IP。
 2. **构建并安装**。`cd apps/android && ./gradlew :app:assembleDebug && adb install -r app/build/outputs/apk/debug/app-debug.apk`（`ADB_LIBUSB=1`；多台设备时先 `export ANDROID_SERIAL=<序列号>`）。
-3. **生成配对二维码**（另开一个终端）：`PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway pair --data-dir ~/auri-gateway-data`。终端会打印一个二维码，**5 分钟内有效、只能用一次**；网关按深色终端的习惯反色打印，手机端两种极性都读，但深色背景的终端最稳。
+3. **生成配对二维码**（另开一个终端）：`PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway pair --data-dir ~/auri-gateway-data`。终端会打印一个二维码，**5 分钟内有效、只能用一次**；网关按深色终端的习惯反色打印，手机端两种极性都读，但深色背景的终端最稳。Mac 有多块网卡或开着 VPN 时，二维码里的地址未必是手机够得着的那个：加 `--host <Mac 的局域网 IP>` 指定（见 `services/gateway/OPERATIONS.md`）。
 4. **配对**。手机上打开 Auri → “同步与配对” → 对准终端里的二维码（首次会要相机权限）。预期：界面显示已配对、没有需要处理的事；Mac 上 `PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway list-devices --data-dir ~/auri-gateway-data` 多了一台 `android` 设备。**截图①**（同步页，已配对）。再用同一个二维码扫第二次应当失败（配对码只能用一次，界面说明原因）；**不要**为了再试一次去放宽任何东西，重新 `pair` 生成新码即可。
 5. **在局域网内入库**。回首页，按 Ticket 16 的步骤用 FreeClip 录一段，说固定测试句：“今天是测试，Auri 录音转文字，一二三四五。”转录完成后回到“同步与配对”页：几秒内应显示已同步。在 Mac 上核对（只看条数与长度，不要把正文贴出来）：`sqlite3 -readonly ~/auri-gateway-data/gateway.db "SELECT record_id, revision, length(text), stored_at FROM revisions ORDER BY stored_at DESC LIMIT 3"`。记下从“转录完成”到“网关里出现”的秒数。**截图②**。
 6. **断开 Wi-Fi 后录音，重连后补传**。手机关闭 Wi-Fi（也关掉移动数据，免得走错网络），再录一段、转录完成。同步页应显示 **“等网关”**（不是“需要你处理”，也没有让用户做什么），Mac 上核对网关里**没有**这一条。**截图③**。重新打开 Wi-Fi：不用点任何东西，应当在一分钟内自动补传，状态回到已同步，网关里恰好多一条。记下“重连”到“网关里出现”的秒数（重试退避从 5 秒起翻倍，封顶 15 分钟，网络恢复会立刻触发一轮，不用等退避）。**截图④**。
