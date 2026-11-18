@@ -63,6 +63,7 @@ tasks.matching { it.name == "testDebugUnitTest" }.configureEach {
 dependencies {
     implementation(project(":asr"))
     implementation(project(":capture"))
+    implementation(project(":modelmgmt"))
     implementation(project(":platform"))
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
