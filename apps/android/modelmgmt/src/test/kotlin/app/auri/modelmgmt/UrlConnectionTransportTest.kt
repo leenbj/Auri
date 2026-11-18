@@ -1,8 +1,9 @@
 package app.auri.modelmgmt
 
-import java.io.IOException
+import java.net.SocketTimeoutException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -11,7 +12,7 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** 真实的 HttpURLConnection 实现，对着本机假服务器：状态、头、Range、重定向、策略与“立刻掐断阻塞的读取”。 */
+/** 真实的 HttpURLConnection 实现，对着本机假服务器：状态、头、Range、重定向、策略与停住的连接上的读超时。 */
 class UrlConnectionTransportTest {
     private val content = ByteArray(100_000) { (it * 31).toByte() }
     private val server = FakeModelServer(content)
@@ -93,23 +94,29 @@ class UrlConnectionTransportTest {
         assertThrows(TransportException::class.java) { transport.get(server.url) }
     }
 
+    /**
+     * 连接停住时读取不会一直挂着：读超时一到就以 IOException 失败，而不是读到“正常结束”（那样下载器会把半截当成整份）。
+     *
+     * 这里测不出 abort 的效果，也不该假装测得出：JDK 的 HttpURLConnection 里，进行中的读占着 MeteredStream 的锁，
+     * disconnect() 与流的 close() 都要等这把锁，所以在 JVM 上 abort 总是晚于读超时（实测：abort 在 60 秒读超时后才返回）。
+     * 下载器因此在另一条线程上调用 abort 并放弃读线程，“暂停立刻生效”由 ResumableDownloaderTest 用同一个真实传输层证明。
+     * 这个用例里 abort 照下载器的用法放在另一条线程上，只要求它不死锁、读线程以超时结束。
+     */
     @Test
-    fun `abort 立刻让卡在读取上的线程失败，不必等读超时`() {
+    fun `连接停住时读超时让读取以 IOException 失败，不会一直挂着，也不会读到正常结束`() {
         server.stallAfterBytes = 20_000
-        val slow = UrlConnectionTransport(policy = UrlPolicy.LOOPBACK_CLEARTEXT_FOR_TESTS, readTimeoutMs = 60_000)
-        val response = slow.get(server.url)
+        val shortTimeout = UrlConnectionTransport(policy = UrlPolicy.LOOPBACK_CLEARTEXT_FOR_TESTS, readTimeoutMs = 1_500)
+        val response = shortTimeout.get(server.url)
         val failure = AtomicReference<Throwable?>()
-        val started = CountDownLatch(1)
+        val received = AtomicLong()
         val finished = CountDownLatch(1)
         val reader = Thread {
             try {
                 val buffer = ByteArray(8192)
-                var total = 0
-                started.countDown()
                 while (true) {
                     val n = response.body.read(buffer)
                     if (n < 0) break
-                    total += n
+                    received.addAndGet(n.toLong())
                 }
             } catch (e: Throwable) {
                 failure.set(e)
@@ -118,16 +125,18 @@ class UrlConnectionTransportTest {
             }
         }
         reader.start()
-        assertTrue(started.await(5, TimeUnit.SECONDS))
-        Thread.sleep(300) // 让它读完前 20000 字节、卡在服务器那一头
-        assertEquals("读线程应该卡着", 1L, finished.count)
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        while (received.get() < 20_000 && System.nanoTime() < deadline) Thread.sleep(10)
+        assertEquals("服务器停住之前发的字节都应读到", 20_000L, received.get())
 
-        response.abort()
+        val aborted = CountDownLatch(1)
+        Thread { response.abort(); aborted.countDown() }.apply { isDaemon = true }.start()
 
-        assertTrue("abort 之后读线程必须很快结束", finished.await(5, TimeUnit.SECONDS))
-        assertTrue(failure.get() is IOException)
+        assertTrue("读超时之后读线程必须结束，而不是一直挂着", finished.await(10, TimeUnit.SECONDS))
+        assertTrue("abort 不能死锁", aborted.await(10, TimeUnit.SECONDS))
+        assertTrue("停住的连接要以读超时失败，不是正常结束：${failure.get()}", failure.get() is SocketTimeoutException)
+        assertEquals("读超时之后不会再多出字节", 20_000L, received.get())
         response.close()
-        server.releaseStall()
     }
 
     @Test

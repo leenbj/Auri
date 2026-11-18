@@ -298,7 +298,11 @@ class ResumableDownloader(
 
         suspend fun next(): Piece = runInterruptible(Dispatchers.IO) { queue.take() }
 
-        /** 没开始读就直接关响应；开始了就叫读线程停下，并在另一条线程上断开连接（Android 上立刻生效，JDK 上等读返回）。 */
+        /**
+     * 没开始读就直接关响应；开始了就叫读线程停下，并在另一条线程上断开连接。
+     * 断开多快由平台决定（JDK 上 abort 要等进行中的读返回，最长一个读超时），所以读线程是被放弃的：
+     * 它最多再多读一块、丢掉，随后自己关响应；暂停的生效不取决于它。
+     */
         fun release() {
             stopped = true
             if (!started) {

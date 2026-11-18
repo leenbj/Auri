@@ -25,7 +25,11 @@ interface TransportResponse : Closeable {
     /** 只有 2xx 响应有正文；其余状态（包括 416、5xx）的正文是空的，调用方只看状态码。 */
     val body: InputStream
 
-    /** 可以从别的线程调用：让阻塞在 [body] 上的读取立刻以 IOException 失败（暂停、取消时用，不必等读超时）。 */
+    /**
+     * 可以从别的线程调用：让阻塞在 [body] 上的读取以 IOException 结束（暂停、取消时用）。
+     * 多快取决于平台：JDK 的 HttpURLConnection 里进行中的读占着流的锁，disconnect() 要等读返回（最长一个读超时）才返回；
+     * Android 的实现没有在设备上验证过。所以调用方必须在不怕阻塞的线程上调用它，并且不能依赖它的返回时间或“立刻生效”。
+     */
     fun abort()
 }
 

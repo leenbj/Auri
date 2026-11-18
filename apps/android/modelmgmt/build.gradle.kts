@@ -32,10 +32,29 @@ android {
             it.useJUnit()
             // 测试直接读 apps/android/manifests/ 下真实的清单，不拷贝
             it.systemProperty("auri.manifests.dir", rootProject.projectDir.resolve("manifests").path)
-            // 真实下载只在显式要求时才跑：./gradlew :modelmgmt:testDebugUnitTest -PauriRealDownload=<缓存目录>
-            providers.gradleProperty("auriRealDownload").orNull?.let { dir -> it.systemProperty("auri.real.download.dir", dir) }
         }
     }
+}
+
+// 一次真实下载的检查（不是单元测试，单元测试里不许联网）：
+//   ./gradlew :modelmgmt:realDownloadCheck -PauriRealDownload=<仓库外的目录，例如 ~/.cache/auri/models>
+// 做什么见 RealDownloadCheck.kt 的文件头。没有给 -PauriRealDownload 就失败，不会悄悄下到别处。
+tasks.register<JavaExec>("realDownloadCheck") {
+    group = "verification"
+    description = "用线上同一套代码对清单里的真实地址下载一次（中途暂停并续传），再独立校验哈希。需要联网。"
+    // 只借单元测试的类路径（编译好的测试类 + 运行时依赖），不运行它：这两个文件集合自带的构建依赖只会触发编译与依赖打包。
+    // 注意别写成 unit.map { ... }：TaskProvider.map 会把 testDebugUnitTest 本身变成依赖，整套单元测试会先跑一遍。
+    val unit = tasks.named<Test>("testDebugUnitTest").get()
+    classpath = unit.testClassesDirs + unit.classpath
+    mainClass.set("app.auri.modelmgmt.RealDownloadCheckKt")
+    val manifest = rootProject.projectDir.resolve("manifests/sensevoice-small-int8-2024-07-17.manifest.json")
+    argumentProviders.add(
+        CommandLineArgumentProvider {
+            val dir = providers.gradleProperty("auriRealDownload").orNull
+                ?: throw GradleException("要用 -PauriRealDownload=<目录> 指定下载到哪里（仓库外，例如 ~/.cache/auri/models）")
+            listOf(manifest.path, dir)
+        },
+    )
 }
 
 dependencies {
