@@ -958,6 +958,19 @@ class CalibrationFindingsTest {
     }
 
     @Test
+    fun `decisions without state changes reveal a lock and unlock before a declaration`() {
+        val run = Run(real)
+        run.recordingInStep2()
+        run.wizard.onDecision(run.feed.decision(CaptureEvent.ROUTE_VERIFIED, Outcome.IGNORED, RECORDING, Cause.MACHINE), true)
+        run.wizard.onDecision(run.feed.decision(CaptureEvent.ROUTE_VERIFIED, Outcome.IGNORED, RECORDING, Cause.MACHINE), false)
+        run.wizard.reportNoEffect()
+        run.wizard.next()
+        run.wizard.skip()
+        run.wizard.skip()
+        assertEquals(CapabilityRecord.untested, run.profile().capabilities.stopWhileBluetoothMicActive)
+    }
+
+    @Test
     fun `中途锁过屏再解锁之后点“重做”：重做是新一次尝试的起点，以界面此刻读到的环境重新建立基准，重试之后的声明站得住`() {
         val run = Run(real)
         run.recordingInStep2()

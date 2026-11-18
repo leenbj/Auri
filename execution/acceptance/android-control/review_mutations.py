@@ -217,7 +217,7 @@ MUTANTS = [
     ("Q5", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "一个不改变状态的无关决定", [
         (CAPTURE + "calibration/CalibrationWizard.kt", "if (decision.stateBefore != decision.stateAfter) {", "if (true) {"),
     ]),
-    ("Q6", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "锁屏通知还没送到，但一个没有状态变化的决定", [
+    ("Q6", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "decisions without state changes reveal a lock and unlock", [
         (CAPTURE + "calibration/CalibrationWizard.kt", "knownLock = screenLocked\n            lockMovedSinceBaseline = true", "knownLock = screenLocked\n            lockMovedSinceBaseline = false"),
     ]),
     ("Q7", "capture", "app.auri.capture.calibration.CalibrationFindingsTest", "第四步：锁屏后读数读不出来", [
