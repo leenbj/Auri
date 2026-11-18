@@ -12,6 +12,7 @@ import java.io.OutputStream
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -77,7 +78,15 @@ data class ModelsState(val models: List<ModelEntryState>) {
 }
 
 /** 一个可以加载的模型：清单是装它时校验用的那份，[generation] 每次换模型或修好之后加一（调度器据此放行等模型的任务）。 */
-data class ActiveModel(val manifest: ModelManifest, val dir: File, val generation: Long)
+data class ActiveModel(
+    val manifest: ModelManifest,
+    val dir: File,
+    val generation: Long,
+    private val lease: () -> AutoCloseable? = { AutoCloseable { } },
+) {
+    /** 取得期间目录不会被更新清理；null 表示这代已经被替换。 */
+    fun acquire(): AutoCloseable? = lease()
+}
 
 /** 默认模型当前能不能用于转录。只有 [Ready] 才可以去加载模型。 */
 sealed interface ActiveModelStatus {
@@ -119,6 +128,7 @@ class ModelManager(
     private val jobs = HashMap<String, Job>()
     private val stops = HashMap<String, Stop>()
     private val installed = HashMap<String, Installed>()
+    private val leases = HashMap<File, Int>()
     private var generation = 0L
 
     private class Installed(val manifest: ModelManifest, val dir: File)
@@ -148,7 +158,7 @@ class ModelManager(
             val dir = pointer?.let { store.activeDir(id, it) }
             val damaged = manifest != null && dir != null && !looksComplete(manifest, dir)
             if (manifest != null && dir != null) installed[id] = Installed(manifest, dir)
-            if (pointer != null) store.collectGarbage(id, keep = pointer.directory)
+            if (pointer != null) collectGarbage(id, pointer.directory)
             val pointerError = found == null && store.storeDir(id).exists()
 
             val current = manifest?.modelVersion == entry.manifest.modelVersion && !damaged
@@ -343,7 +353,6 @@ class ModelManager(
             }
             hooks.at(InstallStep.POINTER_WRITTEN)
             activated(entry, target)
-            store.collectGarbage(id, keep = target.name)
         } finally {
             if (!renamed) staging.deleteRecursively()
         }
@@ -363,6 +372,7 @@ class ModelManager(
             installed[entry.modelId] = Installed(entry.manifest, dir)
             updateEntry(entry.modelId) { it.copy(installedVersion = entry.manifest.modelVersion, damaged = false) }
             if (entry.modelId == catalog.defaultModelId) publishActive(bumpGeneration = true)
+            collectGarbage(entry.modelId, dir.name)
         }
     }
 
@@ -376,13 +386,33 @@ class ModelManager(
             entry.damaged -> ActiveModelStatus.Damaged(id)
             else -> {
                 if (bumpGeneration) generation += 1
-                ActiveModelStatus.Ready(ActiveModel(model.manifest, model.dir, generation))
+                val modelGeneration = generation
+                ActiveModelStatus.Ready(ActiveModel(model.manifest, model.dir, modelGeneration) { acquire(id, model.dir, modelGeneration) })
             }
         }
     }
 
     private fun looksComplete(manifest: ModelManifest, dir: File) =
         manifest.files.all { file -> File(dir, file.path).let { it.isFile && it.length() == file.sizeBytes } }
+
+    private fun acquire(id: String, dir: File, expectedGeneration: Long): AutoCloseable? = synchronized(lock) {
+        if (expectedGeneration != generation || installed[id]?.dir != dir || mutableState.value.entry(id).damaged) return@synchronized null
+        leases[dir] = (leases[dir] ?: 0) + 1
+        val released = AtomicBoolean()
+        AutoCloseable {
+            if (released.compareAndSet(false, true)) synchronized(lock) {
+                val remaining = leases.getValue(dir) - 1
+                if (remaining == 0) leases.remove(dir) else leases[dir] = remaining
+                installed[id]?.dir?.let { collectGarbage(id, it.name) }
+            }
+        }
+    }
+
+    /** 调用方持有 lock，使获取租约与清理旧目录不能交错。 */
+    private fun collectGarbage(id: String, current: String) {
+        val retained = leases.keys.filter { it.parentFile == store.storeDir(id) }.map { it.name }.toSet() + current
+        store.collectGarbage(id, retained)
+    }
 
     /**
      * 下载并定时发布进度：回调只记下最新的字节数，由一个定时器每 [PROGRESS_INTERVAL_MS] 毫秒把它发布到界面状态。

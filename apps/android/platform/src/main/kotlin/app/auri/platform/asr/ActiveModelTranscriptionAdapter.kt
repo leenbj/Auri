@@ -58,19 +58,35 @@ class ActiveModelTranscriptionAdapter(
     private var closed = false
 
     override suspend fun capabilities(): AsrCapabilities {
-        val status = active.value as? ActiveModelStatus.Ready ?: return fallbackCapabilities
-        return try {
-            engineFor(status.model).engine.capabilities.toCapture()
-        } catch (e: Exception) {
-            fallbackCapabilities
+        while (true) {
+            val status = active.value as? ActiveModelStatus.Ready ?: return fallbackCapabilities
+            val lease = status.model.acquire() ?: continue
+            return try {
+                engineFor(status.model).engine.capabilities.toCapture()
+            } catch (e: Exception) {
+                fallbackCapabilities
+            } finally {
+                lease.close()
+            }
         }
     }
 
-    override suspend fun transcribe(request: TranscriptionRequest): TranscriptionResult = withContext(dispatcher) {
-        when (val status = active.value) {
-            ActiveModelStatus.NotInstalled -> outcomeOnly(TranscriptionOutcome.WaitingModel(ErrorCode.MODEL_NOT_INSTALLED))
-            is ActiveModelStatus.Damaged -> outcomeOnly(TranscriptionOutcome.WaitingModel(ErrorCode.MODEL_INTEGRITY_FAILED))
-            is ActiveModelStatus.Ready -> run(status.model, request)
+    override suspend fun transcribe(request: TranscriptionRequest): TranscriptionResult = withContext(dispatcher) { transcribeActive(request) }
+
+    private suspend fun transcribeActive(request: TranscriptionRequest): TranscriptionResult {
+        while (true) {
+            when (val status = active.value) {
+                ActiveModelStatus.NotInstalled -> return outcomeOnly(TranscriptionOutcome.WaitingModel(ErrorCode.MODEL_NOT_INSTALLED))
+                is ActiveModelStatus.Damaged -> return outcomeOnly(TranscriptionOutcome.WaitingModel(ErrorCode.MODEL_INTEGRITY_FAILED))
+                is ActiveModelStatus.Ready -> {
+                    val lease = status.model.acquire() ?: continue
+                    try {
+                        return run(status.model, request)
+                    } finally {
+                        lease.close()
+                    }
+                }
+            }
         }
     }
 

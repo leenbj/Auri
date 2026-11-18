@@ -18,6 +18,7 @@ import app.auri.platform.storage.WavRecordingStore
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -133,6 +134,26 @@ class ActiveModelTranscriptionAdapterTest {
 
     private val handle = CaptureHandle("0b0b0b0b-0000-4000-8000-000000000001", 1, 1, GateState.OPEN)
     private var recordCounter = 0
+
+    @Test
+    fun `转录校验与推理期间持有模型目录租约，用完释放`() = runBlocking {
+        val leases = AtomicInteger()
+        val model = ActiveModel(manifest, File(folder.root, "leased"), 1) {
+            leases.incrementAndGet()
+            AutoCloseable { leases.decrementAndGet() }
+        }
+        val rig = Rig(ActiveModelStatus.Ready(model)) {
+            {
+                assertTrue("推理时目录必须仍被保护", leases.get() > 0)
+                app.auri.asr.TranscriptionOutcome.Succeeded(content("你好"))
+            }
+        }
+
+        rig.adapter.transcribe(request())
+
+        assertEquals(0, leases.get())
+        rig.adapter.close()
+    }
 
     /** 每次都封存一个新的 Record 音频（同一个 Record 标识不能封存两次）。 */
     private fun request(): TranscriptionRequest = runBlocking {

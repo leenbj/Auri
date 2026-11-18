@@ -125,6 +125,31 @@ class ModelManagerTest {
     }
 
     @Test
+    fun `安装新版本时仍在使用的旧版本保留到使用者完成`() {
+        val v1 = TestModel(tmp.newFolder(newFolderName("v1")), version = "1.0.0", seed = 1)
+        val v2 = TestModel(tmp.newFolder(newFolderName("v2")), version = "2.0.0", seed = 2)
+        val rig = Rig(model = v1)
+        rig.manager().apply { start(rig.id); awaitInstalled(rig.id) }
+        rig.urls[v2.url] = server(v2.archiveBytes).url
+        val updating = rig.manager(catalog = rig.catalog(v2))
+        val inUse = ready(updating)
+        val firstLease = checkNotNull(inUse.acquire())
+        val secondLease = checkNotNull(inUse.acquire())
+
+        updating.start(rig.id)
+        updating.awaitInstalled(rig.id)
+
+        ModelVerifier().verify(inUse.manifest, inUse.dir)
+        firstLease.close()
+        assertTrue(inUse.dir.isDirectory)
+        firstLease.close()
+        assertTrue(inUse.dir.isDirectory)
+        secondLease.close()
+        assertFalse(inUse.dir.exists())
+        assertEquals(null, inUse.acquire())
+    }
+
+    @Test
     fun `安装成功：先校验压缩包，再解包，再校验每个文件，最后才启用；启用目录里只有校验过的文件`() {
         val rig = Rig()
         val manager = rig.manager()

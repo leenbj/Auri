@@ -74,8 +74,8 @@ internal class ModelStore(root: File) {
     }
 
     /** 删掉 model-store/<id>/ 下除 [keep] 之外的所有目录：旧版本、没写上指针的半成品。指针文件本身不动。 */
-    fun collectGarbage(modelId: String, keep: String) {
-        storeDir(modelId).listFiles()?.filter { it.isDirectory && it.name != keep }?.forEach { it.deleteRecursively() }
+    fun collectGarbage(modelId: String, keep: Set<String>) {
+        storeDir(modelId).listFiles()?.filter { it.isDirectory && it.name !in keep }?.forEach { it.deleteRecursively() }
     }
 
     /** 删掉下载区里除 [keepVersionDir] 之外的东西（别的版本的残片，或已装好的版本的残余）。 */
