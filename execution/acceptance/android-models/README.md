@@ -97,7 +97,7 @@ AURI_GRADLE_ARGS=--no-daemon execution/acceptance/android-capture/run_emulator_a
 
 **Gradle 的一个陷阱**：读源码、合同或构建产物的测试（`NetworkIsolationTest`、`NoNetworkManifestTest`、场景回放）如果没把这些文件声明成输入，改了它们之后 Gradle 会说 `UP-TO-DATE` 而不重跑。做最终验证前先清结果（`:capture:cleanTest`、`:modelmgmt:cleanTestDebugUnitTest` 等）。`realDownloadCheck` 只借单元测试的类路径，不要写成 `tasks.named<Test>(...).map { … }`：`TaskProvider.map` 会把整套单元测试变成它的依赖。
 
-**共享机器的规矩**同 Ticket 16：同一时刻只许一台模拟器，靠 `~/.cache/auri/emulator.lock` 互斥；无头启动；用完 `adb emu kill`、删 AVD、释放锁；`export ADB_LIBUSB=1`。
+**共享机器的规矩**同 Ticket 16：同一时刻只许一台模拟器，靠 `~/.cache/auri/emulator.lock` 互斥；无头启动；用完 `adb emu kill`、删 AVD、释放锁；`export ADB_LIBUSB=1`。另外：**`./gradlew --stop` 是全机器范围的**，会停掉别的工作树正在跑的构建，共用机器上要给构建与 `--stop` 都加私有的 `-Dorg.gradle.daemon.registry.base=<目录>`（第 10 节缺陷 5）。
 
 ## 5. 产品负责人：真机上的验收（`NOT_RUN`）
 
@@ -135,7 +135,7 @@ AURI_GRADLE_ARGS=--no-daemon execution/acceptance/android-capture/run_emulator_a
 
 1. **清单是唯一的真相**：列表条目、所需空间、固定哈希、许可条目都从清单算出，没有第二份。信任锚是清单里固定的 SHA-256，**不是主机名**（GitHub 会把下载重定向到随时会变的存储主机），所以不做主机白名单；但明文 http 绝不允许，重定向时也不降级，错误信息里永远没有地址。
 2. **续传的正确性来自“磁盘上的字节数 + 校验器”，不来自“收到了多少”**：状态文件（紧挨着 `.part`）记清单身份（大小与哈希）与服务器给的校验器（ETag，没有就 Last-Modified）；只信“身份与这份清单一致、并且有校验器”的状态，其余一律从头来。续传请求带 `Range` 与 `If-Range`；对 206 还要自己核对 `Content-Range` 与响应里的校验器（服务器可能不理 `If-Range`）；对续传回 200 或 416、响应声明的长度与清单不符、正文比清单还长，都作废残片。读线程多读但没写盘的字节在暂停时丢掉，所以真实下载里“多收 16 KB”不是从头再下。
-3. **阻塞的读不在协程线程上做**：每个响应的正文由一条专用线程读，协程这边只从有界队列取块、写文件；暂停时读线程被放弃（最多再多读一块丢掉，然后自己关响应），`abort()` 在另一条线程上调。原因是 JDK 的 `HttpURLConnection` 里进行中的读占着流的锁，`disconnect()` 与 `close()` 都要等读返回（实测会一直阻塞到读超时），所以**暂停的生效不能取决于 abort 的速度**。`ResumableDownloaderTest` 的“暂停立刻生效”用真实传输层对着一个停住的服务器证明这一点。
+3. **阻塞的读不在协程线程上做**：每个响应的正文由一条专用线程读，协程这边只从有界队列取块、写文件；暂停时读线程被放弃（最多再多读一块丢掉，然后自己关响应），`abort()` 在另一条线程上调。原因是 JDK 的 `HttpURLConnection` 里进行中的读占着流的锁，`disconnect()` 与 `close()` 都要等读返回（实测会一直阻塞到读超时），所以**暂停的生效不能取决于 abort 的速度**。`ResumableDownloaderTest` 的“暂停立刻生效”用真实传输层对着一个停住的服务器证明这一点。**因为暂停之后旧传输还要收尾，暂停或取消后马上再点“开始”时，新传输登记时记下前一个任务，等它彻底收完（放开残片）才联网、才读磁盘上的字节数**；收尾只摘登记在册的“自己”，接班的新传输始终受暂停与取消控制（第 10 节缺陷 4）。
 4. **启用是两步原子操作**：校验过的暂存目录一次原子改名成全新的目录，再原子换掉指针文件 `active.json`；两步之间被杀，旧指针原样有效。新模型已经在用之后才清旧版本、没引用的目录与下载区。`active` 只会是“没装 / 损坏 / 就绪（校验过的目录）”，没有“正在装”这种中间态可被加载。每次换模型 `generation` 加一，完整性上报带着它：对旧一代的上报会被忽略，不会冤枉刚换上的新模型。
 5. **调度器**：一个邮箱协程串行处理一切；**状态机是唯一的裁决者**——所有状态变化都先问转移表（`dispatch`），转移就套用并落盘，忽略或拒绝只记一条决定、什么都不改；并发度 1；引擎调用在专用的最低优先级守护线程 `auri-transcribe` 上（原生推理线程继承它的优先级），绝不占用协调器或邮箱的线程；任务写进任务库（`SqliteTranscriptionJobStore`，独立文件，坏了不影响 Record 库，重启按 Record 库对账）；`resume()` 幂等。
 6. **等待的规则**：没有模型 → `WAITING_MODEL` 并记下原因码，**不轮询**，模型管理器一发信号就继续；资源不够 → `WAITING_RESOURCES` 并记下原因，按间隔自己重查，**次数有界**，用完标“需要用户处理”（任务仍在 `WAITING_RESOURCES`，持久化一个标记）；监视器读不出来按“可用”处理（引擎自己的失败路径兜底，不让一个读不出来的传感器永远挡住转录）。可重试的失败有退避与尝试上限；重启时“被杀时正在转”算一次尝试，崩溃循环有上限。
@@ -192,7 +192,7 @@ AURI_GRADLE_ARGS=--no-daemon execution/acceptance/android-capture/run_emulator_a
 
 没有为每个切片严格先红后绿：不少切片是把测试和实现一起写好再跑，测试第一次就通过。补救办法是**变异验证**：每次只改坏被测代码的一处，跑相关测试，记下变红的测试，再用 `git checkout` 还原（驱动脚本是一次性的、在 `/tmp`，没有入库；这里记录的是它实际跑出的结果）。
 
-下表是实际跑出的结果：**23 个变异，全部被抓住**（20 个由驱动脚本跑，M-T、M-D1、M-D2 是手工做的；M-D1/M-D2 在模拟器上跑设备端测试）。`:modelmgmt` 的变异跑 `:modelmgmt:testDebugUnitTest` 的全部 69 个；`:capture` 的变异只跑调度器与状态机两个包（89 个）；`:platform` / `:app` 的联网边界与适配器变异只跑对应的守卫测试类。
+下表是实际跑出的结果：**26 个变异，全部被抓住**（20 个由驱动脚本跑，M-T、M-D1、M-D2 与后补的 M-R1a/b/c 是手工做的；M-D1/M-D2 在模拟器上跑设备端测试）。M1–M7 当时跑的是 `:modelmgmt:testDebugUnitTest` 的全部 69 个（之后补了两个测试，现在是 71 个）；M-R1a/b/c 只跑 `ModelManagerTest`（22、22、23 个）；`:capture` 的变异只跑调度器与状态机两个包（89 个）；`:platform` / `:app` 的联网边界与适配器变异只跑对应的守卫测试类。
 
 | 编号 | 改坏的规则（清单项） | 改的文件 | 结果 | 变红的测试类 |
 |---|---|---|---|---|
@@ -217,9 +217,11 @@ AURI_GRADLE_ARGS=--no-daemon execution/acceptance/android-capture/run_emulator_a
 | M18 | `:platform` 的代码里引用网络 API（`java.net.URL`） | `LocalTranscriptionStack.kt` | CAUGHT | 跑 5，红 2：NetworkIsolationTest×2 |
 | M19 | 引擎加载前校验器拒绝了模型，却不上报给模型管理器（损坏的模型不会被标记） | `ActiveModelTranscriptionAdapter.kt` | CAUGHT | 跑 29，红 3：ActiveModelTranscriptionAdapterTest×3 |
 | M-T | 去掉 `UrlConnectionTransport` 里的 `readTimeout = readTimeoutMs`（手工） | `HttpTransport.kt` | CAUGHT | `UrlConnectionTransportTest` 的读超时测试，在它自己的 10 秒上限（实测 10.029 秒）后失败 |
-
 | M-D1 | `AndroidResourceMonitor` 收到省电模式广播却不发信号（手工；模拟器） | `AndroidResourceMonitor.kt` | CAUGHT | 设备端 4 个跑 1 个红：`batterySaverIsAnnouncedAndMakesTheJobWait`，“触发之后 10 秒内没有收到变化信号”，其余 3 个过 |
 | M-D2 | 温度监听收到变化却不发信号（手工；模拟器） | `AndroidResourceMonitor.kt` | CAUGHT | 设备端 4 个跑 1 个红：`aThermalStatusChangeIsAnnouncedAndMakesTheJobWait`，同样的信息，其余 3 个过 |
+| M-R1a | 暂停之后马上点开始，新传输不等旧传输收尾就去读残片（手工；清单项 2） | `ModelManager.kt` | CAUGHT | 跑 22，红 1：ModelManagerTest 的暂停变体，旧传输还没放开残片时已经有第二个写入者（`expected:<1> but was:<2>`） |
+| M-R1b | 旧传输收尾时不认自己，把登记在册的新传输也摘掉（手工；清单项 2） | `ModelManager.kt` | CAUGHT | 跑 22，红 1：ModelManagerTest 的暂停变体，新传输脱离了暂停的控制，等“已暂停”超时 |
+| M-R1c | 新传输开始时无条件清掉上一个传输还没读的停止原因（手工；清单项 2） | `ModelManager.kt` | CAUGHT | 跑 23，红 1：ModelManagerTest 的取消变体，新传输带着 `Range: bytes=60000-` 接上了一个已经放弃的残片（`expected:<[null, null]> but was:<[null, bytes=60000-]>`） |
 
 两点说明：
 
@@ -234,6 +236,8 @@ AURI_GRADLE_ARGS=--no-daemon execution/acceptance/android-capture/run_emulator_a
    - **断言是空的**：测试用 `changes.first()` 等“变化信号”，但订阅温度监听时系统立刻回报一次当前状态（读 AOSP `ThermalManagerService.registerThermalStatusListener`：注册即 `postStatusListener`），所以什么都没变 `first()` 也会返回。上一版的两个“变化会通知”测试（温度、省电）因此什么也没证明，还把上面那个竞争藏了起来（失败的 4 次各耗时约 2 秒，成功的 3–4.4 秒，与“`first()` 立刻返回、紧接着的第二次开启也落在系统认到拔电之前”一致；没有逐次抓到失败时的时间线，这一句是推断）。
    修法：先轮询到系统自己说没插电；订阅后先丢掉初始回报，只认**触发之后**的信号；信号来的时候读数必须已经是新的（否则调度器收到信号去重查会读到旧值）。验证：修后同一个测试类在模拟器上连跑 15 次全过（修前同一环境 12 次失败 4 次）；变异 M-D1、M-D2 各自让对应的一个测试红、其余过。**这是 Android 系统行为在模拟器上的观察（E2）**，真机上同一套命令是否一样要真机验证（第 5 节）。
 3. **`check_capture_instrumentation.py`（Ticket 16 的工具）只认 `RecordLibraryContract` 一个契约基类**：`SqliteTranscriptionJobStoreContractTest` 继承来的 7 个测试在设备上都通过了，核对器却把它们判成“源码里找不到”，整个验收脚本以 1 退出。这个工具自己写明“有第二个契约基类时再泛化”；现在登记成 `CONTRACT_BASES`（两个），新增 3 个测试先红后绿，并用保存下来的真实日志重核对（30 + 4 个，0 个问题），之后又把整个脚本完整跑了一遍。
+4. **`ModelManager`：暂停或取消之后立刻再点“开始”，新旧两个传输会同时碰同一个残片，而且新的那个脱离控制**（收尾前对整个模块的复查找出来的，不是测试挂了）。`start()` 只看旧任务是不是还“活着”，而被暂停或取消的任务在收尾（放开残片文件、发布最终状态）期间已经不算“活”：于是新传输马上开始，与还没收完尾的旧传输同时写一个 `.part`；旧传输收尾时又无条件把登记的任务摘掉，把新传输一并摘了，之后对它按暂停、按取消都找不到任务，界面上的“暂停”按钮失灵。先写失败的测试（`ModelManagerTest` 的暂停变体：第一个写入流在关闭时被卡住，复现“暂停后收尾期间再开始”，红：`expected:<1> but was:<2>`）再修：新传输登记时记下前一个任务，**等它彻底收完才读磁盘上的字节数**；收尾只摘登记在册的“自己”；前一个任务还没读的停止原因留给它自己读，只在它已经收完（没人会读了）时才清掉。取消变体另有一个测试钉住这一点（旧传输先把放弃的残片清掉，新传输从头开始，不接着一个已经放弃的残片）。三个变异 M-R1a/b/c 各被抓住。**这是 JVM 上用被卡住的写入流造出来的竞争（E2）**，真机上的时序不同，但“同一时刻一个残片只有一个写入者”这条不变量与时序无关。
+5. **`./gradlew --stop` 是全机器范围的**：同一台机器上多个工作树共用 `~/.gradle` 的守护进程登记，一个工作树收尾时跑的 `--stop` 会停掉另一个工作树正在跑的构建（报 `Gradle build daemon has been stopped: stop command received`，不是代码的问题）。在共用机器上跑验收时给两条命令都加 `-Dorg.gradle.daemon.registry.base=<私有目录>`（这样 `--stop` 只停自己的）；`AURI_GRADLE_ARGS` 也能带上它。
 
 ## 11. 已知限制与后续
 

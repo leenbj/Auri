@@ -115,7 +115,7 @@ Android 模型管理与转录调度（Ticket 20，同在 `apps/android/`：`:mod
 
 ```bash
 cd apps/android
-./gradlew :capture:test :modelmgmt:testDebugUnitTest :platform:testDebugUnitTest :app:testDebugUnitTest :asr:testDebugUnitTest   # JVM 单测（158 + 69 + 108 + 66 + 112），不需要设备；:modelmgmt 是 Android 库，要用 testDebugUnitTest（写 test 会 debug 与 release 各跑一遍）
+./gradlew :capture:test :modelmgmt:testDebugUnitTest :platform:testDebugUnitTest :app:testDebugUnitTest :asr:testDebugUnitTest   # JVM 单测（158 + 71 + 108 + 66 + 112），不需要设备；:modelmgmt 是 Android 库，要用 testDebugUnitTest（写 test 会 debug 与 release 各跑一遍）；多个工作树共用一台机器时，`./gradlew --stop` 会停掉别人正在跑的构建，给构建与 --stop 都加私有的 -Dorg.gradle.daemon.registry.base=<目录>
 ./gradlew :modelmgmt:realDownloadCheck -PauriRealDownload=$HOME/.cache/auri/models   # 联网真实下载一次 163 MB 的占位模型：约 5% 时暂停、Range 续传、独立重算 SHA-256；不是单元测试，目录必须在仓库外
 execution/acceptance/android-capture/run_emulator_acceptance.sh      # 模拟器验收（同上）：:platform 的仪器测试现在还包含任务库与资源监视器的设备端测试
 ```
