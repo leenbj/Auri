@@ -14,6 +14,16 @@ import kotlinx.serialization.json.intOrNull
 /** 局域网里的一个网关地址（pairing.schema.json#/$defs/address）。 */
 data class GatewayAddress(val host: String, val port: Int) {
     override fun toString() = "$host:$port"
+
+    companion object {
+        // 主机名或 IP 字面量（含 IPv6 与区域标识 %wlan0）。不含空白、斜杠、@、?、#、方括号：
+        // 它会被写进 Host 头，CR/LF 与分隔符进来就是请求走私的入口。
+        private val HOST = Regex("^[A-Za-z0-9._:%-]{1,253}$")
+
+        fun isValidHost(host: String) = HOST.matches(host)
+
+        fun isValidPort(port: Int) = port in 1..65535
+    }
 }
 
 /** 载荷哪里不合格。只有类别，不带载荷里的任何内容（配对码是秘密，日志与界面都不该看到它）。 */
@@ -73,10 +83,6 @@ class PairingPayload(
             setOf("schema_version", "gateway_id", "addresses", "mdns_service_type", "public_key_sha256", "pairing_code", "expires_at")
         private val ADDRESS_KEYS = setOf("host", "port")
         private val UUID = Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-
-        // 主机名或 IP 字面量（含 IPv6 与区域标识 %wlan0）。不含空白、斜杠、@、?、#、方括号：
-        // 它会被写进 Host 头，CR/LF 与分隔符进来就是请求走私的入口。
-        private val HOST = Regex("^[A-Za-z0-9._:%-]{1,253}$")
         private val TIMESTAMP = Regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})$")
 
         fun parse(text: String): PayloadParse {
@@ -123,9 +129,9 @@ class PairingPayload(
         private fun parseAddress(item: JsonElement): AddressParse {
             val obj = item as? JsonObject ?: return AddressParse.Bad(PayloadProblem.BAD_ADDRESSES)
             if (!obj.keys.all { it in ADDRESS_KEYS }) return AddressParse.Bad(PayloadProblem.UNKNOWN_FIELD)
-            val host = obj.string("host")?.takeIf { HOST.matches(it) } ?: return AddressParse.Bad(PayloadProblem.BAD_HOST)
+            val host = obj.string("host")?.takeIf { GatewayAddress.isValidHost(it) } ?: return AddressParse.Bad(PayloadProblem.BAD_HOST)
             val portElement = obj["port"] as? JsonPrimitive
-            val port = portElement?.takeIf { !it.isString }?.intOrNull?.takeIf { it in 1..65535 }
+            val port = portElement?.takeIf { !it.isString }?.intOrNull?.takeIf { GatewayAddress.isValidPort(it) }
                 ?: return AddressParse.Bad(PayloadProblem.BAD_PORT)
             return AddressParse.Ok(GatewayAddress(host, port))
         }

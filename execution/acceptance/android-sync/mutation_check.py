@@ -170,6 +170,95 @@ MUTATIONS += (
     ),
 )
 
+SECRET_BOX = "apps/android/sync/src/main/kotlin/app/auri/sync/pairing/SecretBox.kt"
+STORE = "apps/android/sync/src/main/kotlin/app/auri/sync/pairing/FilePairingStore.kt"
+PAIRING = "apps/android/sync/src/main/kotlin/app/auri/sync/pairing/PairingService.kt"
+DISCOVERY = "apps/android/sync/src/main/kotlin/app/auri/sync/discovery/GatewayDiscovery.kt"
+STORE_TESTS = (":sync:test", "--tests", "*AesGcmSecretBoxTest*", "--tests", "*FilePairingStoreTest*")
+PAIRING_TESTS = (":sync:test", "--tests", "*GatewayLocatorTest*", "--tests", "*PairingServiceTest*")
+
+MUTATIONS += (
+    Mutation(
+        "secretbox-reuses-a-fixed-iv",
+        "每次封装必须用新的随机 IV（GCM 重用 IV 会泄露密钥流与认证密钥）",
+        (Edit(SECRET_BOX, "cipher.init(Cipher.ENCRYPT_MODE, key())", "cipher.init(Cipher.ENCRYPT_MODE, key(), GCMParameterSpec(TAG_BYTES * 8, ByteArray(IV_BYTES)))"),),
+        STORE_TESTS, "sync/build/test-results/test",
+        ("同一段明文每次封装的结果都不同",),
+    ),
+    Mutation(
+        "secretbox-ignores-purpose",
+        "密文绑定用途（附加认证数据）：别的用途的密文不能冒充配对记录",
+        (Edit(SECRET_BOX, "cipher.init(Cipher.ENCRYPT_MODE, key())\n        cipher.updateAAD(aad)", "cipher.init(Cipher.ENCRYPT_MODE, key())"),
+         Edit(SECRET_BOX, "cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(TAG_BYTES * 8, sealed, 1, IV_BYTES))\n            cipher.updateAAD(aad)", "cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(TAG_BYTES * 8, sealed, 1, IV_BYTES))")),
+        STORE_TESTS, "sync/build/test-results/test",
+        ("换密钥或换用途都打不开",),
+    ),
+    Mutation(
+        "store-writes-token-in-plaintext",
+        "设备令牌不能以明文落盘（封装与打开同时改成直通，其余行为不变，只有“磁盘上找不到令牌”能发现）",
+        (Edit(STORE, "val sealed = box.seal(encode(gateway))", "val sealed = encode(gateway)"),
+         Edit(STORE, "box.open(file.readBytes())", "file.readBytes()")),
+        STORE_TESTS, "sync/build/test-results/test",
+        ("磁盘上的文件里找不到令牌",),
+    ),
+    Mutation(
+        "store-treats-unreadable-record-as-not-paired",
+        "读不出来的配对记录是“丢失”（要求重新配对），不能静默当成“从没配对过”",
+        (Edit(STORE, "?: PairingState.Lost", "?: PairingState.NotPaired"),),
+        STORE_TESTS, "sync/build/test-results/test",
+        ("文件被改动、截断、清空或是乱码是丢失", "换了密钥"),
+    ),
+    Mutation(
+        "walk-stops-at-first-mismatch",
+        "某个地址上是冒充者时要继续找（真网关可能在别的地址）",
+        (Edit(DISCOVERY, "Step.Mismatch -> mismatched = true", "Step.Mismatch -> return null"),),
+        PAIRING_TESTS, "sync/build/test-results/test",
+        ("不信它，继续找", "配对码不发给它，继续试下一个"),
+    ),
+    Mutation(
+        "walk-forgets-that-a-mismatch-was-seen",
+        "全是不符的公钥时结论必须是 KeyMismatch，不能降级成“不可达”",
+        (Edit(DISCOVERY, "return if (mismatched) Walk.Mismatched else Walk.NothingReachable", "return Walk.NothingReachable"),),
+        PAIRING_TESTS, "sync/build/test-results/test",
+        ("所有地址都是不符的公钥", "只有冒充者"),
+    ),
+    Mutation(
+        "walk-retries-addresses-already-tried",
+        "mDNS 给出的地址里已经试过的不重复尝试",
+        (Edit(DISCOVERY, "if (!tried.add(address)) continue", "tried.add(address)"),),
+        PAIRING_TESTS, "sync/build/test-results/test",
+        ("已经试过的不重复尝试",),
+    ),
+    Mutation(
+        "walk-swallows-cancellation",
+        "取消必须向上抛，不能被“发现失败当作没找到”吞掉",
+        (Edit(DISCOVERY, "} catch (cancelled: CancellationException) {\n        throw cancelled\n    } catch (_: Exception) {", "} catch (_: Exception) {"),),
+        PAIRING_TESTS, "sync/build/test-results/test",
+        ("取消不能被吞掉",),
+    ),
+    Mutation(
+        "pairing-retries-after-possibly-sent",
+        "请求可能已经送到（配对码可能已被消耗）就绝不再发：换地址重发会白白烧掉配对码",
+        (Edit(PAIRING, "is TransportFailure.Interrupted -> Step.Done(Attempt.Ended(PairingOutcome.Uncertain))", "is TransportFailure.Interrupted -> Step.Unreachable"),),
+        PAIRING_TESTS, "sync/build/test-results/test",
+        ("请求可能已经送到却没拿到回答",),
+    ),
+    Mutation(
+        "pairing-trusts-any-gateway-id",
+        "网关回答的 gateway_id 必须是二维码里的那一个",
+        (Edit(PAIRING, "if (response.gatewayId != payload.gatewayId) return PairingOutcome.WrongGateway", ""),),
+        PAIRING_TESTS, "sync/build/test-results/test",
+        ("gateway_id 不是二维码里的",),
+    ),
+    Mutation(
+        "pairing-save-can-be-cancelled",
+        "令牌只出现一次：网关签发之后，即使调用方被取消也必须存下来",
+        (Edit(PAIRING, "withContext(NonCancellable) { store.save(gateway) }", "store.save(gateway)"),),
+        PAIRING_TESTS, "sync/build/test-results/test",
+        ("即使调用方被取消，令牌也要存下来",),
+    ),
+)
+
 # 后面各个切片的变异在对应测试写好之后追加到这里（见 README 的“变异检查”一节）。
 
 
