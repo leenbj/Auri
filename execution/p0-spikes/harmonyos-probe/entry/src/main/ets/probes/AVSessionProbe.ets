@@ -3,7 +3,7 @@ import { avSession } from '@kit.AVSessionKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { Action, KeyEvent } from '@kit.InputKit';
 import { util } from '@kit.ArkTS';
-import { ControlNormalizer } from '../logic/ControlNormalizer';
+import { ControlNormalizer, keyEventRawId } from '../logic/ControlNormalizer';
 import type { BusinessCommand, ControlMappingMode } from '../logic/ProbeTypes';
 import { ProbeLogger } from './ProbeLogger';
 
@@ -117,7 +117,7 @@ export class AVSessionProbe {
         } else if (event.action === Action.UP) {
           actionLabel = 'up';
         }
-        const rawId = `${keyCode}-${event.pressedTime}`;
+        const rawId = keyEventRawId(keyCode, event.key ? event.key.pressedTime : undefined);
         this.dispatchKeyEvent(keyCode, actionLabel, event.action, rawId);
       });
 
@@ -208,7 +208,7 @@ export class AVSessionProbe {
     keyCode: number,
     keyAction: 'down' | 'up' | 'unknown',
     rawActionCode: number,
-    rawEventId: string
+    rawEventId: string | null
   ): void {
     const monoNs = ProbeLogger.monoNanos();
     const normalized = this.normalizer.normalize(

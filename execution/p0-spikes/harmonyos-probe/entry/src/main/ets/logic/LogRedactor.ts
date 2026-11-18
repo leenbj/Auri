@@ -37,8 +37,8 @@ function redactInlineMacs(value: string): string {
 
 function redactScalarOrNested(
   key: string,
-  val: string | number | boolean | null | Array<string> | Array<Record<string, string | number | boolean | null>>
-): string | number | boolean | null | Array<string> | Array<Record<string, string | number | boolean | null>> {
+  val: string | number | boolean | null | undefined | Array<string> | Array<Record<string, string | number | boolean | null>>
+): string | number | boolean | null | undefined | Array<string> | Array<Record<string, string | number | boolean | null>> {
   const lowerKey = key.toLowerCase();
 
   if (typeof val === 'string') {
@@ -103,7 +103,7 @@ function redactFlatRecord(
 export function redactLogRecord(record: ProbeLogRecord): ProbeLogRecord {
   const sanitizedData: Record<
     string,
-    string | number | boolean | null | Array<string> | Array<Record<string, string | number | boolean | null>>
+    string | number | boolean | null | undefined | Array<string> | Array<Record<string, string | number | boolean | null>>
   > = {};
 
   const keys = Object.keys(record.data);
