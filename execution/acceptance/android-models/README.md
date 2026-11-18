@@ -2,9 +2,27 @@
 
 对应 `.scratch/auri-v1/issues/20-android-model-management.md`（GitHub issue #21）。PRD 引用：FR-ASR-001/002（本地转录；本地失败不自动上云）、FR-TXT-002（Revision 不可变）、SEC-002（联网只为下载模型，音频与文字没有联网通道）、SEC-004（转录文字是数据）、ADR-0017（默认本地模型待实测后定，这里只放占位清单）、ADR-0019（V1 只做本地转录，云端状态保留但不产生）。
 
-**状态（2026-11-18）**：代码、JVM 单测、一次真实下载、模拟器上的设备端测试都有结果（见第 2、3、7 节）。**没有任何真机（E3）结果**：本机没有 Android 手机，所以温度、内存、省电模式、存储见底、真机上的下载与“边转录边录音”全部是 **`NOT_RUN`**，产品负责人的步骤在第 5 节。代码里的资源阈值是保守初值，**没有真机标定**。
+**状态（2026-11-18）**：第 3、4、7、10 节的数字是审查修复前的历史结果；本次修复与新的验证以本节及随附报告为准。**没有任何真机（E3）结果**：温度、内存、省电模式与电池、存储见底、真机下载和“边转录边录音”仍全部是 **`NOT_RUN`**；步骤在第 5 节，资源阈值尚未真机标定。
 
 证据等级沿用 PRD 第 5.2 节：JVM 单测与模拟器 = **E2**；真机 = E3。那一次真实下载是在这台 Mac 的 JVM 上跑的（`HttpURLConnection`，不是 Android 的实现），所以它证明的是下载逻辑对真实服务器成立，仍是 E2。
+
+### 审查发现修复（E2，真机仍为 NOT_RUN）
+
+- F1：运行协程即使在启动前被取消，也由完成处理器恰好一次释放名额。
+- F2：指针读入或解析失败保留全部模型代并报可恢复存储错误；安装后清理使用刚写好的目录名。
+- F3：开始推理前持久化 RUNNING 与次数；任务 ID 在 Record 库内作为发布幂等键，重启只认领对应 Revision。
+- F4：引擎校验与推理持有模型目录租约；换代后旧目录在最后一个租约释放时才清理。
+- F5：拒绝归属于引擎实际使用的模型代；旧代迟到的拒绝不会阻挡新代。
+- F6：旧引擎按使用计数退役，最后一次调用返回后在适配器线程关闭，不阻塞调度邮箱。
+- F7：同模型传输及其收尾按提交顺序串行，暂停和取消的原因属于各自的传输。
+- F8：资源变化流故障不逃逸；状态未知时等待并退避重订阅，已成功注册的系统监听均在清理路径中注销。
+- F9：转录栈拥有自己的可取消生命周期；关闭时停止资源监听而不取消调用方作用域。
+- F10：HTTPS 每一跳拒绝回环、私有、链路本地、IPv6 唯一本地地址及 localhost、`.local`、`.internal` 名称；实际连接使用经过校验的 DNS 地址，最多 5 次重定向，无主机白名单，固定哈希仍是完整性门禁。
+- F11：资源等待显示原因；无信号也按 15、30、60、120、300 秒退避重查，此后每 5 分钟重查，变化信号与手动检查立即触发；等待不是失败，失败的自动重试仍有上限。
+- F12：重转录仅在 Record 已有 Revision 时保留 DONE；此前没有 Revision 时显示本次进行中、无语音或失败。
+- F13：新增真线程 CPU 负载测试，以 20 ms 节奏生产三秒帧并检查丢帧和到写入的延迟；这只是 Mac JVM 上的 E2，真机边转录边录音仍为 NOT_RUN。
+
+F2 的解析失败测试用真实文件系统上的损坏指针模拟不可读结果，不能模拟每一种 Android I/O 故障；F8 的失败路径用可控注册回调测试清理，真实系统注册/注销仍须设备证据。假设：旧版 RUNNING 任务若存在无法归属的旧 ASR Revision，宁可标失败保留数据，也不盲目重复发布；已保存的旧 `needsUser` 等资源任务恢复自动重查。
 
 ## 1. 这里有什么
 
@@ -27,8 +45,8 @@ JVM 测试数：Ticket 16 审查后的基线是 `:capture` 72、`:platform` 84�
 | 2 | 下载可暂停和恢复；暂停状态在进程重启后仍在（在磁盘上） | `ResumableDownloaderTest`（21）：暂停立刻生效，续传的 `Range` 起点就是磁盘上残片的长度并带 `If-Range` 校验器；服务器换了文件 / 不理 `If-Range` / 不支持 Range（回 200）/ 回 416 / 没给校验器 / 状态文件坏了 / 残片属于别的清单 / 残片比清单还长：每一种都从头来，不把新旧拼在一起。`ModelManagerTest`：暂停后重启（新管理器、同一块磁盘）仍显示已下载的字节、**不偷偷联网**、再开始从残片接着下；开始前先查空间；没有网络、服务器报错、空间写满都有明确状态。`UrlConnectionTransportTest`（10）：真实 `HttpURLConnection` 对本机假服务器，`Range`/`If-Range` 原样发出，重定向逐跳按策略检查，停住的连接以读超时失败。真实服务器见第 3 节 | E2 |
 | 3 | 校验通过后才原子启用；校验失败不加载；更新失败保留旧模型 | `ModelManagerTest`：安装步骤顺序恒为 压缩包校验 → 解包 → 逐文件校验 → 目录改名 → 指针写入；下载没完成的整个过程中 `active` 一直是“没装”；哈希不符则丢弃、不解包、不启用，之后能干净重试；压缩包对但里面的文件不符也不启用；**失败的更新不动旧模型**；更新过程中任何一步被杀掉，重启后“指针之前旧模型可用、指针之后新模型可用、没有半成品”；已装文件缺了/变短重启后判为损坏、修好后换新的一代；加载时校验器拒绝后上报并判损坏，旧一代的上报不会冤枉刚换上的新模型。`ArchiveInstallerTest`（10）：路径逃逸、符号链接顶替清单里的文件名、缺文件、条目大小与清单不符（写盘之前就拒绝）、重复条目、不是 bzip2、被截断的包都被拒；说明文件与示例音频一个字节都不写。`ActiveModelTranscriptionAdapterTest`（13）：没装 / 损坏 / 加载被拒时转录等模型，不会拿坏模型去转 | E2 |
 | 4 | 转录状态机的事件序列样本全部通过 | `TranscriptionScenarioReplayTest`：`transcription.scenarios.json` 的 **10 个场景**逐步回放到真调度器（每步的决定、转移后的状态都与合同一致），并要求 `transcription.machine.json` 的 **20 条规则**每条都被真实决定覆盖、也出现过被拒绝的；少回放一个场景、漏一条规则就失败。合同文件直接读仓库的 `contracts/`，不是拷贝。`TranscriptionMachineTableTest`（5）：状态/事件集合、初始状态、终态、保留状态与合同一致；20 条规则逐条一致；没列出的组合被拒；终态只会忽略取消（一个结束的任务不能复活）；没有任何规则出入云端的三个保留状态（`WAITING_NETWORK` / `WAITING_CONSENT` / `SUBMITTED_REMOTE`，ADR-0019） | E2 |
-| 5 | 没有模型或资源不足时任务等待并显示原因，条件恢复后继续，不无限重试 | `SchedulerWaitingTest`（12）：没有模型 → 等模型并记下原因，模型装好后自己继续（不轮询）；模型损坏 → 同样等；每一种资源原因（录音中、过热、省电、内存、存储）都等、说明原因、条件好了继续；没有变化信号也按间隔重查；**重查次数有界，用完标“需要用户处理”，之后不再自己重查**；用户点“重新检查”清零重来；监视器自己出故障按可用处理。`SchedulerRetryTest`（6）：可重试的失败有退避、尝试次数有界、最后一次就是失败并带原因，之后再久也不再试。`SchedulerRestartTest`（11）：等着的任务重启后原样回来；崩溃循环有上限；被杀时结果其实已发布则直接认领、不转第二遍。`ResourcePolicyTest`（7）、`RecordingAwareResourceMonitorTest`（6）、`ModelsViewModelTest`（没有模型：显示在等模型并带原因码；资源不够：显示在等什么资源，重查用完标成需要用户处理；界面文字本身是纯函数 `ModelsDescriptions.kt`，没有单独的测试）；设备端 `AndroidResourceMonitorTest`、`SqliteTranscriptionJobStoreContractTest`（第 7 节） | E2；真机阈值 `NOT_RUN` |
-| 6 | 转录进行时开始新录音不掉帧 | `TranscriptionDoesNotDropFramesTest`（2）：①虚拟时间：第一段正在转录时录第二段，协调器计数里**每一帧都写入、丢弃数为 0**，两段随后按先后转完；②**真线程**：协调器、流水线与调度器邮箱同在一条线程上，转录引擎把另一条线程占住，新录音的每一帧仍然写入、一帧不丢，引擎线程的优先级是最低的。`LocalTranscriptionStackTest`（3，`:platform`）：线上整条接法里引擎调用也在那条最低优先级线程上（适配器没有把它切回默认线程）。结构上录音与转录没有共享的线程与锁 | E2；真机 `NOT_RUN` |
+| 5 | 没有模型或资源不足时任务等待并显示原因，条件恢复后继续，不无限重试 | `SchedulerWaitingTest`、`SchedulerRobustnessTest`、`SchedulerRestartTest`：资源与未知状态等待并显示原因；没有信号时按退避重查，间隔最多 5 分钟；模型变化与用户重查立即生效；真正的失败和崩溃重试仍有上限。设备端 `AndroidResourceMonitorTest` 与任务库契约见设备报告。 | E2；真机阈值 `NOT_RUN` |
+| 6 | 转录进行时开始新录音不掉帧 | `TranscriptionDoesNotDropFramesTest`：虚拟时间、独立真实线程、以及 CPU 密集型低优先级推理与 20 ms 实时帧生产并发；检查所有帧、丢弃计数与到写入的最大延迟。`LocalTranscriptionStackTest` 检查生产接法的线程优先级。 | E2；真机 `NOT_RUN` |
 | 7 | 重新转录产生新的 Revision，旧的保留 | `SchedulerRetranscribeTest`（7）：重转录是新任务、新 Revision，**写明这次用的模型**，旧 Revision 一个字都没动；重转录没有语音 / 失败 / 在等模型或资源时，已有的文字与“已转录”状态都在；已有未结束的任务时再点不会多出一个；录完的第一次转录排在重转录前面。Revision 本身只增不改由 Ticket 16 的 SQLite 触发器在数据库层面保证（`SqliteRecordLibraryTest`） | E2 |
 | 8 | 没有识别出语音时如实说明，不产生文字 | `SchedulerRunTest`：引擎说没有语音 → 任务是 `NO_SPEECH`、**没有 Revision**、Record 如实记为没有语音；引擎回了只有空白的文字同样不留空 Revision。`SchedulerRetranscribeTest`：重转录没有语音，不加文字。`ModelsViewModelTest`：界面写“没有识别出语音：没有生成文字” | E2 |
 
@@ -183,9 +201,9 @@ AURI_GRADLE_ARGS=--no-daemon execution/acceptance/android-capture/run_emulator_a
 
 | # | 现象 | 涉及字段 / 文件 | 建议 |
 |---|---|---|---|
-| G1 | 转录状态机里 `RUNNING` 没有直接去 `WAITING_MODEL` 的边：引擎在运行时才发现模型不可用（完整性失败、文件被清走）时，实现只能走 `RETRYABLE_ERROR → RETRY_SCHEDULED → RETRY_DUE → QUEUED → MODEL_MISSING → WAITING_MODEL` 四步，每一步都由状态机批准，并且不算一次尝试 | `contracts/fixtures/state-machines/transcription.machine.json` 的 `transitions` | 增加 `RUNNING + MODEL_MISSING → WAITING_MODEL`，并补一个场景 |
-| G2 | “自动重查用完、需要用户处理”没有对应的状态或事件：实现里任务仍是 `WAITING_RESOURCES`，另存一个持久化的 `needsUser` 标记 | 同上的 `states` / `events` | 增加 `NEEDS_USER`（或 `RECHECK_EXHAUSTED` 事件），让其他平台不必各自发明标记 |
-| G3 | `RESOURCES_LOW` 事件不带原因，原因枚举（`THERMAL` / `BATTERY_SAVER` / `LOW_MEMORY` / `LOW_STORAGE` / `RECORDING_ACTIVE`）只存在于 Android 实现里 | 同上的 `events`；`error.schema.json` 没有对应的码 | 在合同里定义等待原因枚举，三端用同一套名字 |
+| G1 | 转录状态机里 `RUNNING` 没有直接去 `WAITING_MODEL` 的边；运行时才发现模型不可用时须经重试、到期、排队再等模型，已记录的尝试次数不回退。 | `contracts/fixtures/state-machines/transcription.machine.json` 的 `transitions` | 增加 `RUNNING + MODEL_MISSING → WAITING_MODEL` 并补场景。 |
+| G2 | 状态机没有规定 `WAITING_RESOURCES` 的重查时间或无信号恢复策略；Android 按最多五分钟的间隔持续重查。 | 同上的 `WAITING_RESOURCES` 转移 | 由合同负责人补充跨平台恢复与退避语义。 |
+| G3 | `RESOURCES_LOW` 事件不带原因，原因枚举（`THERMAL` / `BATTERY_SAVER` / `LOW_MEMORY` / `LOW_STORAGE` / `RECORDING_ACTIVE` / `UNKNOWN`）只存在于 Android 实现里 | 同上的 `events`；`error.schema.json` 没有对应的码 | 在合同里定义等待原因枚举，三端用同一套名字 |
 | G4 | `QUEUED + RESOURCES_LOW` 的说明写“内存或温度不允许”，实际还会因省电模式、存储不足、正在录音而等 | 同上 `transitions[1].note` | 只是措辞；放宽说明即可 |
 
 ## 10. 测试的牙齿（变异验证）与 TDD 的诚实说明
