@@ -1,11 +1,11 @@
-# Ticket 17 review fixes: verification in progress
+# Ticket 17 review fixes: verification
 
-Branch: `ticket/17-headset-control`. The fresh product-code checks below exercised `08af10a`; `86b289a` adds only the isolated mutation runner. The branch contained `origin/integration/auri-v2` at `7f9a85e422d4` when fetched before these checks. All automated evidence is E2; no real phone or headset was available.
+Branch: `ticket/17-headset-control`. The product-code checks below exercised `53d3302`, which merges `origin/integration/auri-v2` at `7f9a85e422d4` and keeps both model management and headset control accessible. All automated evidence is E2; no real phone or headset was available.
 
 | Finding | Test observed failing before the fix | Fix and passing evidence |
 |---|---|---|
-| F1 | `HomeFlowTest` manual mode-off case: 1/6 failed because the media source activated. | `CaptureCoordinator.kt`, `CoordinatorTypes.kt`, and `HomeViewModel.kt` separate manual capture from Control Mode. The real coordinator test verifies manual start/stop followed by a key does not start another segment; the mode-on control remains armed. App JVM suite: 95 passed, E2. |
-| F2 | `HeadsetControlChainTest`: delayed START/TOGGLE and untrustworthy times failed, 2/13. | `HeadsetEventNormalizer.kt` rejects invalid or expired start/toggle times and preserves plausible event times; the coordinator also rejects expired queued commands. The chain verifies delayed START, TOGGLE and STOP. Platform JVM suite: 146 passed, E2. |
+| F1 | `HomeFlowTest` manual mode-off case: 1/6 failed because the media source activated. | `CaptureCoordinator.kt`, `CoordinatorTypes.kt`, and `HomeViewModel.kt` separate manual capture from Control Mode. The real coordinator test verifies manual start/stop followed by a key does not start another segment; the mode-on control remains armed. App JVM suite: 110 passed, E2. |
+| F2 | `HeadsetControlChainTest`: delayed START/TOGGLE and untrustworthy times failed, 2/13. | `HeadsetEventNormalizer.kt` rejects invalid or expired start/toggle times and preserves plausible event times; the coordinator also rejects expired queued commands. The chain verifies delayed START, TOGGLE and STOP. Platform JVM suite: 177 passed, E2. |
 | F3 | `ControlViewModelTest`: 1/37 failed because the pending indicator cleared at ARMED before disable completed. | `CaptureCoordinator.kt` serializes stop and disable and rejects new starts while closing; `ControlViewModel.kt` waits for a newer DISARMED snapshot. Controllable fake and real-chain tests pass, E2. |
 | F4 | `HeadsetControlChainTest`: 1/15 failed because a distinct cancellation inside 400 ms was dropped. | `HeadsetEventNormalizer.kt` compares key kind, input-device ID and platform time to deduplicate; STOP, PAUSE and a distinct TOGGLE cancel routing. Capture and platform JVM suites pass, E2. |
 | F5 | `FeedbackNotificationsTest`: 1/1 failed with a previously audible channel; the injected gateway preserved the old behavior before the fix. | `AndroidFeedbackPlayer.kt` deletes the old channel, creates a new low-importance silent channel, mutes each notification through Android group-alert behavior, and sets only-alert-once. Fake-channel tests pass; API 35 emulator verified the old audible channel is removed and the posted notification has the mute behavior, E2. |
@@ -14,20 +14,35 @@ Branch: `ticket/17-headset-control`. The fresh product-code checks below exercis
 | F8 | `CalibrationFindingsTest`: 3/61 failed because a first locked start or a later locked stop was treated as a locked restart. | `CalibrationFindings.kt` requires the relevant headset stop while locked and its finalization before a successful locked start. The corrected negative tests and existing positive path pass, E2. |
 | F9 | `NoSoundIntoBluetoothTest`: 1/2 failed to reject whitespace between `setSound` and `(`. | The guard accepts whitespace/newlines before the parenthesis and its negative controls cover both forms; the explicit `(null, null)` exception remains covered. Both tests pass, E2. |
 
+JVM limits: F2 injects a fake media source through the real platform-key conversion, normalizer, adapter and coordinator; the JVM cannot exercise Android's actual `MediaSession` delivery and the emulator separately measures that delivery. F5's preconfigured audible channel is a JVM fake, followed by an Android-framework notification test on the emulator. F6's JVM input models a USB-like external device; it cannot prove a real hardware bus or identity, so the Android source conservatively attributes no system media key to a selected headset.
+
 The single Gradle command prefix was `source ~/.config/auri/android-env.sh && cd apps/android && ./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2`.
 
 | Fresh suite | Exact task or command | Result |
 |---|---|---|
-| Capture JVM | `:capture:cleanTest :capture:test` | 228 passed, 0 failed, 0 skipped |
-| Platform JVM | `:platform:cleanTestDebugUnitTest :platform:testDebugUnitTest` | 146 passed, 0 failed, 0 skipped |
-| App JVM | `:app:cleanTestDebugUnitTest :app:testDebugUnitTest` | 95 passed, 0 failed, 0 skipped |
+| Capture JVM | `:capture:cleanTest :capture:test` | 330 passed, 0 failed, 0 skipped |
+| Platform JVM | `:platform:cleanTestDebugUnitTest :platform:testDebugUnitTest` | 177 passed, 0 failed, 0 skipped |
+| App JVM | `:app:cleanTestDebugUnitTest :app:testDebugUnitTest` | 110 passed, 0 failed, 0 skipped |
 | ASR JVM | `:asr:cleanTestDebugUnitTest :asr:testDebugUnitTest` | 112 passed, 0 failed, 0 skipped |
+| Model management JVM | `:modelmgmt:cleanTestDebugUnitTest :modelmgmt:testDebugUnitTest` | 84 passed, 0 failed, 0 skipped |
 | Instrumentation APKs | `:app:assembleDebug :app:assembleDebugAndroidTest :platform:assembleDebugAndroidTest` | BUILD SUCCESSFUL |
-| API 35 arm64 emulator | `AURI_SKIP_BUILD=1 AURI_DEVICE_OUT=/tmp/auri-ticket17-review AURI_AVD_NAME=auri-t17-review AURI_GRADLE_ARGS='--no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2' execution/acceptance/android-control/run_emulator_acceptance.sh` after sourcing Android env | Platform 8/8, app 2/2; the checker verified every test ran. Measured: no playback, 4 injected media keys, 0 deliveries; E2 only. |
+| API 35 arm64 emulator | `AURI_SKIP_BUILD=1 AURI_DEVICE_OUT=/tmp/auri-ticket17-review-final AURI_AVD_NAME=auri-t17-review-final AURI_GRADLE_ARGS='--no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2' execution/acceptance/android-control/run_emulator_acceptance.sh` after sourcing Android env, run from a disposable archive with `PYTHON` and the three baseline APK paths set to the worktree | Platform 12/12, app 2/2; the checker verified every test ran. Measured: no playback, 4 injected media keys, 0 deliveries; E2 only. A second emulator run repeated 12/12 and 2/2 while checking D2/D3. |
 | Android control Python | `AURI_GRADLE_ARGS='--no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2' .venv/bin/pytest execution/acceptance/android-control --basetemp=/tmp/auri-ticket17-acceptance` after sourcing Android env | 106 passed, 0 failed, 0 skipped |
 | Full repo Python | `.venv/bin/pytest tests/contract tests/integration tests/security --basetemp=/tmp/auri-ticket17-repo` | 492 passed, 0 failed, 0 skipped |
 
 The coordinator clarified the shared-machine guard: wait when free memory is below 20% or swap grows by more than 500 MiB over 60 seconds, rather than on historical swap use alone. The first readings were 3301.25 then 3293.25 MiB used with 64–65% free. The emulator increased swap to 4358.50 MiB; after 60 seconds it fell to 4310.50 MiB with 58% free before the next Gradle-bearing suite.
+
+Ticket checklist coverage (the Chinese ticket keeps its boxes unchecked; these are the observed results):
+
+| Checklist item | Evidence |
+|---|---|
+| Media keys cannot start capture with Control Mode off | `HomeFlowTest` and `HeadsetControlChainTest`; `HeadsetMediaKeyOnDeviceTest` and `ControlWiringOnDeviceTest`, E2. |
+| Normalized events carry source/sequence and one duplicate gesture cannot start and immediately stop | `HeadsetEventNormalizerTest`, `CompositeControlAdapterTest`, `HeadsetControlChainTest`, E2. Distinct platform events from the same physical gesture still require E3 measurement. |
+| A cancel reaches routing and a stale toggle during finalizing cannot start the next segment | `HeadsetControlChainTest` covers both and the over-five-second delivery case, E2. |
+| Calibration covers idle, recording, restart and lock | `CalibrationFindingsTest` and `ControlViewModelTest` exercise all four steps, E2; real lock-screen behavior is NOT_RUN. |
+| Profile validates and untested capabilities stay untested | `ControlContractOutputTest`, `HeadsetProfileContractTest`, `control_contract_check.py`, and `CalibrationFindingsTest`, E2; unattributed-event reason cannot be persisted under the existing schema. |
+| Distinct start, stop and refusal feedback; manual controls remain available | `FeedbackHubTest`, `FeedbackPlayerOnDeviceTest`, and `HomeViewModelTest`, E2; subjective haptic feel is NOT_RUN. |
+| Complete calibration and record using a real headset | NOT_RUN: no Android phone or FreeClip is attached; the owner procedure is in the acceptance README. |
 
 Mutation verification is in progress in a disposable `git archive` snapshot. The repository retains descriptions, but not the earlier one-off mutation scripts; reconstructed and new cases are in `execution/acceptance/android-control/review_mutations.py`. Final mutation results and cleanup will be added after the run.
 
