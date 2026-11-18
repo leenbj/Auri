@@ -877,6 +877,106 @@ MUTATIONS += (
     ),
 )
 
+FRAME_READER = "apps/android/sync/src/main/kotlin/app/auri/sync/pairing/QrFrameReader.kt"
+FRAME_TESTS = (":sync:test", "--tests", "*QrFrameReaderTest*")
+DISCOVERY = "apps/android/syncplatform/src/main/kotlin/app/auri/syncplatform/discovery/NsdGatewayDiscovery.kt"
+DEVICE_INFO = "apps/android/syncplatform/src/main/kotlin/app/auri/syncplatform/DeviceInfoProvider.kt"
+SYNCPLATFORM_TEST = "syncplatform/build/test-results/testDebugUnitTest"
+ADVERT_TESTS = (":syncplatform:testDebugUnitTest", "--tests", "*GatewayAdvertisementTest*")
+DEVICE_TESTS = (":syncplatform:testDebugUnitTest", "--tests", "*DeviceInfoTest*")
+
+# 切片 8：取景帧的读取、mDNS 广告筛选、设备信息
+MUTATIONS += (
+    Mutation(
+        "frame-reader-never-closes-frame",
+        "每一帧都必须关闭：CameraX 要等这一帧关闭才给下一帧，漏一次预览就卡住",
+        (Edit(FRAME_READER, "        } finally {\n            frame.close()\n        }", "        }"),),
+        FRAME_TESTS, SYNC_TEST[0],
+        ("读到二维码就把文字交出去，并关闭这一帧", "没有二维码的帧什么也不交出去，但照样关闭"),
+    ),
+    Mutation(
+        "frame-reader-closes-frame-twice",
+        "每一帧恰好关闭一次（重复关闭会让 CameraX 抛异常）",
+        (Edit(FRAME_READER, "?.let(onText)", "?.let(onText).also { frame.close() }"),),
+        FRAME_TESTS, SYNC_TEST[0],
+        ("读到二维码就把文字交出去，并关闭这一帧",),
+    ),
+    Mutation(
+        "frame-reader-lets-exceptions-escape",
+        "一帧读失败不能让分析线程死掉，更不能影响下一帧",
+        (Edit(
+            FRAME_READER,
+            "        } catch (_: Exception) {\n            // 这一帧读不出来，等下一帧\n        } finally {",
+            "        } finally {",
+        ),),
+        FRAME_TESTS, SYNC_TEST[0],
+        ("取灰度出异常也不外抛", "回调出异常也不外抛"),
+    ),
+    Mutation(
+        "frame-reader-ignores-row-stride",
+        "按这一帧自己的行距读，不能假设行距等于宽度",
+        (Edit(FRAME_READER, "frame.width, frame.height, frame.rowStride", "frame.width, frame.height, frame.width"),),
+        FRAME_TESTS, SYNC_TEST[0],
+        ("按这一帧自己的行距读",),
+    ),
+    Mutation(
+        "advert-accepts-other-gateways",
+        "mDNS 里只认要找的那台网关（gateway_id 相同），同一局域网的别的网关不是候选",
+        (Edit(DISCOVERY, '    if (attributes["gateway_id"] != gatewayId) return null\n', ""),),
+        ADVERT_TESTS, SYNCPLATFORM_TEST,
+        ("别的网关的广告不是候选", "没有 gateway_id 的广告不是候选"),
+    ),
+    Mutation(
+        "advert-accepts-unsafe-host",
+        "广告里的主机会被写进 Host 头：带空白或换行的不能当候选",
+        (Edit(DISCOVERY, "!GatewayAddress.isValidHost(host) || ", ""),),
+        ADVERT_TESTS, SYNCPLATFORM_TEST,
+        ("主机里带空白或换行的广告不是候选",),
+    ),
+    Mutation(
+        "advert-accepts-invalid-port",
+        "端口不合法的广告不是候选",
+        (Edit(DISCOVERY, " || !GatewayAddress.isValidPort(port)", ""),),
+        ADVERT_TESTS, SYNCPLATFORM_TEST,
+        ("端口不合法的广告不是候选",),
+    ),
+    Mutation(
+        "device-info-app-version-not-truncated",
+        "配对时报给网关的字段长度必须合乎合同（应用版本最长 64）",
+        (Edit(DEVICE_INFO, "appVersion.take(64).ifEmpty", "appVersion.ifEmpty"),),
+        DEVICE_TESTS, SYNCPLATFORM_TEST,
+        ("过长的字段按合同上限截断",),
+    ),
+    Mutation(
+        "device-info-os-build-not-truncated",
+        "系统版本字段最长 100",
+        (Edit(DEVICE_INFO, '(API $sdkInt)".take(100)', '(API $sdkInt)"'),),
+        DEVICE_TESTS, SYNCPLATFORM_TEST,
+        ("过长的字段按合同上限截断",),
+    ),
+    Mutation(
+        "device-info-display-name-not-truncated",
+        "设备显示名最长 100",
+        (Edit(DEVICE_INFO, '.joinToString(" ").take(100)', '.joinToString(" ")'),),
+        DEVICE_TESTS, SYNCPLATFORM_TEST,
+        ("过长的字段按合同上限截断",),
+    ),
+    Mutation(
+        "device-info-empty-version-not-replaced",
+        "应用版本为空也要给出合格的值",
+        (Edit(DEVICE_INFO, '.ifEmpty { "unknown" }', ""),),
+        DEVICE_TESTS, SYNCPLATFORM_TEST,
+        ("应用版本为空时也合格",),
+    ),
+    Mutation(
+        "device-info-names-not-trimmed",
+        "厂商与型号两端的空白要去掉",
+        (Edit(DEVICE_INFO, "manufacturer?.trim(), model?.trim()", "manufacturer, model"),),
+        DEVICE_TESTS, SYNCPLATFORM_TEST,
+        ("厂商或型号缺失时仍给出合格的名字",),
+    ),
+)
+
 # 后面各个切片的变异在对应测试写好之后追加到这里（见 README 的“变异检查”一节）。
 
 
