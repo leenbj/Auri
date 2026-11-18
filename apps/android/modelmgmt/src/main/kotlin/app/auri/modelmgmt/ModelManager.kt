@@ -148,18 +148,23 @@ class ModelManager(
             val dir = pointer?.let { store.activeDir(id, it) }
             val damaged = manifest != null && dir != null && !looksComplete(manifest, dir)
             if (manifest != null && dir != null) installed[id] = Installed(manifest, dir)
-            store.collectGarbage(id, keep = pointer?.directory)
+            if (pointer != null) store.collectGarbage(id, keep = pointer.directory)
+            val pointerError = found == null && store.storeDir(id).exists()
 
             val current = manifest?.modelVersion == entry.manifest.modelVersion && !damaged
             val workDir = store.downloadDir(id, entry.manifest.modelVersion)
-            store.cleanDownloads(id, keepVersionDir = if (current) null else workDir)
+            if (!pointerError) store.cleanDownloads(id, keepVersionDir = if (current) null else workDir)
             val partial = if (current) 0L else downloader.partialBytes(entry.manifest.archive, workDir)
             ModelEntryState(
                 info = entry.info,
                 isDefault = id == catalog.defaultModelId,
                 installedVersion = manifest?.modelVersion,
                 damaged = damaged,
-                transfer = if (partial > 0) Transfer.Paused(partial, entry.manifest.archive.sizeBytes) else Transfer.Idle,
+                transfer = when {
+                    pointerError -> Transfer.Failed(ModelError(ModelErrorKind.STORAGE_ERROR), partial)
+                    partial > 0 -> Transfer.Paused(partial, entry.manifest.archive.sizeBytes)
+                    else -> Transfer.Idle
+                },
             )
         }
         mutableState.value = ModelsState(entries)
@@ -338,11 +343,11 @@ class ModelManager(
             }
             hooks.at(InstallStep.POINTER_WRITTEN)
             activated(entry, target)
+            store.collectGarbage(id, keep = target.name)
         } finally {
             if (!renamed) staging.deleteRecursively()
         }
         // 新模型已经在用：现在才清掉旧版本、没引用的目录与下载区
-        store.collectGarbage(id, keep = store.readPointer(id)?.first?.directory)
         downloader.discard(workDir)
         workDir.deleteRecursively()
     }

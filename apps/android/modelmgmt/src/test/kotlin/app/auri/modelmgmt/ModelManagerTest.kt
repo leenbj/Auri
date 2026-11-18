@@ -89,6 +89,42 @@ class ModelManagerTest {
     private fun filesUnder(dir: File) = dir.walkTopDown().filter { it.isFile }.map { it.relativeTo(dir).path }.sorted().toList()
 
     @Test
+    fun `指针无法解析时保留所有版本并报告可恢复的存储错误`() {
+        val rig = Rig()
+        val first = rig.manager().apply { start(rig.id); awaitInstalled(rig.id) }
+        val old = ready(first)
+        val pointer = File(rig.root, "model-store/${rig.id}/active.json")
+        val validPointer = pointer.readText()
+        pointer.writeText("{ invalid")
+
+        val restarted = rig.manager()
+
+        assertTrue("不能因为指针不可读而删除已安装的模型", old.dir.isDirectory)
+        assertEquals(ModelErrorKind.STORAGE_ERROR, failedOf(restarted.entry(rig.id)).kind)
+        pointer.writeText(validPointer)
+        ModelVerifier().verify(ready(rig.manager()).manifest, old.dir)
+    }
+
+    @Test
+    fun `启用后读取指针失败也不能删除刚安装的版本`() {
+        val v1 = TestModel(tmp.newFolder(newFolderName("v1")), version = "1.0.0", seed = 1)
+        val v2 = TestModel(tmp.newFolder(newFolderName("v2")), version = "2.0.0", seed = 2)
+        val rig = Rig(model = v1)
+        rig.manager().apply { start(rig.id); awaitInstalled(rig.id) }
+        rig.urls[v2.url] = server(v2.archiveBytes).url
+        val updating = rig.manager(catalog = rig.catalog(v2), hooks = InstallHooks { step ->
+            if (step == InstallStep.POINTER_WRITTEN) File(rig.root, "model-store/${rig.id}/active.json").writeText("{ invalid")
+        })
+
+        updating.start(rig.id)
+        updating.awaitInstalled(rig.id)
+
+        val installed = ready(updating)
+        assertTrue("新启用的目录必须仍在", installed.dir.isDirectory)
+        ModelVerifier().verify(installed.manifest, installed.dir)
+    }
+
+    @Test
     fun `安装成功：先校验压缩包，再解包，再校验每个文件，最后才启用；启用目录里只有校验过的文件`() {
         val rig = Rig()
         val manager = rig.manager()
