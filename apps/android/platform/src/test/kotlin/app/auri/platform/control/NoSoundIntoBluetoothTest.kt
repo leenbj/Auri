@@ -30,7 +30,7 @@ class NoSoundIntoBluetoothTest {
         "playSoundEffect", "SoundEffectConstants", "DEFAULT_SOUND", "DEFAULT_ALL", "setDefaults", "STATE_PLAYING",
     ).map { Regex("\\b$it") }
 
-    private val soundArgument = Regex("""setSound\((?!\s*null\s*,\s*null\s*\))""")
+    private val soundArgument = Regex("""\bsetSound\s*\((?!\s*null\s*,\s*null\s*\))""")
 
     private fun violations(files: Map<String, String>): List<String> = files.flatMap { (path, text) ->
         forbidden.filter { it.containsMatchIn(text) }.map { "$path：${it.pattern}" } +
@@ -49,12 +49,13 @@ class NoSoundIntoBluetoothTest {
             "val p = MediaPlayer()", "SoundPool.Builder()", "ToneGenerator(0, 100)", "AudioTrack.Builder()", "RingtoneManager.getRingtone()",
             "TextToSpeech(context, listener)", "audioManager.playSoundEffect(0)", "SoundEffectConstants.CLICK", "Notification.DEFAULT_SOUND",
             "Notification.DEFAULT_ALL", "builder.setDefaults(1)", "PlaybackState.STATE_PLAYING", "channel.setSound(uri, attrs)",
-            "channel.setSound(defaultUri, null)",
+            "channel.setSound(defaultUri, null)", "channel.setSound (uri, attrs)", "channel.setSound\n(uri, attrs)",
         )
         bad.forEach { snippet ->
             assertTrue("没抓到：$snippet", violations(mapOf("Injected.kt" to code(snippet))).isNotEmpty())
         }
         assertEquals(emptyList<String>(), violations(mapOf("Ok.kt" to "channel.setSound(null, null)")))
+        assertEquals(emptyList<String>(), violations(mapOf("Ok.kt" to "channel.setSound \n ( null, null )")))
         assertEquals("注释里写到这些词不算代码", emptyList<String>(), violations(mapOf("Doc.kt" to code("// 不用 MediaPlayer\n/* ToneGenerator */"))))
     }
 }
