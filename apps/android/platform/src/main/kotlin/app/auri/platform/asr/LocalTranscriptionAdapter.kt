@@ -97,5 +97,6 @@ internal fun app.auri.asr.TranscriptionOutcome.toCapture(): TranscriptionOutcome
     is app.auri.asr.TranscriptionOutcome.Succeeded -> TranscriptionOutcome.Text(content.text, content.language, content.confidence)
     is app.auri.asr.TranscriptionOutcome.NoSpeech -> TranscriptionOutcome.NoSpeech
     is app.auri.asr.TranscriptionOutcome.WaitingModel -> TranscriptionOutcome.WaitingModel(error.code.toCapture())
-    is app.auri.asr.TranscriptionOutcome.Failed -> TranscriptionOutcome.Failed(error?.code?.toCapture())
+    // retryable 照引擎说的传出去；没有错误信息（引擎内部异常）就是没声明过可以重试
+    is app.auri.asr.TranscriptionOutcome.Failed -> TranscriptionOutcome.Failed(error?.code?.toCapture(), error?.retryable == true)
 }

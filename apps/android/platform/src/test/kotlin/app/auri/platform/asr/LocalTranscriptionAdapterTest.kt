@@ -17,6 +17,7 @@ import java.io.File
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -48,8 +49,8 @@ class LocalTranscriptionAdapterTest {
         cancelSupport = app.auri.asr.contract.CancelSupport.NONE,
     )
 
-    private fun asrError(code: app.auri.asr.contract.ErrorCode) =
-        AsrError("1.1", code, "测试", retryable = false, requiredAction = null, operationId = null)
+    private fun asrError(code: app.auri.asr.contract.ErrorCode, retryable: Boolean = false) =
+        AsrError("1.1", code, "测试", retryable = retryable, requiredAction = null, operationId = null)
 
     private fun content(text: String) = RevisionContent(
         text = text,
@@ -156,6 +157,18 @@ class LocalTranscriptionAdapterTest {
 
         assertEquals(ErrorCode.ASR_RESOURCE_LIMIT, a.code)
         assertNull(b.code)
+    }
+
+    @Test
+    fun `失败可不可以重试照引擎说的带出去，调度器据此决定要不要有界重试；没有错误信息的引擎内部异常不重试`() = runBlocking {
+        val audio = sealed(ShortArray(1600))
+        fun failure(error: AsrError?) = LocalTranscriptionAdapter(
+            FakeEngine(reply = { app.auri.asr.TranscriptionOutcome.Failed(error, "IllegalStateException") }),
+        ).let { adapter -> runBlocking { adapter.transcribe(request(audio)).outcome as TranscriptionOutcome.Failed } }
+
+        assertTrue(failure(asrError(app.auri.asr.contract.ErrorCode.ASR_RESOURCE_LIMIT, retryable = true)).retryable)
+        assertFalse(failure(asrError(app.auri.asr.contract.ErrorCode.ASR_RESOURCE_LIMIT, retryable = false)).retryable)
+        assertFalse("引擎内部异常：没有声明过可以重试", failure(null).retryable)
     }
 
     @Test

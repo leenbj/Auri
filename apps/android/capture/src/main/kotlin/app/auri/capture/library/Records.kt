@@ -53,6 +53,8 @@ data class Revision(
     val modelVersion: String?,
     val confidence: Double?,
     val createdAt: Instant,
+    /** 本地发布幂等键，不属于网络合同。 */
+    val publicationKey: String? = null,
 ) {
     init {
         require(number >= 1) { "revision 至少为 1" }
@@ -73,12 +75,13 @@ data class RevisionDraft(
     val modelVersion: String?,
     val confidence: Double?,
     val createdAt: Instant,
+    val publicationKey: String? = null,
 ) {
     val textSha256: String get() = sha256Hex(text)
 
     /** 库实现在事务里分配好 [number] 之后调用。 */
     fun toRevision(number: Int) = Revision(
-        recordId, number, text, textSha256, source, language, reviewState, executionLocation, engine, modelId, modelVersion, confidence, createdAt,
+        recordId, number, text, textSha256, source, language, reviewState, executionLocation, engine, modelId, modelVersion, confidence, createdAt, publicationKey,
     )
 }
 
