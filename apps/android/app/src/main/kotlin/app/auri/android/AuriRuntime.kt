@@ -1,6 +1,7 @@
 package app.auri.android
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import app.auri.android.home.CoordinatorControls
@@ -31,6 +32,9 @@ import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 
 /** 一次录音最多比转录引擎一次能处理的长度少这么多：留出读音频批次的余量，保证录下的音频不会超出引擎上限。 */
 private const val DURATION_SAFETY_MARGIN_MS = 500L
@@ -91,6 +95,7 @@ class AuriRuntime(
         // 前台服务跟着采集状态走；服务起不来就取消这次采集（没有前台服务，录音一进后台就会被系统静音）
         scope.bindForegroundService(coordinator.snapshot, AndroidForegroundServiceController(application)) { coordinator.userCancel() }
         pipeline.resume() // 上次没转完的、等模型的 Record 重新排队
+        scope.launch { coordinator.snapshot.map(::captureLogLine).distinctUntilChanged().collect { Log.i(CAPTURE_LOG_TAG, it) } }
     }
 
     val homeViewModelFactory = object : ViewModelProvider.Factory {
