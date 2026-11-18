@@ -203,6 +203,18 @@ class CalibrationObservationTest {
     }
 
     @Test
+    fun `步骤边界：上一步里还没等到决定的屏幕停止，它的决定晚到时，不能配给下一步里耳机发的停止键`() {
+        val w = wizardAt(1) // 第二步
+        val feed = Feed(w, state = RECORDING)
+        w.onControlEvent(feed.event(PlatformEvent.SCREEN_BUTTON, BusinessCommand.STOP, ControlSource.SCREEN_CONTROL)) // 屏幕停止：决定还没送到
+        w.next() // 翻到第三步
+        w.onControlEvent(feed.event(PlatformEvent.PAUSE, BusinessCommand.STOP)) // 第三步里耳机发来停止键（录音其实已经在封存）
+        w.onDecision(feed.decision(CaptureEvent.STOP, Outcome.TRANSITION, FINALIZING), false) // 先到的是屏幕停止的决定
+        w.onDecision(feed.decision(CaptureEvent.STOP, Outcome.IGNORED, FINALIZING), false) // 后到耳机停止的决定：已在封存，被忽略
+        assertFalse("停下录音的是屏幕按钮，不是耳机", w.summary.stoppedByGesture)
+    }
+
+    @Test
     fun `声明没效果之后又收到一次耳机事件：声明作废，它说的是更早那次尝试；屏幕按钮的事件不作废它`() {
         val w = wizardAt(1)
         val feed = Feed(w)
@@ -311,5 +323,29 @@ class ControlDecisionPairingTest {
         pairing.clear()
         assertEquals(0, pairing.size)
         assertNull(pairing.match(decision(CaptureEvent.TOGGLE)))
+    }
+
+    @Test
+    fun `放弃归属之后，旧事件的决定晚到时由它们自己吸收：不会错配给之后到的新事件，也不会记到任何手势头上`() {
+        val pairing = ControlDecisionPairing()
+        pairing.offer(event(BusinessCommand.STOP))
+        pairing.discard()
+        assertEquals("放弃归属的事件不再算待配对", 0, pairing.size)
+        val fresh = event(BusinessCommand.STOP)
+        pairing.offer(fresh)
+        assertEquals(1, pairing.size)
+        assertNull("旧事件的决定先到：被旧事件吸收，不归因给任何事件", pairing.match(decision(CaptureEvent.STOP)))
+        assertSame("新事件自己的决定", fresh, pairing.match(decision(CaptureEvent.STOP)))
+    }
+
+    @Test
+    fun `放弃归属的事件，对不上触发器时照样当作丢了决定清走，不会一直占着位置`() {
+        val pairing = ControlDecisionPairing()
+        pairing.offer(event(BusinessCommand.TOGGLE))
+        pairing.discard()
+        val fresh = event(BusinessCommand.START)
+        pairing.offer(fresh)
+        assertSame(fresh, pairing.match(decision(CaptureEvent.START)))
+        assertNull("旧的切换事件已经被当作丢了决定清走，不会再吸收后面的切换决定", pairing.match(decision(CaptureEvent.TOGGLE)))
     }
 }

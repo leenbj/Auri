@@ -31,6 +31,8 @@ import app.auri.capture.machine.CaptureEvent
 import app.auri.capture.machine.Outcome
 import java.io.IOException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -115,7 +117,26 @@ class ControlViewModelTest {
         }
     }
 
-    private class Rig(scope: TestScope, initial: CaptureState, isEmulator: Boolean, val store: FakeStore, val active: ActiveControlProfile) {
+    /** 读数刚变、通知还没送到收集者：`value` 已经是新读数，收集者收到的还是旧的。 */
+    private class LaggingLock(private val delivered: Boolean?) : StateFlow<Boolean?> {
+        @Volatile
+        var current: Boolean? = delivered
+        override val value: Boolean? get() = current
+        override val replayCache: List<Boolean?> get() = listOf(delivered)
+        override suspend fun collect(collector: FlowCollector<Boolean?>): Nothing {
+            collector.emit(delivered)
+            awaitCancellation()
+        }
+    }
+
+    private class Rig(
+        scope: TestScope,
+        initial: CaptureState,
+        isEmulator: Boolean,
+        val store: FakeStore,
+        val active: ActiveControlProfile,
+        lockSource: StateFlow<Boolean?>? = null,
+    ) {
         val controls = FakeControls(initial)
         val headset = MutableStateFlow(HeadsetControlStatus.OFF)
         val feedback = MutableStateFlow<Feedback?>(null)
@@ -125,7 +146,7 @@ class ControlViewModelTest {
         private var ns = 0L
         private var seq = 0L
         val viewModel = ControlViewModel(
-            controls, headset, feedback, lock, events::observe, active, store, isEmulator, { "cal-${++runs}" }, scope.backgroundScope,
+            controls, headset, feedback, lockSource ?: lock, events::observe, active, store, isEmulator, { "cal-${++runs}" }, scope.backgroundScope,
         )
         val state: ControlUiState get() = viewModel.state.value
 
@@ -155,7 +176,8 @@ class ControlViewModelTest {
         isEmulator: Boolean = false,
         store: FakeStore = FakeStore(),
         active: ActiveControlProfile = ActiveControlProfile(),
-    ) = Rig(this, initial, isEmulator, store, active)
+        lockSource: StateFlow<Boolean?>? = null,
+    ) = Rig(this, initial, isEmulator, store, active, lockSource)
 
     private fun runUnconfined(block: suspend TestScope.() -> Unit) = runTest(UnconfinedTestDispatcher()) { block() }
 
@@ -638,6 +660,50 @@ class ControlViewModelTest {
         val capabilities = rig.store.saves.single().capabilities
         assertEquals("第二步手势停止是观察到的", CompatStatus.SUPPORTED_FOREGROUND, capabilities.stopWhileBluetoothMicActive.status)
         assertEquals("失败的是停止手势，不能写成开始不支持", CapabilityRecord.untested, capabilities.foregroundStartStop)
+    }
+
+    @Test
+    fun `声明没效果时，界面也把实际的锁屏状态交给向导：读数刚变、通知还没送到向导，这次声明不采纳`() = runUnconfined {
+        fun declaredStop(reading: Boolean?): CalibrationUi.Finished {
+            val lagging = LaggingLock(delivered = false)
+            val rig = rig(CaptureState.ARMED, lockSource = lagging)
+            rig.viewModel.setRealDeviceConfirmed(true)
+            rig.viewModel.startCalibration()
+            rig.viewModel.skipStep()
+            // 第二步：屏幕按钮开始录音，录音中
+            rig.gesture(PlatformEvent.SCREEN_BUTTON, BusinessCommand.START, ControlSource.SCREEN_CONTROL)
+            rig.decide(CaptureEvent.START, CaptureState.ROUTING)
+            rig.decide(CaptureEvent.ROUTE_VERIFIED, CaptureState.RECORDING)
+            lagging.current = reading // 锁屏读数刚变，通知还没送到向导
+            rig.viewModel.reportNoEffect() // 耳机停止手势没反应
+            rig.viewModel.nextStep()
+            repeat(2) { rig.viewModel.skipStep() }
+            return rig.state.calibration as CalibrationUi.Finished
+        }
+
+        assertTrue("对照：读数没变，声明站得住，有可保存的结论", declaredStop(reading = false).canSave)
+        assertFalse("读数刚变成读不出来：向导还以为亮着，这次声明不能算数", declaredStop(reading = null).canSave)
+        assertFalse("读数刚变成锁着：向导还以为亮着，这次声明不能算数", declaredStop(reading = true).canSave)
+    }
+
+    @Test
+    fun `中途锁过屏再解锁之后点“重做”：界面把此刻实际的环境交给向导重新建立基准，重试之后的声明站得住`() = runUnconfined {
+        val rig = rig(CaptureState.ARMED)
+        rig.viewModel.setRealDeviceConfirmed(true)
+        rig.viewModel.startCalibration()
+        rig.viewModel.skipStep()
+        rig.gesture(PlatformEvent.SCREEN_BUTTON, BusinessCommand.START, ControlSource.SCREEN_CONTROL)
+        rig.decide(CaptureEvent.START, CaptureState.ROUTING)
+        rig.decide(CaptureEvent.ROUTE_VERIFIED, CaptureState.RECORDING)
+        rig.lock.value = true // 录音中自动锁屏
+        rig.lock.value = false // 解锁
+        rig.viewModel.repeatStep() // 点“重做”，再用耳机试一次，没反应
+        rig.viewModel.reportNoEffect()
+        rig.viewModel.nextStep()
+        repeat(2) { rig.viewModel.skipStep() }
+        rig.viewModel.saveProfile()
+
+        assertEquals(CompatStatus.UNSUPPORTED, rig.store.saves.single().capabilities.stopWhileBluetoothMicActive.status)
     }
 
     @Test

@@ -10,6 +10,7 @@ import app.auri.capture.calibration.CalibrationState
 import app.auri.capture.calibration.CalibrationStep
 import app.auri.capture.calibration.CalibrationWizard
 import app.auri.capture.calibration.CompatStatus
+import app.auri.capture.calibration.CurrentEnvironment
 import app.auri.capture.calibration.EvidenceLevel
 import app.auri.capture.calibration.EvidenceSetting
 import app.auri.capture.calibration.HeadsetCapabilities
@@ -287,13 +288,15 @@ class ControlViewModel(
     fun skipStep(shown: CalibrationStep? = null) = advance(shown) { it.skip() }
 
     fun repeatStep() {
-        runningWizard()?.repeat()
+        runningWizard()?.repeat(currentEnvironment())
     }
 
     fun reportNoEffect() {
-        // 把此刻实际的采集状态交给向导：它自己所知的状态来自协调器的决定，决定送到有时延
-        runningWizard()?.reportNoEffect(controls.snapshot.value.state)
+        runningWizard()?.reportNoEffect(currentEnvironment())
     }
+
+    // 此刻实际的采集状态与锁屏状态：向导自己所知的来自协调器的决定与锁屏通知，送到向导有时延，声明与重做以这里读到的为准
+    private fun currentEnvironment() = CurrentEnvironment(controls.snapshot.value.state, screenLocked.value)
 
     fun abortCalibration() {
         val running = local.value.phase as? Phase.Running ?: return

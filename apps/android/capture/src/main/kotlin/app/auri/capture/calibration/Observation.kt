@@ -53,27 +53,38 @@ internal fun Observation.Decided.isRemoteStop(): Boolean =
  * 事件必须先于决定到达（向导的接入点在协调器之前，见 CompositeControlAdapter.tap）。
  * 宁可漏记，不可错记：决定的触发器必须与待配对事件的命令一致，对不上的事件视为没等到决定而丢掉，
  * 完全对不上的决定不归因——这样丢一个决定，不会把屏幕上的点击记成耳机手势。
+ *
+ * [discard]（步骤边界、重做）放弃的是“归属”，不是“位置”：协调器的决定按命令先后到达，被放弃的事件的决定还会到，
+ * 它们要继续排在队列里，由它们自己吸收那些决定，之后到的新事件才不会被旧决定错配。
  */
 internal class ControlDecisionPairing(private val capacity: Int = 16) {
-    private val pending = ArrayDeque<NormalizedControlEvent>()
+    private class Entry(val event: NormalizedControlEvent, var live: Boolean = true)
 
-    val size: Int get() = pending.size
+    private val pending = ArrayDeque<Entry>()
+
+    /** 还在等决定、归属当前这次尝试的事件个数（被 [discard] 放弃归属的不算）。 */
+    val size: Int get() = pending.count { it.live }
 
     fun offer(event: NormalizedControlEvent) {
-        pending.addLast(event)
+        pending.addLast(Entry(event))
         while (pending.size > capacity) pending.removeFirst()
     }
 
-    /** 返回引起这个决定的事件；不是控制决定，或对不上，返回 null（后一种不改动待配对队列）。 */
+    /** 返回引起这个决定的事件；不是控制决定，或对不上，或那个事件已被放弃归属，返回 null（对不上时不改动待配对队列）。 */
     fun match(decision: CaptureDecision): NormalizedControlEvent? {
         if (!isControlDecision(decision)) return null
-        val index = pending.indexOfFirst { triggerOf(it.command) == decision.trigger }
+        val index = pending.indexOfFirst { triggerOf(it.event.command) == decision.trigger }
         if (index < 0) return null
         repeat(index) { pending.removeFirst() }
-        return pending.removeFirst()
+        val entry = pending.removeFirst()
+        return if (entry.live) entry.event else null
     }
 
+    /** 全部清掉，包括位置（整轮放弃时用）。 */
     fun clear() = pending.clear()
+
+    /** 现有的事件放弃归属：它们的决定到了也不记到任何手势头上，但仍占着队列里的位置。 */
+    fun discard() = pending.forEach { it.live = false }
 
     // 没有触发器的决定只有“命令被忽略”这一种才对应某个控制事件（内部错误等无法确定是哪个命令）；
     // 路由确认之类有触发器、但不是 START/STOP/TOGGLE 的决定，与任何命令的触发器都对不上，在 match 里自然配不上

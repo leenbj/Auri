@@ -51,6 +51,9 @@ data class StepSummary(
     val ownerReportedNoEffect: Boolean = false,
 )
 
+/** 界面此刻读到的实际环境；向导自己所知的来自事件与决定，送到向导有时延。 */
+class CurrentEnvironment(val state: CaptureState, val screenLocked: Boolean?)
+
 data class CalibrationState(
     val phase: CalibrationPhase,
     val step: CalibrationStep?,
@@ -105,8 +108,10 @@ class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
     // 读不出来（null）就是不知道：旧值可能已经过期，不再沿用。
     private var knownLock: Boolean? = null
 
-    // 自上一个采集决定以来，锁屏状态变过或读不出来过：此时声明的锁屏状态代表不了那次手势做的时候（决定自带的读数会让它重新对齐）
-    private var lockMovedSinceDecision = false
+    // 自上一个“起点”以来，锁屏状态变过或读不出来过：此时声明的锁屏状态代表不了那次手势做的时候。
+    // 起点 = 状态发生了变化的采集决定（用户在屏幕上的准备做完了，或录音自己进入了下一阶段；决定自带的读数让它重新对齐），
+    // 或用户点“重做”。没有状态变化的决定（被忽略、被拒绝）不是起点：它说明不了那次手势是在它之后做的。
+    private var lockMovedSinceBaseline = false
 
     private val flow = MutableStateFlow(snapshot())
     val state: StateFlow<CalibrationState> = flow.asStateFlow()
@@ -128,16 +133,24 @@ class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
     @Synchronized
     fun skip(): Boolean = finishStep(StepOutcome.SKIPPED)
 
-    /** 重做这一步：清掉这一步的观察与声明，尝试次数加一。 */
+    /**
+     * 重做这一步：清掉这一步的观察与声明，尝试次数加一。点“重做”是新一次尝试的起点：给了 [now]，
+     * 就以界面此刻读到的环境（采集状态、锁屏状态）重新建立基准，否则中途锁过屏之后，重试时的声明永远站不住。
+     */
     @Synchronized
-    fun repeat(): Boolean {
+    fun repeat(now: CurrentEnvironment? = null): Boolean {
         val step = current ?: return false
         steps.getValue(step).apply {
             attempt += 1
             reset()
         }
-        // 被丢弃的那次尝试里还没等到决定的事件：它的决定晚到时，不能记到新的尝试头上
-        pairing.clear()
+        // 被丢弃的那次尝试里还没等到决定的事件：它们的决定晚到时不能记到新的尝试头上，但要继续占着队列里的位置
+        pairing.discard()
+        if (now != null) {
+            trackedState = now.state
+            knownLock = now.screenLocked
+            lockMovedSinceBaseline = now.screenLocked == null
+        }
         publish()
         return true
     }
@@ -147,15 +160,23 @@ class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
      * 声明说的是用户刚做的那次手势，并且记下这一刻的采集状态与锁屏状态，结论据此判断那次手势想做什么；
      * 之后又收到耳机事件（用户又试了一次），声明作废，要再声明一次才算最近这次。
      *
-     * [currentState] 是界面此刻读到的实际采集状态（向导自己所知的状态来自协调器的决定，决定送到向导有时延）：
+     * 有事件已经到了、协调器的决定还没到时不记（返回 false）：那次手势的结局还不知道，“没反应”说不清它指的是什么，
+     * 用户稍后再点即可。
+     *
+     * [now] 是界面此刻读到的实际环境（向导自己所知的来自协调器的决定与锁屏通知，送到向导有时延）：
      * 给了而且与向导所知的对不上，就当不知道，这次声明不会被采纳为结论；不给就只用向导所知的。
      */
     @Synchronized
-    fun reportNoEffect(currentState: CaptureState? = null): Boolean {
+    fun reportNoEffect(now: CurrentEnvironment? = null): Boolean {
         val step = current ?: return false
         if (step == CalibrationStep.IDLE_EVENTS) return false
-        val state = if (currentState == null || currentState == trackedState) trackedState else null
-        steps.getValue(step).declared = DeclaredAttempt(state, knownLock, lockSteady = !lockMovedSinceDecision)
+        if (pairing.size > 0) return false
+        val agrees = now == null || (now.state == trackedState && now.screenLocked == knownLock)
+        steps.getValue(step).declared = if (agrees) {
+            DeclaredAttempt(trackedState, knownLock, lockSteady = !lockMovedSinceBaseline)
+        } else {
+            DeclaredAttempt(null, null, lockSteady = false)
+        }
         publish()
         return true
     }
@@ -206,9 +227,17 @@ class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
             ),
         )
         trackedState = decision.stateAfter
-        // 决定自带的锁屏读数让“采集状态”与“锁屏状态”重新对齐；读不出来则仍然不可信
-        knownLock = screenLocked
-        lockMovedSinceDecision = screenLocked == null
+        if (decision.stateBefore != decision.stateAfter) {
+            // 状态变了（用户在屏幕上的准备做完，或录音自己进入了下一阶段）：之后的手势发生在这个新环境里，
+            // 决定自带的锁屏读数让“采集状态”与“锁屏状态”重新对齐；读不出来则仍然不可信
+            knownLock = screenLocked
+            lockMovedSinceBaseline = screenLocked == null
+        } else if (screenLocked != knownLock) {
+            // 没有状态变化的决定（被忽略、被拒绝）不是新的起点，不能让锁屏读数重新对齐；
+            // 它带来的读数与已知的不同，说明锁屏状态在我们没注意到时变过
+            knownLock = screenLocked
+            lockMovedSinceBaseline = true
+        }
         if (decision.stateBefore == CaptureState.FINALIZING && decision.stateAfter == CaptureState.ARMED) finalizeSeen = true
         publish()
     }
@@ -217,7 +246,7 @@ class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
     @Synchronized
     fun onScreenLockChanged(locked: Boolean?) {
         val step = current ?: return
-        if (locked != knownLock) lockMovedSinceDecision = true
+        if (locked != knownLock) lockMovedSinceBaseline = true
         knownLock = locked
         if (locked != null) steps.getValue(step).add(Observation.LockChanged(locked, trackedState))
         publish()
@@ -250,15 +279,9 @@ class CalibrationWizard(val runId: String, val setting: EvidenceSetting) {
         val step = current ?: return false
         val data = steps.getValue(step)
         data.outcome = outcome
-        if (outcome == StepOutcome.SKIPPED) {
-            data.reset()
-        } else if (pairing.size > 0) {
-            // 这一步结束时还有事件没等到协调器的决定：决定晚到时不会再记到这一步头上，而那次手势也许其实成功了，
-            // 所以这一步里“没效果”的声明不能当结论
-            data.declared = null
-        }
-        // 步骤边界之前的事件，它们的决定晚到时不归因给任何手势（宁可漏记，不可错记）
-        pairing.clear()
+        if (outcome == StepOutcome.SKIPPED) data.reset()
+        // 步骤边界之前的事件，它们的决定晚到时不归因给任何手势（宁可漏记，不可错记），但仍占着队列里的位置
+        pairing.discard()
         val following = CalibrationStep.entries.getOrNull(step.ordinal + 1)
         if (following == null) {
             phase = CalibrationPhase.COMPLETED

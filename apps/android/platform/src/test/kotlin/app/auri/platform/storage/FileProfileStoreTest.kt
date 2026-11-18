@@ -9,6 +9,7 @@ import java.io.IOException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Rule
@@ -109,16 +110,17 @@ class FileProfileStoreTest {
     }
 
     @Test
-    fun `替换这一步抛的不是 IOException（框架的运行时异常）：照样清掉写好的临时文件，异常原样抛出，旧档案还在`() {
+    fun `替换这一步抛的不是 IOException（框架的运行时异常）：照样清掉写好的临时文件，异常原样抛出（同一个实例），旧档案还在`() {
         val old = profile("FreeClip")
         store().save(old)
-        val broken = FileProfileStore(file) { _, _ -> throw UnsupportedOperationException("文件系统不支持这种替换") }
+        val thrown = UnsupportedOperationException("文件系统不支持这种替换")
+        val broken = FileProfileStore(file) { _, _ -> throw thrown }
 
         try {
             broken.save(profile("FreeClip 2"))
             fail("运行时异常不能被吞掉，调用方要据此告诉用户“没保存上”")
-        } catch (expected: UnsupportedOperationException) {
-            // 预期
+        } catch (caught: UnsupportedOperationException) {
+            assertSame("原样抛出，不能换成另一个异常", thrown, caught)
         }
 
         assertEquals("临时文件不能留在目录里", listOf("headset-profile.json"), file.parentFile.list()!!.toList())

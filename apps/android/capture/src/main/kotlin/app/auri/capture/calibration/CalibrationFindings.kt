@@ -18,8 +18,9 @@ internal class StepRecord(
  * 用户声明“做了手势，没有任何效果”那一刻的环境。声明说的是刚做的那次手势，而那次手势想停止还是想开始、
  * 是不是在锁屏时做的，只有这一刻说得清：录音中的手势是想停止，就绪或受阻时的手势是想开始。不知道（null）一律不算。
  *
- * [lockSteady]：自上一个采集决定以来，锁屏状态没有变过（也没有读不出来过）。变过的话，声明时的锁屏状态代表不了那次手势做的时候——
- * 比如锁屏时做了手势没反应、解锁回来才点“没反应”，声明时屏幕是亮的，手势却是在锁屏时做的。
+ * [lockSteady]：自上一个起点（状态变化的采集决定，或用户点“重做”）以来，锁屏状态没有变过（也没有读不出来过）。
+ * 变过的话，声明时的锁屏状态代表不了那次手势做的时候——比如锁屏时做了手势没反应、解锁回来才点“没反应”，
+ * 声明时屏幕是亮的，手势却是在锁屏时做的。
  */
 internal class DeclaredAttempt(val state: CaptureState?, val screenLocked: Boolean?, val lockSteady: Boolean) {
     fun wasStop(locked: Boolean) = lockSteady && state == CaptureState.RECORDING && screenLocked == locked
@@ -41,8 +42,10 @@ private class Finding(val verdict: Verdict, val evidenceId: String? = null)
  *    录音中的手势想停止，就绪或受阻时的手势想开始；亮屏的检查（第二、三步）不采纳锁屏时的声明，锁屏的检查反之。
  *    第四步里它还说不了“录音撑没撑过锁屏”；对“锁屏时重新开始”，还要求锁屏中手势真的停下过录音（那才是这一步的流程）。
  *    声明之后又收到耳机事件（用户又试了一次）则声明作废，由 CalibrationWizard 在收到事件时清掉。
- *    声明那一刻的环境还要“站得住”才采纳：向导所知的采集状态与界面给的实际状态一致、锁屏状态自上一个采集决定以来没变过也没读不出来过
- *    （[DeclaredAttempt]）；这一步结束时还有事件没等到协调器的决定，这一步的声明作废（那次手势也许其实成功了，结局晚到）。
+ *    声明那一刻的环境还要“站得住”才采纳：向导所知的采集状态与锁屏状态和界面给的实际环境一致、锁屏状态自上一个起点以来没变过
+ *    也没读不出来过（[DeclaredAttempt]）；有事件已经到了、协调器的决定还没到时点的“没反应”根本不记（那次手势的结局还不知道）。
+ *    声明说的是这一步要求的那种手势（第二步：停止；第三、四步：开始），向导分不出用户其实在说另一种——比如第三步里先试了停止、
+ *    没反应，改用屏幕停止，再点“没反应”，会被记成“开始没反应”；这是与操作说明不符的操作，事件里看不出来。
  *  - 一次手势开始的结局属于它自己：手势让录音进入准备之后，紧接着离开准备的决定必须是“到达录音中”才算开始成功，
  *    并且到达那一刻的锁屏状态与开始时一致；准备被取消或受阻后，用户改点屏幕按钮录上的那一段，不能算在手势头上。
  *  - 一项能力由一或两项检查决定：全部成功 = 支持；全部声明没效果 = 不支持；成功与没效果混合 = PARTIAL；
@@ -157,8 +160,10 @@ internal object CalibrationFindings {
                     }
                 is Observation.Decided -> when {
                     !lockedWithRecording -> Unit
-                    o.source == null && o.stateBefore == CaptureState.RECORDING && o.stateAfter != CaptureState.RECORDING -> lockedWithRecording = false
+                    // 耳机手势在锁屏中遇到了正在进行的录音：录音撑到了这一刻
                     o.source.isRemote() && o.screenLocked == true && o.stateBefore == CaptureState.RECORDING -> return true
+                    // 录音在这里结束了（任何原因，包括耳机让它停下、但这一刻读不出锁屏状态）：之后的录音不是同一段，不能再算它撑过了锁屏
+                    o.stateBefore == CaptureState.RECORDING && o.stateAfter != CaptureState.RECORDING -> lockedWithRecording = false
                 }
                 is Observation.Arrived -> Unit
             }

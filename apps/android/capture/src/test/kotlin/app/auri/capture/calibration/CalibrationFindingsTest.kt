@@ -12,9 +12,11 @@ import app.auri.capture.contract.CaptureState.ROUTING
 import app.auri.capture.contract.ControlSource
 import app.auri.capture.contract.PlatformEvent
 import app.auri.capture.control.ControlProfile
+import app.auri.capture.coordinator.Cause
 import app.auri.capture.machine.CaptureEvent
 import app.auri.capture.machine.Outcome
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -715,7 +717,7 @@ class CalibrationFindingsTest {
         val stale = Run(real)
         stale.idle()
         stale.stopByGesture() // 向导所知：就绪
-        stale.wizard.reportNoEffect(currentState = RECORDING)
+        stale.wizard.reportNoEffect(CurrentEnvironment(RECORDING, false))
         stale.wizard.next()
         stale.wizard.skip()
         val c = stale.profile().capabilities
@@ -726,7 +728,7 @@ class CalibrationFindingsTest {
         val agreed = Run(real)
         agreed.idle()
         agreed.stopByGesture()
-        agreed.wizard.reportNoEffect(currentState = ARMED)
+        agreed.wizard.reportNoEffect(CurrentEnvironment(ARMED, false))
         agreed.wizard.next()
         agreed.wizard.skip()
         assertEquals(CompatStatus.PARTIAL, agreed.profile().capabilities.foregroundStartStop.status)
@@ -798,6 +800,117 @@ class CalibrationFindingsTest {
             CompatStatus.PARTIAL,
             run.profile().capabilities.foregroundStartStop.status,
         )
+    }
+
+    // ---- 复审第 6 轮：声明与配对要经得起“事件、决定、锁屏通知”三路到达的先后 ----
+
+    /** 第一步做完，第二步里用屏幕按钮开始了录音：向导所知是录音中、亮屏。 */
+    private fun Run.recordingInStep2() {
+        idle()
+        feed.gesture(PlatformEvent.SCREEN_BUTTON, START, ROUTING, source = ControlSource.SCREEN_CONTROL)
+        feed.other(CaptureEvent.ROUTE_VERIFIED, RECORDING)
+    }
+
+    @Test
+    fun `重做之后旧的决定才送到：它属于重做之前的屏幕停止，不能配给重做之后耳机发的停止键，不写成“耳机手势停止了录音”`() {
+        val run = Run(real)
+        run.recordingInStep2()
+        run.wizard.onControlEvent(run.feed.event(PlatformEvent.SCREEN_BUTTON, STOP, ControlSource.SCREEN_CONTROL)) // 用户点了屏幕“停止”，决定还没送到
+        run.wizard.repeat() // 然后点了“重做”
+        run.wizard.onControlEvent(run.feed.event(PlatformEvent.PAUSE, STOP)) // 重做之后耳机发来明确的停止键（录音其实已经在封存）
+        run.wizard.onDecision(run.feed.decision(CaptureEvent.STOP, Outcome.TRANSITION, FINALIZING), false) // 先送到的是屏幕停止的决定
+        run.wizard.onDecision(run.feed.decision(CaptureEvent.STOP, Outcome.IGNORED, FINALIZING), false) // 后送到耳机停止的决定：已在封存，被忽略
+        run.feed.other(CaptureEvent.FINALIZE_COMPLETE, ARMED)
+        run.wizard.next()
+        run.wizard.skip()
+        run.wizard.skip()
+        assertEquals("停下录音的是屏幕按钮，不是耳机", CapabilityRecord.untested, run.profile().capabilities.stopWhileBluetoothMicActive)
+    }
+
+    @Test
+    fun `事件已经到了、决定还没到时点“没反应”：这次声明不记（那次手势的结局还不知道）；决定随后送到、翻步，也不会补记成“开始不支持”`() {
+        val run = Run(real)
+        run.idle()
+        run.stopByGesture() // 第二步停止成功；向导所知：就绪
+        run.wizard.onControlEvent(run.feed.event(PlatformEvent.TOGGLE, TOGGLE)) // 第三步：耳机的开始事件到了向导
+        assertFalse("决定还没到，声明说不清指的是哪次手势", run.wizard.reportNoEffect())
+        run.wizard.onDecision(run.feed.decision(CaptureEvent.TOGGLE, Outcome.TRANSITION, ROUTING), false) // 决定送到：开始了
+        run.wizard.next() // 路由确认已经是下一步的事
+        run.wizard.skip()
+        val c = run.profile().capabilities
+        assertEquals("第二步手势停止是观察到的", CompatStatus.SUPPORTED_FOREGROUND, c.stopWhileBluetoothMicActive.status)
+        assertEquals("那次开始手势其实起作用了，只是结局没在这一步里看到", CapabilityRecord.untested, c.foregroundStartStop)
+    }
+
+    @Test
+    fun `锁屏时做的开始手势没反应、解锁之后，一个不改变状态的无关决定（被拒绝）不能让锁屏读数重新对齐，之后声明也不写成“前台开始不支持”`() {
+        val run = Run(real)
+        run.idle()
+        run.stopByGesture() // 向导所知：就绪、亮屏
+        run.wizard.onScreenLockChanged(true) // 锁屏时做了开始手势，没反应
+        run.wizard.onScreenLockChanged(false) // 解锁回来
+        run.wizard.onDecision(run.feed.decision(CaptureEvent.ROUTE_VERIFIED, Outcome.REJECTED, ARMED, Cause.STALE_SESSION), false) // 旧会话的路由回调被拒绝：就绪 → 就绪
+        run.wizard.reportNoEffect()
+        run.wizard.next()
+        run.wizard.skip()
+        assertEquals(CapabilityRecord.untested, run.profile().capabilities.foregroundStartStop)
+    }
+
+    @Test
+    fun `第四步：锁屏后读数读不出来，耳机手势停了录音，再用屏幕另开一段、读数恢复亮屏：后一段不是撑过了锁屏的那一段`() {
+        val run = Run(real)
+        run.toLockStep() // 第三步结束时在录音中
+        run.wizard.onScreenLockChanged(true)
+        run.wizard.onScreenLockChanged(null) // 读不出来
+        run.feed.gesture(PlatformEvent.TOGGLE, TOGGLE, FINALIZING, locked = null) // 耳机手势停了录音，这一刻读不出锁屏状态
+        run.feed.other(CaptureEvent.FINALIZE_COMPLETE, ARMED, locked = null)
+        run.feed.gesture(PlatformEvent.SCREEN_BUTTON, START, ROUTING, locked = null, source = ControlSource.SCREEN_CONTROL) // 用屏幕另开一段
+        run.feed.other(CaptureEvent.ROUTE_VERIFIED, RECORDING, locked = null)
+        run.wizard.onScreenLockChanged(false) // 读数恢复：亮屏，这一段录音在继续
+        run.wizard.next()
+        assertEquals(CapabilityRecord.untested, run.profile().capabilities.continueRecordingWhenLocked)
+    }
+
+    @Test
+    fun `声明那一刻界面读到的锁屏状态与向导所知的对不上（读数刚变、通知还没送到）：不采纳；一致时照常算数`() {
+        fun stopRecord(now: CurrentEnvironment): CapabilityRecord {
+            val run = Run(real)
+            run.recordingInStep2()
+            run.wizard.reportNoEffect(now)
+            run.wizard.next()
+            run.wizard.skip()
+            run.wizard.skip()
+            return run.profile().capabilities.stopWhileBluetoothMicActive
+        }
+        assertEquals("对照：界面读到的与向导所知的一致", CompatStatus.UNSUPPORTED, stopRecord(CurrentEnvironment(RECORDING, false)).status)
+        assertEquals("界面此刻读到“读不出来”，向导还不知道", CapabilityRecord.untested, stopRecord(CurrentEnvironment(RECORDING, null)))
+        assertEquals("界面此刻读到“锁着”，向导以为亮着", CapabilityRecord.untested, stopRecord(CurrentEnvironment(RECORDING, true)))
+    }
+
+    @Test
+    fun `锁屏通知还没送到，但一个没有状态变化的决定已经带来了新读数：锁屏状态变过，之后的声明不采纳`() {
+        val run = Run(real)
+        run.recordingInStep2() // 向导所知：录音中、亮屏
+        run.wizard.onDecision(run.feed.decision(CaptureEvent.ROUTE_VERIFIED, Outcome.IGNORED, RECORDING, Cause.MACHINE), true) // 这个决定处理时屏幕是锁着的
+        run.wizard.reportNoEffect()
+        run.wizard.next()
+        run.wizard.skip()
+        run.wizard.skip()
+        assertEquals(CapabilityRecord.untested, run.profile().capabilities.stopWhileBluetoothMicActive)
+    }
+
+    @Test
+    fun `中途锁过屏再解锁之后点“重做”：重做是新一次尝试的起点，以界面此刻读到的环境重新建立基准，重试之后的声明站得住`() {
+        val run = Run(real)
+        run.recordingInStep2()
+        run.wizard.onScreenLockChanged(true) // 录音中自动锁屏
+        run.wizard.onScreenLockChanged(false) // 解锁
+        run.wizard.repeat(CurrentEnvironment(RECORDING, false)) // 点“重做”，再用耳机试一次，没反应
+        run.wizard.reportNoEffect(CurrentEnvironment(RECORDING, false))
+        run.wizard.next()
+        run.wizard.skip()
+        run.wizard.skip()
+        assertEquals(CompatStatus.UNSUPPORTED, run.profile().capabilities.stopWhileBluetoothMicActive.status)
     }
 
     // ---- 档案本身与命令映射 ----
