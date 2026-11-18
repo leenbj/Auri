@@ -22,7 +22,17 @@
 - F12：重转录仅在 Record 已有 Revision 时保留 DONE；此前没有 Revision 时显示本次进行中、无语音或失败。
 - F13：新增真线程 CPU 负载测试，以 20 ms 节奏生产三秒帧并检查丢帧和到写入的延迟；这只是 Mac JVM 上的 E2，真机边转录边录音仍为 NOT_RUN。
 
-F2 的解析失败测试用真实文件系统上的损坏指针模拟不可读结果，不能模拟每一种 Android I/O 故障；F8 的失败路径用可控注册回调测试清理，真实系统注册/注销仍须设备证据。假设：旧版 RUNNING 任务若存在无法归属的旧 ASR Revision，宁可标失败保留数据，也不盲目重复发布；已保存的旧 `needsUser` 等资源任务恢复自动重查。
+F2 的测试在真实文件系统上覆盖损坏指针和 POSIX 无读取权限两种情况，不能模拟每一种 Android I/O 故障；F8 的失败路径用可控注册回调测试清理，真实系统注册/注销仍须设备证据。假设：旧版 RUNNING 任务若存在无法归属的旧 ASR Revision，宁可标失败保留数据，也不盲目重复发布；已保存的旧 `needsUser` 等资源任务恢复自动重查。
+
+### 审查后的复验结果
+
+- JVM：`:capture` 172、`:modelmgmt` 82、`:platform` 115、`:app` 66、`:asr` 112，全部通过，无跳过；每套先清除测试结果、逐套运行。
+- E2 模拟器：API 35 arm64，平台 32 个、应用 4 个仪器测试全部通过，检查器确认没有漏跑；临时 AVD、进程与锁已清除。两个设备信号变异均被抓住。
+- JVM 变异：30/30 被测试断言抓住，包含 F1、F2、F3（两个）、F4、F7。原有资源等待变异 M9 的旧期望与 F11 相反，已改为验证“五次后停止重查”并抓住；M-T 只覆盖测试回环 HTTP 的读超时。
+- Android 模型验收 Python：2 个通过；完整合同/集成/安全测试：492 个通过（211.24 秒）。
+- 本机实时并发帧测试：150 帧、零丢帧，生成 2,980 ms，最大交付延迟 6 ms（Mac JVM，不是手机性能指标）。
+
+完整的红/绿测试名称、命令、证据边界与清理记录见 [review-fixes-report.md](review-fixes-report.md)。Gradle 每次使用 `--no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2`，每次构建或启动模拟器之前先检查 swap 与系统空闲内存；禁止用 `./gradlew --stop`。
 
 ## 1. 这里有什么
 
@@ -98,7 +108,7 @@ AURI_GRADLE_ARGS=--no-daemon execution/acceptance/android-capture/run_emulator_a
 .venv/bin/pytest tests/contract tests/integration tests/security
 ```
 
-**最终运行的结果**（2026-11-18，分支 `ticket/20-model-management`，已合并 `origin/integration/auri-v2` 的 `e92cfa7`；JVM 单测跑之前先清过测试结果，所以不是 `UP-TO-DATE`；第 10 节缺陷 4 修好之后整套重新跑过，一次只跑一个 Gradle 调用，一个接一个，模拟器与 Gradle 单测不同时跑）：
+**审查修复前的历史运行结果**（2026-11-18，分支 `ticket/20-model-management`，已合并 `origin/integration/auri-v2` 的 `e92cfa7`；JVM 单测跑之前先清过测试结果，所以不是 `UP-TO-DATE`；第 10 节缺陷 4 修好之后整套重新跑过，一次只跑一个 Gradle 调用，一个接一个，模拟器与 Gradle 单测不同时跑）：
 
 | 套件 | 命令 | 结果 |
 |---|---|---|
@@ -115,7 +125,7 @@ AURI_GRADLE_ARGS=--no-daemon execution/acceptance/android-capture/run_emulator_a
 
 **Gradle 的一个陷阱**：读源码、合同或构建产物的测试（`NetworkIsolationTest`、`NoNetworkManifestTest`、场景回放）如果没把这些文件声明成输入，改了它们之后 Gradle 会说 `UP-TO-DATE` 而不重跑。做最终验证前先清结果（`:capture:cleanTest`、`:modelmgmt:cleanTestDebugUnitTest` 等）。`realDownloadCheck` 只借单元测试的类路径，不要写成 `tasks.named<Test>(...).map { … }`：`TaskProvider.map` 会把整套单元测试变成它的依赖。
 
-**共享机器的规矩**同 Ticket 16：同一时刻只许一台模拟器，靠 `~/.cache/auri/emulator.lock` 互斥；无头启动；用完 `adb emu kill`、删 AVD、释放锁；`export ADB_LIBUSB=1`。另外：**`./gradlew --stop` 是全机器范围的**，会停掉别的工作树正在跑的构建，共用机器上要给构建与 `--stop` 都加私有的 `-Dorg.gradle.daemon.registry.base=<目录>`（第 10 节缺陷 5）。
+**共享机器的规矩**同 Ticket 16：同一时刻只许一台模拟器，靠 `~/.cache/auri/emulator.lock` 互斥；无头启动；用完 `adb emu kill`、删 AVD、释放锁；`export ADB_LIBUSB=1`。另外：**`./gradlew --stop` 是全机器范围的**，会停掉别的工作树正在跑的构建，共用机器上构建可使用私有的 `-Dorg.gradle.daemon.registry.base=<目录>`，不得运行 `./gradlew --stop`（第 10 节缺陷 5）。
 
 ## 5. 产品负责人：真机上的验收（`NOT_RUN`）
 
