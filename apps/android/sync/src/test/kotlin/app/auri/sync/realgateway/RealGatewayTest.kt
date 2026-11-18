@@ -106,8 +106,21 @@ class RealGatewayTest {
         override suspend fun find(gatewayId: String): List<GatewayAddress> = emptyList()
     }
 
+    /** mDNS 的替身（JVM 里没有 NsdManager）：只在被问到时给出事先设好的候选地址，并数被问了几次。 */
+    private class ScriptedDiscovery : GatewayDiscovery {
+        @Volatile
+        var candidates: List<GatewayAddress> = emptyList()
+        val asked = AtomicInteger()
+
+        override suspend fun find(gatewayId: String): List<GatewayAddress> = candidates.also { asked.incrementAndGet() }
+    }
+
     /** 一部“手机”。 */
-    private inner class Phone(val dir: File, val key: SecretKey = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()) {
+    private inner class Phone(
+        val dir: File,
+        val key: SecretKey = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey(),
+        discovery: GatewayDiscovery = NoDiscovery,
+    ) {
         /** 引擎与配对服务发出的每个请求（“方法 路径”），按顺序。 */
         val calls = CopyOnWriteArrayList<String>()
 
@@ -133,12 +146,12 @@ class RealGatewayTest {
             pairing = store,
             source = SubmissionSource { jobKey -> overrides[jobKey] ?: librarySource.submissionFor(jobKey) },
             http = http,
-            locator = GatewayLocator(http, NoDiscovery, log),
+            locator = GatewayLocator(http, discovery, log),
             clock = RealClock,
             retry = RetryPolicy(baseMs = 100, maxMs = 400),
             log = log,
         )
-        val pairing = PairingService(store, http, NoDiscovery, RealClock, DeviceInfo(APP_VERSION, "jvm-real-gateway-test", "Ticket 21 real gateway test"), log)
+        val pairing = PairingService(store, http, discovery, RealClock, DeviceInfo(APP_VERSION, "jvm-real-gateway-test", "Ticket 21 real gateway test"), log)
 
         /** 发布一条 Revision：本地库里有了，同步任务入队。 */
         suspend fun publish(n: Int, text: String): JobKey {
@@ -178,7 +191,8 @@ class RealGatewayTest {
     private inner class Lab {
         val gateway = RealGateway(folder.newFolder()).tracked().start()
         val proxy = TcpProxy(gateway.port).tracked()
-        val phone = Phone(folder.newFolder())
+        val discovery = ScriptedDiscovery()
+        val phone = Phone(folder.newFolder(), discovery = discovery)
 
         fun payload(of: RealGateway = gateway): String = of.pairingPayloadJson(advertisedPort = proxy.port)
 
@@ -238,7 +252,8 @@ class RealGatewayTest {
     fun `入库：引擎把一条 Revision 送到真实网关，正文与哈希逐字节一致，来源设备是这部手机，同步状态变成已同步`() = runBlocking {
         val lab = Lab()
         val paired = lab.pair()
-        val text = "帮我记录一下：明天检查小说的记忆模块。café 🙂 “引号”与\\反斜杠\n第二行"
+        // 前后各带空白与换行：正文必须原样送到，网关里存的与手机上的逐字节一样（哈希才对得上）
+        val text = "  帮我记录一下：明天检查小说的记忆模块。café 🙂 “引号”与\\反斜杠\n第二行\n\n"
         val key = lab.phone.publish(1, text)
 
         lab.phone.engine.runOnce()
@@ -433,15 +448,44 @@ class RealGatewayTest {
     // ---- 5. 网关不在 / 换了一台 / 吊销 ----
 
     @Test
+    fun `地址搬家：记着的地址连不上就用发现（mDNS 的替身）找到网关的新地址，核对同一把公钥后送达，并记住新地址`() = runBlocking {
+        val lab = Lab()
+        lab.pair() // 记下的地址是转发器 A
+        val key = lab.phone.publish(1, "网关换了地址之后写的")
+        lab.proxy.close() // 记着的地址从此没人听；网关其实还在，只是换了地址
+        val moved = TcpProxy(lab.gateway.port).tracked()
+        val newAddress = GatewayAddress("127.0.0.1", moved.port)
+        lab.discovery.candidates = listOf(newAddress)
+
+        lab.phone.engine.runOnce()
+
+        assertEquals(SyncState.STORED, lab.phone.jobs.get(key)!!.state)
+        assertEquals("网关里有这一条", 1, lab.gateway.count("SELECT COUNT(*) FROM revisions WHERE record_id = ?", key.recordId))
+        assertEquals("记着的地址不通才去问发现，而且只问一次", 1, lab.discovery.asked.get())
+        assertTrue("请求是经新地址送到网关的", moved.reachedGateway.get() > 0)
+        assertEquals("连上的新地址被记住", newAddress, ((lab.phone.store.load()) as PairingState.Paired).gateway.lastGoodAddress)
+
+        // 记住了新地址：下一条先连它，不再需要发现
+        val next = lab.phone.publish(2, "之后又写的")
+        lab.phone.engine.runOnce()
+
+        assertEquals(SyncState.STORED, lab.phone.jobs.get(next)!!.state)
+        assertEquals("先连最近连上的地址：不再问发现", 1, lab.discovery.asked.get())
+        Unit
+    }
+
+    @Test
     fun `网关关机：任务等网关，一条不丢；网关重启（同一份数据）之后自动送达`() = runBlocking {
         val lab = Lab()
         lab.pair()
         lab.gateway.stop()
         val key = lab.phone.publish(1, "网关睡着的时候写的")
+        val second = lab.phone.publish(2, "网关睡着的时候写的第二条") // 这一轮只会试第一条：连不上就不必再试别的，但第二条也要如实标成等网关
 
         lab.phone.engine.runOnce()
 
         assertEquals(SyncState.WAITING_GATEWAY, lab.phone.jobs.get(key)!!.state)
+        assertEquals("没有被试过的排队任务也改成等网关，界面不会一边说在发送一边什么也没发", SyncState.WAITING_GATEWAY, lab.phone.jobs.get(second)!!.state)
         assertEquals(SyncHeadline.WAITING_FOR_GATEWAY, lab.phone.status().headline)
         assertTrue("网关不在不是用户的事", lab.phone.status().causes.isEmpty())
 
@@ -451,7 +495,9 @@ class RealGatewayTest {
         lab.phone.engine.runOnce()
 
         assertEquals(SyncState.STORED, lab.phone.jobs.get(key)!!.state)
+        assertEquals(SyncState.STORED, lab.phone.jobs.get(second)!!.state)
         assertEquals("重启后的网关里有这一条", 1, restarted.count("SELECT COUNT(*) FROM revisions WHERE record_id = ?", key.recordId))
+        assertEquals("重启后的网关里有第二条", 1, restarted.count("SELECT COUNT(*) FROM revisions WHERE record_id = ?", second.recordId))
         assertEquals(SyncHeadline.UP_TO_DATE, lab.phone.status().headline)
         Unit
     }
@@ -472,9 +518,13 @@ class RealGatewayTest {
         assertTrue("原因要是公钥不符（界面据此提示重新配对）：${status.causes}", UserCause.KEY_MISMATCH in status.causes)
         assertEquals(NeedsUser.KEY_MISMATCH, ((lab.phone.store.load()) as PairingState.Paired).gateway.needsUser)
         assertEquals("陌生网关里什么也没有：没有设备、没有文字", 0, stranger.count("SELECT COUNT(*) FROM revisions") + stranger.count("SELECT COUNT(*) FROM devices"))
+        // 用户还没处理，手机上又录了一条：公钥不符是对整个连接成立的事实，新任务也不能带着令牌去敲这个地址
+        // （只看已经停下的那条任务，任务本来就不会再发，这个检查等于没做）
+        val later = lab.phone.publish(2, "公钥不符期间新录的")
         val accepted = lab.proxy.accepted.get()
         repeat(2) { lab.phone.engine.runOnce() }
         assertEquals("需要用户处理的期间，手机一个连接也不会再发", accepted, lab.proxy.accepted.get())
+        assertEquals("新任务没有被送给陌生网关", 0, stranger.count("SELECT COUNT(*) FROM revisions WHERE record_id = ?", later.recordId))
 
         // 用户在新网关上生成配对码、重新配对：任务回到排队，送到新网关
         lab.phone.pairWith(lab.payload(of = stranger))
@@ -482,7 +532,9 @@ class RealGatewayTest {
         lab.phone.engine.runOnce()
 
         assertEquals(SyncState.STORED, lab.phone.jobs.get(key)!!.state)
+        assertEquals(SyncState.STORED, lab.phone.jobs.get(later)!!.state)
         assertEquals(1, stranger.count("SELECT COUNT(*) FROM revisions WHERE record_id = ?", key.recordId))
+        assertEquals(1, stranger.count("SELECT COUNT(*) FROM revisions WHERE record_id = ?", later.recordId))
         assertEquals(0, lab.gateway.count("SELECT COUNT(*) FROM revisions"))
         Unit
     }
@@ -501,16 +553,21 @@ class RealGatewayTest {
         assertEquals(SyncHeadline.NEEDS_USER, status.headline)
         assertTrue("原因要是令牌被拒：${status.causes}", UserCause.AUTH_REJECTED in status.causes)
         assertEquals(0, lab.gateway.count("SELECT COUNT(*) FROM revisions"))
+        // 令牌被拒是对整个连接成立的事实：用户还没处理时又录的一条，也不能再带着这个令牌去敲网关
+        val later = lab.phone.publish(2, "令牌被拒期间新录的")
         val before = lab.phone.requests().size
         repeat(3) { lab.phone.engine.runOnce() }
         assertEquals("令牌被拒之后不会再带着它发请求", before, lab.phone.requests().size)
+        assertEquals(0, lab.gateway.count("SELECT COUNT(*) FROM revisions WHERE record_id = ?", later.recordId))
 
         lab.phone.pairWith(lab.payload())
         lab.phone.engine.resolveAfterRepair()
         lab.phone.engine.runOnce()
 
         assertEquals(SyncState.STORED, lab.phone.jobs.get(key)!!.state)
+        assertEquals(SyncState.STORED, lab.phone.jobs.get(later)!!.state)
         assertEquals(1, lab.gateway.count("SELECT COUNT(*) FROM revisions WHERE record_id = ?", key.recordId))
+        assertEquals(1, lab.gateway.count("SELECT COUNT(*) FROM revisions WHERE record_id = ?", later.recordId))
         assertEquals("新配对登记了一台新设备", 2, lab.gateway.count("SELECT COUNT(*) FROM devices"))
         assertEquals("旧设备仍是吊销状态，可用的只有新配对的那台", 1, lab.gateway.count("SELECT COUNT(*) FROM devices WHERE revoked_at IS NULL"))
         Unit

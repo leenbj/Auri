@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import os
 import pathlib
 import re
 import subprocess
@@ -1223,6 +1224,77 @@ MUTATIONS += (
     ),
 )
 
+# 第 11 组：同样的破坏，换成对着真实的 Python 网关再跑一遍（:sync:realGatewayTest）。
+# 前面的变异都是被“假网关 / 假传输”的单测抓住的；这一组证明真实网关那一层也守得住同样的规矩（不是只在假的世界里成立）。
+REAL_GATEWAY_TEST = (":sync:realGatewayTest",)
+REAL_GATEWAY_RESULTS = "sync/build/test-results/realGatewayTest"
+
+
+def _on_real_gateway(base_id: str, new_id: str, rule: str, must_fail: tuple[str, ...]) -> Mutation:
+    base = next(m for m in MUTATIONS if m.id == base_id)
+    return Mutation(new_id, rule, base.edits, REAL_GATEWAY_TEST, REAL_GATEWAY_RESULTS, must_fail)
+
+
+MUTATIONS += (
+    _on_real_gateway(
+        "pin-accepts-any-key", "real-gw-pin-accepts-any-key",
+        "真网关：换了一台公钥不同的网关，连接必须被拒绝（比对改成永远通过就会连上冒充者）",
+        ("换了一台网关",),
+    ),
+    _on_real_gateway(
+        "engine-resends-without-asking", "real-gw-resends-without-asking",
+        "真网关：响应丢了、网关其实已经入库——结果不确定时必须先问网关，不能盲目重发",
+        ("响应在路上丢了",),
+    ),
+    _on_real_gateway(
+        "engine-retries-version-conflict", "real-gw-retries-version-conflict",
+        "真网关：同一版号不同正文，网关回版本冲突，永久拒绝不能重试",
+        ("同一版号、正文不同",),
+    ),
+    Mutation(
+        "real-gw-retries-not-origin-device",
+        "真网关：别的设备改这条 Record，网关回 RECORD_NOT_ORIGIN_DEVICE 永久拒绝（ADR-0020），不能重试",
+        (Edit(ENGINE, "result.code == ErrorCode.RECORD_NOT_ORIGIN_DEVICE -> blocked(key, BlockedReason.NOT_ORIGIN_DEVICE)", "result.code == ErrorCode.RECORD_NOT_ORIGIN_DEVICE -> retryLater(key)"),),
+        REAL_GATEWAY_TEST, REAL_GATEWAY_RESULTS,
+        ("别的设备改这条 Record",),
+    ),
+    _on_real_gateway(
+        "store-writes-token-in-plaintext", "real-gw-token-in-plaintext",
+        "真网关：真二维码配对之后，设备令牌不能以明文落盘",
+        ("二维码配对：",),
+    ),
+    _on_real_gateway(
+        "engine-ignores-connection-gate", "real-gw-ignores-connection-gate",
+        "真网关：公钥不符、令牌被拒要用户处理期间，新任务也一个带令牌的请求都不能发",
+        ("换了一台网关", "网关吊销了这部手机"),
+    ),
+    _on_real_gateway(
+        "engine-does-not-persist-connection-gate", "real-gw-gate-not-persisted",
+        "真网关：公钥不符、令牌被网关吊销要记进配对记录：之后新录的任务也不能再去敲网关",
+        ("换了一台网关", "网关吊销了这部手机"),
+    ),
+    _on_real_gateway(
+        "engine-does-not-park-pending-jobs", "real-gw-pending-not-parked",
+        "真网关：网关关机时排队的任务全部改为等待网关，一条不丢",
+        ("网关关机：",),
+    ),
+    _on_real_gateway(
+        "engine-send-started-not-recorded-uncertain", "real-gw-send-started-not-recorded",
+        "真网关：请求发出之前就要把任务记成结果不确定（先落盘后发送）",
+        ("请求没送到网关",),
+    ),
+    _on_real_gateway(
+        "engine-address-not-remembered", "real-gw-address-not-remembered",
+        "真网关：网关换了地址、靠发现找到之后，新地址要记住，下次先连它而不是再去问发现",
+        ("地址搬家：",),
+    ),
+    _on_real_gateway(
+        "submission-trims-text", "real-gw-text-trimmed",
+        "真网关：正文原样发送（含前后的空白与换行），网关里存的必须和手机上的逐字节一致",
+        ("入库：引擎把一条 Revision 送到真实网关",),
+    ),
+)
+
 # 后面各个切片的变异在对应测试写好之后追加到这里（见 README 的“变异检查”一节）。
 
 
@@ -1266,7 +1338,9 @@ def run_mutation(mutation: Mutation) -> tuple[str, str]:
     originals = apply_edits(mutation)
     try:
         subprocess.run(["rm", "-rf", str(results)], check=True)
-        proc = subprocess.run([*GRADLE_BASE, *mutation.gradle], cwd=ANDROID, capture_output=True, text=True, timeout=1800)
+        # 快照里没有 .venv（太大，不同步）：真网关测试要的 Python 解释器由真实工作树那一侧传进来
+        python = ["-Pauri.python=" + os.environ["AURI_GATEWAY_PYTHON"]] if "AURI_GATEWAY_PYTHON" in os.environ else []
+        proc = subprocess.run([*GRADLE_BASE, *python, *mutation.gradle], cwd=ANDROID, capture_output=True, text=True, timeout=1800)
         total, failed = failed_tests(results) if results.exists() else (0, [])
     finally:
         restore(originals)
@@ -1306,6 +1380,7 @@ def main(argv: list[str]) -> int:
         return 0
     if not args.in_place:
         sync_snapshot(REPO, SNAPSHOT_DIR)
+        os.environ.setdefault("AURI_GATEWAY_PYTHON", str(REPO / ".venv" / "bin" / "python"))
         return subprocess.run([sys.executable, str(SNAPSHOT_DIR / SCRIPT_RELATIVE), "--in-place", *argv], check=False).returncode
     rows, worst = [], 0
     for m in selected:

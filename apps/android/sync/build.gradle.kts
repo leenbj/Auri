@@ -32,13 +32,6 @@ tasks.test {
     // 真实网关测试（要起 Python 网关进程）单独跑：./gradlew :sync:realGatewayTest
     exclude("**/realgateway/**")
     systemProperty("auri.repo.root", repoRoot.path)
-    // 合同输出目录；Python 验收测试用 -PauriSyncOut=<目录> 指定，默认在 build/ 下
-    systemProperty(
-        "auri.sync.out",
-        providers.gradleProperty("auriSyncOut")
-            .orElse(layout.buildDirectory.dir("contract-out/jvm").map { it.asFile.path })
-            .get(),
-    )
     // 合同文件是测试的输入：改了 contracts/ 下的 schema 或样本，缓存的测试结果必须作废
     inputs.files(fileTree(repoRoot.resolve("contracts")) { include("schemas/**", "fixtures/**") })
         .withPropertyName("contracts")
@@ -46,7 +39,8 @@ tasks.test {
 
 // 真实网关测试：起 services/gateway 里的 Python 网关进程（自签 TLS、临时数据目录、随机端口），用 :sync 的真实代码与它对话。
 // 要仓库的 .venv（CLAUDE.md 里的 pip install），所以不进 :sync:test；找不到解释器就直接失败，不会悄悄跳过。每次都跑，不用缓存。
-val gatewayPython: File = repoRoot.resolve(".venv/bin/python")
+// -Pauri.python=…：变异检查在没有 .venv 的快照里跑，解释器由真实工作树传进来；平时用仓库自己的 .venv
+val gatewayPython: File = (findProperty("auri.python") as String?)?.let(::File) ?: repoRoot.resolve(".venv/bin/python")
 tasks.register<Test>("realGatewayTest") {
     group = "verification"
     description = "对着真实的 Python 网关进程跑配对、入库、幂等、结果不确定、网关换机/吊销（E2，不是真机）"
