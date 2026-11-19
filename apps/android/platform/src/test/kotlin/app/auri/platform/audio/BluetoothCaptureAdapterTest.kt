@@ -471,4 +471,114 @@ class BluetoothCaptureAdapterTest {
         adapter.permissionsMayHaveChanged()
         assertEquals(1, revoked)
     }
+
+    // ---- 录音中权限被撤销（Ticket 19 第 5 项）----
+
+    @Test
+    fun `录音中麦克风权限被撤销：撤销时读到的那一批不递送，通知一次，协调器释放之后读线程安静退出，资源各只放一次`() {
+        prepare()
+        val recorder = audio.recorders.single()
+        val reasons = mutableListOf<ErrorCode>()
+        adapter.onPermissionRevoked { reason ->
+            reasons += reason
+            adapter.release(request.operationId) // 协调器收到通知之后的反应：关闸、释放采集
+        }
+        recorder.script += ReadStep(chunk(value = 1), HEADSET)
+        recorder.script += ReadStep(chunk(value = 2), HEADSET)
+        recorder.script += ReadStep(chunk(value = 3), HEADSET)
+        var reads = 0
+        recorder.onRead = { if (++reads == 2) environment.mic = false } // 读第二批的时候权限被撤销
+
+        readers.single().run()
+
+        assertEquals("撤销之前的照常递送；撤销时读到的那一批不递送", listOf<Short>(1), sink.frames.flatMap { it.samples.toList() }.distinct())
+        assertEquals(listOf(ErrorCode.PERMISSION_MIC_DENIED), reasons)
+        assertTrue("释放之后读线程退出，不再报告“输入不可用”", sink.unavailable.isEmpty())
+        assertEquals(1, recorder.releaseCalls)
+        assertEquals(1, recorder.subscriptionCancels)
+        assertEquals(1, audio.focusAbandoned)
+        assertEquals(1, audio.routeCleared)
+        assertEquals("没有任何“改用别的麦克风”的动作：只打开过这一个录音", 1, audio.recorders.size)
+    }
+
+    @Test
+    fun `录音中蓝牙连接权限被撤销：同样不递送这一批并通知一次，原因沿用 INPUT_DEVICE_MISSING（合同没有专门的码）`() {
+        prepare()
+        val recorder = audio.recorders.single()
+        val reasons = mutableListOf<ErrorCode>()
+        adapter.onPermissionRevoked { reason ->
+            reasons += reason
+            adapter.release(request.operationId)
+        }
+        recorder.script += ReadStep(chunk(value = 1), HEADSET)
+        recorder.script += ReadStep(chunk(value = 2), HEADSET)
+        var reads = 0
+        recorder.onRead = { if (++reads == 2) environment.bluetooth = false }
+
+        readers.single().run()
+
+        assertEquals(listOf<Short>(1), sink.frames.flatMap { it.samples.toList() }.distinct())
+        assertEquals(listOf(ErrorCode.INPUT_DEVICE_MISSING), reasons)
+        assertEquals(1, recorder.releaseCalls)
+        assertEquals(1, audio.routeCleared)
+    }
+
+    @Test
+    fun `回到前台时已经发现了撤销：读线程之后每一批都不递送，也不重复通知`() {
+        prepare()
+        val recorder = audio.recorders.single()
+        val reasons = mutableListOf<ErrorCode>()
+        adapter.onPermissionRevoked { reasons += it } // 协调器还没来得及处理：采集还开着
+        recorder.script += ReadStep(chunk(value = 1), HEADSET)
+        recorder.script += ReadStep(chunk(value = 2), HEADSET)
+
+        environment.mic = false
+        adapter.permissionsMayHaveChanged()
+        readers.single().run()
+
+        assertEquals("只通知了一次（前台核对那次）", listOf(ErrorCode.PERMISSION_MIC_DENIED), reasons)
+        assertTrue("权限没了，读到的批次一个也不递送", sink.frames.isEmpty())
+    }
+
+    @Test
+    fun `权限被撤销之后读失败：原因是权限而不是路由，只通知权限撤销，不再另报“输入路由变了”`() {
+        prepare()
+        val reasons = mutableListOf<ErrorCode>()
+        adapter.onPermissionRevoked { reasons += it } // 协调器还没来得及处理：采集还开着
+        environment.mic = false // 系统撤销了权限，读随之失败（脚本是空的，read 返回 -1）
+
+        readers.single().run()
+
+        assertEquals(listOf(ErrorCode.PERMISSION_MIC_DENIED), reasons)
+        assertTrue("读失败的原因是权限：不能再把它记成路由变化（会让这次录音被误标成 route_lost）", sink.unavailable.isEmpty())
+    }
+
+    @Test
+    fun `没有权限问题时读失败仍然报告输入不可用（路由变了）`() {
+        prepare()
+        adapter.onPermissionRevoked { throw AssertionError("权限没变，不该有通知") }
+
+        readers.single().run() // 脚本是空的：read 返回 -1
+
+        assertEquals(listOf(ErrorCode.INPUT_ROUTE_CHANGED), sink.unavailable)
+    }
+
+    @Test
+    fun `权限没有变化时读线程不通知，帧照常递送；撤销后重新授予不算撤销`() {
+        prepare()
+        val recorder = audio.recorders.single()
+        var revoked = 0
+        adapter.onPermissionRevoked { revoked += 1 }
+        recorder.script += ReadStep(chunk(value = 1), HEADSET)
+        recorder.script += ReadStep(chunk(value = 2), HEADSET)
+
+        readers.single().run()
+        environment.mic = false
+        adapter.permissionsMayHaveChanged()
+        environment.mic = true // 重新授予
+        adapter.permissionsMayHaveChanged()
+
+        assertEquals(2, sink.frames.size)
+        assertEquals("只有撤销那一刻通知了一次", 1, revoked)
+    }
 }

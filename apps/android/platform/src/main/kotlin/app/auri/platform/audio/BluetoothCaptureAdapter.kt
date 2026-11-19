@@ -49,8 +49,10 @@ class BluetoothCaptureAdapter(
     /** Samples discarded because their input route was ambiguous. */
     val droppedAmbiguousSamples: Long get() = discardedSamples.get()
 
-    @Volatile
-    private var micWasGranted = environment.micPermissionGranted()
+    /** 上一次核对时两项运行时权限在不在；只有“在 → 不在”的那一刻才通知，所以读写都在这把锁里。 */
+    private val permissionLock = Any()
+    private var micGranted = environment.micPermissionGranted()
+    private var bluetoothGranted = environment.bluetoothPermissionGranted()
 
     override fun inspectEligibility(): CaptureEligibility {
         val lifecycle = environment.lifecycle()
@@ -100,11 +102,34 @@ class BluetoothCaptureAdapter(
         return Subscription { permissionHandlers -= handler }
     }
 
-    /** 界面回到前台时调用：Android 没有“权限被撤销”的回调，进程回来之后核对一次。 */
+    /**
+     * 界面回到前台时调用；录音中读线程每读完一批也会核对。Android 没有“权限被撤销”的回调，只能核对。
+     * （在设置里撤销权限通常直接结束进程，那条路由恢复流程接手；这里管进程还活着的情况。）
+     */
     fun permissionsMayHaveChanged() {
-        val granted = environment.micPermissionGranted()
-        if (micWasGranted && !granted) permissionHandlers.forEach { it(ErrorCode.PERMISSION_MIC_DENIED) }
-        micWasGranted = granted
+        checkPermissions()
+    }
+
+    /**
+     * 核对两项运行时权限，返回现在缺的那一项（都在则 null）；刚从“在”变成“不在”的那一刻通知协调器一次，之后不重复。
+     * 麦克风缺失用 PERMISSION_MIC_DENIED；蓝牙连接缺失没有专门的错误码，沿用资格检查的 INPUT_DEVICE_MISSING（待合同补码）。
+     */
+    private fun checkPermissions(): ErrorCode? {
+        val mic = environment.micPermissionGranted()
+        val bluetooth = environment.bluetoothPermissionGranted()
+        val missing = when {
+            !mic -> ErrorCode.PERMISSION_MIC_DENIED
+            !bluetooth -> ErrorCode.INPUT_DEVICE_MISSING
+            else -> null
+        }
+        val justRevoked = synchronized(permissionLock) {
+            val lost = (micGranted && !mic) || (bluetoothGranted && !bluetooth)
+            micGranted = mic
+            bluetoothGranted = bluetooth
+            lost
+        }
+        if (justRevoked && missing != null) permissionHandlers.forEach { it(missing) }
+        return missing
     }
 
     private fun refuse(request: InputRequest, sink: CaptureSink, reason: ErrorCode, device: InputDevice?): PreparedInput {
@@ -247,7 +272,9 @@ class BluetoothCaptureAdapter(
 
         private fun failRead() {
             try {
-                sink.inputUnavailable(ErrorCode.INPUT_ROUTE_CHANGED)
+                // 权限被撤销时读也会失败：原因是权限，不是路由。核对会通知协调器；缺权限就不再另报“输入路由变了”
+                // （否则同一次打断会被当成 route_lost 而不是 permission_revoked）
+                if (checkPermissions() == null) sink.inputUnavailable(ErrorCode.INPUT_ROUTE_CHANGED)
             } finally {
                 captures.remove(request.operationId, this)
                 close()
@@ -274,6 +301,8 @@ class BluetoothCaptureAdapter(
                 if (read == 0) continue
                 val after = rec.routedDevice()
                 observe(after)
+                // 权限在录音中被撤销：这一批不可信，不递送；通知先于之后的任何帧进邮箱，协调器据此关闸并释放采集
+                if (checkPermissions() != null) continue
                 if (before == null || before.id != input.device.id || BluetoothInput.from(before) == null || before != after ||
                     version != routeChanges.get() || readEpoch != currentEpoch()
                 ) {
