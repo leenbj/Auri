@@ -316,7 +316,7 @@ MUTATIONS += (
         "网关没有这一版就是没入库，必须重新提交，不能当成已入库（F10 的对照）",
         (Edit(ENGINE, "Standing.MISSING -> Unit // 网关没有这一版：往下重新提交", "Standing.MISSING -> return stored(key)"),),
         ENGINE_TESTS, SYNC_TEST[0],
-        ("网关上有这条 Record 的别的版本、唯独没有这一版", "网关里查不到这条 Record（404）等于没入库"),
+        ("网关上有这条 Record 的别的版本、唯独没有这一版",),
     ),
     Mutation(
         "engine-confirms-deleted-record",
@@ -386,7 +386,7 @@ MUTATIONS += (
         "循环在网络回来/换了一个时必须通知引擎重新武装等待重试的任务（F11/F12）",
         (Edit(LOOP, "                    containNetworkFailure { engine.networkChanged() }\n", ""),),
         ENGINE_AND_LOOP_TESTS, SYNC_TEST[0],
-        ("默认网络换了一个：等待重试的任务不再干等旧的重试时间", "发送途中断了网、请求随之被中断"),
+        ("默认网络换了一个：等待重试的任务不再干等旧的重试时间", "网络回来之后：失败又按正常的重试倒计时算"),
     ),
     Mutation(
         "loop-observer-ends-after-first-failure",
@@ -422,6 +422,13 @@ MUTATIONS += (
         (Edit(ENGINE, "if (!(answer.status == 404 && answer.code == ErrorCode.REQUEST_INVALID)) return failed(key, gateway, answer, wasUncertain)", "if (false) return failed(key, gateway, answer, wasUncertain)"),),
         ENGINE_TESTS, SYNC_TEST[0],
         ("问网关结果时网关自己出错或没回答",),
+    ),
+    Mutation(
+        "engine-never-resends-after-404",
+        "问结果时网关说查无此 Record（404）：那就是没入库，必须重新提交，不能当成网关出错而一直不发（F10 的另一条对照）",
+        (Edit(ENGINE, "is GatewayResult.Rejected -> if (!(answer.status == 404 && answer.code == ErrorCode.REQUEST_INVALID)) return failed(key, gateway, answer, wasUncertain)", "is GatewayResult.Rejected -> return failed(key, gateway, answer, wasUncertain)"),),
+        ENGINE_TESTS, SYNC_TEST[0],
+        ("网关里查不到这条 Record（404）等于没入库",),
     ),
     Mutation(
         "engine-resends-when-status-unanswered",
@@ -477,7 +484,7 @@ MUTATIONS += (
         "晚到的旧观察不能覆盖用户刚重新配对写入的新记录（打“要用户处理”标记时）",
         (Edit(ENGINE, "if (current.isSamePairing(gateway)) current.copy(needsUser = needs) else null", "current.copy(needsUser = needs)"),),
         ENGINE_TESTS, SYNC_TEST[0],
-        ("发送途中用户重新配对了",),
+        ("找网关的途中用户重新配对了，旧公钥的探测这时才报公钥不符",),
     ),
     Mutation(
         "engine-address-update-overwrites-new-pairing",
@@ -1693,7 +1700,7 @@ MUTATIONS += (
     Mutation(
         "manifest-allows-cleartext-traffic",
         "放开明文流量必须被清单测试抓到",
-        (Edit(APP_MANIFEST, 'android:allowBackup="false"', 'android:allowBackup="false"\n        android:usesCleartextTraffic="true"'),),
+        (Edit(APP_MANIFEST, 'android:usesCleartextTraffic="false">', 'android:usesCleartextTraffic="true">'),),
         MANIFEST_TESTS, APP_TEST,
         ("合并后的应用清单没有放开明文流量",),
     ),
