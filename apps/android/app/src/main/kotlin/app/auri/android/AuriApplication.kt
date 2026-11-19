@@ -1,10 +1,15 @@
 package app.auri.android
 
 import android.app.Application
+import app.auri.syncplatform.SyncRuntime
+import app.auri.syncplatform.SyncRuntimeHost
 
-class AuriApplication : Application() {
+class AuriApplication : Application(), SyncRuntimeHost {
     lateinit var runtime: AuriRuntime
         private set
+
+    /** 系统因为有网络把应用叫醒时，同步服务从这里拿运行时（Application.onCreate 一定先于服务运行）。 */
+    override val syncRuntime: SyncRuntime get() = runtime.sync
 
     override fun onCreate() {
         super.onCreate()

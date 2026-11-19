@@ -1,7 +1,6 @@
 package app.auri.android
 
 import java.io.File
-import java.util.Properties
 import javax.xml.parsers.DocumentBuilderFactory
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -38,13 +37,7 @@ class NoNetworkManifestTest {
         }
     }
 
-    private fun mergedAppManifest(): File {
-        val resource = "com/android/tools/test_config.properties"
-        val stream = javaClass.classLoader!!.getResourceAsStream(resource)
-            ?: error("找不到 $resource；:app 需要 unitTests.isIncludeAndroidResources = true")
-        val props = Properties().apply { stream.use { load(it) } }
-        return File(props.getProperty("android_merged_manifest") ?: error("test_config.properties 里没有 android_merged_manifest"))
-    }
+    private fun mergedAppManifest(): File = MergedManifest.file()
 
     /**
      * 合并报告里某个权限条目的来源：条目从一行 `uses-permission#<名字>` 开始，后面是若干 `ADDED|MERGED|IMPLIED|INJECTED from [<库>] <路径>`

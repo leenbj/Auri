@@ -45,7 +45,8 @@ interface NetworkSignal {
  * - 所有触发只往一个“合并”的信号里投一票；跑一轮的是唯一的一个协程，一轮永远不会被别的触发或任务表的变化取消或重叠
  *   （取消一个发到一半的请求会留下“结果不确定”的任务）。一轮在跑时来的触发合并成之后的一轮。
  * - 计时器跟着任务表走：任务表一变就按最新的状态重新计时，所以不会按过期的状态响。
- * - 只在进程活着时工作：进程被杀之后什么也不会发生，下次启动的第一轮把任务接回来（没有用 WorkManager，见 README）。
+ * - 只在进程活着时工作：进程被杀之后由 [ResumePlanner][app.auri.sync.resume.ResumePlanner] 登记在系统里的叫醒（Android 上是 JobScheduler）
+ *   把应用拉起来，或下次启动的第一轮，把任务接回来。
  *
  * [start] 只调用一次；返回的 Job 取消之后，循环里的一切都停下。
  */
@@ -90,28 +91,8 @@ class SyncLoop(
         }
     }
 
-    /**
-     * 一个触发来源出了故障只记日志，不拖垮别的来源（比如系统的网络服务不可用时，任务表与手动触发照常工作）；
-     * 然后按有界退避重新订阅：本机数据库暂时读不出来、系统网络服务暂时不可用都是暂时的，不该让这个来源永远失聪。
-     * 来源自己正常结束就不再重启。上一次订阅活得够久（至少 [STABLE_MS]）再出故障，退避从头算。
-     */
-    private fun CoroutineScope.producer(name: String, body: suspend () -> Unit) = launch {
-        var failures = 0
-        while (true) {
-            val startedAt = clock.now()
-            try {
-                body()
-                return@launch
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (failure: Exception) {
-                log.event("loop.$name.failed ${failure::class.simpleName}")
-            }
-            if (Duration.between(startedAt, clock.now()).toMillis() >= STABLE_MS) failures = 0
-            failures += 1
-            delay(retry.delayMs(failures))
-        }
-    }
+    /** 触发来源出故障的处置（只记日志、有界退避重新订阅）见 [restartingProducer]。 */
+    private fun CoroutineScope.producer(name: String, body: suspend () -> Unit) = restartingProducer(name, log, clock, retry, body)
 
     private suspend fun watchNetwork() {
         // 不去重：手机常开着移动数据，Wi-Fi 回来时系统只是把默认网络从蜂窝换回 Wi-Fi，信号一直是“可用”；
@@ -182,10 +163,5 @@ class SyncLoop(
                 }
             }
         }
-    }
-
-    private companion object {
-        /** 一次订阅至少活这么久再出故障，就不算“连续失败”：重新订阅的退避从头算。 */
-        const val STABLE_MS = 60_000L
     }
 }

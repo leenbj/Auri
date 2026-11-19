@@ -20,6 +20,7 @@ import dataclasses
 import os
 import pathlib
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -28,7 +29,8 @@ import xml.etree.ElementTree as ET
 
 REPO = pathlib.Path(__file__).resolve().parents[3]
 ANDROID = REPO / "apps" / "android"
-GRADLE_BASE = ["./gradlew", "--no-daemon", "-Pkotlin.compiler.execution.strategy=in-process"]
+# 与别的验收脚本一样认 AURI_GRADLE_ARGS（内存紧的机器上加 -Dorg.gradle.workers.max=2）；不设就用下面的默认值
+GRADLE_BASE = ["./gradlew", *shlex.split(os.environ.get("AURI_GRADLE_ARGS") or "--no-daemon -Pkotlin.compiler.execution.strategy=in-process")]
 SNAPSHOT_DIR = pathlib.Path(tempfile.gettempdir()) / "auri-ticket21-mutation-snapshot"
 SCRIPT_RELATIVE = pathlib.Path(__file__).resolve().relative_to(REPO)
 # 不同步：版本库内部、虚拟环境、构建产物（留在快照里让 Gradle 增量构建）、别的工具的私有目录
@@ -64,6 +66,7 @@ MACHINE_TESTS = (":sync:test", "--tests", "*SyncMachineTableTest*", "--tests", "
 PIN_TESTS = (":sync:test", "--tests", "*PinnedHttpsClientTest*", "--tests", "*SpkiPinTrustManagerTest*")
 STATUS = "apps/android/sync/src/main/kotlin/app/auri/sync/status/SyncStatus.kt"
 LOOP = "apps/android/sync/src/main/kotlin/app/auri/sync/loop/SyncLoop.kt"
+PRODUCER = "apps/android/sync/src/main/kotlin/app/auri/sync/loop/RestartingProducer.kt"
 STATUS_TESTS = (":sync:test", "--tests", "*SyncStatusTest*")
 LOOP_TESTS = (":sync:test", "--tests", "*SyncLoopTest*")
 ENGINE_AND_LOOP_TESTS = (":sync:test", "--tests", "*SyncEngineTest*", "--tests", "*SyncScenarioReplayTest*", "--tests", "*SyncLoopTest*")
@@ -388,21 +391,21 @@ MUTATIONS += (
     Mutation(
         "loop-observer-ends-after-first-failure",
         "触发来源暂时出故障后必须重新订阅，不能就此失聪（F4）",
-        (Edit(LOOP, "        while (true) {\n            val startedAt = clock.now()", "        repeat(1) {\n            val startedAt = clock.now()"),),
+        (Edit(PRODUCER, "    while (true) {\n        val startedAt = clock.now()", "    repeat(1) {\n        val startedAt = clock.now()"),),
         LOOP_TESTS, SYNC_TEST[0],
         ("任务表的变化信号暂时出了故障", "网络信号暂时出了故障"),
     ),
     Mutation(
         "loop-observer-restarts-densely",
         "重新订阅要按有界退避，不能每秒一次地空转（F4）",
-        (Edit(LOOP, "            delay(retry.delayMs(failures))\n        }\n    }", "            delay(1_000)\n        }\n    }"),),
+        (Edit(PRODUCER, "        delay(retry.delayMs(failures))\n", "        delay(1_000)\n"),),
         LOOP_TESTS, SYNC_TEST[0],
         ("任务表的变化信号一直出故障",),
     ),
     Mutation(
         "loop-observer-backoff-never-resets",
         "上一次订阅活得够久再出故障，重新订阅的退避从头算（F4）",
-        (Edit(LOOP, "STABLE_MS) failures = 0", "STABLE_MS) failures += 0"),),
+        (Edit(PRODUCER, "STABLE_MS) failures = 0", "STABLE_MS) failures += 0"),),
         LOOP_TESTS, SYNC_TEST[0],
         ("上一次订阅活了一阵",),
     ),
@@ -777,7 +780,7 @@ MUTATIONS += (
     Mutation(
         "loop-source-failure-kills-loop",
         "一个触发来源出故障不能拖垮循环的其余部分",
-        (Edit(LOOP, "log.event(\"loop.$name.failed ${failure::class.simpleName}\")", "throw failure"),),
+        (Edit(PRODUCER, "log.event(\"loop.$name.failed ${failure::class.simpleName}\")", "throw failure"),),
         LOOP_TESTS, SYNC_TEST[0],
         ("网络信号自己出了故障", "任务表的变化信号出了故障"),
     ),
@@ -1129,6 +1132,11 @@ APP_TEST = "app/build/test-results/testDebugUnitTest"
 PLATFORM_TEST = "platform/build/test-results/testDebugUnitTest"
 GUARD_TESTS = (":app:testDebugUnitTest", "--tests", "*NoNetworkCodeGuardTest*")
 MANIFEST_TESTS = (":app:testDebugUnitTest", "--tests", "*NoNetworkManifestTest*")
+RESUME_MANIFEST_TESTS = (":app:testDebugUnitTest", "--tests", "*ResumeManifestTest*")
+RESUME_TESTS = (":sync:test", "--tests", "*ResumePlannerTest*", "--tests", "*ResumeRunnerTest*")
+RESUME_PLANNER = "apps/android/sync/src/main/kotlin/app/auri/sync/resume/ResumePlanner.kt"
+RESUME_RUNNER = "apps/android/sync/src/main/kotlin/app/auri/sync/resume/ResumeRunner.kt"
+SYNCPLATFORM_MANIFEST = "apps/android/syncplatform/src/main/AndroidManifest.xml"
 MIC_TESTS = (":platform:testDebugUnitTest", "--tests", "*NoPhoneMicPathTest*")
 VM_TESTS = (":app:testDebugUnitTest", "--tests", "*SyncViewModelTest*")
 TEXT_TESTS = (":app:testDebugUnitTest", "--tests", "*SyncScreenTextTest*")
@@ -1224,6 +1232,143 @@ MUTATIONS += (
         (Edit(NETSURFACE, "it.module == module && classPath.startsWith(it.classPathPrefix)", "classPath.startsWith(it.classPathPrefix)"),),
         GUARD_TESTS, APP_TEST,
         ("同一个合规的类放到不该放的位置也被认出",),
+    ),
+    Mutation(
+        "resume-needs-counts-blocked-jobs",
+        "停下等用户处理的任务叫醒了也发不出去：不能因它们而叫醒（F7）",
+        (Edit(RESUME_PLANNER, "it.state != SyncState.STORED && it.state != SyncState.BLOCKED", "it.state != SyncState.STORED"),),
+        RESUME_TESTS, SYNC_TEST[0],
+        ("只剩停下等用户处理的任务", "决策表"),
+    ),
+    Mutation(
+        "resume-needs-counts-stored-jobs",
+        "任务都入库了就不该再留着叫醒（F7）",
+        (Edit(RESUME_PLANNER, "it.state != SyncState.STORED && it.state != SyncState.BLOCKED", "it.state != SyncState.BLOCKED"),),
+        RESUME_TESTS, SYNC_TEST[0],
+        ("任务都已入库", "决策表"),
+    ),
+    Mutation(
+        "resume-needs-ignores-connection-block",
+        "连接要用户处理（公钥不符、令牌被拒）时叫醒也发不出去（F7）",
+        (Edit(RESUME_PLANNER, "pairing is PairingState.Paired && pairing.gateway.needsUser == null &&\n", "pairing is PairingState.Paired &&\n"),),
+        RESUME_TESTS, SYNC_TEST[0],
+        ("没配对、配对记录丢了、连接要用户处理", "决策表"),
+    ),
+    Mutation(
+        "resume-needs-when-not-paired",
+        "没配对或配对记录丢了：不叫醒（F7）",
+        (Edit(RESUME_PLANNER, "pairing is PairingState.Paired && pairing.gateway.needsUser == null &&\n", "(pairing !is PairingState.Paired || pairing.gateway.needsUser == null) &&\n"),),
+        RESUME_TESTS, SYNC_TEST[0],
+        ("没配对、配对记录丢了、连接要用户处理", "决策表"),
+    ),
+    Mutation(
+        "resume-planner-reschedules-every-change",
+        "结论没变不重复打扰系统（F7）",
+        (Edit(RESUME_PLANNER, ".distinctUntilChanged()", ""),),
+        RESUME_TESTS, SYNC_TEST[0],
+        ("结论没变就不重复打扰系统",),
+    ),
+    Mutation(
+        "resume-planner-never-cancels",
+        "没活了要取消叫醒（F7）",
+        (Edit(RESUME_PLANNER, "if (needed) scheduler.ensureScheduled() else scheduler.cancel()", "if (needed) scheduler.ensureScheduled() else Unit"),),
+        RESUME_TESTS, SYNC_TEST[0],
+        ("任务都已入库", "没有任何任务", "跟着变"),
+    ),
+    Mutation(
+        "resume-planner-never-schedules",
+        "有活要登记叫醒（F7）",
+        (Edit(RESUME_PLANNER, "if (needed) scheduler.ensureScheduled() else scheduler.cancel()", "if (needed) Unit else scheduler.cancel()"),),
+        RESUME_TESTS, SYNC_TEST[0],
+        ("已配对并且有任务没发完", "跟着变"),
+    ),
+    Mutation(
+        "resume-planner-gives-up-after-scheduler-failure",
+        "系统暂时拒绝登记：按退避重新来过，不丢掉这次请求（F7）",
+        (
+            Edit(RESUME_PLANNER, 'scope.restartingProducer("resume", log, clock, retry) {', 'scope.launch {'),
+            Edit(RESUME_PLANNER, "import kotlinx.coroutines.Job\n", "import kotlinx.coroutines.Job\nimport kotlinx.coroutines.launch\n"),
+        ),
+        RESUME_TESTS, SYNC_TEST[0],
+        ("系统暂时拒绝登记",),
+    ),
+    Mutation(
+        "resume-runner-no-time-limit",
+        "被叫醒后的一轮要有时限，不能一直占着系统的执行时间（F7）",
+        (Edit(RESUME_RUNNER, "withTimeoutOrNull(limitMs) {", "withTimeoutOrNull(Long.MAX_VALUE) {"),),
+        RESUME_TESTS, SYNC_TEST[0],
+        ("这一轮卡住了",),
+    ),
+    Mutation(
+        "resume-runner-skips-startup-wait",
+        "被叫醒的那一轮要等启动做完（配对记录读出来）再跑（F7）",
+        (Edit(RESUME_RUNNER, "                ready()\n                runPass()", "                runPass()"),),
+        RESUME_TESTS, SYNC_TEST[0],
+        ("先等启动做完",),
+    ),
+    Mutation(
+        "resume-runner-failure-means-done",
+        "这一轮出了意外不能当作没活了（F7）",
+        (Edit(RESUME_RUNNER, "            return true // 没得出结论：不能当作没活了", "            return false // 没得出结论：不能当作没活了"),),
+        RESUME_TESTS, SYNC_TEST[0],
+        ("这一轮出了意外",),
+    ),
+    Mutation(
+        "resume-runner-swallows-cancellation",
+        "被系统叫停时取消要向上传，不再做收尾判断（F7）",
+        (Edit(
+            RESUME_RUNNER,
+            "        } catch (cancelled: CancellationException) {\n            throw cancelled\n        } catch (failure: Exception) {\n            log.event(\"resume.failed ${failure::class.simpleName}\")\n            return true // 没得出结论",
+            "        } catch (failure: Exception) {\n            log.event(\"resume.failed ${failure::class.simpleName}\")\n            return true // 没得出结论",
+        ),),
+        RESUME_TESTS, SYNC_TEST[0],
+        ("被系统叫停",),
+    ),
+    Mutation(
+        "resume-runner-swallows-cancellation-in-final-check",
+        "收尾判断时被系统叫停：取消也要向上传（F7）",
+        (Edit(
+            RESUME_RUNNER,
+            "            stillNeeded()\n        } catch (cancelled: CancellationException) {\n            throw cancelled\n        } catch (failure: Exception) {",
+            "            stillNeeded()\n        } catch (failure: Exception) {",
+        ),),
+        RESUME_TESTS, SYNC_TEST[0],
+        ("被系统叫停时正在做收尾判断",),
+    ),
+    Mutation(
+        "resume-runner-always-asks-for-more",
+        "没活了就不请系统再叫醒（F7）",
+        (Edit(RESUME_RUNNER, "        return try {\n            stillNeeded()\n", "        return try {\n            stillNeeded() || true\n"),),
+        RESUME_TESTS, SYNC_TEST[0],
+        ("返回的是“还需要叫醒”的判断",),
+    ),
+    Mutation(
+        "resume-runner-log-leaks-message",
+        "叫醒那一轮出意外的日志只有异常类名（F7）",
+        (Edit(RESUME_RUNNER, 'log.event("resume.failed ${failure::class.simpleName}")\n            return true // 没得出结论', 'log.event("resume.failed ${failure.message}")\n            return true // 没得出结论'),),
+        RESUME_TESTS, SYNC_TEST[0],
+        ("这一轮出了意外",),
+    ),
+    Mutation(
+        "manifest-resume-no-boot-permission",
+        "没有 RECEIVE_BOOT_COMPLETED，跨重启保留的叫醒在登记时被系统拒绝（F7）",
+        (Edit(SYNCPLATFORM_MANIFEST, '<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />\n', ""),),
+        RESUME_MANIFEST_TESTS, APP_TEST,
+        ("RECEIVE_BOOT_COMPLETED",),
+    ),
+    Mutation(
+        "manifest-resume-service-exported",
+        "叫醒服务不能对外导出（F7）",
+        (Edit(SYNCPLATFORM_MANIFEST, 'android:exported="false"', 'android:exported="true"'),),
+        RESUME_MANIFEST_TESTS, APP_TEST,
+        ("叫醒服务只允许系统绑定",),
+    ),
+    Mutation(
+        "manifest-resume-service-open-to-anyone",
+        "叫醒服务必须要求 BIND_JOB_SERVICE，否则系统不会启动它、别的应用也能绑定（F7）",
+        (Edit(SYNCPLATFORM_MANIFEST, '            android:permission="android.permission.BIND_JOB_SERVICE" />', '            />'),),
+        RESUME_MANIFEST_TESTS, APP_TEST,
+        ("叫醒服务只允许系统绑定",),
     ),
     Mutation(
         "manifest-app-declares-internet",

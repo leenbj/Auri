@@ -24,13 +24,19 @@ import app.auri.sync.pairing.PairingOutcome
 import app.auri.sync.pairing.PairingPayload
 import app.auri.sync.pairing.PairingService
 import app.auri.sync.pairing.SecretBox
+import app.auri.sync.resume.ResumePlanner
+import app.auri.sync.resume.ResumeRunner
+import app.auri.sync.resume.ResumeScheduler
+import app.auri.sync.resume.needsResume
 import app.auri.sync.status.SyncStatus
 import app.auri.syncplatform.discovery.NsdGatewayDiscovery
 import app.auri.syncplatform.jobs.SqliteSyncJobStore
 import app.auri.syncplatform.keystore.KeystoreKeys
 import app.auri.syncplatform.network.AndroidNetworkSignal
+import app.auri.syncplatform.resume.JobSchedulerResume
 import java.io.File
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -57,7 +63,8 @@ object SyncStorage {
  * mDNS 发现、网络回调、同步循环。界面只通过它读状态（[status]、[pairing]）和下指令（[pair]、[syncNow]）。
  *
  * 构造参数都可以替换：仪器测试里换成连宿主机上真网关的 HTTP 通道与固定的网络信号。
- * [start] 只调用一次，之后同步循环一直跑到 [scope] 被取消（进程被杀之后什么也不会发生，下次启动的第一轮把任务接回来）。
+ * [start] 只调用一次，之后同步循环一直跑到 [scope] 被取消。进程被系统杀掉之后：有没发完的任务期间，系统里留着一个“有网络就叫醒”的
+ * 任务（[resume]、ResumePlanner），被叫醒后跑一轮有时限的同步（[resumePass]）；就算没有叫醒，下次启动的第一轮也会把任务接回来。
  */
 class SyncRuntime(
     val library: SqliteRecordLibrary,
@@ -70,6 +77,7 @@ class SyncRuntime(
     network: NetworkSignal,
     http: HttpExchangeFactory = HttpExchangeFactory { pin -> PinnedHttpsClient(pin) },
     private val log: SyncLog = SyncLog.None,
+    resume: ResumeScheduler = ResumeScheduler.None,
 ) : SyncController {
     val jobs = SqliteSyncJobStore(library)
 
@@ -88,6 +96,16 @@ class SyncRuntime(
     )
     private val loop = SyncLoop(engine, jobs, network, clock, log = log)
 
+    /** [start] 的启动工作（读配对记录、接回中断的任务）做完了没有：被系统叫醒的那一轮要等它。 */
+    private val started = CompletableDeferred<Unit>()
+    private val planner = ResumePlanner(pairing.states, jobs.observe(), resume, clock, log = log)
+    private val resumeRunner = ResumeRunner(
+        ready = { started.await() },
+        runPass = engine::runOnce,
+        stillNeeded = { needsResume(pairing.load(), jobs.all()) },
+        log = log,
+    )
+
     /** 界面要的同步状态汇总：配对状态与任务表任何一边变了都重新汇总。 */
     override val status: Flow<SyncStatus> = combine(pairing.states, jobs.observe()) { pairingState, list -> SyncStatus.of(pairingState, list) }.distinctUntilChanged()
 
@@ -103,8 +121,16 @@ class SyncRuntime(
         } catch (failure: Exception) {
             log.event("start.failed ${failure::class.simpleName}")
         }
+        started.complete(Unit)
+        planner.start(this)
         loop.start(this)
     }
+
+    /**
+     * 系统因为有网络把应用叫醒后调用（见 SyncResumeService）：等启动做完，跑一轮有时限的同步，
+     * 返回“还有活、请系统稍后再叫醒”。被取消（系统叫停）时取消照常向上传。
+     */
+    suspend fun resumePass(): Boolean = resumeRunner.run()
 
     /** 用二维码里的载荷配对。成功之后，因公钥不符或令牌被拒而停下的任务回到队列，并立刻同步一轮。 */
     override suspend fun pair(payload: PairingPayload): PairingOutcome {
@@ -137,6 +163,7 @@ class SyncRuntime(
                 discovery = NsdGatewayDiscovery(application, log = log),
                 network = AndroidNetworkSignal(application),
                 log = log,
+                resume = JobSchedulerResume(application),
             )
         }
     }
