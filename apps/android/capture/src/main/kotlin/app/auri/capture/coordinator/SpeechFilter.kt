@@ -14,6 +14,9 @@ internal class SpeechFilter(format: PcmFormat, private val vad: VoiceActivityDet
     var receivedSamples = 0L
         private set
 
+    /** 已经整窗分析过的采样数（不含攒着的半个窗）。 */
+    val processedSamples: Long get() = processed
+
     fun offer(samples: ShortArray): List<SpeechPiece> {
         receivedSamples += samples.size
         val output = mutableListOf<SpeechPiece>()
@@ -29,6 +32,14 @@ internal class SpeechFilter(format: PcmFormat, private val vad: VoiceActivityDet
             }
         }
         return output
+    }
+
+    /**
+     * 丢掉攒着、还没凑够一个分析窗的采样。路由丢失时用：这点采样（不足 10 ms）正好跨在变化点上，不知道属于变化之前还是之后，
+     * 宁可丢也不留。
+     */
+    fun discardPending() {
+        buffered = 0
     }
 
     fun finish(): List<SpeechPiece> {

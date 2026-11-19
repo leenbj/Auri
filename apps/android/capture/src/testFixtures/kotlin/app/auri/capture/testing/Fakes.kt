@@ -6,6 +6,7 @@ import app.auri.capture.adapter.CaptureSink
 import app.auri.capture.adapter.ControlAdapter
 import app.auri.capture.adapter.InputRequest
 import app.auri.capture.adapter.PcmFormat
+import app.auri.capture.adapter.RecordingMeta
 import app.auri.capture.adapter.RecordingStore
 import app.auri.capture.adapter.RecordingWriter
 import app.auri.capture.adapter.SealedAudio
@@ -157,7 +158,7 @@ class FakeCaptureAdapter : CaptureAdapter {
     val requests = CopyOnWriteArrayList<InputRequest>()
     val releases = CopyOnWriteArrayList<String>()
     private val sinks = CopyOnWriteArrayList<CaptureSink>()
-    private val permissionHandlers = CopyOnWriteArrayList<() -> Unit>()
+    private val permissionHandlers = CopyOnWriteArrayList<(ErrorCode) -> Unit>()
     private val lastEpoch = mutableMapOf<Int, Long>()
 
     override fun inspectEligibility(): CaptureEligibility = eligibility
@@ -179,12 +180,13 @@ class FakeCaptureAdapter : CaptureAdapter {
         releaseFailure?.let { throw it }
     }
 
-    override fun onPermissionRevoked(handler: () -> Unit): Subscription {
+    override fun onPermissionRevoked(handler: (ErrorCode) -> Unit): Subscription {
         permissionHandlers += handler
         return Subscription { permissionHandlers -= handler }
     }
 
-    fun revokePermission() = permissionHandlers.forEach { it() }
+    /** [reason] 默认是麦克风；蓝牙连接权限被撤销时合同没有专门的码，用 INPUT_DEVICE_MISSING（与适配器一致）。 */
+    fun revokePermission(reason: ErrorCode = ErrorCode.PERMISSION_MIC_DENIED) = permissionHandlers.forEach { it(reason) }
 
     /** 第 [session] 个会话（默认最近一个）的 sink：旧会话的 sink 在取消之后依然可以回调，用来模拟迟到的回调。 */
     fun sink(session: Int = requests.lastIndex): CaptureSink = sinks[session]
@@ -229,10 +231,13 @@ class FakeCaptureAdapter : CaptureAdapter {
 
 /** 存储收到的每一次调用，不论成功与否——“确认之前一个字节都没写”就靠这份记录证明。 */
 sealed interface StoreEvent {
-    data class Begin(val recordId: String, val handle: CaptureHandle, val format: PcmFormat) : StoreEvent
-    data class Append(val handle: CaptureHandle, val samples: Int, val accepted: Boolean) : StoreEvent
+    data class Begin(val recordId: String, val handle: CaptureHandle, val format: PcmFormat, val meta: RecordingMeta) : StoreEvent
+    data class Append(val handle: CaptureHandle, val samples: Int, val accepted: Boolean, val startSample: Long = -1) : StoreEvent
     data class Seal(val recordId: String) : StoreEvent
     data class Abort(val recordId: String) : StoreEvent
+
+    /** 不再写、也不删：封存没能完成，已落盘的部分留给下次启动的恢复流程。 */
+    data class Release(val recordId: String) : StoreEvent
 }
 
 class FakeRecordingStore : RecordingStore {
@@ -252,19 +257,23 @@ class FakeRecordingStore : RecordingStore {
     /** 非空时 seal 抛它（不是 IOException）：模拟适配器自己的 bug。 */
     var failSealUnexpectedly: RuntimeException? = null
 
+    /** 非空时 append 抛它（不是 IOException）：模拟存储适配器自己的 bug。 */
+    var failAppendUnexpectedly: RuntimeException? = null
+
     /** 所有成功写入的采样（按顺序）。 */
     val written = mutableListOf<Short>()
 
-    override fun begin(recordId: String, handle: CaptureHandle, format: PcmFormat): RecordingWriter {
-        events += StoreEvent.Begin(recordId, handle, format)
+    override fun begin(recordId: String, handle: CaptureHandle, format: PcmFormat, meta: RecordingMeta): RecordingWriter {
+        events += StoreEvent.Begin(recordId, handle, format, meta)
         failBegin?.let { throw it }
         return object : RecordingWriter {
             private var sealed = false
 
-            override fun append(handle: CaptureHandle, samples: ShortArray) {
+            override fun append(handle: CaptureHandle, startSample: Long, samples: ShortArray) {
                 val limit = failAppendAfterSamples
                 val accepted = handle.gateState == GateState.OPEN && !sealed && (limit == null || written.size < limit)
-                events += StoreEvent.Append(handle, samples.size, accepted)
+                events += StoreEvent.Append(handle, samples.size, accepted, startSample)
+                failAppendUnexpectedly?.let { throw it }
                 if (handle.gateState != GateState.OPEN) throw IllegalStateException("闸门已关，不接受写入")
                 if (limit != null && written.size >= limit) throw IOException("磁盘已满（测试注入）")
                 written += samples.toList()
@@ -287,6 +296,10 @@ class FakeRecordingStore : RecordingStore {
 
             override fun abort() {
                 events += StoreEvent.Abort(recordId)
+            }
+
+            override fun release() {
+                events += StoreEvent.Release(recordId)
             }
         }
     }

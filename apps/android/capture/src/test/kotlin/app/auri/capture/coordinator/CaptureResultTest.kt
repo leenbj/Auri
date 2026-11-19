@@ -193,7 +193,7 @@ class CaptureResultTest {
     }
 
     @Test
-    fun `封存失败：通知录音丢失并回到待命，存储被要求清理，不交出任何结果`() = runTest {
+    fun `封存失败：通知录音没能封存并回到待命，已写下的部分留在磁盘上给恢复流程，不删除，不交出任何结果`() = runTest {
         val rig = recording()
         rig.store.failSeal = IOException("封存失败（测试注入）")
         rig.stop()
@@ -203,7 +203,8 @@ class CaptureResultTest {
         val (recordId, reason) = rig.output.lost.single()
         assertEquals(ErrorCode.STORAGE_EXHAUSTED, reason)
         assertEquals("丢失通知里的标识就是 begin 时的 Record 标识", rig.store.events.filterIsInstance<StoreEvent.Begin>().single().recordId, recordId)
-        assertEquals("残留被要求清理", listOf(StoreEvent.Abort(recordId)), rig.store.events.filterIsInstance<StoreEvent.Abort>())
+        assertEquals("已写下的段落不能删：下次启动由恢复流程接手", emptyList<StoreEvent>(), rig.store.events.filterIsInstance<StoreEvent.Abort>())
+        assertEquals("只释放写入器，保留磁盘上的一切", listOf(StoreEvent.Release(recordId)), rig.store.events.filterIsInstance<StoreEvent.Release>())
         assertEquals(Cause.STORAGE_FAILURE, rig.decisions.last().cause)
     }
 

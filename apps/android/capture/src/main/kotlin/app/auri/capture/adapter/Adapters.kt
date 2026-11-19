@@ -8,6 +8,7 @@ import app.auri.capture.contract.ErrorCode
 import app.auri.capture.contract.NormalizedControlEvent
 import app.auri.capture.contract.PreparedInput
 import app.auri.capture.contract.RouteChangeEvent
+import java.time.Instant
 
 // 三端共用的适配器边界（PRD 第 17.1 节）。协调器只通过这里的接口碰系统：
 //   ControlAdapter       控制命令从哪来（本 Ticket 只有屏幕按钮；耳机在 Ticket 17）
@@ -86,27 +87,70 @@ interface CaptureAdapter {
     /** 立即停止这次操作的采集并释放资源（幂等；对已取消或不存在的操作无副作用）。 */
     fun release(operationId: String)
 
-    /** 麦克风权限在运行期被撤销（与会话无关，任何状态下都可能发生）。 */
-    fun onPermissionRevoked(handler: () -> Unit): Subscription
+    /**
+     * 录音所需的权限（麦克风、蓝牙连接）在运行期被撤销（与会话无关，任何状态下都可能发生）。
+     * 回调参数是具体缺了哪一项对应的错误码：麦克风 [ErrorCode.PERMISSION_MIC_DENIED]；蓝牙连接合同里没有专门的码，
+     * 与资格检查一致按 [ErrorCode.INPUT_DEVICE_MISSING] 报告（待合同补码）。
+     */
+    fun onPermissionRevoked(handler: (ErrorCode) -> Unit): Subscription
 }
 
 /**
  * 录音存储。**只有路由确认之后协调器才会调用 [begin]**：确认之前的音频只存在于协调器的内存 Quarantine 里，
  * 确认失败就整体丢弃，没有任何一个字节碰到这里。每个 Record 一个音频文件，文件名与 Record 共用同一个标识。
+ *
+ * 存储要做到进程被杀之后还能找回已经写下的音频（Ticket 19）：所以 [begin] 带上重建 Record 所需的信息（[RecordingMeta]），
+ * [RecordingWriter.append] 带上每段音频在原始时间线上的位置；存储把它们和分段哈希一起落盘，下次启动时由 [OrphanRecordingSource] 找回。
  */
 interface RecordingStore {
-    fun begin(recordId: String, handle: CaptureHandle, format: PcmFormat): RecordingWriter
+    fun begin(recordId: String, handle: CaptureHandle, format: PcmFormat, meta: RecordingMeta): RecordingWriter
 }
 
+/**
+ * 进程被杀之后重建一个 Record 所需、协调器在路由确认那一刻就已经知道的事实。里面没有正文也没有音频；
+ * 设备显示名只在 [evidence] 的 observed_input 里，那是合同本来就要记录的路由证据。
+ */
+data class RecordingMeta(
+    val startedAt: Instant,
+    /** 之后 Revision 的 capture.route_evidence_id。 */
+    val routeEvidenceId: String,
+    /** 确认路由的那次系统观测。 */
+    val evidence: RouteChangeEvent,
+)
+
 interface RecordingWriter {
-    /** 追加已确认路由的音频。[handle] 必须是 begin 时那个、闸门开着；不匹配就拒绝（IllegalStateException）。写失败抛 IOException。 */
-    fun append(handle: CaptureHandle, samples: ShortArray)
+    /**
+     * 追加已确认路由的音频。[handle] 必须是 begin 时那个、闸门开着；不匹配就拒绝（IllegalStateException）。
+     * [startSample] 是这段音频在 Capture Session 原始时间线上的起点（交错采样数，含被丢弃的静音；与 recording_result 里的 chunks 同一个时间线）。
+     *
+     * 要么整段都写下并计入，要么一个字节都不留：写失败抛 IOException，存储必须把这次已经写进去的部分截掉，
+     * 之后封存出来的文件才与协调器自己算的哈希、采样数一致。
+     */
+    fun append(handle: CaptureHandle, startSample: Long, samples: ShortArray)
 
     /** 封存：落盘、校验、算哈希，返回封存后的音频。之后不能再写。是挂起函数，让调用方在封存期间仍能处理别的消息。 */
     suspend fun seal(): SealedAudio
 
-    /** 放弃：删除已写的部分（幂等：封存失败后协调器会再调一次来清理残留）。 */
+    /** 放弃：删除已写的部分（幂等；封存之后无效）。只用于确实没有东西可留的时候。 */
     fun abort()
+
+    /**
+     * 不再写，也不删任何东西：封存没能完成时，已经落盘的部分留给下次启动的恢复流程（[OrphanRecordingSource]）。
+     * 幂等；封存或放弃之后无效。
+     */
+    fun release()
+}
+
+/**
+ * 找回上次进程被杀（或封存没能完成）时留下的录音。恢复不开麦、不起前台服务、不改变采集状态：只读磁盘、把能验证的音频整理好交出去。
+ */
+interface OrphanRecordingSource {
+    /**
+     * 扫描存储，返回每一个没有交付过的录音。[isRegistered] 说某个 Record 是否已经登记进库：已登记的不再恢复，只清理它的恢复记录。
+     * 本进程自己正在写或写过的录音一律跳过。可重复调用；中途被杀后再调，结果不变。
+     * 一个录音出错只影响它自己（记入 [OrphanScan.failures]），其余照常。
+     */
+    suspend fun recoverOrphans(isRegistered: suspend (recordId: String) -> Boolean): OrphanScan
 }
 
 /** 封存后的音频。[location] 是存储自己的不透明位置（Android 上是私有目录里的文件路径）。 */

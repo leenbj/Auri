@@ -151,4 +151,10 @@ data class CaptureSnapshot(
     /** 耳机控制由用户显式开启；手动采集不改变它。 */
     val controlModeEnabled: Boolean = state != CaptureState.DISARMED,
     val durationWarning: Boolean = false,
+    /**
+     * 最近一次录音被打断（不是用户停的、也不是到时长上限）时的原因：路由变了或耳机断开、来电抢走音频、权限被撤销、存储写满、前台服务没了。
+     * 界面据此告诉用户“这段录音被中断了、为什么”；已经录下的部分照常保存。下一次开始录音时清除。
+     * 采集从不会因为中断自己续录：只有用户再按开始才有新的录音。
+     */
+    val interruption: ErrorCode? = null,
 )
