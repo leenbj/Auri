@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 与局域网里的网关通信（HTTPS，公钥指纹固定）。声明 INTERNET 的只有这个模块与 :modelmgmt（下载模型）：
+         :asr、:capture、:platform 的清单里没有，录音与转录的代码里也没有网络类（NoNetworkCodeGuardTest）。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 网络恢复时自动重试（ConnectivityManager.registerNetworkCallback） -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 扫配对二维码。没有摄像头的设备（和模拟器）也能安装：配对载荷可以在调试版里手动输入。 -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- 进程被系统杀掉之后，有网络时把应用叫醒、接着发没发完的文字（JobScheduler）。跨重启保留这个叫醒（setPersisted）必须声明它。 -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <application>
+        <!-- 只有系统（BIND_JOB_SERVICE）能绑定，不对外导出 -->
+        <service
+            android:name="app.auri.syncplatform.resume.SyncResumeService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE" />
+    </application>
+
+</manifest>

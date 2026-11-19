@@ -239,7 +239,10 @@ def test_the_real_android_test_sources_contain_the_tests_the_acceptance_flow_rel
 
     for required in (
         "ModelRefusalOnDeviceTest#oneFlippedByteInTheRealModelIsRefusedBeforeTheEngineIsTouched",
-        "OfflineProofTest#theInstalledPackageRequestsInternetOnlyForModelDownloadAndNoOtherNetworkPermission",
+        "OfflineProofTest#theInstalledPackageRequestsOnlyTheGatewayLinkNetworkPermissions",
+        "OfflineProofTest#transcriptionSendsNoNetworkBytesEvenWhileTheNetworkIsAvailable",
+        "OfflineProofTest#everyProductTranscriptionEntryPointSendsNoNetworkBytesEvenWhileTheNetworkIsAvailable",
+        "OfflineProofTest#everyProductTranscriptionEntryPointWorksInAirplaneModeWithoutAnyNetworkBytes",
         "RealEngineTranscriptionTest#chineseSampleIsTranscribed",
     ):
         assert any(n.endswith("." + required) for n in names), (required, sorted(names))

@@ -11,6 +11,7 @@ import app.auri.android.home.HomeViewModel
 import app.auri.android.modelui.ManagerModelControls
 import app.auri.android.modelui.ModelsViewModel
 import app.auri.android.modelui.SchedulerControls
+import app.auri.android.sync.SyncViewModel
 import app.auri.asr.engine.SherpaOnnxEngineFactory
 import app.auri.capture.adapter.TranscriptionAdapter
 import app.auri.capture.calibration.ProfileStore
@@ -35,17 +36,20 @@ import app.auri.platform.audio.AudioSystem
 import app.auri.platform.audio.BluetoothCaptureAdapter
 import app.auri.platform.control.ScreenControlAdapter
 import app.auri.platform.jobs.SqliteTranscriptionJobStore
-import app.auri.platform.library.SqliteRecordLibrary
 import app.auri.platform.service.AndroidForegroundServiceController
 import app.auri.platform.service.bindForegroundService
 import app.auri.platform.storage.FileProfileStore
 import app.auri.platform.storage.DurationLimitSetting
+import app.auri.platform.storage.NoBackupStorage
 import app.auri.platform.storage.WavRecordingStore
 import app.auri.platform.system.AndroidCaptureEnvironment
 import app.auri.platform.system.AndroidResourceMonitor
 import app.auri.platform.system.AppLifecycleTracker
 import app.auri.platform.system.RandomIds
 import app.auri.platform.system.SystemClock
+import app.auri.syncplatform.AndroidSyncLog
+import app.auri.syncplatform.SyncRuntime
+import app.auri.syncplatform.SyncStorage
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -69,11 +73,11 @@ class AuriRuntime(
     application: Application,
     audio: AudioSystem = AndroidAudioSystem(application),
     databaseName: String? = "auri.db",
-    recordingsDir: File = File(application.filesDir, "recordings"),
+    recordingsDir: File = NoBackupStorage.place(application.noBackupFilesDir, application.filesDir, "recordings"),
     /** Ticket 14 的调试布局（files/models/<id>/<版本>）。产品转录不再读它：模型由 [modelManager] 下载并启用，放在 [modelStoreRoot] 下。 */
     @Suppress("UNUSED_PARAMETER") modelsDir: File = File(application.filesDir, "models"),
     transcriptionOverride: TranscriptionAdapter? = null,
-    headsetProfileStore: ProfileStore = FileProfileStore(File(application.filesDir, PROFILE_FILE_NAME)),
+    headsetProfileStore: ProfileStore = FileProfileStore(NoBackupStorage.place(application.noBackupFilesDir, application.filesDir, PROFILE_FILE_NAME)),
     /** 模型管理器的根目录；里面的 model-store/、model-downloads/、model-staging/ 是它自己的（布局见 ModelStore）。 */
     modelStoreRoot: File = application.filesDir,
     transport: HttpTransport = UrlConnectionTransport(),
@@ -82,7 +86,7 @@ class AuriRuntime(
 
     private val lifecycle = AppLifecycleTracker(application)
     val headset = AndroidHeadsetPresence(application)
-    val library = SqliteRecordLibrary(application, databaseName)
+    val library = SyncStorage.library(application, databaseName) // Record 库与待同步任务表同库：发布 Revision 的事务里顺手登记任务（Ticket 21）
     val screenControl = ScreenControlAdapter(SystemClock, RandomIds)
     private val controlWiring = ControlWiring(application, screenControl, headsetProfileStore)
     val captureAdapter = BluetoothCaptureAdapter(audio, AndroidCaptureEnvironment(application, lifecycle), SystemClock)
@@ -140,6 +144,9 @@ class AuriRuntime(
 
     val controls = CoordinatorControls(coordinator, screenControl)
 
+    /** 配对与同步（Ticket 21）。构造时不碰网络与相机；[SyncRuntime.start] 由 AuriApplication 调用。 */
+    val sync: SyncRuntime = SyncRuntime.create(application, library, scope)
+
     init {
         // 前台服务跟着采集状态走；服务起不来就取消这次采集（没有前台服务，录音一进后台就会被系统静音）
         scope.bindForegroundService(coordinator.snapshot, AndroidForegroundServiceController(application)) { coordinator.foregroundServiceFailed() }
@@ -159,6 +166,12 @@ class AuriRuntime(
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
             HomeViewModel(controls, headset, library, pipeline.notices, CoroutineScope(SupervisorJob() + Dispatchers.Default), durationSetting) as T
+    }
+
+    val syncViewModelFactory = object : ViewModelProvider.Factory {
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : ViewModel> create(modelClass: Class<T>): T =
+            SyncViewModel(sync, CoroutineScope(SupervisorJob() + Dispatchers.Default), AndroidSyncLog) as T
     }
 
     val modelsViewModelFactory = object : ViewModelProvider.Factory {
