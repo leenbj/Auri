@@ -8,13 +8,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import app.auri.android.sync.PairingProblem
@@ -31,6 +26,7 @@ import app.auri.sync.status.UserCause
  * “等网关”“稍后重试”“需要你处理”是三种不同的情形，文字与操作都不一样，不能合并（Ticket 21 第 6 项）。
  *
  * 摄像头取景由调用方通过 [scanner] 提供（界面层不碰 Android 的相机类，也便于以后替换）。
+ * [manualEntry] 是留给调试版的槽（没有摄像头时粘贴配对载荷）：这里不知道它是什么，release 版传进来的是空实现（评审 F14）。
  */
 @Composable
 fun SyncScreen(
@@ -39,11 +35,11 @@ fun SyncScreen(
     onBack: () -> Unit,
     onStartScan: () -> Unit,
     onStopScan: () -> Unit,
-    onManualPayload: (String) -> Unit,
     onDismissProblem: () -> Unit,
     onSyncNow: () -> Unit,
     cameraUnavailable: Boolean = false,
     scanner: @Composable () -> Unit,
+    manualEntry: @Composable () -> Unit = {},
 ) {
     Column(Modifier.fillMaxSize().padding(16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -77,16 +73,8 @@ fun SyncScreen(
         }
         if (cameraUnavailable) Text("摄像头不可用（没有摄像头、没有授权或正被占用）。")
         if (scanning) scanner()
-        if (state.manualEntryAvailable) ManualPayloadEntry(onManualPayload, enabled = state.pairing != PairingProgress.Pairing)
+        manualEntry()
     }
-}
-
-@Composable
-private fun ManualPayloadEntry(onSubmit: (String) -> Unit, enabled: Boolean) {
-    var text by remember { mutableStateOf("") }
-    Text("调试版：没有摄像头时可以粘贴网关命令行输出的配对载荷（JSON）")
-    OutlinedTextField(value = text, onValueChange = { text = it }, label = { Text("配对载荷") }, modifier = Modifier.padding(vertical = 4.dp))
-    Button(onClick = { onSubmit(text) }, enabled = enabled && text.isNotBlank()) { Text("用文字配对") }
 }
 
 /** 一句话说清现在是哪种情形。三种“同步没完成”的句子互不相同，只有需要用户处理的那一种让用户做事。 */

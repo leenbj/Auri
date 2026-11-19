@@ -1,7 +1,6 @@
 package app.auri.android
 
 import android.app.Application
-import android.content.pm.ApplicationInfo
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -149,9 +148,6 @@ class AuriRuntime(
     /** 配对与同步（Ticket 21）。构造时不碰网络与相机；[SyncRuntime.start] 由 AuriApplication 调用。 */
     val sync: SyncRuntime = SyncRuntime.create(application, library, scope)
 
-    /** 只有调试版才显示“手动输入配对载荷”（模拟器没有摄像头）；release 版没有这个入口。 */
-    private val manualPairingEntryAvailable = (application.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
-
     init {
         // 前台服务跟着采集状态走；服务起不来就取消这次采集（没有前台服务，录音一进后台就会被系统静音）
         scope.bindForegroundService(coordinator.snapshot, AndroidForegroundServiceController(application)) { coordinator.foregroundServiceFailed() }
@@ -171,7 +167,7 @@ class AuriRuntime(
     val syncViewModelFactory = object : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
-            SyncViewModel(sync, CoroutineScope(SupervisorJob() + Dispatchers.Default), manualPairingEntryAvailable, AndroidSyncLog) as T
+            SyncViewModel(sync, CoroutineScope(SupervisorJob() + Dispatchers.Default), AndroidSyncLog) as T
     }
 
     val modelsViewModelFactory = object : ViewModelProvider.Factory {

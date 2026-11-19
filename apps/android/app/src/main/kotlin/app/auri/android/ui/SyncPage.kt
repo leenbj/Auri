@@ -50,10 +50,10 @@ fun SyncPage(viewModel: SyncViewModel, onBack: () -> Unit) {
             else permission.launch(Manifest.permission.CAMERA)
         },
         onStopScan = { scanning = false },
-        onManualPayload = viewModel::onManualPayload,
         onDismissProblem = viewModel::dismissPairingProblem,
         onSyncNow = viewModel::syncNow,
         cameraUnavailable = cameraUnavailable,
+        manualEntry = { ManualPairingEntry(onSubmit = viewModel::onQrText, enabled = state.pairing != PairingProgress.Pairing) },
         scanner = {
             val owner = LocalLifecycleOwner.current
             AndroidView(

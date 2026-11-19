@@ -83,8 +83,8 @@ class SyncViewModelTest {
         fun status(headline: SyncHeadline = SyncHeadline.UP_TO_DATE) = SyncStatus(headline, emptyList(), SyncCounts(0, 0, 0, 0, 0, 0), null)
     }
 
-    private fun TestScope.viewModel(controller: FakeController, manualEntry: Boolean = true) =
-        SyncViewModel(controller, CoroutineScope(UnconfinedTestDispatcher(testScheduler) + SupervisorJob()), manualEntry)
+    private fun TestScope.viewModel(controller: FakeController) =
+        SyncViewModel(controller, CoroutineScope(UnconfinedTestDispatcher(testScheduler) + SupervisorJob()))
 
     @Test
     fun `读到配对记录之前没有同步状态，读到之后原样给出，同步状态不被配对动作改写`() = runTest {
@@ -126,7 +126,7 @@ class SyncViewModelTest {
     }
 
     private fun TestScope.viewModelOf(controller: SyncController, escapes: Escapes, log: SyncLog = SyncLog.None) =
-        SyncViewModel(controller, CoroutineScope(UnconfinedTestDispatcher(testScheduler) + SupervisorJob() + escapes), true, log)
+        SyncViewModel(controller, CoroutineScope(UnconfinedTestDispatcher(testScheduler) + SupervisorJob() + escapes), log)
 
     @Test
     fun `状态流读本机存储时出了故障：异常不会冲出视图模型的作用域（否则进程崩溃），界面进入“存储故障”状态并保留最后读到的状态`() = runTest {
@@ -307,22 +307,6 @@ class SyncViewModelTest {
     }
 
     @Test
-    fun `release 版没有手动入口：手动输入的载荷被忽略，调试版则等同于扫码`() = runTest {
-        val release = FakeController()
-        val releaseVm = viewModel(release, manualEntry = false)
-        val debug = FakeController()
-        val debugVm = viewModel(debug, manualEntry = true)
-
-        releaseVm.onManualPayload(payloadText())
-        debugVm.onManualPayload(payloadText())
-
-        assertFalse(releaseVm.state.value.manualEntryAvailable)
-        assertEquals(0, release.pairCalls.get())
-        assertTrue(debugVm.state.value.manualEntryAvailable)
-        assertEquals(1, debug.pairCalls.get())
-    }
-
-    @Test
     fun `现在同步转给同步控制器`() = runTest {
         val controller = FakeController()
         val vm = viewModel(controller)
@@ -351,7 +335,7 @@ class SyncViewModelTest {
             val gate = CompletableDeferred<PairingOutcome>()
             controller.onPair = { gate.await() }
             val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-            val vm = SyncViewModel(controller, scope, manualEntryAvailable = false)
+            val vm = SyncViewModel(controller, scope)
             val threads = 8
             val barrier = CyclicBarrier(threads)
             val workers = List(threads) {

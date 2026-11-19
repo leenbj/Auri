@@ -1160,6 +1160,8 @@ SYNC_LOG = "apps/android/sync/src/main/kotlin/app/auri/sync/SyncLog.kt"
 ANDROID_SYNC_LOG = "apps/android/syncplatform/src/main/kotlin/app/auri/syncplatform/AndroidSyncLog.kt"
 VIEWMODEL = "apps/android/app/src/main/kotlin/app/auri/android/sync/SyncViewModel.kt"
 SYNC_SCREEN = "apps/android/app/src/main/kotlin/app/auri/android/ui/SyncScreen.kt"
+RELEASE_ENTRY = "apps/android/app/src/release/kotlin/app/auri/android/ui/ManualPairingEntry.kt"
+RELEASE_TESTS = (":app:testDebugUnitTest", "--tests", "*ReleaseVariantTest*")
 GUARD_REAL_TREE = "六个生产模块编译出的类里没有任何违反网络规矩的引用"
 TRUST_ALL_SNIPPET = (
     "        javax.net.ssl.SSLContext.getInstance(\"TLS\").init(\n"
@@ -1527,12 +1529,29 @@ MUTATIONS += (
         VM_TESTS, APP_TEST,
         ("配对失败之后同一张二维码可以重试",),
     ),
+    # 评审 F14：“粘贴配对载荷”原先写在 src/main、只靠运行时的 debuggable 标志藏起来；现在真实现只在 src/debug，release 是空实现。
+    # 下面三条把它又放回会进 release 的地方，ReleaseVariantTest 读 release 版编译出的类，必须变红。
     Mutation(
-        "sync-vm-manual-entry-ignores-release-flag",
-        "release 版没有手动输入配对载荷的入口",
-        (Edit(VIEWMODEL, "        if (manualEntryAvailable) onQrText(text)\n", "        onQrText(text)\n"),),
-        VM_TESTS, APP_TEST,
-        ("release 版没有手动入口",),
+        "release-manual-entry-text-leaks-into-main",
+        "手动输入的文案又写回 src/main（两个变体都会编进去）：release 版的类里必须没有它",
+        (Edit(SYNC_SCREEN, "        manualEntry()\n    }\n}\n", "        manualEntry()\n        Text(\"配对载荷\")\n    }\n}\n"),),
+        RELEASE_TESTS, APP_TEST,
+        ("release 版编译出的类里没有手动输入配对载荷的入口",),
+    ),
+    Mutation(
+        "release-manual-entry-point-back-in-viewmodel",
+        "视图模型里又有一个“手动输入”入口（再靠运行时标志管着）：名字在 release 与 debug 的类里都不能出现",
+        (Edit(VIEWMODEL, "    fun onQrText(text: String) {\n        val current = progress.value\n",
+              "    fun onManualPayload(text: String) = onQrText(text)\n\n    fun onQrText(text: String) {\n        val current = progress.value\n"),),
+        RELEASE_TESTS, APP_TEST,
+        ("release 版编译出的类里没有手动输入配对载荷的入口", "运行时开关与视图模型入口已经整个删掉"),
+    ),
+    Mutation(
+        "release-stub-draws-the-debug-entry",
+        "release 版的空实现被换成会画出手动输入的界面",
+        (Edit(RELEASE_ENTRY, "enabled: Boolean) = Unit\n", "enabled: Boolean) { androidx.compose.material3.Text(\"用文字配对\") }\n"),),
+        RELEASE_TESTS, APP_TEST,
+        ("release 版编译出的类里没有手动输入配对载荷的入口",),
     ),
     Mutation(
         "sync-vm-unexpected-exception-not-contained",

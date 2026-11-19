@@ -22,7 +22,9 @@ def test_mutation_edits_apply_exactly_once(mutation):
         text = (REPO / edit.path).read_text(encoding="utf-8")
         assert text.count(edit.old) == 1, f"{mutation.id}: {edit.path} 里原文出现 {text.count(edit.old)} 次"
         assert edit.old != edit.new
-        assert "/src/main/" in edit.path or edit.path in mc.SCANNER_SOURCES, "变异只能碰生产代码，不能碰测试（唯一例外：网络卫士的规则表）"
+        # src/debug 与 src/release 是变体各自的生产代码（评审 F14：release 版的空实现）；测试目录一律不行
+        assert edit.path in mc.SCANNER_SOURCES or any(f"/src/{variant}/" in edit.path for variant in ("main", "debug", "release")), \
+            "变异只能碰生产代码，不能碰测试（唯一例外：网络卫士的规则表）"
         assert not edit.path.endswith("Test.kt") and "/androidTest/" not in edit.path, "任何变异都不能改测试类本身"
 
 
