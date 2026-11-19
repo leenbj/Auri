@@ -6,11 +6,13 @@
   麦克风运行时权限（RECORD_AUDIO）与麦克风类前台服务权限（FOREGROUND_SERVICE_MICROPHONE，API 34+）是两层，都要有。
   MODIFY_AUDIO_SETTINGS：录音前把音频模式切到 MODE_IN_COMMUNICATION、结束时恢复（AudioManager.setMode 要求它，
   普通权限、安装即授予，探针清单里也有）。
+  VIBRATE：开始 / 停止 / 没能开始的提示用振动节奏区分（Ticket 17），不播放任何声音（NoSoundIntoBluetoothTest）；普通权限、安装即授予。
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />

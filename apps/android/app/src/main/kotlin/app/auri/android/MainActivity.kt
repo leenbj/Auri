@@ -12,34 +12,26 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.BackHandler
 import androidx.activity.viewModels
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.Text
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.auri.android.control.ControlViewModel
 import app.auri.android.home.HomeViewModel
 import app.auri.android.modelui.ModelsViewModel
 import app.auri.android.sync.SyncViewModel
+import app.auri.android.ui.AppRoot
+import app.auri.android.ui.ControlScreen
 import app.auri.android.ui.HomeScreen
 import app.auri.android.ui.ModelsScreen
 import app.auri.android.ui.SyncPage
-
-private enum class Page { HOME, MODELS }
 
 class MainActivity : ComponentActivity() {
     private val runtime get() = (application as AuriApplication).runtime
 
     private val viewModel: HomeViewModel by viewModels { runtime.homeViewModelFactory }
+    private val controlViewModel: ControlViewModel by viewModels { runtime.controlViewModelFactory }
     private val syncViewModel: SyncViewModel by viewModels { runtime.syncViewModelFactory }
     private val modelsViewModel: ModelsViewModel by viewModels { runtime.modelsViewModelFactory }
 
@@ -50,42 +42,39 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             val state by viewModel.state.collectAsStateWithLifecycle()
+            val controlState by controlViewModel.state.collectAsStateWithLifecycle()
             val models by modelsViewModel.state.collectAsStateWithLifecycle()
             var onSyncPage by rememberSaveable { mutableStateOf(false) }
-            var page by rememberSaveable { mutableStateOf(Page.HOME) }
             if (onSyncPage) {
                 // 配对与同步（Ticket 21）占满整个屏幕，返回键回到原来的页
                 BackHandler { onSyncPage = false }
                 SyncPage(syncViewModel, onBack = { onSyncPage = false })
             } else {
-                // 录音 / 模型与转录两页（Ticket 20）；“同步与配对”入口在录音页里
-                Column(Modifier.fillMaxSize()) {
-                    Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = { page = Page.HOME }, enabled = page != Page.HOME) { Text("录音") }
-                        Button(onClick = { page = Page.MODELS }, enabled = page != Page.MODELS) { Text("模型与转录") }
-                    }
-                    Box(Modifier.weight(1f)) {
-                        when (page) {
-                            Page.HOME -> HomeScreen(
-                                state,
-                                onStart = ::onStartPressed,
-                                onStop = viewModel::stop,
-                                onDismissNotice = viewModel::dismissNotice,
-                                onOpenSync = { onSyncPage = true },
-                            )
-                            Page.MODELS -> ModelsScreen(
-                                models,
-                                onStart = modelsViewModel::start,
-                                onPause = modelsViewModel::pause,
-                                onCancelDownload = modelsViewModel::cancelDownload,
-                                onOpenLicense = ::openLicense,
-                                onCancelJob = modelsViewModel::cancelJob,
-                                onRetranscribe = modelsViewModel::retranscribe,
-                                onRecheck = modelsViewModel::recheckResources,
-                            )
-                        }
-                    }
-                }
+                // 录音 / 耳机控制（Ticket 17）/ 模型与转录（Ticket 20）三页；“同步与配对”入口在录音页里
+                AppRoot(
+                    home = {
+                        HomeScreen(
+                            state,
+                            onStart = ::onStartPressed,
+                            onStop = viewModel::stop,
+                            onDismissNotice = viewModel::dismissNotice,
+                            onOpenSync = { onSyncPage = true },
+                        )
+                    },
+                    control = { ControlScreen(controlState, controlViewModel, onStart = ::onStartPressed) },
+                    models = {
+                        ModelsScreen(
+                            models,
+                            onStart = modelsViewModel::start,
+                            onPause = modelsViewModel::pause,
+                            onCancelDownload = modelsViewModel::cancelDownload,
+                            onOpenLicense = ::openLicense,
+                            onCancelJob = modelsViewModel::cancelJob,
+                            onRetranscribe = modelsViewModel::retranscribe,
+                            onRecheck = modelsViewModel::recheckResources,
+                        )
+                    },
+                )
             }
         }
     }
