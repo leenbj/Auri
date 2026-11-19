@@ -61,6 +61,8 @@ enum class SendResult {
  * - **连接问题挂在配对记录上**：公钥不符、令牌被拒是对所有任务都成立的事实，记进配对记录（needsUser）；
  *   在用户重新配对之前，一个带令牌的请求都不会发出，也没有“忽略并继续”。
  * - **只经 [PairingStore.update] 改配对记录**：用户刚刚重新配对写入的新记录，不会被晚到的旧观察覆盖。
+ * - **结果跟着配对走**：请求发出时是哪份配对，结果就只对那份有效。途中用户重新配对、改配别的网关，晚到的结果（被拒、
+ *   公钥不符、甚至“已入库”）全部作废，任务回到排队、对新配对重新来过；一轮同步里缓存的网关地址也只对同一份配对有效。
  *
  * 引擎自己不计时、不监听网络：什么时候调用 [runOnce]、[networkLost] 由 SyncLoop 决定。
  */
@@ -216,7 +218,9 @@ class SyncEngine(
         val client = GatewayClient(http.forPin(gateway.pin))
         if (wasUncertain) {
             // 上一次可能已经送到：先问网关。只有网关明确说“已入库”才确认，明确说“没有”才往下重发；问不到就不重发。
-            when (val answer = client.recordStatus(address, gateway.token, key.recordId)) {
+            val answer = client.recordStatus(address, gateway.token, key.recordId)
+            if (!stillPaired(gateway)) return stale(key)
+            when (answer) {
                 is GatewayResult.Success -> when (answer.value.standing(key.revision, submission.textSha256, gateway.deviceId)) {
                     Standing.SAME_STORED -> return stored(key)
                     Standing.MISSING -> Unit // 网关没有这一版：往下重新提交
@@ -229,7 +233,9 @@ class SyncEngine(
                 else -> return failed(key, gateway, answer, wasUncertain)
             }
         }
-        return when (val put = client.putRevision(address, gateway.token, submission)) {
+        val put = client.putRevision(address, gateway.token, submission)
+        if (!stillPaired(gateway)) return stale(key)
+        return when (put) {
             is GatewayResult.Success -> stored(key)
             else -> failed(key, gateway, put, wasUncertain)
         }
@@ -254,6 +260,19 @@ class SyncEngine(
         return SendResult.STORED
     }
 
+    /** 发请求时的那份配对，现在还是当前的配对吗？用户重新配对、改配另一个网关、取消配对之后就不是了。 */
+    private suspend fun stillPaired(gateway: PairedGateway): Boolean = (pairing.load() as? PairingState.Paired)?.gateway?.isSamePairing(gateway) == true
+
+    /**
+     * 请求在途中用户换了配对：这个结果是旧配对（旧令牌、旧公钥、也许是另一个网关）得到的，对新配对没有意义——
+     * 旧令牌被拒不代表新令牌会被拒，旧网关说“已入库”不代表新网关有。丢掉它，任务回到排队、按新配对重新来过；
+     * 请求可能已经送到过旧网关，所以仍记成结果不确定（先问新网关，再决定发不发）。
+     */
+    private suspend fun stale(key: JobKey): SendResult {
+        deliver(key, SyncEvent.RETRYABLE_FAILURE) { it.copy(attempts = 0, uncertain = true, retryAt = clock.now()) }
+        return SendResult.RETRY_LATER
+    }
+
     /** 请求没有离开手机（连不上）：“不确定”回到发送之前的样子。 */
     private suspend fun waiting(key: JobKey, wasUncertain: Boolean): SendResult {
         deliver(key, SyncEvent.GATEWAY_UNREACHABLE) { it.copy(uncertain = wasUncertain) }
@@ -274,7 +293,8 @@ class SyncEngine(
 
     /** 公钥不符或令牌被拒。先记进配对记录（之后不再发任何带令牌的请求），再把这条任务停下。 */
     private suspend fun connectionBlocked(key: JobKey, gateway: PairedGateway, needs: NeedsUser, reason: BlockedReason, wasUncertain: Boolean): SendResult {
-        pairing.update { current -> if (current.isSamePairing(gateway)) current.copy(needsUser = needs) else null }
+        // 配对记录里的这份已经不是发请求时的那份（途中重新配对了）：这是旧配对的结论，作废。写记录这一步本身就是原子的比对
+        if (!pairing.update { current -> if (current.isSamePairing(gateway)) current.copy(needsUser = needs) else null }) return stale(key)
         val event = if (needs == NeedsUser.KEY_MISMATCH) SyncEvent.KEY_MISMATCH else SyncEvent.AUTH_REVOKED
         deliver(key, event) { it.copy(uncertain = wasUncertain, blockedReason = reason) }
         return SendResult.CONNECTION_BLOCKED
@@ -343,11 +363,19 @@ class SyncEngine(
         }
     }
 
-    /** 一轮同步里“网关在哪”只问一次。 */
+    /** 一轮同步里“网关在哪”只问一次——对同一份配对。途中换了配对，旧网关的地址不能拿给新网关的指纹去连。 */
     private inner class Location {
+        private var forPairing: PairedGateway? = null
         private var value: Located? = null
 
-        suspend fun get(gateway: PairedGateway): Located = value ?: locator.locate(gateway).also { value = it }
+        suspend fun get(gateway: PairedGateway): Located {
+            val cached = value
+            if (cached != null && forPairing?.isSamePairing(gateway) == true) return cached
+            return locator.locate(gateway).also {
+                value = it
+                forPairing = gateway
+            }
+        }
     }
 
     /** 网关对“这一版在不在”的回答，换算成引擎的下一步。先看 Record 本身（已删除、不是本机录的），再看这一版。 */

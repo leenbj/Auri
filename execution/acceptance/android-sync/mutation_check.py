@@ -322,6 +322,34 @@ MUTATIONS += (
         ("网关说这条 Record 已被删除：哪怕那一版的哈希相同", "网关说这条 Record 已被删除、而且没有这一版"),
     ),
     Mutation(
+        "engine-accepts-stale-put-result",
+        "PUT 在途中用户换了配对：旧配对得到的结果（哪怕是已入库）必须作废（F6）",
+        (Edit(ENGINE, "        if (!stillPaired(gateway)) return stale(key)\n        return when (put) {", "        return when (put) {"),),
+        ENGINE_TESTS, SYNC_TEST[0],
+        ("旧网关回的已入库不能算新网关的送达", "这一轮缓存的旧网关地址不能拿给新网关的指纹用"),
+    ),
+    Mutation(
+        "engine-accepts-stale-status-answer",
+        "问结果的途中用户换了配对：旧网关的回答必须作废（F6）",
+        (Edit(ENGINE, "            if (!stillPaired(gateway)) return stale(key)\n            when (answer) {", "            when (answer) {"),),
+        ENGINE_TESTS, SYNC_TEST[0],
+        ("问结果的途中改配了另一个网关",),
+    ),
+    Mutation(
+        "engine-blocks-on-stale-connection-verdict",
+        "旧配对的公钥不符/令牌被拒结论到得太晚：配对记录已经不是同一份，就作废而不是停下任务（F6）",
+        (Edit(ENGINE, "if (!pairing.update { current -> if (current.isSamePairing(gateway)) current.copy(needsUser = needs) else null }) return stale(key)", "pairing.update { current -> if (current.isSamePairing(gateway)) current.copy(needsUser = needs) else null }"),),
+        ENGINE_TESTS, SYNC_TEST[0],
+        ("旧公钥的探测这时才报公钥不符",),
+    ),
+    Mutation(
+        "engine-reuses-location-across-pairings",
+        "一轮里缓存的网关地址只对同一份配对有效（F6）",
+        (Edit(ENGINE, "if (cached != null && forPairing?.isSamePairing(gateway) == true) return cached", "if (cached != null) return cached"),),
+        ENGINE_TESTS, SYNC_TEST[0],
+        ("这一轮缓存的旧网关地址不能拿给新网关的指纹用",),
+    ),
+    Mutation(
         "engine-confirms-foreign-origin",
         "网关说 Record 是别的设备录的：不能确认入库，也不再提交（F9，ADR-0020）",
         (Edit(ENGINE, "        originDeviceId != deviceId -> Standing.FOREIGN\n", ""),),
@@ -380,7 +408,7 @@ MUTATIONS += (
     Mutation(
         "engine-does-not-persist-connection-gate",
         "公钥不符、令牌被拒要记进配对记录",
-        (Edit(ENGINE, "        pairing.update { current -> if (current.isSamePairing(gateway)) current.copy(needsUser = needs) else null }\n", ""),),
+        (Edit(ENGINE, "        if (!pairing.update { current -> if (current.isSamePairing(gateway)) current.copy(needsUser = needs) else null }) return stale(key)\n", ""),),
         ENGINE_TESTS, SYNC_TEST[0],
         ("令牌被撤销：整个连接停下", "没有任何继续的路"),
     ),

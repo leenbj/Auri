@@ -11,6 +11,7 @@ import app.auri.sync.pairing.DeviceToken
 import app.auri.sync.pairing.GatewayAddress
 import app.auri.sync.pairing.NeedsUser
 import app.auri.sync.pairing.PairingState
+import app.auri.sync.testing.FakeGateway
 import app.auri.sync.testing.FakeGateway.Fault
 import app.auri.sync.testing.SyncRig
 import app.auri.sync.testing.SyncSamples
@@ -29,6 +30,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -572,6 +574,144 @@ class SyncEngineTest {
         sending.join()
 
         assertEquals(fresh, rig.pairing.gateway)
+    }
+
+    // ---- F6：配对代次。旧配对在途中得到的结论，对用户刚刚建立的新配对没有意义 ----
+
+    private val newTokenText = "fixture-device-token-not-a-real-secret-0002"
+    private val addressB = GatewayAddress("192.168.1.30", 8443)
+
+    private fun pairedToB() = SyncSamples.pairedGateway(
+        pin = TlsFixtures.gatewayB.pin,
+        addresses = listOf(addressB),
+        pairedAt = rePaired,
+        token = DeviceToken.parse(newTokenText)!!,
+    )
+
+    private fun SyncRig.hostGatewayB(): FakeGateway = FakeGateway(now = clock::now).also { serverB -> lan.host(addressB, TlsFixtures.gatewayB) { serverB.handle(it) } }
+
+    /** 启动一轮同步，让它的第一个 PUT 停在网关里（任务处于发送中）；返回放行用的闸门和这一轮的作业。 */
+    private suspend fun SyncRig.startPassHeldAtFirstPut(key: JobKey): Pair<CompletableDeferred<Fault?>, kotlinx.coroutines.Job> {
+        val gate = CompletableDeferred<Fault?>()
+        server.holdNext = gate
+        val pass = scope.launch { engine.runOnce() }
+        scope.runCurrent()
+        assertEquals(SyncState.SENDING, job(key).state)
+        return gate to pass
+    }
+
+    @Test
+    fun `发送途中用户重新配对了：旧令牌被拒的 401 是旧配对的结论，不能把任务永远停住；之后用新令牌送达`() = runRig { rig ->
+        val key = rig.publish()
+        val fresh = SyncSamples.pairedGateway(pairedAt = rePaired, token = DeviceToken.parse(newTokenText)!!)
+        val (gate, pass) = rig.startPassHeldAtFirstPut(key)
+
+        rig.pairing.save(fresh) // 用户重新配对
+        rig.engine.resolveAfterRepair() // 应用在配对成功后调它：这时旧请求还在途中，没有可恢复的任务
+        gate.complete(Fault.Reject(401, "GATEWAY_AUTH_REVOKED", false)) // 旧令牌的拒绝这时才到
+        pass.join()
+
+        assertNotEquals("旧配对的拒绝不能让任务停在“需要用户处理”", SyncState.BLOCKED, rig.job(key).state)
+        assertEquals("新配对原样保留", fresh, rig.pairing.gateway)
+        rig.engine.runOnce()
+        assertEquals(SyncState.STORED, rig.job(key).state)
+        assertEquals("Bearer $newTokenText", rig.lan.delivered.last { it.second.method == "PUT" }.second.headers["Authorization"])
+    }
+
+    @Test
+    fun `发送途中用户重新配对了：旧公钥不符的结论同样作废，任务回到排队而不是停下`() = runRig { rig ->
+        val key = rig.publish()
+        val fresh = SyncSamples.pairedGateway(pairedAt = rePaired, token = DeviceToken.parse(newTokenText)!!)
+        val (gate, pass) = rig.startPassHeldAtFirstPut(key)
+
+        rig.pairing.save(fresh)
+        rig.engine.resolveAfterRepair()
+        gate.complete(Fault.Transport(TransportFailure.KeyMismatch()))
+        pass.join()
+
+        assertNotEquals(SyncState.BLOCKED, rig.job(key).state)
+        assertEquals(fresh, rig.pairing.gateway)
+        rig.engine.runOnce()
+        assertEquals(SyncState.STORED, rig.job(key).state)
+    }
+
+    @Test
+    fun `发送途中用户改配了另一个网关：旧网关回的已入库不能算新网关的送达，任务重新问、重新发到新网关`() = runRig { rig ->
+        val key = rig.publish()
+        val serverB = rig.hostGatewayB()
+        val (gate, pass) = rig.startPassHeldAtFirstPut(key)
+
+        rig.pairing.save(pairedToB())
+        gate.complete(null) // 旧网关正常入库并回了 200
+        pass.join()
+
+        assertEquals("旧网关上确实有一份", 1, rig.server.stored.size)
+        assertNotEquals("那不是新配对的网关：不能记成已送达", SyncState.STORED, rig.job(key).state)
+        rig.engine.runOnce()
+        assertEquals(SyncState.STORED, rig.job(key).state)
+        assertTrue("新网关上有这一版", key in serverB.stored)
+    }
+
+    @Test
+    fun `一轮同步里途中改配了另一个网关：这一轮缓存的旧网关地址不能拿给新网关的指纹用，否则就是误报公钥不符`() = runRig { rig ->
+        val first = rig.publish()
+        val second = rig.publish(SyncSamples.OTHER_RECORD_ID, 1)
+        val serverB = rig.hostGatewayB()
+        val (gate, pass) = rig.startPassHeldAtFirstPut(first)
+
+        rig.pairing.save(pairedToB())
+        gate.complete(null)
+        pass.join()
+
+        assertNull("新配对没有被误打上“公钥不符”", rig.pairing.gateway!!.needsUser)
+        assertTrue("同一轮里的第二条直接送到了新网关", second in serverB.stored)
+        rig.engine.runOnce()
+        assertTrue("第一条在下一轮也送到了新网关", first in serverB.stored)
+    }
+
+    @Test
+    fun `问结果的途中改配了另一个网关：旧网关说已入库不能确认，任务回到排队、对新网关重新问`() = runRig { rig ->
+        val key = rig.publish()
+        rig.jobs.update(rig.job(key).copy(uncertain = true))
+        rig.server.stored[key] = rig.submissions.getValue(key).textSha256
+        val serverB = rig.hostGatewayB()
+        val gate = CompletableDeferred<Fault?>()
+        rig.server.holdNext = gate
+        val pass = rig.scope.launch { rig.engine.runOnce() }
+        rig.scope.runCurrent()
+        assertEquals("卡在向旧网关问结果这一步", listOf("GET status ${key.recordId}"), rig.server.calls.toList())
+
+        rig.pairing.save(pairedToB())
+        gate.complete(null) // 旧网关回答：已入库，哈希相同
+        pass.join()
+
+        assertNotEquals("旧网关的回答对新配对没有意义", SyncState.STORED, rig.job(key).state)
+        rig.engine.runOnce()
+        assertEquals(SyncState.STORED, rig.job(key).state)
+        assertTrue("新网关上有这一版", key in serverB.stored)
+    }
+
+    @Test
+    fun `找网关的途中用户重新配对了，旧公钥的探测这时才报公钥不符：旧配对的结论，不能停下任务也不能打上新配对`() = runRig { rig ->
+        val key = rig.publish()
+        val fresh = SyncSamples.pairedGateway(pairedAt = rePaired, lastGoodAddress = SyncSamples.NAS_ADDRESS)
+        val inProbe = CompletableDeferred<Unit>()
+        rig.lan.hosts.getValue(SyncSamples.LAN_ADDRESS).handler = { request ->
+            if (request.path == "/health") {
+                inProbe.await()
+                throw TransportFailure.KeyMismatch() // 旧指纹在这个地址上这时才对不上
+            }
+            rig.server.handle(request)
+        }
+        val sending = rig.scope.launch { rig.engine.send(key) }
+        rig.scope.runCurrent()
+
+        rig.pairing.save(fresh)
+        inProbe.complete(Unit)
+        sending.join()
+
+        assertEquals("新记录原样保留，没有被打上“要用户处理”", fresh, rig.pairing.gateway)
+        assertNotEquals("旧配对的公钥不符不能把任务停在“需要用户处理”", SyncState.BLOCKED, rig.job(key).state)
     }
 
     // ---- 进程、取消、故障 ----
