@@ -20,6 +20,7 @@ class StorageLocationGuardTest {
         Triple("app/src/main/kotlin/app/auri/android/AuriRuntime.kt", "modelsDir: File = File(application.filesDir", "Ticket 14 的调试布局默认值，产品转录不读它（模型权重不敏感）"),
         Triple("app/src/main/kotlin/app/auri/android/AuriRuntime.kt", "modelStoreRoot: File = application.filesDir", "模型管理器的根目录：下载的模型权重（公开文件，不敏感）"),
         Triple("platform/src/main/kotlin/app/auri/platform/system/AndroidResourceMonitor.kt", "context.applicationContext.filesDir", "只量剩余空间，不存任何东西"),
+        Triple("app/src/main/kotlin/app/auri/android/AuriRuntime.kt", "DurationLimitSetting(File(application.filesDir", "录音时长上限（Ticket 18）：只有一个分钟数，没有音频、文字、设备标识或凭证"),
     )
 
     private fun productionSources(): List<File> = listOf("capture", "asr", "platform", "app", "sync", "syncplatform", "modelmgmt").flatMap { module ->
