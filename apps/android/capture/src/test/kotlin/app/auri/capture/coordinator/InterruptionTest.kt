@@ -88,6 +88,26 @@ class InterruptionTest {
     }
 
     @Test
+    fun `路由其实已经变了、路由事件还没到：epoch 对不上的帧一个采样都不写，事件到了之后照常按路由丢失收场`() = runTest {
+        val rig = recording(samples = 1600)
+        val droppedBefore = rig.coordinator.snapshot.value.counters.droppedGate
+
+        rig.capture.frames(samples = 1600, epoch = 2) // 适配器已经给新路由的帧盖了新 epoch，但路由观测事件还在路上
+        rig.settle()
+        assertEquals("这些帧自己不会让会话收场", CaptureState.RECORDING, rig.state)
+        assertEquals("一个采样都不能写：不知道它们属于哪条路由", 1600, rig.store.writtenSamples)
+        assertEquals("记成闸门丢弃", droppedBefore + 1, rig.coordinator.snapshot.value.counters.droppedGate)
+
+        rig.capture.mismatchRoute(epoch = 2)
+        rig.settle()
+
+        val sealed = rig.output.recordings.single()
+        assertEquals(EndReason.ROUTE_LOST, sealed.result.endReason)
+        assertEquals("封存的只有变化之前已确认的那部分", 1600L, sealed.audio?.sampleCount)
+        assertEquals(1600, rig.store.writtenSamples)
+    }
+
+    @Test
     fun `正常停止时分析窗里那点尾巴照常保留：只有路由丢失才丢，别的原因没有被动`() = runTest {
         val rig = recording(samples = 1605)
 
