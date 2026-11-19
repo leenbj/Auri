@@ -157,6 +157,15 @@ AURI_ALSO_ASR_ACCEPTANCE=1 execution/acceptance/android-sync/run_emulator_accept
 adb logcat -d -s AuriSync:I                                                              # 真机：同步层日志（只有状态与原因，没有令牌、配对码、网关地址、文字）
 ```
 
+Android 中断、断连与崩溃恢复（Ticket 19，同在 `apps/android/`：`:capture` 里是中断收场（关闸、封存已确认的部分、`PARTIAL` 加合同结束原因；路由变化时丢掉变化前后含糊的帧）与孤儿录音恢复（`OrphanRecovery`、`StartupRecovery`），`:platform` 是分段落盘的 `WavRecordingStore`（`.wav.part` + `.journal`，每段先 fsync 数据再写日志行；下次启动逐段校验 SHA-256、截掉写了一半的尾巴）与权限撤销检测（轮询，系统没有回调），`:app` 首页会说明被什么打断；恢复只登记 Record，不开麦、不起前台服务、不待命，进程重启一律回到 `DISARMED`；步骤、真机流程（`NOT_RUN`）、变异表、合同缺口（缺蓝牙权限错误码、存储写满的结束原因、Record 时长下限标记）与结果见 `execution/acceptance/android-interruptions/README.md`）：
+
+```bash
+cd apps/android
+./gradlew :capture:test :platform:testDebugUnitTest :app:testDebugUnitTest                         # JVM 单测（368 + 226 + 188），不需要设备；要新鲜结果每个任务后加 --rerun，内存紧张时加 --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2
+./gradlew :platform:testDebugUnitTest --tests app.auri.platform.storage.InterruptionEndToEndTest   # 写满扫描（106 个位置 × 2）与被杀扫描（45 个点）：真实协调器 + 真实存储 + 故障磁盘；报告 XML 的 system-out 里有 MEASURED 行
+adb logcat -d -s AuriCapture:I                                                                     # 真机：采集状态、最近一次打断的原因（interrupted=… code=…）与启动恢复计数（orphan recovery: recovered=…），没有文字、路径、标识
+```
+
 鸿蒙探针（DEV-003，工程位于 `execution/p0-spikes/harmonyos-probe/`）：
 
 ```bash
