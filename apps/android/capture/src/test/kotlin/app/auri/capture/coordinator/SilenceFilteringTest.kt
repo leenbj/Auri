@@ -11,6 +11,9 @@ import app.auri.capture.pipeline.RecordPipeline
 import app.auri.capture.testing.CaptureRig
 import app.auri.capture.testing.FakeTranscriptionAdapter
 import app.auri.capture.testing.InMemoryRecordLibrary
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.security.MessageDigest
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -187,9 +190,16 @@ class SilenceFilteringTest {
         assertEquals(6_000L, result.captureDurationMs)
         assertEquals(3_000L, result.speechDurationMs)
         assertEquals(listOf(TimeRange(800, 2_300), TimeRange(3_800, 5_300)), result.verifiedRanges)
+        assertEquals(result.verifiedRanges, result.chunks.map { TimeRange(it.startMs, it.endMs) })
         assertEquals(48_000, rig.store.written.size)
         assertTrue(rig.store.written.take(3_200).all { it == 0.toShort() })
         assertTrue(rig.store.written.drop(3_200).take(16_000).all { it == 1_000.toShort() })
+        result.chunks.forEachIndexed { index, chunk ->
+            val bytes = ByteBuffer.allocate(24_000 * 2).order(ByteOrder.LITTLE_ENDIAN)
+            rig.store.written.subList(index * 24_000, (index + 1) * 24_000).forEach { bytes.putShort(it) }
+            val digest = MessageDigest.getInstance("SHA-256").digest(bytes.array()).joinToString("") { "%02x".format(it) }
+            assertEquals(digest, chunk.sha256)
+        }
     }
 
     @Test
