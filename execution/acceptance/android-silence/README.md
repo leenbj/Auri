@@ -36,9 +36,10 @@ cd ../..
    microphone as a substitute for the selected headset input.
 2. Start from the screen and confirm the displayed actual input is Bluetooth.
    Speak a sentence, pause for several minutes, then speak another and stop.
-   Confirm that the pause never stops the session, both sentences transcribe,
-   and the Record reports the elapsed duration and the original gap. Repeat
-   with soft speech, distant speech, background noise and digital silence.
+   Confirm that the pause never stops the session and both sentences transcribe.
+   Inspect the stored duration and original gap using the metadata-only query
+   below; the current home screen does not display individual segment offsets.
+   Repeat with soft speech, distant speech, background noise and digital silence.
 3. Start again, stay silent, then stop. Confirm one Record labelled `无语音`, no
    Revision, no transcription job, and no retained audio. Try starting and
    stopping with the calibrated headset gesture as well as the screen control.
@@ -53,6 +54,16 @@ cd ../..
    corresponding reason and there is no automatic restart or phone-mic audio.
 6. Record observations and failures without copying personal audio, transcript
    text, device identifiers or credentials into the repository.
+
+When the device provides `sqlite3`, inspect only the newest Record's timing and
+state fields (no transcript text or identifiers):
+
+```bash
+adb shell run-as app.auri.android sqlite3 databases/auri.db 'SELECT status,end_reason,capture_duration_ms,speech_duration_ms,speech_segments,transcription,(SELECT COUNT(*) FROM revisions WHERE revisions.record_id=records.record_id) FROM records ORDER BY started_at_s DESC,started_at_nano DESC,rowid DESC LIMIT 1;'
+```
+
+If the phone does not provide `sqlite3`, leave that metadata inspection
+`NOT_RUN` until an approved on-device inspector is available.
 
 The device-only instrumented suites are also **NOT_RUN** (deferred, emulator
 disabled to save memory). With a suitable device attached, take the shared Gradle

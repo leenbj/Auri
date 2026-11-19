@@ -114,6 +114,7 @@ adb logcat -d -s AuriCapture:I                                       # 真机：
 Android 静音过滤与时长上限（先取共享 Gradle 锁；真机验收步骤及未运行项见 `execution/acceptance/android-silence/README.md`）：
 
 ```bash
+source ~/.config/auri/android-env.sh
 cd apps/android && ./gradlew :capture:test --tests app.auri.capture.contract.ContractOutputTest --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2
 cd ../.. && .venv/bin/pytest execution/acceptance/android-silence/test_contract_output.py
 ```
