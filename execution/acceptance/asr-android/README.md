@@ -38,7 +38,7 @@
 
 另：`README`（本文件）、`CLAUDE.md` “命令”一节、`.gitignore` 都已更新。
 
-> **Ticket 20 与 Ticket 21 的更新（改了第 4 项的证据口径）**：Ticket 20（下载模型）与 Ticket 21（把文字发到局域网网关）都必须声明 `INTERNET`，所以上表第 4 项里的 ① 与 ② 不再成立：`theInstalledPackageRequestsNoInternetPermission` 与 `theKernelRefusesEveryNetworkSocketButStillAllowsLocalOnes` 已被换掉，换成“已安装的包申请的网络类权限恰好是 `INTERNET` 与 `ACCESS_NETWORK_STATE`”“飞行模式下 socket 建得出来但连不出去”“网络可用时转录全程零字节”“飞行模式下转录零字节（不变）”，以及代码层的 `NoNetworkCodeGuardTest` 与 `NetworkIsolationTest`。保证比原来弱（原来是内核层面禁止联网，现在是代码里没有网络类加实测零字节），是否要出不带 `INTERNET` 的构建变体由产品负责人定（留给 Ticket 30）。细节、理由与设备上的复测结果见 `execution/acceptance/android-sync/README.md` 第 8、12 节与 `execution/acceptance/android-models/README.md`。下面第 5 节起的实测数字是 Ticket 14 当时的历史记录，没有改动。
+> **Ticket 20 与 Ticket 21 的更新（改了第 4 项的证据口径）**：Ticket 20（下载模型）与 Ticket 21（把文字发到局域网网关）都必须声明 `INTERNET`，所以上表第 4 项里的 ① 与 ② 不再成立：`theInstalledPackageRequestsNoInternetPermission` 与 `theKernelRefusesEveryNetworkSocketButStillAllowsLocalOnes` 已被换掉，换成“已安装的包申请的网络类权限恰好是 `INTERNET` 与 `ACCESS_NETWORK_STATE`”“飞行模式下 socket 建得出来但连不出去”“网络可用时转录全程零字节”“飞行模式下转录零字节（不变）”，以及代码层的 `NoNetworkCodeGuardTest` 与 `NetworkIsolationTest`。保证比原来弱（原来是内核层面禁止联网，现在是代码里没有网络类加实测零字节），是否要出不带 `INTERNET` 的构建变体由产品负责人定（留给 Ticket 30）。细节、理由与设备上的复测结果见 `execution/acceptance/android-sync/README.md` 第 8、12 节与 `execution/acceptance/android-models/README.md`。**Ticket 21 评审（F1）之后**：内核层面的保证已确认无法恢复（`INTERNET` 是按 UID 授予的）；代码守卫改成显式白名单（七个生产模块、类文件与源码两层、逐类登记），应用清单明确写 `usesCleartextTraffic="false"`；`OfflineProofTest` 在原有的四个测试之外多了两个，用真实的 `AuriRuntime` 把产品的四个转录入口（封存后的管线、调度器提交、重新转录、重启恢复）各量一次零字节——它们只编译过，设备上 `NOT_RUN`。下面第 5 节起的实测数字是 Ticket 14 当时的历史记录，没有改动。
 
 ## 3. 在本机怎么跑
 

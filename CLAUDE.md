@@ -135,17 +135,17 @@ cd apps/android
 execution/acceptance/android-capture/run_emulator_acceptance.sh      # 模拟器验收（同上）：:platform 的仪器测试现在还包含任务库与资源监视器的设备端测试
 ```
 
-Android 配对网关并把文字送过去（Ticket 21，同在 `apps/android/`：`:sync` 是纯 Kotlin/JVM 模块（配对载荷与二维码解码、固定公钥的 HTTPS 客户端、同步状态机与引擎），`:syncplatform` 是 Android 实现（Keystore 加密、CameraX 取景、NsdManager 发现、系统网络回调；INTERNET 与 `:modelmgmt` 并列，只有这两个模块的清单声明它，网络类也只许出现在登记过的传输类里（`NoNetworkCodeGuardTest`）），`:app` 里是配对与同步状态界面；步骤、真机流程（`NOT_RUN`）、合同缺口与结果见 `execution/acceptance/android-sync/README.md`）：
+Android 配对网关并把文字送过去（Ticket 21，同在 `apps/android/`：`:sync` 是纯 Kotlin/JVM 模块（配对载荷与二维码解码、固定公钥的 HTTPS 客户端、同步状态机与引擎），`:syncplatform` 是 Android 实现（Keystore 加密、CameraX 取景、NsdManager 发现、系统网络回调；INTERNET 与 `:modelmgmt` 并列，只有这两个模块的清单声明它，网络类也只许出现在登记过的传输类里（`NoNetworkCodeGuardTest`）），`:app` 里是配对与同步状态界面；敏感文件放 `noBackupFilesDir` 且备份与换机迁移被规则整个关掉（`:platform` 的 `NoBackupStorage`）、进程被杀后靠 JobScheduler 叫醒同步（`:sync` 的 `resume` 包，真机 `NOT_RUN`）、手动输入配对载荷只在 debug 变体；步骤、真机流程（`NOT_RUN`）、合同缺口与结果见 `execution/acceptance/android-sync/README.md`）：
 
 ```bash
 cd apps/android
-./gradlew :sync:test :syncplatform:testDebugUnitTest :app:testDebugUnitTest              # JVM 单测（221 + 10 + 89；:app 现为 89，其中 Ticket 21 加了 37 个），不需要设备
+./gradlew :sync:test :syncplatform:testDebugUnitTest :app:testDebugUnitTest              # JVM 单测（267 + 19 + 177），不需要设备；:app:testDebugUnitTest 会先编译 release 变体（ReleaseVariantTest 读它的类）；内存紧张时加 --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2，要新鲜结果每个任务后加 --rerun；不要用 ./gradlew --stop（会停掉别的工作树正在跑的构建）
 ./gradlew :sync:realGatewayTest                                                          # 对着真实的 Python 网关进程（仓库 .venv、自签 TLS、临时数据目录、随机端口）跑配对、入库、幂等、结果不确定、换网关、吊销（12 个，E2）；不进 :sync:test，找不到解释器就失败
-./gradlew :app:assembleDebug :syncplatform:assembleDebugAndroidTest                      # 构建 APK 与同步层的仪器测试 APK
+./gradlew :app:assembleDebug :app:assembleDebugAndroidTest :syncplatform:assembleDebugAndroidTest :platform:assembleDebugAndroidTest  # 构建 APK 与三个模块的仪器测试 APK（只编译，不运行：运行要设备或模拟器）
 cd ../..
-.venv/bin/pytest execution/acceptance/android-sync                                       # Python 验收工具（539 个，其中 494 个是变异表自检；含真实调用 Gradle 的 :sync:realGatewayTest 逐个核对，需要 JAVA_HOME）
-.venv/bin/python execution/acceptance/android-sync/mutation_check.py --list              # 变异检查（162 条）：只在仓库外的快照里改源码，绝不改工作树；--only <id…> / --match <子串> 选条目
-AURI_ALSO_ASR_ACCEPTANCE=1 execution/acceptance/android-sync/run_emulator_acceptance.sh  # 一次性无头模拟器验收（E2）：先取共享锁，宿主机起真网关（模拟器经 10.0.2.2 访问），无论成败都停网关、杀模拟器、删 AVD、放锁；AURI_ALSO_ASR_ACCEPTANCE=1 在同一台模拟器上再跑 Ticket 14 的验收（离线证明已被 Ticket 21 改写）
+.venv/bin/pytest execution/acceptance/android-sync                                       # Python 验收工具（812 个，其中 767 个是变异表自检；含真实调用 Gradle 的 :sync:realGatewayTest 逐个核对，需要 JAVA_HOME；Gradle 子进程可经环境变量 AURI_GRADLE_ARGS 带参数）
+.venv/bin/python execution/acceptance/android-sync/mutation_check.py --list              # 变异检查（253 条，整表真跑约 2 小时）：只在仓库外的快照里改源码，绝不改工作树；--only <id…> / --match <子串> 选条目；同样读 AURI_GRADLE_ARGS；表自检只能证明原文可替换，变异能否编译、预期红的测试名对不对要真跑才知道
+AURI_ALSO_ASR_ACCEPTANCE=1 execution/acceptance/android-sync/run_emulator_acceptance.sh  # 一次性无头模拟器验收（E2）：先取共享锁，宿主机起真网关（模拟器经 10.0.2.2 访问），无论成败都停网关、杀模拟器、删 AVD、放锁；AURI_ALSO_ASR_ACCEPTANCE=1 在同一台模拟器上再跑 Ticket 14 的验收（离线证明已被 Ticket 21 改写；评审 F1/F5/F7 的设备端检查要靠它跑，目前 NOT_RUN）
 adb logcat -d -s AuriSync:I                                                              # 真机：同步层日志（只有状态与原因，没有令牌、配对码、网关地址、文字）
 ```
 
