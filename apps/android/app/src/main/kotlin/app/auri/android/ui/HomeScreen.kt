@@ -119,7 +119,7 @@ internal fun describeInterruption(fact: InterruptionFact): String {
         else -> "被系统中断"
     }
     val saved = when (fact.code) {
-        ErrorCode.STORAGE_EXHAUSTED -> "已写入的部分已保存（若列表里没有，下次启动应用时会找回），腾出空间后请重新开始"
+        ErrorCode.STORAGE_EXHAUSTED -> "已写入的部分（如果有）已保存，列表里没有的话下次启动应用时会找回，腾出空间后请重新开始"
         else -> "已录下并确认来自耳机的部分已保存，需要时请重新开始"
     }
     return "录音已停止：$cause。$saved；不会自动继续。"
@@ -135,6 +135,6 @@ internal fun describeTruncation(reason: EndReason): String = when (reason) {
 }
 
 internal fun describeNotice(notice: Notice): String = when (notice) {
-    is Notice.RecordingLost -> "这次录音没能完整保存（${notice.reason}）；已写下的部分还留在手机上，下次启动应用时会尝试找回"
+    is Notice.RecordingLost -> "这次录音没能完整保存（${notice.reason}）；如果手机上已经写下了一部分，下次启动应用时会尝试找回"
     Notice.RecordNotSaved -> "录音已保存，但没能记入列表"
 }

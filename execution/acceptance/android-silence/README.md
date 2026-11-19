@@ -25,7 +25,7 @@ source ~/.config/auri/android-env.sh
 cd apps/android
 ./gradlew :capture:test --tests app.auri.capture.contract.ContractOutputTest --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2
 cd ../..
-.venv/bin/pytest execution/acceptance/android-silence/test_contract_output.py
+.venv/bin/pytest execution/acceptance/android-silence/test_silence_contract_output.py
 ```
 
 ## Product-owner procedure (real Android phone and headset, E3)

@@ -146,17 +146,23 @@ class InterruptionEndToEndTest {
                     }
 
                     lost.size == 1 -> {
-                        outcomes += "封存没完成但分段留在磁盘上，下次启动找回"
-                        assertTrue("$context：磁盘写满时封存不需要新空间，只有注入的封存失败才会走到这里", sealFails)
                         assertEquals(context, ErrorCode.STORAGE_EXHAUSTED, lost.single().second)
                         assertTrue("$context：没有交出任何录音结果", sealed.isEmpty())
-                        val recovered = scan.recovered.single()
-                        assertEquals(context, lost.single().first, recovered.recordId)
-                        val kept = recovered.checkedPcm(context).size.toLong()
                         val written = rig.snapshot.counters.writtenSamples
-                        assertTrue("$context：找回的不超过写下的（$kept > $written）", kept <= written)
-                        assertTrue("$context：丢的不超过一个提交间隔（$written 写下，$kept 找回）", written - kept <= COMMIT_SAMPLES)
-                        assertTrue("$context：找回的是真的有内容的分段", kept > 0 || written <= COMMIT_SAMPLES)
+                        if (written == 0L) {
+                            // 第一批都没写下就写满了：没有音频可留，通知“录音丢失（存储）”，而不是留一个没有音频的 Record 冒充“无语音”；磁盘上不留残渣
+                            outcomes += "第一批都没写下就写满：通知丢失，不留 Record 也不留残渣"
+                            assertTrue("$context：一个采样都没写下，磁盘上什么都不剩：${scan.recovered}", scan.recovered.isEmpty() && directory.list().orEmpty().isEmpty())
+                        } else {
+                            outcomes += "封存没完成但分段留在磁盘上，下次启动找回"
+                            assertTrue("$context：磁盘写满时封存不需要新空间，只有注入的封存失败才会走到这里", sealFails)
+                            val recovered = scan.recovered.single()
+                            assertEquals(context, lost.single().first, recovered.recordId)
+                            val kept = recovered.checkedPcm(context).size.toLong()
+                            assertTrue("$context：找回的不超过写下的（$kept > $written）", kept <= written)
+                            assertTrue("$context：丢的不超过一个提交间隔（$written 写下，$kept 找回）", written - kept <= COMMIT_SAMPLES)
+                            assertTrue("$context：找回的是真的有内容的分段", kept > 0 || written <= COMMIT_SAMPLES)
+                        }
                     }
 
                     else -> throw AssertionError("$context：既没有封存也没有通知丢失：sealed=$sealed lost=$lost")
@@ -168,7 +174,7 @@ class InterruptionEndToEndTest {
 
         assertEquals(
             "扫描必须真的走到过每一种收场方式，否则这个测试什么也没证明：$outcomes",
-            setOf("开始就写不下", "写满后封存了已写下的部分", "完整结束", "封存没完成但分段留在磁盘上，下次启动找回"),
+            setOf("开始就写不下", "第一批都没写下就写满：通知丢失，不留 Record 也不留残渣", "写满后封存了已写下的部分", "完整结束", "封存没完成但分段留在磁盘上，下次启动找回"),
             outcomes,
         )
     }
