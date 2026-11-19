@@ -58,7 +58,18 @@ class SqliteSyncJobStore(private val library: SqliteRecordLibrary) : SyncJobStor
     override fun observe(): Flow<List<SyncJob>> = combine(ownChanges, library.changeSignal) { _, _ -> }.map { all() }
 
     companion object {
-        /** 交给 [SqliteRecordLibrary] 的 extraSchema：每次打开数据库时幂等执行。 */
+        /**
+         * 交给 [SqliteRecordLibrary] 的 extraSchema：每次打开数据库时在**一个事务里**按顺序幂等执行——先建表，再回填。
+         *
+         * 回填（评审 F5）：升级一台装过 Ticket 16 的手机时，库里已经有“已发布”的 Revision，却没有任务；只建空表的话这些文字永远不会同步。
+         * 所以凡是库里有 Revision 而任务表里还没有它的，补一条等待发送的任务——与发布事务里入队的那条（[enqueueIn]）一个样子，
+         * 时间取 Revision 自己的发布时间（所以先发布的先同步，并且和“当时就入了队”没有区别）。
+         * 幂等：已有任务（不论进展到哪）一条都不动，重复打开不会重复；进程死在建表与回填之间，下一次打开补齐。
+         *
+         * 条件：本库没有墓碑（删除是后续 Ticket 的事）、也没有来源设备列——库里的 Record 全部由本机采集（ADR-0020，V1 没有导入路径，
+         * 换机迁移与备份已被关掉），所以评审说的“未删除、来源是本机”现在恒成立。**加墓碑的那个 Ticket 必须在这条回填里排除已删除的 Record**，
+         * 否则每次打开都会把它们的任务复活；SyncJobsBackfillTest 把两张表的列固定住了，改了结构那里会变红。
+         */
         val SCHEMA = listOf(
             """
             CREATE TABLE IF NOT EXISTS sync_jobs (
@@ -76,6 +87,17 @@ class SqliteSyncJobStore(private val library: SqliteRecordLibrary) : SyncJobStor
                 updated_at_nano INTEGER NOT NULL,
                 PRIMARY KEY (record_id, revision)
             )
+            """.trimIndent(),
+            """
+            INSERT INTO sync_jobs (
+                record_id, revision, state, attempts, uncertain, retry_at_s, retry_at_nano, blocked_reason,
+                created_at_s, created_at_nano, updated_at_s, updated_at_nano
+            )
+            SELECT r.record_id, r.number, '${SyncState.PENDING.name}', 0, 0, NULL, NULL, NULL,
+                   r.created_at_s, r.created_at_nano, r.created_at_s, r.created_at_nano
+            FROM revisions r
+            WHERE NOT EXISTS (SELECT 1 FROM sync_jobs j WHERE j.record_id = r.record_id AND j.revision = r.number)
+            ORDER BY r.created_at_s, r.created_at_nano, r.record_id, r.number
             """.trimIndent(),
         )
 

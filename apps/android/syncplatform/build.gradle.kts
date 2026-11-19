@@ -42,6 +42,7 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(testFixtures(project(":sync")))
+    testImplementation(libs.sqlite.jdbc) // 只给 JVM 测试：真 SQLite 引擎验证迁移 SQL（F5）；不进 APK
 
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.test.runner)

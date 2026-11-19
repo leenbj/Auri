@@ -37,8 +37,9 @@ import kotlinx.serialization.serializer
  * - 枚举存合同里的取值（wire value），不存 Kotlin 常量名，改常量名不会让已有数据读不出来。
  * - 时间存为“秒 + 纳秒”两列，原样取回；排序用它们。
  * - 所有数据库操作在 [io] 上执行，不在调用方线程。
- * - 同一个数据库文件里可以带别的表（Ticket 21 的 sync_jobs）：[extraSchema] 在每次打开数据库时幂等地执行（CREATE TABLE IF NOT EXISTS），
- *   不改 [SCHEMA_VERSION]，所以不会和这里的迁移抢版本号；它们用 [withDatabase] 拿同一条连接，[changeSignal] 知道什么时候该重读。
+ * - 同一个数据库文件里可以带别的表（Ticket 21 的 sync_jobs）：[extraSchema] 在每次打开数据库时、在一个事务里按顺序幂等地执行
+ *   （CREATE TABLE IF NOT EXISTS，以及给旧数据补行的回填），不改 [SCHEMA_VERSION]，所以不会和这里的迁移抢版本号；
+ *   它们用 [withDatabase] 拿同一条连接，[changeSignal] 知道什么时候该重读。
  *
  * 文字（转录正文）在数据库里是数据，这里不记日志、不解释。
  */
@@ -69,7 +70,15 @@ class SqliteRecordLibrary(
         }
 
         override fun onOpen(db: SQLiteDatabase) {
-            if (!db.isReadOnly) extraSchema.forEach(db::execSQL)
+            if (db.isReadOnly || extraSchema.isEmpty()) return
+            // 一个事务：别的表的建表与回填（评审 F5）要么一起生效、要么都不留；进程死在中间，下次打开从头再来
+            db.beginTransaction()
+            try {
+                extraSchema.forEach(db::execSQL)
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
+            }
         }
     }
 
@@ -193,9 +202,10 @@ class SqliteRecordLibrary(
     private fun SQLiteDatabase.exists(recordId: String) =
         rawQuery("SELECT 1 FROM records WHERE record_id = ?", arrayOf(recordId)).use { it.moveToFirst() }
 
-    private companion object {
-        const val SCHEMA_VERSION = 2
+    companion object {
+        private const val SCHEMA_VERSION = 2
 
+        /** 建库语句（当前结构）。公开只为让别的模块的迁移测试在 JVM 上用真实结构造出一个库；运行时只有 [onCreate] 用它。 */
         val SCHEMA = listOf(
             """
             CREATE TABLE records (

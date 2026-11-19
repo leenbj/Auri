@@ -1662,6 +1662,85 @@ MUTATIONS += (
     ),
 )
 
+# 评审 F5：升级后的回填。任务表建好之后，把升级前已经发布的 Revision 补成等待发送的任务（JVM 上用真的 SQLite 引擎验证）。
+SQLITE_JOB_STORE = "apps/android/syncplatform/src/main/kotlin/app/auri/syncplatform/jobs/SqliteSyncJobStore.kt"
+RECORD_LIBRARY = "apps/android/platform/src/main/kotlin/app/auri/platform/library/SqliteRecordLibrary.kt"
+BACKFILL_TESTS = (":syncplatform:testDebugUnitTest", "--tests", "*SyncJobsBackfillTest*")
+NOT_EXISTS = "WHERE NOT EXISTS (SELECT 1 FROM sync_jobs j WHERE j.record_id = r.record_id AND j.revision = r.number)"
+BACKFILL_COLUMNS = "'${SyncState.PENDING.name}', 0, 0, NULL, NULL, NULL,"
+
+MUTATIONS += (
+    Mutation(
+        "backfill-selects-nothing",
+        "升级前已经发布的 Revision 必须被回填成任务，否则它们永远不会同步（F5）",
+        (Edit(SQLITE_JOB_STORE, NOT_EXISTS, "WHERE 0"),),
+        BACKFILL_TESTS, SYNCPLATFORM_TEST,
+        ("升级时旧库里已经发布的每个 Revision", "进程死在建表之后、回填之前"),
+    ),
+    Mutation(
+        "backfill-without-exists-check",
+        "回填必须幂等：只补还没有任务的，重复打开不能撞主键或重复（F5）",
+        (Edit(SQLITE_JOB_STORE, NOT_EXISTS, "WHERE 1"),),
+        BACKFILL_TESTS, SYNCPLATFORM_TEST,
+        ("再打开一次不会重复，也不会把已有任务的进度重置",),
+    ),
+    Mutation(
+        "backfill-replaces-existing-jobs",
+        "回填不能把已有任务（已入库、被拒收……）的进度重置成等待发送（F5）",
+        (
+            Edit(SQLITE_JOB_STORE, "INSERT INTO sync_jobs (\n                record_id, revision, state", "INSERT OR REPLACE INTO sync_jobs (\n                record_id, revision, state"),
+            Edit(SQLITE_JOB_STORE, NOT_EXISTS, "WHERE 1"),
+        ),
+        BACKFILL_TESTS, SYNCPLATFORM_TEST,
+        ("再打开一次不会重复，也不会把已有任务的进度重置", "库里有 Revision 却没有任务时下一次打开补上"),
+    ),
+    Mutation(
+        "backfill-only-first-revisions",
+        "每一个 Revision 都要回填，不只是第一版（F5）",
+        (Edit(SQLITE_JOB_STORE, NOT_EXISTS, NOT_EXISTS + " AND r.number = 1"),),
+        BACKFILL_TESTS, SYNCPLATFORM_TEST,
+        ("升级时旧库里已经发布的每个 Revision",),
+    ),
+    Mutation(
+        "backfill-marks-jobs-stored",
+        "回填出来的任务是等待发送，不能直接标成已入库（那样文字根本不会发出去，界面还显示一切正常）（F5）",
+        (Edit(SQLITE_JOB_STORE, BACKFILL_COLUMNS, "'${SyncState.STORED.name}', 0, 0, NULL, NULL, NULL,"),),
+        BACKFILL_TESTS, SYNCPLATFORM_TEST,
+        ("升级时旧库里已经发布的每个 Revision",),
+    ),
+    Mutation(
+        "backfill-marks-jobs-uncertain",
+        "回填出来的任务与发布事务里入队的一个样子：没有“结果不确定”（F5）",
+        (Edit(SQLITE_JOB_STORE, BACKFILL_COLUMNS, "'${SyncState.PENDING.name}', 0, 1, NULL, NULL, NULL,"),),
+        BACKFILL_TESTS, SYNCPLATFORM_TEST,
+        ("升级时旧库里已经发布的每个 Revision",),
+    ),
+    Mutation(
+        "backfill-created-at-ignores-publication-time",
+        "回填任务的时间取 Revision 自己的发布时间，先发布的先同步（F5）",
+        (Edit(SQLITE_JOB_STORE, "r.created_at_s, r.created_at_nano, r.created_at_s, r.created_at_nano\n", "0, 0, 0, 0\n"),),
+        BACKFILL_TESTS, SYNCPLATFORM_TEST,
+        ("升级时旧库里已经发布的每个 Revision",),
+    ),
+    Mutation(
+        "backfill-order-left-to-scan-order",
+        "发布时间相同时的次序要由回填语句保证（先 Record 再版本号），不能靠碰巧的扫描次序（F5）",
+        (Edit(SQLITE_JOB_STORE, "ORDER BY r.created_at_s, r.created_at_nano, r.record_id, r.number", ""),),
+        BACKFILL_TESTS, SYNCPLATFORM_TEST,
+        ("发布时间完全一样时次序也是确定的",),
+    ),
+    Mutation(
+        "library-gains-deleted-column-backfill-unaware",
+        "库里一旦有了“已删除”这类列，回填就必须据此排除；列变了而回填没跟上，测试要变红（F5）",
+        (Edit(
+            RECORD_LIBRARY, "                transcription TEXT NOT NULL,\n                failure_code TEXT\n",
+            "                transcription TEXT NOT NULL,\n                failure_code TEXT,\n                deleted_at_s INTEGER\n",
+        ),),
+        BACKFILL_TESTS, SYNCPLATFORM_TEST,
+        ("本机的库里还没有“已删除”与“来源设备”这两个概念",),
+    ),
+)
+
 # 第 11 组：同样的破坏，换成对着真实的 Python 网关再跑一遍（:sync:realGatewayTest）。
 # 前面的变异都是被“假网关 / 假传输”的单测抓住的；这一组证明真实网关那一层也守得住同样的规矩（不是只在假的世界里成立）。
 REAL_GATEWAY_TEST = (":sync:realGatewayTest",)

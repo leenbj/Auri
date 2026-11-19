@@ -17,7 +17,6 @@ import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -150,24 +149,55 @@ class SyncPublicationTransactionTest {
     }
 
     @Test
-    fun 旧数据库没有任务表时打开即补建_版本号不变() = runBlocking {
-        // 没有 extraSchema 的旧版本先建库并写入数据
+    fun 旧数据库没有任务表时打开即补建_升级前已发布的每一版都回填成待发送任务_版本号不变() = runBlocking {
+        // 没有 extraSchema 的旧版本（Ticket 16–20）先建库并写入数据：两条 Record、三个 Revision，发布时间各不相同
         val plain = SqliteRecordLibrary(context, name).also { opened += it }
-        val entry = Samples.entry(6)
-        plain.addRecord(entry)
-        plain.publishRevision(Samples.draft(entry.recordId))
+        val first = Samples.entry(6)
+        val second = Samples.entry(7)
+        plain.addRecord(first)
+        plain.addRecord(second)
+        val firstOne = plain.publishRevision(Samples.draft(first.recordId, text = "升级前的第一条", at = Samples.start.plusSeconds(100)))
+        val secondOne = plain.publishRevision(Samples.draft(second.recordId, text = "升级前的第二条", at = Samples.start.plusSeconds(200)))
+        val firstTwo = plain.publishRevision(Samples.draft(first.recordId, text = "升级前的第一条（修订）", at = Samples.start.plusSeconds(300)))
+        val plainVersion = plain.withDatabase { db -> db.version }
         plain.close()
 
         val upgraded = open()
+        val jobs = SqliteSyncJobStore(upgraded)
 
-        assertNull("升级前发布的 Revision 没有任务（没有回填；之前的版本没有同步）", SqliteSyncJobStore(upgraded).get(JobKey(entry.recordId, 1)))
-        assertTrue(SqliteSyncJobStore(upgraded).all().isEmpty())
-        // 之后发布的有任务
-        val next = upgraded.publishRevision(Samples.draft(entry.recordId, text = "升级之后的"))
-        assertEquals(2, next.number)
-        assertEquals(listOf(JobKey(entry.recordId, 2)), SqliteSyncJobStore(upgraded).all().map { it.key })
+        // 评审 F5：升级前发布的文字一个都不能漏，否则它们永远不会同步
+        val backfilled = jobs.all()
+        assertEquals(
+            "先发布的先同步：次序就是各自的发布次序",
+            listOf(firstOne, secondOne, firstTwo).map { JobKey(it.recordId, it.number) },
+            backfilled.map { it.key },
+        )
+        assertEquals(listOf(firstOne, secondOne, firstTwo).map { it.createdAt }, backfilled.map { it.createdAt })
+        backfilled.forEach { assertEquals(SyncState.PENDING, it.state) }
+
+        // 之后发布的有任务，并且回填出来的任务与发布事务里入队的是同一个样子
+        val next = upgraded.publishRevision(Samples.draft(first.recordId, text = "升级之后的"))
+        assertEquals(3, next.number)
+        val live = checkNotNull(jobs.get(JobKey(first.recordId, 3)))
+        for (job in backfilled) {
+            assertEquals(live.state, job.state)
+            assertEquals(live.attempts, job.attempts)
+            assertEquals(live.uncertain, job.uncertain)
+            assertEquals(live.retryAt, job.retryAt)
+            assertEquals(live.blockedReason, job.blockedReason)
+        }
+        assertEquals(4, jobs.all().size)
+
+        // 再打开一次：不重复，已有任务的进度不被重置
+        val done = checkNotNull(jobs.get(JobKey(first.recordId, 1))).copy(state = SyncState.STORED, attempts = 1)
+        jobs.update(done)
+        upgraded.close()
+        val reopenedLibrary = open()
+        val reopened = SqliteSyncJobStore(reopenedLibrary)
+        assertEquals(4, reopened.all().size)
+        assertEquals(done, reopened.get(JobKey(first.recordId, 1)))
+
         // 没有为此抬高数据库版本号：不会和别的 Ticket 的迁移抢版本
-        val version = upgraded.withDatabase { db -> db.version }
-        assertEquals(1, version)
+        assertEquals(plainVersion, reopenedLibrary.withDatabase { db -> db.version })
     }
 }
