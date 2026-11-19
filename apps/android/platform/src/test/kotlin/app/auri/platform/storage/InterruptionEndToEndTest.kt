@@ -172,6 +172,7 @@ class InterruptionEndToEndTest {
             }
         }
 
+        println("MEASURED storage-sweep positions=${cases.size / 2} cases=${cases.size} recordingGrowthBytes=${totals.growth} outcomes=${outcomes.sorted()}")
         assertEquals(
             "扫描必须真的走到过每一种收场方式，否则这个测试什么也没证明：$outcomes",
             setOf("开始就写不下", "第一批都没写下就写满：通知丢失，不留 Record 也不留残渣", "写满后封存了已写下的部分", "完整结束", "封存没完成但分段留在磁盘上，下次启动找回"),
