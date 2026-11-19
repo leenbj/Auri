@@ -188,6 +188,18 @@ class LocalTranscriptionAdapterTest {
     }
 
     @Test
+    fun `三十一秒录音可由三十秒上限的引擎完整转录`() = runBlocking {
+        val engine = FakeEngine(maxMs = 30_000)
+        val samples = ShortArray(16_000 * 31) { (it % 1_000).toShort() }
+
+        val result = LocalTranscriptionAdapter(engine).transcribe(request(sealed(samples)))
+
+        assertTrue(result.outcome is TranscriptionOutcome.Text)
+        assertEquals(listOf(30_000L, 1_000L), engine.received.map { it.durationMs })
+        assertArrayEquals(samples, engine.received.flatMap { it.samples.toList() }.toShortArray())
+    }
+
+    @Test
     fun `后一个分段失败时不发布前面分段的部分文字`() = runBlocking {
         var part = 0
         val engine = FakeEngine(maxMs = 1_000, reply = {
