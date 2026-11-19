@@ -106,6 +106,7 @@ class CaptureCoordinator(
     private var lastFinalizedNs: Long? = null
     private var durationLimitMs: Long? = null
     private var interruption: ErrorCode? = null
+    private var interruptionReason: EndReason? = null
     private var durationWarning = false
     private var controlModeEnabled = false
     private var disableWhenIdle = false
@@ -602,6 +603,7 @@ class CaptureCoordinator(
     private fun beginSession(eligible: Boolean) {
         durationLimitMs = null
         interruption = null
+        interruptionReason = null
         durationWarning = false
         generation += 1
         val created = Session(
@@ -720,7 +722,9 @@ class CaptureCoordinator(
                 code = if (e is IOException) ErrorCode.STORAGE_EXHAUSTED else null
             }
         }
-        interruption = if (reason.truncated && reason != EndReason.PROCESS_TERMINATED) code else null
+        val interrupted = reason.truncated && reason != EndReason.PROCESS_TERMINATED
+        interruption = if (interrupted) code else null
+        interruptionReason = if (interrupted) reason else null
         durationLimitMs = if (reason == EndReason.DURATION_LIMIT) current.limitMs else null
         current.handle = handle.closed()
 
@@ -865,6 +869,7 @@ class CaptureCoordinator(
             controlModeEnabled = controlModeEnabled,
             durationWarning = durationWarning,
             interruption = interruption,
+            interruptionReason = interruptionReason,
         )
     }
 }

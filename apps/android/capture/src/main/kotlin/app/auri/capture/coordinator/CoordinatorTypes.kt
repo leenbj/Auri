@@ -3,6 +3,7 @@ package app.auri.capture.coordinator
 import app.auri.capture.adapter.PcmFormat
 import app.auri.capture.adapter.SealedAudio
 import app.auri.capture.contract.CaptureState
+import app.auri.capture.contract.EndReason
 import app.auri.capture.contract.ErrorCode
 import app.auri.capture.contract.GateState
 import app.auri.capture.contract.ObservedInput
@@ -157,4 +158,9 @@ data class CaptureSnapshot(
      * 采集从不会因为中断自己续录：只有用户再按开始才有新的录音。
      */
     val interruption: ErrorCode? = null,
+    /**
+     * 同一次打断的结束原因（合同的 end_reason：route_lost / system_interruption / permission_revoked），[interruption] 的错误码可能为 null
+     * 或在不同原因下相同（耳机断开与蓝牙权限被撤销都是 INPUT_DEVICE_MISSING），界面要分开说就看这一项。清除时机同 [interruption]。
+     */
+    val interruptionReason: EndReason? = null,
 )

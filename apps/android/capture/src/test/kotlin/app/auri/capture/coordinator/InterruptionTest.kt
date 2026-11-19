@@ -83,6 +83,7 @@ class InterruptionTest {
         assertEquals(1600L, sealed.audio?.sampleCount)
         assertEquals(DiscardReason.ROUTE_UNVERIFIED, sealed.result.discardedRanges.last().reason)
         assertEquals(ErrorCode.INPUT_DEVICE_MISSING, rig.coordinator.snapshot.value.interruption)
+        assertEquals(EndReason.ROUTE_LOST, rig.coordinator.snapshot.value.interruptionReason)
         assertEquals(CaptureState.ARMED, rig.state)
     }
 
@@ -98,6 +99,7 @@ class InterruptionTest {
         assertEquals("1605 个采样都在", 1605L, sealed.audio?.sampleCount)
         assertTrue(sealed.result.discardedRanges.none { it.reason == DiscardReason.ROUTE_UNVERIFIED })
         assertNull(rig.coordinator.snapshot.value.interruption)
+        assertNull("用户停的不是打断", rig.coordinator.snapshot.value.interruptionReason)
     }
 
     // ---- 第 2 项：任何中断之后都不会自己续录 ----
@@ -132,6 +134,7 @@ class InterruptionTest {
             assertEquals(case.name, CaptureStatus.PARTIAL, sealed.result.status)
             assertEquals("${case.name}：已确认的 100 ms 保留下来", 1600L, sealed.audio?.sampleCount)
             assertEquals("${case.name}：界面看得到原因", case.code, rig.coordinator.snapshot.value.interruption)
+            assertEquals("${case.name}：以及结束原因（同一个错误码可以对应不同的原因）", case.endReason, rig.coordinator.snapshot.value.interruptionReason)
             assertEquals("${case.name}：采集资源只释放一次", listOf(first.operationId), rig.capture.releases)
             assertEquals("${case.name}：写入只开过一次", 1, rig.store.events.count { it is StoreEvent.Begin })
 
@@ -154,6 +157,7 @@ class InterruptionTest {
             rig.settle()
             assertEquals(case.name, CaptureState.ROUTING, rig.state)
             assertNull("${case.name}：新一次开始时清除", rig.coordinator.snapshot.value.interruption)
+            assertNull("${case.name}：结束原因也清除", rig.coordinator.snapshot.value.interruptionReason)
             rig.capture.verifiedRoute(epoch = 1)
             rig.settle()
             rig.capture.frames(samples = 1600, epoch = 1)
@@ -240,5 +244,6 @@ class InterruptionTest {
         assertEquals(CaptureStatus.PARTIAL, sealed.result.status)
         assertEquals(1600L, sealed.audio?.sampleCount)
         assertEquals(ErrorCode.STORAGE_EXHAUSTED, rig.coordinator.snapshot.value.interruption)
+        assertEquals(EndReason.SYSTEM_INTERRUPTION, rig.coordinator.snapshot.value.interruptionReason)
     }
 }
