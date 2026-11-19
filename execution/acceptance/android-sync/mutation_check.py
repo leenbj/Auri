@@ -1159,10 +1159,14 @@ CAPTURE_TYPES = "apps/android/capture/src/main/kotlin/app/auri/capture/coordinat
 SYNC_LOG = "apps/android/sync/src/main/kotlin/app/auri/sync/SyncLog.kt"
 ANDROID_SYNC_LOG = "apps/android/syncplatform/src/main/kotlin/app/auri/syncplatform/AndroidSyncLog.kt"
 VIEWMODEL = "apps/android/app/src/main/kotlin/app/auri/android/sync/SyncViewModel.kt"
+ASR_AUDIO = "apps/android/asr/src/main/kotlin/app/auri/asr/audio/Audio.kt"
+PLATFORM_CLOCK = "apps/android/platform/src/main/kotlin/app/auri/platform/system/SystemClockAndIds.kt"
+MAIN_ACTIVITY = "apps/android/app/src/main/kotlin/app/auri/android/MainActivity.kt"
+MODEL_ERROR = "apps/android/modelmgmt/src/main/kotlin/app/auri/modelmgmt/ModelError.kt"
 SYNC_SCREEN = "apps/android/app/src/main/kotlin/app/auri/android/ui/SyncScreen.kt"
 RELEASE_ENTRY = "apps/android/app/src/release/kotlin/app/auri/android/ui/ManualPairingEntry.kt"
 RELEASE_TESTS = (":app:testDebugUnitTest", "--tests", "*ReleaseVariantTest*")
-GUARD_REAL_TREE = "六个生产模块编译出的类里没有任何违反网络规矩的引用"
+GUARD_REAL_TREE = "七个生产模块编译出的类里没有任何违反网络规矩的引用"
 TRUST_ALL_SNIPPET = (
     "        javax.net.ssl.SSLContext.getInstance(\"TLS\").init(\n"
     "            null,\n"
@@ -1218,8 +1222,14 @@ MUTATIONS += (
     ),
     Mutation(
         "guard-rule-trust-allowed-in-app",
-        "卫士自己被削弱（信任类放行到应用壳）：正对照“信任所有证书”必须因此变红",
-        (Edit(NETSURFACE, "allowedIn = listOf(syncTls),", 'allowedIn = listOf(syncTls, Where("app", "app/")),'),),
+        "卫士自己被削弱（信任类放行到应用壳里的两个类）：正对照“信任所有证书”与“另建 SSLContext”必须因此变红",
+        (Edit(
+            NETSURFACE, "allowedIn = listOf(pinnedTls, spkiTrustManager),\n        ),\n        Rule(\n            id = \"no-bypass\"",
+            "allowedIn = listOf(\n                pinnedTls, spkiTrustManager,\n"
+            "                Transport(\"app\", \"app/auri/android/netguard/TrustAllExample\", \"x.kt\"),\n"
+            "                Transport(\"app\", \"app/auri/android/netguard/SslContextExample\", \"x.kt\"),\n"
+            "            ),\n        ),\n        Rule(\n            id = \"no-bypass\"",
+        ),),
         GUARD_TESTS, APP_TEST,
         ("卫士认得出信任所有证书的实现", "卫士认得出另建 SSLContext 与信任管理器数组"),
     ),
@@ -1240,9 +1250,213 @@ MUTATIONS += (
     Mutation(
         "guard-rule-ignores-module",
         "卫士自己被削弱（只看类路径、不看模块）：同一个类放到别的模块的同名包里必须仍被认出",
-        (Edit(NETSURFACE, "it.module == module && classPath.startsWith(it.classPathPrefix)", "classPath.startsWith(it.classPathPrefix)"),),
+        (Edit(
+            NETSURFACE, 'this.module == module && (classFile == "$classPath.class" || classFile.startsWith("$classPath\\$"))',
+            'classFile == "$classPath.class" || classFile.startsWith("$classPath\\$")',
+        ),),
         GUARD_TESTS, APP_TEST,
-        ("同一个合规的类放到不该放的位置也被认出",),
+        ("同一个合规的类放到不该放的位置也被认出", "登记的是具体的类"),
+    ),
+    # 评审 F3：分块响应的长度算术。对端可能是写错或被攻破的网关，不能让它的一句“下一块有 7fffffff 字节”把手机撑爆。
+    Mutation(
+        "chunk-limit-sums-in-int",
+        "分块的上限检查在 Int 里把已读字节与块大小相加：溢出成负数就放行，然后去分配 2 GB 的数组（F3）",
+        (Edit(HTTPS, 'if (size > maxResponseBytes - out.size().toLong()) throw IOException("response too large")',
+              'if (out.size() + size.toInt() > maxResponseBytes) throw IOException("response too large")'),),
+        PIN_TESTS, SYNC_TEST[0],
+        ("一个字节的块之后声称下一块有 7fffffff 字节", "格式正确但超出上限的块大小"),
+    ),
+    Mutation(
+        "chunk-size-truncated-before-limit-check",
+        "分块的块大小在和上限比较之前被截成 Int：超出 Int 的块大小截断后看起来很小（F3）",
+        (Edit(HTTPS, 'if (size > maxResponseBytes - out.size().toLong()) throw IOException("response too large")',
+              'if (size.toInt() > maxResponseBytes - out.size()) throw IOException("response too large")'),),
+        PIN_TESTS, SYNC_TEST[0],
+        ("格式正确但超出上限的块大小",),
+    ),
+    Mutation(
+        "chunk-limit-ignores-earlier-chunks",
+        "分块的上限只比单个块、不算前面已经读到的：很多个不超限的小块可以加起来撑爆内存（F3）",
+        (Edit(HTTPS, 'if (size > maxResponseBytes - out.size().toLong()) throw IOException("response too large")',
+              'if (size > maxResponseBytes.toLong()) throw IOException("response too large")'),),
+        PIN_TESTS, SYNC_TEST[0],
+        ("一个块比上限大、或者前面的块用掉了一部分额度", "很多个很小的块"),
+    ),
+    Mutation(
+        "chunk-size-accepts-sign-and-prefix",
+        "分块的块大小不再核对“只能是十六进制数字”：+5、-1 这类写法被 toLong 悄悄接受（F3）",
+        (Edit(HTTPS, '            if (!CHUNK_SIZE.matches(digits)) throw IOException("bad chunk size")\n', ""),),
+        PIN_TESTS, SYNC_TEST[0],
+        ("写不成非负十六进制数的块大小",),
+    ),
+    # 评审 F8：一个总时限管住解析、连接、握手、写、读与取消（以前只有读响应受它约束）
+    Mutation(
+        "deadline-resolver-unbounded",
+        "主机名解析不受总时限约束：解析器卡住时调用方陪着卡（F8）",
+        (Edit(HTTPS, "lookup.get(((deadlineNs - System.nanoTime()) / 1_000_000).coerceAtLeast(1), TimeUnit.MILLISECONDS)", "lookup.get()"),),
+        PIN_TESTS, SYNC_TEST[0],
+        ("主机名解析卡住",),
+    ),
+    Mutation(
+        "deadline-watchdog-never-aborts",
+        "总时限的看门狗到点不关套接字：阻塞在握手或写里的调用没有别的办法停下来（F8）",
+        (Edit(HTTPS, "                    delay(timeouts.totalMs)\n                    connection.abort()\n", "                    delay(timeouts.totalMs)\n"),),
+        PIN_TESTS, SYNC_TEST[0],
+        ("握手卡住", "对端不收数据"),
+    ),
+    Mutation(
+        "deadline-watchdog-closes-tls-before-tcp",
+        "看门狗到点先关 TLS 层再关 TCP：TLS 层的关闭要抢被卡住的写占着的写锁，会陪着一起卡住（F8）",
+        (Edit(HTTPS, "                    delay(timeouts.totalMs)\n                    connection.abort()\n", "                    delay(timeouts.totalMs)\n                    connection.close()\n"),),
+        PIN_TESTS, SYNC_TEST[0],
+        ("对端不收数据",),
+    ),
+    Mutation(
+        "deadline-not-applied-to-reads",
+        "读响应时每一步的超时不看剩余总时间、看门狗也不工作：对端一点一点滴数据可以拖过总时限（F8）",
+        (Edit(HTTPS, "                    delay(timeouts.totalMs)\n                    connection.abort()\n", "                    delay(timeouts.totalMs)\n"),
+         Edit(HTTPS, '            if (remainingMs <= 0) throw SocketTimeoutException("total deadline exceeded")\n            socket.soTimeout = minOf(timeouts.ioMs.toLong(), remainingMs).toInt().coerceAtLeast(1)\n',
+              "            socket.soTimeout = timeouts.ioMs\n")),
+        PIN_TESTS, SYNC_TEST[0],
+        ("对端一点一点滴响应",),
+    ),
+    Mutation(
+        "deadline-cancel-does-not-abort",
+        "协程被取消时不关套接字：阻塞的读不会响应取消，调用要等读超时才返回（F8）",
+        (Edit(HTTPS, "                    connection.abort()\n                    throw cancelled\n", "                    throw cancelled\n"),),
+        PIN_TESTS, SYNC_TEST[0],
+        ("协程被取消时立刻返回",),
+    ),
+    # 评审 F13：登记的是具体的类，不是整个包。下面三条把它放回“同一个包里都算”，或在 :sync 的 http 包里放一个没登记的类。
+    Mutation(
+        "guard-allowlist-widened-to-package",
+        "卫士自己被削弱（登记从具体的类放宽成整个包）：放在 http 包里的未登记类、同包的兄弟类必须仍被认出（F13）",
+        (Edit(
+            NETSURFACE, 'this.module == module && (classFile == "$classPath.class" || classFile.startsWith("$classPath\\$"))',
+            'this.module == module && classFile.startsWith(classPath.substringBeforeLast(\'/\') + "/")',
+        ),),
+        GUARD_TESTS, APP_TEST,
+        ("卫士认得出未登记的类自己开套接字", "登记的是具体的类"),
+    ),
+    Mutation(
+        "guard-raw-socket-next-to-the-pinned-client",
+        "在 :sync 的 http 包里、PinnedHttpsClient 旁边写一个自己开套接字的类：以前整个包都放行，现在必须被抓到（F13）",
+        (Edit(HTTP, "class HttpReply(val status: Int, val headers: Map<String, String>, val body: ByteArray) {",
+              "private val sneakySocket: Any = java.net.Socket()\n\nclass HttpReply(val status: Int, val headers: Map<String, String>, val body: ByteArray) {"),),
+        GUARD_TESTS, APP_TEST,
+        (GUARD_REAL_TREE, "源码里同样没有", "引用了网络名字的生产类恰好都在登记的传输里"),
+    ),
+    Mutation(
+        "guard-second-http-stack-in-sync",
+        "在 :sync 里用 java.net.URL 另开一条 HTTP 路（只有 PinnedHttpsClient 与 :modelmgmt 的下载传输是登记的 HTTP 栈）（F1）",
+        (Edit(HTTP, "interface HttpExchange {", 'private val sneakyUrl: Any = java.net.URL("https://example.invalid/")\n\ninterface HttpExchange {'),),
+        GUARD_TESTS, APP_TEST,
+        (GUARD_REAL_TREE, "源码里同样没有"),
+    ),
+    # 评审 F1：每个生产模块都要受网络规矩约束（以前 :modelmgmt 根本没被扫描，也没有 WebView、DownloadManager、查看网址意图的规则）
+    Mutation(
+        "guard-webview-in-asr-module",
+        "转录模块里出现 WebView 必须被卫士抓到（F1）",
+        (Edit(ASR_AUDIO, "class PcmAudio(val samples: ShortArray, val sampleRateHz: Int, val channels: Int) {",
+              "private val sneakyWeb: Any = android.webkit.WebView::class.java\n\nclass PcmAudio(val samples: ShortArray, val sampleRateHz: Int, val channels: Int) {"),),
+        GUARD_TESTS, APP_TEST,
+        (GUARD_REAL_TREE, "源码里同样没有"),
+    ),
+    Mutation(
+        "guard-download-manager-in-platform",
+        "平台模块里出现系统下载管理器必须被卫士抓到（F1）",
+        (Edit(PLATFORM_CLOCK, "object SystemClock : Clock {",
+              "private val sneakyDownloads: Any = android.app.DownloadManager::class.java\n\nobject SystemClock : Clock {"),),
+        GUARD_TESTS, APP_TEST,
+        (GUARD_REAL_TREE, "源码里同样没有"),
+    ),
+    Mutation(
+        "guard-second-view-intent-in-main-activity",
+        "BrowserLink 之外又有一处发“查看网址”的意图必须被卫士抓到（F1）",
+        (Edit(MAIN_ACTIVITY, "    private fun openLicense(url: String) = BrowserLink(this).open(url)",
+              "    private fun sneakyView() = android.content.Intent(android.content.Intent.ACTION_VIEW)\n\n    private fun openLicense(url: String) = BrowserLink(this).open(url)"),),
+        GUARD_TESTS, APP_TEST,
+        (GUARD_REAL_TREE, "源码里同样没有"),
+    ),
+    Mutation(
+        "guard-raw-socket-in-modelmgmt-outside-the-transport",
+        "下载模块里、下载传输之外的类开套接字必须被卫士抓到（以前 :modelmgmt 整个模块不在扫描范围）（F1）",
+        (Edit(MODEL_ERROR, "enum class ModelErrorKind {", "private val sneakySocket: Any = java.net.Socket()\n\nenum class ModelErrorKind {"),),
+        GUARD_TESTS, APP_TEST,
+        (GUARD_REAL_TREE, "源码里同样没有"),
+    ),
+    Mutation(
+        "guard-modelmgmt-not-scanned",
+        "卫士自己被削弱（不再扫 :modelmgmt）：必须有测试证明下载模块在扫描范围里（F1）",
+        (Edit(NETSURFACE, 'listOf("capture", "asr", "platform", "app", "modelmgmt", "sync", "syncplatform")', 'listOf("capture", "asr", "platform", "app", "sync", "syncplatform")'),),
+        GUARD_TESTS, APP_TEST,
+        ("下载模型的传输也在扫描范围里",),
+    ),
+    Mutation(
+        "guard-rule-webview-dropped",
+        "卫士自己被削弱（不再查 WebView）：正对照必须因此变红（F1）",
+        (Edit(NETSURFACE, 'names = listOf("android/webkit/"),', 'names = listOf("android/webkit-never/"),'),),
+        GUARD_TESTS, APP_TEST,
+        ("卫士认得出 WebView",),
+    ),
+    Mutation(
+        "guard-rule-download-manager-dropped",
+        "卫士自己被削弱（不再查 DownloadManager）：正对照必须因此变红（F1）",
+        (Edit(NETSURFACE, 'names = listOf("android/app/DownloadManager"),', 'names = listOf("android/app/DownloadManager-never"),'),),
+        GUARD_TESTS, APP_TEST,
+        ("卫士认得出 DownloadManager",),
+    ),
+    Mutation(
+        "guard-rule-view-intent-dropped",
+        "卫士自己被削弱（不再查“查看网址”的意图）：正对照必须因此变红（F1）",
+        (Edit(NETSURFACE, 'names = listOf("android.intent.action.VIEW"),', 'names = listOf("android.intent.action.VIEW-never"),'),),
+        GUARD_TESTS, APP_TEST,
+        ("卫士认得出查看网址的意图",),
+    ),
+    Mutation(
+        "guard-rule-http-stack-allowed-everywhere",
+        "卫士自己被削弱（HTTP 栈对谁都放行）：别名后的 HttpURLConnection 正对照必须因此变红（F1）",
+        (Edit(NETSURFACE, "allowedIn = downloadHttp,", "allowedIn = downloadHttp + listOf(Transport(\"app\", \"app/auri/android/netguard/AliasedHttpUrlConnectionExample\", \"x.kt\")),"),),
+        GUARD_TESTS, APP_TEST,
+        ("卫士认得出起了别名的 HttpURLConnection", "登记表没有多余项"),
+    ),
+    Mutation(
+        "guard-source-layer-ignores-imports",
+        "卫士自己被削弱（源码层不看 import 行）：别名导入与通配导入必须仍被认出（F1）",
+        (Edit(NETSURFACE, "val code = SourceText.withoutCommentsAndStrings(text)\n",
+              "val code = SourceText.withoutCommentsAndStrings(text.lines().filterNot { it.trimStart().startsWith(\"import \") }.joinToString(\"\\n\"))\n"),),
+        GUARD_TESTS, APP_TEST,
+        ("源码层认得出别名导入",),
+    ),
+    Mutation(
+        "guard-source-layer-allows-the-whole-package",
+        "卫士自己被削弱（源码层按包而不是按文件放行）：同包的别的文件必须仍被认出（F13）",
+        (Edit(NETSURFACE, 'path.endsWith("/$module/src/main/kotlin/${it.source}")', 'path.contains("/$module/src/main/kotlin/${it.source.substringBeforeLast(\'/\')}/")'),),
+        GUARD_TESTS, APP_TEST,
+        ("源码层也按登记的文件放行",),
+    ),
+    Mutation(
+        "guard-source-layer-counts-comments",
+        "卫士自己被削弱（源码层把注释里的字也算数）：注释与字符串里的说明文字不能报错，否则文档里一提 Socket 就挂（F1）",
+        (Edit(NETSURFACE, "val code = SourceText.withoutCommentsAndStrings(text)\n", "val code = text\n"),),
+        GUARD_TESTS, APP_TEST,
+        ("源码层认得出别名导入",),
+    ),
+    Mutation(
+        "guard-allowlist-has-a-stale-entry",
+        "登记表里多一项没人用的登记（悄悄放宽范围）：自检必须发现它没有用到那条规则里的任何名字（F13）",
+        (Edit(NETSURFACE, "allowedIn = listOf(pinnedTls, spkiTrustManager),\n        ),\n        Rule(\n            id = \"no-bypass\"",
+              "allowedIn = listOf(pinnedTls, spkiTrustManager, nsdDiscovery),\n        ),\n        Rule(\n            id = \"no-bypass\""),),
+        GUARD_TESTS, APP_TEST,
+        ("登记表没有多余项",),
+    ),
+    Mutation(
+        "manifest-cleartext-not-explicit",
+        "应用清单不再明确写 usesCleartextTraffic=false（只靠默认值）：清单测试必须发现（F1）",
+        (Edit(APP_MANIFEST, '        android:theme="@android:style/Theme.Material.Light.NoActionBar"\n        android:usesCleartextTraffic="false">',
+              '        android:theme="@android:style/Theme.Material.Light.NoActionBar">'),),
+        MANIFEST_TESTS, APP_TEST,
+        ("合并后的应用清单没有放开明文流量",),
     ),
     Mutation(
         "resume-needs-counts-blocked-jobs",

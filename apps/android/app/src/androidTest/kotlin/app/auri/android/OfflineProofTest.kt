@@ -25,14 +25,20 @@ import org.junit.runner.RunWith
  * Ticket 21（把文字发到局域网网关）都要 INTERNET，Android 按应用（UID）而不是按模块授予它，不能限在某个模块或进程里
  * （产品负责人已决定：不做不带 INTERNET 的构建变体，那个问题留给 Ticket 30；见 execution/acceptance/android-sync/README.md 第 8 节）。
  * 剩下的保证是**代码守卫加实测零字节**，所以这里的测试要尽量强：
- *  1. 静态（JVM，不在这个文件里）：网络 API 只出现在登记过的模块里（`:platform` 的 NetworkIsolationTest、`:app` 的 NoNetworkCodeGuardTest），
- *     INTERNET 只来自登记过的模块清单（NoNetworkManifestTest）；
+ *  1. 静态（JVM，不在这个文件里）：只有登记过的**具体的类**可以碰网络（`:app` 的 NoNetworkCodeGuardTest，字节码与源码两层；`:platform` 的
+ *     NetworkIsolationTest 是按模块登记的更粗的一层），INTERNET 只来自登记过的模块清单、明文流量明确关闭（NoNetworkManifestTest）；
  *  2. 已安装的包申请的网络类权限恰好是 INTERNET 与 ACCESS_NETWORK_STATE（同步层监听网络恢复要用），没有别的网络/定位类权限（第一个测试）；
  *  3. 飞行模式下系统没有任何出路：有 INTERNET 的应用，socket 能建出来（对照：它不再被内核拒绝），但连出去的尝试在系统层失败（第二个测试）；
- *  4. 网络**可用**（有默认网络）时整条转录 SUCCEEDED，且该 UID 的收发字节数没有增加——零字节是**测出来**的，不是权限保证的（第三个测试）；
- *  5. 在系统飞行模式下整条转录照常 SUCCEEDED，且该 UID 的收发字节数没有变化（第四个测试）。
+ *  4. 网络**可用**（有默认网络）时整条转录 SUCCEEDED，且该 UID 的收发字节数没有增加——零字节是**测出来**的，不是权限保证的（第三个测试，
+ *     走的是验收用的 FileTranscription）；
+ *  5. 在系统飞行模式下整条转录照常 SUCCEEDED，且该 UID 的收发字节数没有变化（第四个测试，同样是 FileTranscription）；
+ *  6. **产品里真正走的转录入口**（评审 F1(c)）：封存的录音交给管线、调度器提交、重新转录、重启后的恢复，四个入口每个都真的转出 Revision，
+ *     全程网络可用时该 UID 的收发字节数为 0、模型下载传输一次都没被调用（第五个测试）；飞行模式下同样（第六个测试）。
+ *     FileTranscription 只是调试入口，只测它就没有测到产品的转录路径。
  *
  * 失去的是什么：Ticket 14 那种“系统层面证明这个进程根本不能联网”的证据没有了，剩下的是代码扫描加行为实测。这一点写进了验收文档，由产品负责人知情。
+ * 零字节实测也有它看不到的东西：它只覆盖这几个入口、这一台设备、这一次运行；固定版本的 sherpa-onnx 原生库自己开套接字，代码扫描看不到，
+ * 只能靠这里的实测和 AAR 的固定哈希。
  * 模拟器上的飞行模式只是“系统没有默认网络”的 E2 证据；真机飞行模式实测是 E3，见 README 的验收步骤（NOT_RUN）。
  */
 @RunWith(AndroidJUnit4::class)
@@ -116,6 +122,43 @@ class OfflineProofTest {
             File(out, "airplane-evidence.json").writeText(Json.encodeToString(AirplaneEvidence.serializer(), evidence))
         } finally {
             if (!wasOn) DeviceEnv.shell("cmd connectivity airplane-mode disable")
+        }
+    }
+
+    @Test
+    fun everyProductTranscriptionEntryPointSendsNoNetworkBytesEvenWhileTheNetworkIsAvailable() {
+        DeviceEnv.requireInstalled("zh")
+        assertEquals("飞行模式必须是关的", "0", airplaneModeSetting())
+        val network = activeDefaultNetworkLine()
+        assertTrue("需要有默认网络才有意义：$network", network.isNotEmpty() && !network.endsWith("none"))
+
+        val evidence = ProductTranscriptionHarness().use { it.runEveryEntryPoint() }
+
+        assertEquals("四个入口都要跑到", listOf(
+            ProductTranscriptionHarness.PIPELINE, ProductTranscriptionHarness.SCHEDULER,
+            ProductTranscriptionHarness.RETRANSCRIBE, ProductTranscriptionHarness.RESUME,
+        ), evidence.entryPoints)
+        assertEquals("该 UID 的收发字节数必须没有增加：$evidence", 0L, evidence.networkBytes)
+        assertEquals("模型下载的传输一次都不该被调用", 0, evidence.downloadAttempts)
+    }
+
+    @Test
+    fun everyProductTranscriptionEntryPointWorksInAirplaneModeWithoutAnyNetworkBytes() {
+        DeviceEnv.requireInstalled("zh")
+        val wasOn = airplaneModeSetting() == "1"
+        ProductTranscriptionHarness().use { harness ->
+            try {
+                DeviceEnv.shell("cmd connectivity airplane-mode enable")
+                awaitAirplaneMode()
+
+                val evidence = harness.runEveryEntryPoint()
+
+                assertEquals("该 UID 的收发字节数必须没有变化：$evidence", 0L, evidence.networkBytes)
+                assertEquals("模型下载的传输一次都不该被调用", 0, evidence.downloadAttempts)
+                assertEquals(4, evidence.entryPoints.size)
+            } finally {
+                if (!wasOn) DeviceEnv.shell("cmd connectivity airplane-mode disable")
+            }
         }
     }
 

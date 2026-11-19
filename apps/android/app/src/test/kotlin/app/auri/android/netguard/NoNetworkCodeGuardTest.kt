@@ -6,15 +6,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Ticket 21 的网络卫士。行为上由 :sync 的 SpkiPinTrustManagerTest / PinnedHttpsClientTest 证明（指纹不对一律拒绝，没有任何旁路）；
- * 这里扫六个生产模块编译出的类文件和源码，证明代码里**没有别的路**：
- *  - 没有第二套信任规则（TrustManager、SSLContext 只在 :sync 的 tls 包）；
- *  - 没有“忽略主机名”、没有别的 HTTP 栈（HostnameVerifier、HttpsURLConnection、OkHttp、java.net.http……任何位置都没有）；
- *  - 套接字、地址解析、系统连接管理与 NSD 只出现在 :sync 的 http/tls 与 :syncplatform 的 discovery/network；
- *    录音、转录、本地库与界面壳（:capture、:asr、:platform、:app）里一个网络类都没有；
- *  - 没有明文 http:// 地址。
- * 卫士自己是否会“真的拦住”由正对照证明：测试源码里故意写了几个违规的类（Examples.kt），卫士必须逐个认出来；
- * 同一个合规的类放到不该放的位置也必须被认出来。
+ * Ticket 21 的网络卫士（评审 F1/F13 重写）。行为上由 :sync 的 SpkiPinTrustManagerTest / PinnedHttpsClientTest 证明（指纹不对一律拒绝，没有任何旁路）；
+ * 这里扫七个生产模块编译出的类文件和源码，证明代码里**没有别的路**：
+ *  - 只有登记过的**具体的类**可以碰网络（PinnedHttpsClient、PinnedTls、SpkiPinTrustManager、NsdGatewayDiscovery、AndroidNetworkSignal、
+ *    :modelmgmt 下载模型的传输、BrowserLink），不是整个包；:capture、:asr、:platform 与界面壳一个网络类都没有；
+ *  - 没有第二套信任规则（TrustManager、SSLContext 只在 tls 的两个类里）、没有“忽略主机名”、没有 WebView、DownloadManager 或别的 HTTP 栈；
+ *  - 没有明文 http:// 地址，也没有 :BrowserLink 之外的“查看网址”意图；
+ *  - 字节码和源码两层都查：别名躲不过字节码，通配导入躲不过源码层。
+ * 内核层面的“根本不能联网”证明在 Ticket 20/21 起不可能再成立（INTERNET 是整个应用一份），这里是它的代替品里**静态**的那一半；
+ * 动态的一半是设备上的零字节实测（OfflineProofTest）。
+ * 卫士自己是否会“真的拦住”由正对照证明：测试源码里故意写了违规的类（Examples.kt），卫士必须逐个认出来；
+ * 同一个合规的类放到不该放的位置也必须被认出来；登记表里不能有多余的项（多余的登记会悄悄放宽范围）。
  */
 class NoNetworkCodeGuardTest {
     private val androidDir = File("..")
@@ -33,12 +35,20 @@ class NoNetworkCodeGuardTest {
     // ---- 真实的生产代码 ----
 
     @Test
-    fun `六个生产模块编译出的类里没有任何违反网络规矩的引用`() {
+    fun `七个生产模块编译出的类里没有任何违反网络规矩的引用`() {
         val classes = allClasses()
         val violations = classes.flatMap { (module, path, file) -> NetworkSurface.violations(module, path, file.readBytes()) }
 
         assertEquals(violations.joinToString("\n"), emptyList<String>(), violations)
         assertTrue("应当扫到类文件", classes.size > 300)
+    }
+
+    @Test
+    fun `下载模型的传输也在扫描范围里：modelmgmt 的类被扫到，它的网络类出现在预期的位置（F1）`() {
+        val classes = allClasses()
+
+        assertTrue("modelmgmt 没有被扫描", NetworkSurface.modules.contains("modelmgmt"))
+        assertTrue(classes.any { it.first == "modelmgmt" && it.second == "app/auri/modelmgmt/UrlConnectionTransport.class" })
     }
 
     @Test
@@ -55,6 +65,9 @@ class NoNetworkCodeGuardTest {
         assertTrue(NetworkSurface.references(constantsOf("sync", "app/auri/sync/http/PinnedHttpsClient\$Connection.class"), "javax/net/ssl/SSLSocket"))
         assertTrue(NetworkSurface.references(constantsOf("syncplatform", "app/auri/syncplatform/network/AndroidNetworkSignal.class"), "android/net/ConnectivityManager"))
         assertTrue(NetworkSurface.references(constantsOf("syncplatform", "app/auri/syncplatform/discovery/NsdGatewayDiscovery.class"), "android/net/nsd/NsdManager"))
+        assertTrue(NetworkSurface.references(constantsOf("modelmgmt", "app/auri/modelmgmt/UrlConnectionTransport.class"), "okhttp3/OkHttpClient"))
+        assertTrue(NetworkSurface.references(constantsOf("modelmgmt", "app/auri/modelmgmt/UrlConnectionResponse.class"), "java/net/HttpURLConnection"))
+        assertTrue(NetworkSurface.references(constantsOf("app", "app/auri/android/BrowserLink.class"), "android.intent.action.VIEW"))
     }
 
     @Test
@@ -84,34 +97,59 @@ class NoNetworkCodeGuardTest {
         assertTrue(classes.isNotEmpty())
     }
 
-    @Test
-    fun `源码里同样没有：信任类只在 tls 包的源文件，主机名校验与别的 HTTP 栈任何地方都没有`() {
-        val sourceDirs = NetworkSurface.modules.flatMap { module ->
-            listOf("main", "debug", "release").map { File(androidDir, "$module/src/$it") }
-        }.filter { it.isDirectory }
-        val files = sourceDirs.flatMap { dir ->
-            dir.walkTopDown().filter { it.isFile && it.extension in setOf("kt", "java") }.toList()
-        }
-        for (module in NetworkSurface.modules) {
-            assertTrue("$module 没有扫到任何源文件（目录不对？）", files.any { it.invariantSeparatorsPath.contains("/$module/src/") })
-        }
-        assertTrue("应当扫到全部生产源文件（当前 85 个）：${files.size}", files.size >= 80)
-
-        val trustTokens = Regex("\\b(X509TrustManager|X509ExtendedTrustManager|TrustManager|TrustManagerFactory|SSLContext)\\b")
-        val forbiddenTokens = Regex(
-            "\\b(HostnameVerifier|HttpsURLConnection|HttpURLConnection|URLConnection|OkHttpClient|trustAll|TRUST_ALL|ALLOW_ALL_HOSTNAME_VERIFIER|setDefaultSSLSocketFactory|setDefaultHostnameVerifier)\\b",
-        )
-        val problems = files.flatMap { file ->
-            val code = SourceText.withoutCommentsAndStrings(file.readText())
-            val path = file.invariantSeparatorsPath
-            val inTls = path.contains("/sync/src/main/kotlin/app/auri/sync/tls/")
-            buildList {
-                if (!inTls) trustTokens.findAll(code).forEach { add("$path: 信任类 ${it.value} 只许出现在 :sync 的 tls 包") }
-                forbiddenTokens.findAll(code).forEach { add("$path: ${it.value} 任何位置都不允许") }
+    private fun productionSources(): List<Triple<String, String, File>> =
+        NetworkSurface.modules.flatMap { module ->
+            listOf("main", "debug", "release").map { File(androidDir, "$module/src/$it") }.filter { it.isDirectory }.flatMap { dir ->
+                dir.walkTopDown().filter { it.isFile && it.extension in setOf("kt", "java") }.map { Triple(module, it.invariantSeparatorsPath, it) }.toList()
             }
         }
 
+    @Test
+    fun `源码里同样没有：信任类只在 tls 的两个类，主机名校验、WebView、DownloadManager 与别的 HTTP 栈除登记的传输外任何地方都没有`() {
+        val files = productionSources()
+        for (module in NetworkSurface.modules) {
+            assertTrue("$module 没有扫到任何源文件（目录不对？）", files.any { it.first == module })
+        }
+        assertTrue("应当扫到全部生产源文件（当前 90 多个）：${files.size}", files.size >= 85)
+
+        val problems = files.flatMap { (module, path, file) -> NetworkSurface.sourceViolations(module, path, file.readText()) }
+
         assertEquals(problems.joinToString("\n"), emptyList<String>(), problems)
+    }
+
+    @Test
+    fun `登记表没有多余项：每条登记都有编译出来的类和源文件，而且它真的用到了这条规则里的名字（F13）`() {
+        val classes = allClasses()
+        val constantsByClass = classes.associate { (module, path, file) -> (module to path) to NetworkSurface.constants(file.readBytes()) }
+
+        for (rule in NetworkSurface.rules) {
+            for (entry in rule.allowedIn) {
+                val family = classes.filter { entry.matches(it.first, it.second) }
+                assertTrue("${rule.id}：登记的 ${entry.module}/${entry.classPath} 在编译产物里找不到任何类（改名了？）", family.isNotEmpty())
+                assertTrue(
+                    "${rule.id}：登记的 ${entry.module}/${entry.classPath} 没有用到这条规则里的任何名字——多余的登记会悄悄放宽范围，删掉它",
+                    family.any { (module, path, _) -> rule.names.any { NetworkSurface.references(constantsByClass.getValue(module to path), it) } },
+                )
+                assertTrue(
+                    "${rule.id}：登记的源文件 ${entry.source} 不存在",
+                    File(androidDir, "${entry.module}/src/main/kotlin/${entry.source}").isFile,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `引用了网络名字的生产类恰好都在登记的传输里：没有哪个类靠“同一个包”蹭上白名单（F13）`() {
+        val classes = allClasses()
+        val registered = NetworkSurface.rules.flatMap { it.allowedIn }.distinct()
+
+        val strays = classes.filter { (module, path, file) ->
+            val constants = NetworkSurface.constants(file.readBytes())
+            val usesNetwork = NetworkSurface.rules.any { rule -> rule.names.any { NetworkSurface.references(constants, it) } }
+            usesNetwork && registered.none { it.matches(module, path) }
+        }.map { "${it.first}/${it.second}" }
+
+        assertEquals(emptyList<String>(), strays)
     }
 
     // ---- 正对照：卫士真的认得出违规写法 ----
@@ -136,6 +174,54 @@ class NoNetworkCodeGuardTest {
         val found = violationsOfExample(RawSocketExample::class.java)
 
         assertTrue(found.toString(), found.any { "sockets 引用 java/net/Socket" in it })
+    }
+
+    @Test
+    fun `卫士认得出未登记的类自己开套接字：放在 sync 的 http 包里也一样（F13）`() {
+        val bytes = exampleBytes(UnpinnedRawSocketClient::class.java)
+
+        val inHttpPackage = NetworkSurface.violations("sync", "app/auri/sync/http/UnpinnedRawSocketClient.class", bytes)
+
+        assertTrue(inHttpPackage.toString(), inHttpPackage.any { "sockets 引用 java/net/Socket" in it })
+    }
+
+    @Test
+    fun `登记的是具体的类：同包的兄弟类、同名前缀的类、别的模块里的同名类都不算（F13）`() {
+        val real = File(androidDir, "sync/build/classes/kotlin/main/app/auri/sync/http/PinnedHttpsClient\$Connection.class").readBytes()
+
+        assertEquals(emptyList<String>(), NetworkSurface.violations("sync", "app/auri/sync/http/PinnedHttpsClient\$Connection.class", real))
+        assertTrue(NetworkSurface.violations("sync", "app/auri/sync/http/PinnedHttpsClientEvil.class", real).any { "sockets" in it })
+        assertTrue(NetworkSurface.violations("sync", "app/auri/sync/http/Sibling.class", real).any { "sockets" in it })
+        assertTrue(NetworkSurface.violations("syncplatform", "app/auri/sync/http/PinnedHttpsClient\$Connection.class", real).any { "sockets" in it })
+    }
+
+    @Test
+    fun `卫士认得出 WebView（F1）`() {
+        val found = violationsOfExample(WebViewExample::class.java)
+
+        assertTrue(found.toString(), found.any { "webview 引用 android/webkit/" in it })
+    }
+
+    @Test
+    fun `卫士认得出起了别名的 HttpURLConnection：别名在字节码里还是原来的类（F1）`() {
+        val found = violationsOfExample(AliasedHttpUrlConnectionExample::class.java)
+
+        assertTrue(found.toString(), found.any { "引用 java/net/HttpURLConnection" in it })
+        assertTrue(found.toString(), found.any { "引用 java/net/URL" in it })
+    }
+
+    @Test
+    fun `卫士认得出 DownloadManager（F1）`() {
+        val found = violationsOfExample(DownloadManagerExample::class.java)
+
+        assertTrue(found.toString(), found.any { "download-manager 引用 android/app/DownloadManager" in it })
+    }
+
+    @Test
+    fun `卫士认得出查看网址的意图（F1）`() {
+        val found = violationsOfExample(ViewIntentExample::class.java)
+
+        assertTrue(found.toString(), found.any { "view-intent 引用 android.intent.action.VIEW" in it })
     }
 
     @Test
@@ -168,6 +254,34 @@ class NoNetworkCodeGuardTest {
         assertTrue(NetworkSurface.violations("app", "app/auri/android/SpkiPinTrustManager.class", real).any { "trust" in it })
         assertTrue(NetworkSurface.violations("sync", "app/auri/sync/gateway/SpkiPinTrustManager.class", real).any { "trust" in it })
         assertTrue(NetworkSurface.violations("syncplatform", "app/auri/sync/tls/SpkiPinTrustManager.class", real).any { "trust" in it })
+    }
+
+    @Test
+    fun `源码层认得出别名导入、通配导入、WebView、loadUrl、套接字与查看网址的意图（F1）`() {
+        fun found(text: String, module: String = "app", path: String = "/x/apps/android/app/src/main/kotlin/app/auri/android/X.kt") =
+            NetworkSurface.sourceViolations(module, path, text)
+
+        assertTrue(found("import java.net.HttpURLConnection as Plain\nval c: Plain? = null").any { "http-stack" in it })
+        assertTrue(found("import java.net.*\nval s = Socket()").any { "sockets" in it })
+        assertTrue(found("import android.net.*\nfun f(m: ConnectivityManager) = Unit").any { "sockets" in it })
+        assertTrue(found("import android.webkit.WebView\nfun f(w: WebView) = w.loadUrl(\"x\")").any { "webview" in it })
+        assertTrue(found("fun f(w: Any) = w.loadUrl(\"x\")").any { "webview" in it })
+        assertTrue(found("fun f() = Intent(Intent.ACTION_VIEW, uri)").any { "view-intent" in it })
+        assertTrue(found("val manager = context.getSystemService(DownloadManager::class.java)").any { "download-manager" in it })
+        assertTrue(found("val c = URL(address).openConnection()").any { "http-stack" in it })
+        assertTrue(found("val r = retrofit2.Retrofit.Builder()").any { "http-stack" in it })
+        assertEquals("注释与字符串里的说明文字不算", emptyList<String>(), found("// 用 Socket 和 WebView 的做法不对\nval doc = \"ACTION_VIEW 与 DownloadManager\""))
+    }
+
+    @Test
+    fun `源码层也按登记的文件放行：登记的传输文件放行，同包的别的文件与别的模块里的同名文件不放行（F13）`() {
+        val text = "import java.net.Socket\nval s = Socket()"
+        val pinned = "/x/apps/android/sync/src/main/kotlin/app/auri/sync/http/PinnedHttpsClient.kt"
+
+        assertEquals(emptyList<String>(), NetworkSurface.sourceViolations("sync", pinned, text))
+        assertTrue(NetworkSurface.sourceViolations("sync", pinned.replace("PinnedHttpsClient", "Sibling"), text).isNotEmpty())
+        assertTrue(NetworkSurface.sourceViolations("syncplatform", pinned.replace("/sync/src/", "/syncplatform/src/"), text).isNotEmpty())
+        assertTrue(NetworkSurface.sourceViolations("app", pinned, text).isNotEmpty())
     }
 
     @Test

@@ -1,10 +1,7 @@
 package app.auri.android
 
 import android.Manifest
-import android.content.ActivityNotFoundException
-import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -95,14 +92,8 @@ class MainActivity : ComponentActivity() {
         if (missing.isEmpty()) viewModel.start() else permissions.launch(missing.toTypedArray())
     }
 
-    /** 交给系统浏览器看许可全文；本应用自己不联网取它。没有浏览器时打不开，地址仍显示在页面上，可以抄下来。 */
-    private fun openLicense(url: String) {
-        try {
-            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-        } catch (e: ActivityNotFoundException) {
-            // 见上
-        }
-    }
+    /** 交给系统浏览器看许可全文；本应用自己不联网取它（见 [BrowserLink]）。 */
+    private fun openLicense(url: String) = BrowserLink(this).open(url)
 
     private fun requiredPermissions(): List<String> = buildList {
         add(Manifest.permission.RECORD_AUDIO)

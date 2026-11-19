@@ -99,7 +99,8 @@ class NoNetworkManifestTest {
         val application = doc.getElementsByTagName("application").item(0) as Element
 
         assertEquals("", application.getAttribute("android:networkSecurityConfig"))
-        assertTrue(application.getAttribute("android:usesCleartextTraffic") != "true")
+        // 明确写成 false，不靠 targetSdk 的默认值：库的清单想放开明文流量会和这一条冲突，合并就失败（评审 F1）
+        assertEquals("false", application.getAttribute("android:usesCleartextTraffic"))
     }
 
     @Test
