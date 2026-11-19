@@ -59,9 +59,9 @@ class FeedbackTest {
     }
 
     @Test
-    fun `三种反馈互相可以区分：振动的脉冲数或长度不同，屏幕文字和通知文字也各不相同`() {
+    fun `四种反馈互相可以区分：振动的脉冲数或长度不同，屏幕文字和通知文字也各不相同`() {
         val all = FeedbackKind.entries.map { Feedbacks.of(it) }
-        assertEquals(3, all.size)
+        assertEquals(4, all.size)
         assertEquals(all.size, all.map { it.vibrationPattern }.toSet().size)
         assertEquals(all.size, all.map { it.screenText }.toSet().size)
         assertEquals(all.size, all.map { it.notificationText }.toSet().size)

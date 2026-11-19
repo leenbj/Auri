@@ -14,6 +14,7 @@ import app.auri.capture.pipeline.PipelineNotice
 import app.auri.platform.audio.HeadsetPresence
 import app.auri.platform.audio.HeadsetStatus
 import app.auri.platform.control.ScreenControlAdapter
+import app.auri.platform.storage.DurationLimitSetting
 import java.time.Instant
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
@@ -68,6 +69,9 @@ data class HomeUiState(
     val records: List<RecordItem>,
     val notice: Notice?,
     val durationLimit: DurationLimitStop?,
+    val durationWarning: Boolean = false,
+    val durationMinutes: Int = 30,
+    val durationSettingError: String? = null,
 )
 
 data class DurationLimitStop(val reason: EndReason, val limitSeconds: Double)
@@ -141,15 +145,21 @@ class HomeViewModel(
     library: RecordLibrary,
     notices: Flow<PipelineNotice>,
     private val scope: CoroutineScope,
+    private val durationSetting: DurationLimitSetting? = null,
 ) : ViewModel() {
     private val notice = MutableStateFlow<Notice?>(null)
+    private data class DurationUi(val minutes: Int, val error: String? = null)
+    private val duration = MutableStateFlow(DurationUi(durationSetting?.minutes?.value ?: 30))
 
     val state: StateFlow<HomeUiState> = combine(
         controls.snapshot,
         headset.status,
         library.observe(),
         notice,
-    ) { snapshot, headsetStatus, records, currentNotice -> buildState(snapshot, headsetStatus, records, currentNotice) }.stateIn(scope, SharingStarted.Eagerly, buildState(controls.snapshot.value, headset.status.value, emptyList(), null))
+        duration,
+    ) { snapshot, headsetStatus, records, currentNotice, currentDuration ->
+        buildState(snapshot, headsetStatus, records, currentNotice, currentDuration)
+    }.stateIn(scope, SharingStarted.Eagerly, buildState(controls.snapshot.value, headset.status.value, emptyList(), null, duration.value))
 
     init {
         scope.launch {
@@ -166,6 +176,20 @@ class HomeViewModel(
 
     fun stop() = controls.stop()
 
+    fun setDurationLimit(text: String) {
+        val minutes = text.trim().toIntOrNull()
+        if (minutes == null || minutes !in 1..120) {
+            duration.value = duration.value.copy(error = "请输入 1–120 分钟")
+            return
+        }
+        try {
+            durationSetting?.save(minutes)
+            duration.value = DurationUi(minutes)
+        } catch (e: Exception) {
+            duration.value = duration.value.copy(error = "时长上限没能保存，请重试")
+        }
+    }
+
     fun dismissNotice() {
         notice.value = null
     }
@@ -174,7 +198,7 @@ class HomeViewModel(
         scope.cancel()
     }
 
-    private fun buildState(snapshot: CaptureSnapshot, headset: HeadsetStatus, records: List<RecordEntry>, notice: Notice?) = HomeUiState(
+    private fun buildState(snapshot: CaptureSnapshot, headset: HeadsetStatus, records: List<RecordEntry>, notice: Notice?, duration: DurationUi) = HomeUiState(
         headset = HeadsetFact(headset.connected, headset.name),
         input = InputFact(snapshot.actualInput?.routeType, snapshot.actualInput?.displayName),
         capture = CaptureFact(snapshot.state, snapshot.blockedReason),
@@ -183,6 +207,9 @@ class HomeViewModel(
         records = records.map(::toItem),
         notice = notice,
         durationLimit = snapshot.durationLimitMs?.let { DurationLimitStop(EndReason.DURATION_LIMIT, it / 1000.0) },
+        durationWarning = snapshot.durationWarning,
+        durationMinutes = duration.minutes,
+        durationSettingError = duration.error,
     )
 
     private fun toItem(entry: RecordEntry) = RecordItem(

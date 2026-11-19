@@ -2,9 +2,10 @@ package app.auri.capture.feedback
 
 import app.auri.capture.contract.CaptureState
 import app.auri.capture.coordinator.CaptureDecision
+import app.auri.capture.coordinator.Cause
 
 /** 用户需要分清的三件事：录音开始了、录音停止了、录音没能开始。 */
-enum class FeedbackKind { STARTED, STOPPED, START_FAILED }
+enum class FeedbackKind { STARTED, STOPPED, START_FAILED, DURATION_WARNING }
 
 /**
  * 一种反馈的全部内容：屏幕上的文字、通知里的文字、振动节奏。
@@ -33,11 +34,13 @@ object Feedbacks {
     private val started = Feedback(FeedbackKind.STARTED, "录音已开始", "录音中", listOf(0, 120))
     private val stopped = Feedback(FeedbackKind.STOPPED, "录音已停止", "录音已停止", listOf(0, 80, 120, 80))
     private val startFailed = Feedback(FeedbackKind.START_FAILED, "录音没能开始", "录音没能开始，请在屏幕上重试", listOf(0, 700))
+    private val durationWarning = Feedback(FeedbackKind.DURATION_WARNING, "录音将在一分钟后停止", "录音将在一分钟后停止", listOf(0, 300, 100, 300))
 
     fun of(kind: FeedbackKind): Feedback = when (kind) {
         FeedbackKind.STARTED -> started
         FeedbackKind.STOPPED -> stopped
         FeedbackKind.START_FAILED -> startFailed
+        FeedbackKind.DURATION_WARNING -> durationWarning
     }
 }
 
@@ -49,6 +52,7 @@ object Feedbacks {
  * 用户自己在准备阶段取消（准备中 → 就绪）不算失败。
  */
 fun feedbackFor(decision: CaptureDecision): FeedbackKind? = when {
+    decision.cause == Cause.DURATION_WARNING -> FeedbackKind.DURATION_WARNING
     decision.stateBefore == CaptureState.ROUTING && decision.stateAfter == CaptureState.RECORDING -> FeedbackKind.STARTED
     decision.stateBefore == CaptureState.RECORDING && decision.stateAfter == CaptureState.FINALIZING -> FeedbackKind.STOPPED
     decision.stateBefore == CaptureState.ROUTING && decision.stateAfter == CaptureState.BLOCKED -> FeedbackKind.START_FAILED

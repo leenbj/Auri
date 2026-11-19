@@ -36,6 +36,7 @@ import app.auri.platform.control.ScreenControlAdapter
 import app.auri.platform.jobs.SqliteTranscriptionJobStore
 import app.auri.platform.service.AndroidForegroundServiceController
 import app.auri.platform.service.bindForegroundService
+import app.auri.platform.storage.DurationLimitSetting
 import app.auri.platform.storage.FileProfileStore
 import app.auri.platform.storage.NoBackupStorage
 import app.auri.platform.storage.WavRecordingStore
@@ -56,18 +57,10 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
-/** 一次录音最多比转录引擎一次能处理的长度少这么多：留出读音频批次的余量，保证录下的音频不会超出引擎上限。 */
-private const val DURATION_SAFETY_MARGIN_MS = 500L
-
-/**
- * 在分段与长录音（Ticket 18/20）之前，一次录音不能长过转录引擎一次能处理的时长，否则录完会转不了。
- * 所以自动停止的时长上限取引擎声明的上限（再留一点余量）；引擎没有上限就用协调器的默认值。
- */
-fun captureConfigFor(maxAudioDurationMs: Long?): CaptureConfig {
-    val default = CaptureConfig()
-    if (maxAudioDurationMs == null) return default
-    val limit = (maxAudioDurationMs - DURATION_SAFETY_MARGIN_MS).takeIf { it > 0 } ?: maxAudioDurationMs
-    return default.copy(maxDurationMs = limit)
+/** 录音上限独立于转录引擎的单次输入上限。 */
+fun captureConfigFor(durationMinutes: Int): CaptureConfig {
+    require(durationMinutes in 1..120)
+    return CaptureConfig(maxDurationMs = durationMinutes * 60_000L)
 }
 
 /**
@@ -130,6 +123,7 @@ class AuriRuntime(
     }
 
     val pipeline = RecordPipeline(library, scheduler, scope)
+    val durationSetting = DurationLimitSetting(File(application.filesDir, "capture-duration-limit"))
 
     val coordinator = CaptureCoordinator(
         control = controlWiring.control,
@@ -138,9 +132,10 @@ class AuriRuntime(
         output = pipeline,
         clock = SystemClock,
         ids = RandomIds,
-        config = captureConfigFor(modelCapabilities.limits.maxAudioDurationMs),
+        config = captureConfigFor(durationSetting.minutes.value),
         scope = scope,
         adapterDispatcher = Dispatchers.IO,
+        durationLimit = { durationSetting.minutes.value * 60_000L },
     )
 
     val controls = CoordinatorControls(coordinator, screenControl)
@@ -161,7 +156,7 @@ class AuriRuntime(
     val homeViewModelFactory = object : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
-            HomeViewModel(controls, headset, library, pipeline.notices, CoroutineScope(SupervisorJob() + Dispatchers.Default)) as T
+            HomeViewModel(controls, headset, library, pipeline.notices, CoroutineScope(SupervisorJob() + Dispatchers.Default), durationSetting) as T
     }
 
     val syncViewModelFactory = object : ViewModelProvider.Factory {

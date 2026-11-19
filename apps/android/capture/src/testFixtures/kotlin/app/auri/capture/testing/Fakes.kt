@@ -41,6 +41,8 @@ import app.auri.capture.coordinator.CaptureOutput
 import app.auri.capture.coordinator.Clock
 import app.auri.capture.coordinator.IdGenerator
 import app.auri.capture.coordinator.SealedRecording
+import app.auri.capture.coordinator.EnergyVoiceActivityDetector
+import app.auri.capture.coordinator.VoiceActivityDetector
 import java.io.IOException
 import java.security.MessageDigest
 import java.time.Instant
@@ -215,7 +217,7 @@ class FakeCaptureAdapter : CaptureAdapter {
 
     /** 递送 [samples] 个采样（值是确定的，便于核对哈希）。 */
     fun frames(samples: Int, epoch: Long, session: Int = requests.lastIndex) {
-        sinks[session].frames(AudioFrames(epoch, ShortArray(samples) { (it % 100).toShort() }))
+        sinks[session].frames(AudioFrames(epoch, ShortArray(samples) { (1_000 + it % 100).toShort() }))
     }
 
     fun interrupt(session: Int = requests.lastIndex) = sinks[session].interrupted()
@@ -242,6 +244,9 @@ class FakeRecordingStore : RecordingStore {
     /** 写满这么多个采样之后，再 append 就抛 IOException；null 表示不失败。 */
     var failAppendAfterSamples: Long? = null
 
+    /** 在第几次 append 调用时抛 IOException（从 1 开始）；null 表示不按次数失败。 */
+    var failAppendOnCall: Int? = null
+
     /** 非空时 seal 挂起等它，测试借此把封存卡在 FINALIZING。 */
     var sealGate: CompletableDeferred<Unit>? = null
 
@@ -258,13 +263,17 @@ class FakeRecordingStore : RecordingStore {
         failBegin?.let { throw it }
         return object : RecordingWriter {
             private var sealed = false
+            private var appendCalls = 0
 
             override fun append(handle: CaptureHandle, samples: ShortArray) {
+                appendCalls += 1
                 val limit = failAppendAfterSamples
-                val accepted = handle.gateState == GateState.OPEN && !sealed && (limit == null || written.size < limit)
+                val failOnCall = failAppendOnCall
+                val storageFull = (limit != null && written.size >= limit) || (failOnCall != null && appendCalls >= failOnCall)
+                val accepted = handle.gateState == GateState.OPEN && !sealed && !storageFull
                 events += StoreEvent.Append(handle, samples.size, accepted)
                 if (handle.gateState != GateState.OPEN) throw IllegalStateException("闸门已关，不接受写入")
-                if (limit != null && written.size >= limit) throw IOException("磁盘已满（测试注入）")
+                if (storageFull) throw IOException("磁盘已满（测试注入）")
                 written += samples.toList()
             }
 
@@ -356,6 +365,8 @@ class CaptureRig(
     // 默认排队：准备任务要等 settle 才开始，“发出又立刻取消”的请求永远不会运行，测试看不见它；
     // 传 UnconfinedTestDispatcher 则一发出就当场开始（线上的适配器跑在真线程上，取消可能来不及）
     adapterDispatcher: CoroutineDispatcher = StandardTestDispatcher(scope.testScheduler),
+    durationLimit: () -> Long = { config.maxDurationMs },
+    vad: VoiceActivityDetector = EnergyVoiceActivityDetector(),
 ) {
     val clock = FakeClock(scope.testScheduler)
     val ids = SequentialIds()
@@ -376,6 +387,8 @@ class CaptureRig(
         config = config,
         scope = scope.backgroundScope,
         adapterDispatcher = adapterDispatcher,
+        durationLimit = durationLimit,
+        vad = vad,
     )
 
     init {

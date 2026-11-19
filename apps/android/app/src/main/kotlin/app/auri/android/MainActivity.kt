@@ -55,6 +55,7 @@ class MainActivity : ComponentActivity() {
                             onStart = ::onStartPressed,
                             onStop = viewModel::stop,
                             onDismissNotice = viewModel::dismissNotice,
+                            onSetDuration = viewModel::setDurationLimit,
                             onOpenSync = { onSyncPage = true },
                         )
                     },

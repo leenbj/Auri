@@ -8,8 +8,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import app.auri.android.home.HomeUiState
@@ -25,12 +30,14 @@ import app.auri.capture.contract.ObservedInputRouteType
  * 三个事实分三行：耳机连接、实际输入来源、采集状态——不能合并成一句话（耳机已连接 ≠ 正在用耳机麦克风）。
  */
 @Composable
-fun HomeScreen(state: HomeUiState, onStart: () -> Unit, onStop: () -> Unit, onDismissNotice: () -> Unit, onOpenSync: (() -> Unit)? = null) {
+fun HomeScreen(state: HomeUiState, onStart: () -> Unit, onStop: () -> Unit, onDismissNotice: () -> Unit, onSetDuration: (String) -> Unit, onOpenSync: (() -> Unit)? = null) {
+    var durationText by rememberSaveable { mutableStateOf(state.durationMinutes.toString()) }
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         onOpenSync?.let { Button(onClick = it) { Text("同步与配对") } }
         Text("耳机：" + if (state.headset.connected) "已连接" + (state.headset.name?.let { "（$it）" } ?: "") else "未连接")
         Text("实际输入：" + describeInput(state.input.source, state.input.deviceName))
         Text("采集状态：" + describeCapture(state.capture.state) + (state.capture.blockedReason?.let { "（原因：$it）" } ?: ""))
+        if (state.durationWarning) Text("录音将在一分钟后停止")
         state.durationLimit?.let { Text("已达到录音时长上限（${it.limitSeconds} 秒），录音已自动停止") }
         state.notice?.let {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -42,6 +49,11 @@ fun HomeScreen(state: HomeUiState, onStart: () -> Unit, onStop: () -> Unit, onDi
             Button(onClick = onStart, enabled = state.startEnabled) { Text("开始录音") }
             Button(onClick = onStop, enabled = state.stopEnabled) { Text("停止") }
         }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(value = durationText, onValueChange = { durationText = it }, label = { Text("录音上限（分钟）") }, singleLine = true, modifier = Modifier.weight(1f))
+            Button(onClick = { onSetDuration(durationText) }) { Text("保存") }
+        }
+        state.durationSettingError?.let { Text(it) }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(state.records, key = { it.recordId }) { RecordRow(it) }
         }

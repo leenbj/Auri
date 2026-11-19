@@ -22,6 +22,8 @@ import app.auri.capture.contract.CaptureState.ROUTING
 import app.auri.capture.contract.CaptureStatus
 import app.auri.capture.contract.ContractRules
 import app.auri.capture.contract.ControlSource
+import app.auri.capture.contract.DiscardReason
+import app.auri.capture.contract.DiscardedRange
 import app.auri.capture.contract.EndReason
 import app.auri.capture.contract.ErrorCode
 import app.auri.capture.contract.GateState
@@ -40,6 +42,9 @@ import app.auri.capture.machine.CaptureMachine
 import app.auri.capture.machine.MachineRule
 import app.auri.capture.machine.Outcome
 import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.security.MessageDigest
 import java.time.Instant
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -87,6 +92,8 @@ class CaptureCoordinator(
     private val config: CaptureConfig = CaptureConfig(),
     private val scope: CoroutineScope,
     private val adapterDispatcher: CoroutineDispatcher,
+    private val durationLimit: () -> Long = { config.maxDurationMs },
+    private val vad: VoiceActivityDetector = EnergyVoiceActivityDetector(),
 ) {
     // ---- 只在邮箱协程里读写的状态 ----
     private var state: CaptureState = CaptureMachine.initialState
@@ -97,6 +104,7 @@ class CaptureCoordinator(
     private var publishVersion = 0L
     private var lastFinalizedNs: Long? = null
     private var durationLimitMs: Long? = null
+    private var durationWarning = false
     private var controlModeEnabled = false
     private var disableWhenIdle = false
 
@@ -164,7 +172,7 @@ class CaptureCoordinator(
 
     private class Tag(val sessionId: String, val generation: Long)
 
-    private enum class TimerKind { ROUTE, DURATION }
+    private enum class TimerKind { ROUTE, DURATION_WARNING, DURATION }
 
     private sealed interface SealOutcome {
         class Done(val sealed: SealedRecording?) : SealOutcome
@@ -207,7 +215,7 @@ class CaptureCoordinator(
     }
 
     /** 一次 Capture Session 的内部状态。 */
-    private class Session(val id: String, val generation: Long, val operationId: String, val quarantine: Quarantine) {
+    private class Session(val id: String, val generation: Long, val operationId: String, val quarantine: Quarantine, val limitMs: Long) {
         var lastEpoch = -1L
         var observed: ObservedInput? = null
         var handle: CaptureHandle? = null
@@ -217,6 +225,10 @@ class CaptureCoordinator(
         var writer: RecordingWriter? = null
         var startedAt: Instant? = null
         var writtenSamples = 0L
+        var storageFailed = false
+        var startedNs = 0L
+        var speech: SpeechFilter? = null
+        val segments = mutableListOf<Segment>()
         var routeTimer: Job? = null
         var durationTimer: Job? = null
         var prepareJob: Job? = null
@@ -227,6 +239,8 @@ class CaptureCoordinator(
             prepareJob?.cancel()
         }
     }
+
+    private class Segment(val id: String, val start: Long, var end: Long, val digest: MessageDigest)
 
     // ---- 邮箱处理 ----
 
@@ -362,13 +376,12 @@ class CaptureCoordinator(
                     return
                 }
                 try {
-                    (current.writer ?: error("RECORDING 必有写入器")).append(handle, samples)
+                    appendSpeech(current, handle, (current.speech ?: error("RECORDING 必有 VAD")).offer(samples))
                 } catch (e: IOException) {
+                    current.storageFailed = true
                     dispatch(CaptureEvent.SYSTEM_INTERRUPTION, Context(errorCode = ErrorCode.STORAGE_EXHAUSTED, cause = Cause.STORAGE_FAILURE))
                     return
                 }
-                current.writtenSamples += samples.size
-                counters = counters.copy(writtenSamples = counters.writtenSamples + samples.size)
             }
             else -> counters = counters.copy(droppedGate = counters.droppedGate + 1)
         }
@@ -388,6 +401,13 @@ class CaptureCoordinator(
     private fun onTimeout(message: Message.Timeout) {
         val event = if (message.kind == TimerKind.ROUTE) CaptureEvent.ROUTE_TIMEOUT else CaptureEvent.DURATION_LIMIT
         currentSession(message.tag, event) ?: return
+        if (message.kind == TimerKind.DURATION_WARNING) {
+            if (state == RECORDING) {
+                durationWarning = true
+                emit(CaptureDecision(null, Outcome.IGNORED, state, state, Cause.DURATION_WARNING))
+            }
+            return
+        }
         dispatch(event, Context(errorCode = if (message.kind == TimerKind.ROUTE) ErrorCode.INPUT_ROUTE_UNVERIFIED else null))
     }
 
@@ -457,9 +477,11 @@ class CaptureCoordinator(
 
     private fun transition(rule: MachineRule, context: Context) {
         val before = state
-        val errorCode = context.errorCode
+        var errorCode = context.errorCode
+        var cause = context.cause
         var eligibilityDenied: ErrorCode? = null
         var eligibilityEvent: CaptureEvent? = null
+        var storageFailedDuringStop = false
         when (rule.event) {
             CaptureEvent.ENABLE_CONTROL_MODE -> {
                 if (!context.manual && !control.enableUserControlMode()) {
@@ -486,13 +508,13 @@ class CaptureCoordinator(
                 }
 
                 ROUTING -> abandonSession()
-                RECORDING -> stopRecording(rule.endReason ?: context.endReason ?: EndReason.HEADSET_COMMAND)
+                RECORDING -> storageFailedDuringStop = stopRecording(rule.endReason ?: context.endReason ?: EndReason.HEADSET_COMMAND)
                 else -> error("转移表不会给 ${rule.from} 配 ${rule.event}")
             }
 
             CaptureEvent.STOP -> when (rule.from) {
                 ROUTING -> abandonSession()
-                RECORDING -> stopRecording(rule.endReason ?: context.endReason ?: EndReason.HEADSET_COMMAND)
+                RECORDING -> storageFailedDuringStop = stopRecording(rule.endReason ?: context.endReason ?: EndReason.HEADSET_COMMAND)
                 else -> error("转移表不会给 ${rule.from} 配 STOP")
             }
 
@@ -509,7 +531,7 @@ class CaptureCoordinator(
             CaptureEvent.ROUTE_UNVERIFIED, CaptureEvent.ROUTE_TIMEOUT -> abandonSession()
             CaptureEvent.PERMISSION_REVOKED -> when (rule.from) {
                 ROUTING -> abandonSession()
-                RECORDING -> stopRecording(EndReason.PERMISSION_REVOKED)
+                RECORDING -> storageFailedDuringStop = stopRecording(EndReason.PERMISSION_REVOKED)
                 else -> Unit
             }
 
@@ -521,7 +543,7 @@ class CaptureCoordinator(
             }
 
             CaptureEvent.DURATION_LIMIT, CaptureEvent.ROUTE_LOST, CaptureEvent.SYSTEM_INTERRUPTION ->
-                stopRecording(rule.endReason ?: error("${rule.event} 的转移必须带 end_reason"))
+                storageFailedDuringStop = stopRecording(rule.endReason ?: error("${rule.event} 的转移必须带 end_reason"), context.cause != Cause.STORAGE_FAILURE)
 
             CaptureEvent.FINALIZE_COMPLETE -> {
                 session = null
@@ -534,7 +556,7 @@ class CaptureCoordinator(
                 when (rule.from) {
                     ROUTING -> abandonSession()
                     RECORDING -> {
-                        stopRecording(rule.endReason ?: EndReason.PROCESS_TERMINATED)
+                        storageFailedDuringStop = stopRecording(rule.endReason ?: EndReason.PROCESS_TERMINATED)
                         session = null
                     }
 
@@ -546,9 +568,13 @@ class CaptureCoordinator(
                 disableWhenIdle = false
             }
         }
+        if (storageFailedDuringStop) {
+            cause = Cause.STORAGE_FAILURE
+            errorCode = ErrorCode.STORAGE_EXHAUSTED
+        }
         state = rule.to
         blockedReason = if (rule.to == BLOCKED) errorCode ?: ErrorCode.INPUT_ROUTE_UNVERIFIED else null
-        emit(CaptureDecision(rule.event, Outcome.TRANSITION, before, rule.to, context.cause, errorCode))
+        emit(CaptureDecision(rule.event, Outcome.TRANSITION, before, rule.to, cause, errorCode))
         if ((disableWhenIdle || !controlModeEnabled) && state == ARMED && rule.event != CaptureEvent.ENABLE_CONTROL_MODE) {
             dispatch(CaptureEvent.DISABLE_CONTROL_MODE)
         }
@@ -562,12 +588,14 @@ class CaptureCoordinator(
     /** 创建新的 Capture Session：分配标识与 generation，起路由确认超时，资格通过时请求蓝牙输入。 */
     private fun beginSession(eligible: Boolean) {
         durationLimitMs = null
+        durationWarning = false
         generation += 1
         val created = Session(
             id = ids.newUuid(),
             generation = generation,
             operationId = ids.newUuid(),
             quarantine = Quarantine(config.quarantineMaxMs * config.format.sampleRateHz * config.format.channels / 1000),
+            limitMs = durationLimit().also { require(it in 1..120L * 60_000) },
         )
         session = created
         val tag = Tag(created.id, created.generation)
@@ -623,45 +651,74 @@ class CaptureCoordinator(
         current.evidence = evidence
         current.evidenceId = ids.newUuid()
         current.startedAt = clock.now()
+        current.startedNs = clock.monotonicNs()
+        current.speech = SpeechFilter(config.format, vad)
         val tag = Tag(current.id, current.generation)
         current.durationTimer = scope.launch {
-            delay(config.maxDurationMs)
+            if (current.limitMs > 60_000) {
+                delay(current.limitMs - 60_000)
+                post(Message.Timeout(tag, TimerKind.DURATION_WARNING))
+                delay(60_000)
+            } else {
+                delay(current.limitMs)
+            }
             post(Message.Timeout(tag, TimerKind.DURATION))
         }
         return true
     }
 
-    /** 关闸、立刻释放麦克风，然后在后台封存；封存结果以消息回到邮箱。 */
-    private fun stopRecording(endReason: EndReason) {
-        durationLimitMs = if (endReason == EndReason.DURATION_LIMIT) config.maxDurationMs else null
+    /** 关闸、立刻释放麦克风，然后在后台封存；封存结果以消息回到邮箱。返回尾帧冲刷是否遇到存储失败。 */
+    private fun stopRecording(endReason: EndReason, flush: Boolean = true): Boolean {
         val current = session ?: error("RECORDING 必有会话")
         current.cancelJobs()
-        current.handle = (current.handle ?: error("RECORDING 必有句柄")).closed()
+        durationWarning = false
         releaseCapture(current.operationId)
+        val handle = current.handle ?: error("RECORDING 必有句柄")
+        var flushFailed = false
+        val reason = try {
+            if (flush) appendSpeech(current, handle, current.speech?.finish().orEmpty())
+            endReason
+        } catch (e: IOException) {
+            flushFailed = true
+            current.storageFailed = true
+            if (endReason.truncated) endReason else EndReason.SYSTEM_INTERRUPTION
+        }
+        durationLimitMs = if (reason == EndReason.DURATION_LIMIT) current.limitMs else null
+        current.handle = handle.closed()
 
         val writer = current.writer ?: error("RECORDING 必有写入器")
         val recordId = current.recordId ?: error("RECORDING 必有 Record 标识")
         val evidence = current.evidence ?: error("RECORDING 必有路由证据")
         val evidenceId = current.evidenceId ?: error("RECORDING 必有证据标识")
         val startedAt = current.startedAt ?: error("RECORDING 必有开始时间")
-        val chunkId = ids.newUuid()
         val written = current.writtenSamples
+        val storageFailed = current.storageFailed
         val sessionId = current.id
         val epoch = evidence.epoch
+        val observedSamples = current.speech?.receivedSamples ?: 0L
+        val captureMs = maxOf((clock.monotonicNs() - current.startedNs).coerceAtLeast(0) / 1_000_000, samplesToMs(observedSamples, roundUp = true))
+        val chunks = current.segments.mapIndexed { index, segment ->
+            AudioChunk(segment.id, index.toLong(), segment.digest.digest().joinToString("") { "%02x".format(it) }, epoch,
+                samplesToMs(segment.start), samplesToMs(segment.end, roundUp = true))
+        }
         val tag = Tag(current.id, current.generation)
 
         scope.launch(adapterDispatcher) {
             val outcome = try {
                 if (written == 0L) {
-                    // 确认了路由却没收到任何采样：没有音频可留，不留空文件
+                    // 确认了路由却没收到任何采样：没有音频可留，不留空文件；若是存储写入失败，按丢失处理而不是无语音
                     writer.abort()
-                    SealOutcome.Done(
-                        SealedRecording(resultFor(recordId, sessionId, endReason, 0, null), evidence, evidenceId, startedAt, null),
-                    )
+                    if (storageFailed) {
+                        SealOutcome.Failed(recordId, Cause.STORAGE_FAILURE)
+                    } else {
+                        SealOutcome.Done(
+                            SealedRecording(resultFor(recordId, sessionId, reason, captureMs, observedSamples, chunks), evidence, evidenceId, startedAt, null),
+                        )
+                    }
                 } else {
                     val audio = writer.seal()
                     SealOutcome.Done(
-                        SealedRecording(resultFor(recordId, sessionId, endReason, audio.durationMs, ChunkSpec(chunkId, audio.sha256, epoch)), evidence, evidenceId, startedAt, audio),
+                        SealedRecording(resultFor(recordId, sessionId, reason, captureMs, observedSamples, chunks), evidence, evidenceId, startedAt, audio),
                     )
                 }
             } catch (e: CancellationException) {
@@ -677,6 +734,7 @@ class CaptureCoordinator(
             }
             post(Message.Sealed(tag, outcome))
         }
+        return flushFailed
     }
 
     private fun releaseCapture(operationId: String) {
@@ -687,24 +745,49 @@ class CaptureCoordinator(
         }
     }
 
-    private class ChunkSpec(val chunkId: String, val sha256: String, val routeEpoch: Long)
+    private fun appendSpeech(current: Session, handle: CaptureHandle, pieces: List<SpeechPiece>) {
+        val writer = current.writer ?: error("RECORDING 必有写入器")
+        for (piece in pieces) {
+            writer.append(handle, piece.samples)
+            val last = current.segments.lastOrNull()
+            val segment = if (last != null && last.end == piece.startSample) last else {
+                Segment(ids.newUuid(), piece.startSample, piece.startSample, MessageDigest.getInstance("SHA-256")).also { current.segments += it }
+            }
+            segment.end += piece.samples.size
+            val bytes = ByteBuffer.allocate(piece.samples.size * 2).order(ByteOrder.LITTLE_ENDIAN)
+            piece.samples.forEach(bytes::putShort)
+            segment.digest.update(bytes.array())
+            current.writtenSamples += piece.samples.size
+            counters = counters.copy(writtenSamples = counters.writtenSamples + piece.samples.size)
+        }
+    }
 
-    /**
-     * 组装合同里的 RecordingResult。时间线从路由确认那一刻开始：保留的音频是 [0, durationMs]；
-     * 确认之前的帧不在时间线上（它们根本没有被保留）。capture_duration_ms 取已保留音频的时长（按采样数算）。
-     * 没有 VAD（Ticket 18），所以保留下来的音频都算作“已确认的语音时间段”。
-     */
-    private fun resultFor(recordId: String, sessionId: String, endReason: EndReason, durationMs: Long, chunk: ChunkSpec?): RecordingResult {
+    private fun samplesToMs(samples: Long, roundUp: Boolean = false): Long {
+        val rate = config.format.sampleRateHz.toLong() * config.format.channels
+        return (samples * 1000 + if (roundUp) rate - 1 else 0) / rate
+    }
+
+    private fun resultFor(recordId: String, sessionId: String, endReason: EndReason, durationMs: Long, observedSamples: Long, chunks: List<AudioChunk>): RecordingResult {
+        val ranges = chunks.map { TimeRange(it.startMs, it.endMs) }
+        var cursor = 0L
+        val discarded = buildList {
+            for (range in ranges) {
+                if (cursor < range.startMs) add(DiscardedRange(cursor, range.startMs, DiscardReason.SILENCE))
+                cursor = range.endMs
+            }
+            val observedMs = samplesToMs(observedSamples, roundUp = true)
+            if (cursor < observedMs) add(DiscardedRange(cursor, observedMs, DiscardReason.SILENCE))
+        }
         val result = RecordingResult(
             recordId = recordId,
             captureSessionId = sessionId,
             status = if (endReason.truncated) CaptureStatus.PARTIAL else CaptureStatus.COMPLETE,
             endReason = endReason,
             captureDurationMs = durationMs,
-            speechDurationMs = durationMs,
-            chunks = if (chunk == null) emptyList() else listOf(AudioChunk(chunk.chunkId, 0, chunk.sha256, chunk.routeEpoch, 0, durationMs)),
-            verifiedRanges = if (durationMs > 0) listOf(TimeRange(0, durationMs)) else emptyList(),
-            discardedRanges = emptyList(),
+            speechDurationMs = ranges.sumOf { it.endMs - it.startMs },
+            chunks = chunks,
+            verifiedRanges = ranges,
+            discardedRanges = discarded,
         )
         check(ContractRules.violations(result).isEmpty()) { "协调器组装出了违反合同语义规则的结果" }
         return result
@@ -735,6 +818,7 @@ class CaptureCoordinator(
             version = publishVersion,
             durationLimitMs = durationLimitMs,
             controlModeEnabled = controlModeEnabled,
+            durationWarning = durationWarning,
         )
     }
 }

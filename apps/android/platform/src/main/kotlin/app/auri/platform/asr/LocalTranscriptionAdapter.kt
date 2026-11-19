@@ -18,9 +18,12 @@ import app.auri.capture.contract.ExecutionLocation
 import app.auri.capture.contract.TimestampGranularity
 import java.io.File
 import java.io.IOException
+import java.io.RandomAccessFile
 import java.util.UUID
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
 /** :asr 的 [LocalTranscriber] 对外露出的那一点：音频进、:asr 的结果出。缩成接口是为了在 JVM 里用假引擎测这层映射。 */
@@ -50,28 +53,95 @@ class LocalTranscriptionAdapter(
 
     override suspend fun transcribe(request: TranscriptionRequest): TranscriptionResult = withContext(dispatcher) {
         val capabilities = engine.capabilities.toCapture()
-        // 一定处理不了的长音频不必先整个读进内存（30 分钟的录音有 57 MB）：在读文件之前就拒绝
-        val limit = capabilities.limits.maxAudioDurationMs
-        if (limit != null && request.audio.durationMs > limit) {
-            return@withContext TranscriptionResult(
-                AsrTaskHandle(UUID.randomUUID().toString(), "local-${capabilities.engine}", null, 1),
-                capabilities,
-                TranscriptionOutcome.Failed(ErrorCode.ASR_RESOURCE_LIMIT),
-            )
-        }
-        val audio = try {
-            WavReader.read(File(request.audio.location))
+        val windowMs = minOf(capabilities.limits.maxAudioDurationMs ?: 30_000L, 30_000L)
+        try {
+            if (request.audio.durationMs > windowMs) {
+                transcribeWindows(request, capabilities, windowMs)
+            } else {
+                val audio = WavReader.read(File(request.audio.location))
+                val result = engine.transcribe(audio)
+                TranscriptionResult(result.job.toCapture(), capabilities, result.outcome.toCapture())
+            }
         } catch (e: Exception) {
             // 读不了这份音频（文件丢了、被截断、格式不对）：没有对应的合同错误码，不硬套一个
             if (e !is IOException && e !is app.auri.asr.audio.WavFormatException) throw e
-            return@withContext TranscriptionResult(
+            TranscriptionResult(
                 AsrTaskHandle(UUID.randomUUID().toString(), "local-${capabilities.engine}", null, 1),
                 capabilities,
                 TranscriptionOutcome.Failed(null),
             )
         }
-        val result = engine.transcribe(audio)
-        TranscriptionResult(result.job.toCapture(), capabilities, result.outcome.toCapture())
+    }
+
+    /** Keeps each engine call and its temporary PCM buffer within the engine's limit. */
+    private suspend fun transcribeWindows(request: TranscriptionRequest, capabilities: AsrCapabilities, windowMs: Long): TranscriptionResult {
+        val format = request.audio.format
+        val frameBytes = format.channels * 2
+        val windowBytes = (windowMs * format.sampleRateHz / 1000 * frameBytes).coerceAtLeast(frameBytes.toLong()).toInt()
+        var job: AsrTaskHandle? = null
+        var language: String? = null
+        var confidence: Double? = null
+        var count = 0
+        var textBytes = 0
+        val text = StringBuilder()
+
+        RandomAccessFile(File(request.audio.location), "r").use { file ->
+            val prefix = ByteArray(12)
+            file.readFully(prefix)
+            if (String(prefix, 0, 4, Charsets.US_ASCII) != "RIFF" || String(prefix, 8, 4, Charsets.US_ASCII) != "WAVE") {
+                throw app.auri.asr.audio.WavFormatException("不是 RIFF/WAVE 文件")
+            }
+            var offset = 12L
+            var dataLength = -1L
+            while (offset + 8 <= file.length()) {
+                file.seek(offset)
+                val tag = ByteArray(4).also(file::readFully).toString(Charsets.US_ASCII)
+                val length = (0 until 4).fold(0L) { value, shift -> value or (file.readUnsignedByte().toLong() shl (shift * 8)) }
+                if (tag == "data") {
+                    dataLength = length
+                    offset += 8
+                    break
+                }
+                offset += 8 + length + (length and 1)
+                if (offset > 1_048_576 || offset > file.length()) throw app.auri.asr.audio.WavFormatException("WAV 头不完整或过大")
+            }
+            if (dataLength < 0 || dataLength % frameBytes != 0L || dataLength != request.audio.sampleCount * 2 || offset + dataLength > file.length()) {
+                throw app.auri.asr.audio.WavFormatException("WAV 数据长度不符")
+            }
+            val header = ByteArray(offset.toInt())
+            file.seek(0)
+            file.readFully(header)
+            var remaining = dataLength
+            while (remaining > 0) {
+                currentCoroutineContext().ensureActive()
+                val size = minOf(remaining, windowBytes.toLong()).toInt()
+                val bytes = ByteArray(header.size + size)
+                header.copyInto(bytes)
+                file.readFully(bytes, header.size, size)
+                val audio = WavReader.parse(bytes)
+                if (audio.sampleRateHz != format.sampleRateHz || audio.channels != format.channels) {
+                    throw app.auri.asr.audio.WavFormatException("WAV 格式与录音元数据不符")
+                }
+                val result = engine.transcribe(audio)
+                if (job == null) job = result.job.toCapture()
+                when (val outcome = result.outcome.toCapture()) {
+                    is TranscriptionOutcome.Text -> {
+                        textBytes += outcome.text.toByteArray(Charsets.UTF_8).size + if (text.isEmpty()) 0 else 1
+                        if (textBytes > 1_048_576) return TranscriptionResult(result.job.toCapture(), capabilities, TranscriptionOutcome.Failed(null))
+                        if (text.isNotEmpty()) text.append(' ')
+                        text.append(outcome.text)
+                        if (language == null) language = outcome.language
+                        confidence = if (count++ == 0) outcome.confidence else null
+                    }
+                    TranscriptionOutcome.NoSpeech -> Unit
+                    else -> return TranscriptionResult(result.job.toCapture(), capabilities, outcome)
+                }
+                remaining -= size
+            }
+        }
+        val handle = job ?: AsrTaskHandle(UUID.randomUUID().toString(), "local-${capabilities.engine}", null, 1)
+        val outcome = if (text.isEmpty()) TranscriptionOutcome.NoSpeech else TranscriptionOutcome.Text(text.toString(), language ?: "und", confidence)
+        return TranscriptionResult(handle, capabilities, outcome)
     }
 }
 
