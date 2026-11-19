@@ -162,8 +162,8 @@ class LocalTranscriptionStackTest {
     /** 经真的 WavRecordingStore 封存一段音频并登记成 Record，和产品里的路径一致。 */
     private fun addRecord(n: Int): String = runBlocking {
         val recordId = Samples.uuid(n)
-        val writer = WavRecordingStore(File(folder.root, "records")).begin(recordId, handle, PcmFormat(16_000))
-        writer.append(handle, ShortArray(1600) { (it % 50).toShort() })
+        val writer = WavRecordingStore(File(folder.root, "records")).begin(recordId, handle, PcmFormat(16_000), Samples.recordingMeta(sessionId = handle.captureSessionId))
+        writer.append(handle, 0, ShortArray(1600) { (it % 50).toShort() })
         val audio: SealedAudio = writer.seal()
         library.addRecord(Samples.entry(n, audio = audio))
         recordId

@@ -44,7 +44,7 @@ class BluetoothCaptureAdapter(
 ) : CaptureAdapter {
     private val captures = ConcurrentHashMap<String, Capture>()
     private val routeLock = Any()
-    private val permissionHandlers = CopyOnWriteArrayList<() -> Unit>()
+    private val permissionHandlers = CopyOnWriteArrayList<(ErrorCode) -> Unit>()
     private val discardedSamples = AtomicLong()
     /** Samples discarded because their input route was ambiguous. */
     val droppedAmbiguousSamples: Long get() = discardedSamples.get()
@@ -95,7 +95,7 @@ class BluetoothCaptureAdapter(
         captures.remove(operationId)?.close()
     }
 
-    override fun onPermissionRevoked(handler: () -> Unit): Subscription {
+    override fun onPermissionRevoked(handler: (ErrorCode) -> Unit): Subscription {
         permissionHandlers += handler
         return Subscription { permissionHandlers -= handler }
     }
@@ -103,7 +103,7 @@ class BluetoothCaptureAdapter(
     /** 界面回到前台时调用：Android 没有“权限被撤销”的回调，进程回来之后核对一次。 */
     fun permissionsMayHaveChanged() {
         val granted = environment.micPermissionGranted()
-        if (micWasGranted && !granted) permissionHandlers.forEach { it() }
+        if (micWasGranted && !granted) permissionHandlers.forEach { it(ErrorCode.PERMISSION_MIC_DENIED) }
         micWasGranted = granted
     }
 
