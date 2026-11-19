@@ -33,12 +33,12 @@ class RouteBoundaryTest {
             coordinator.enableControlMode()
             control.press(BusinessCommand.START)
             val recorder = audio.recorders.single()
-            recorder.script += ReadStep(ShortArray(1600) { 1 }, HEADSET, notify = false)
-            recorder.script += ReadStep(ShortArray(1600) { 2 }, HEADSET)
+            recorder.script += ReadStep(ShortArray(1600) { 1_000 }, HEADSET, notify = false)
+            recorder.script += ReadStep(ShortArray(1600) { 2_000 }, HEADSET)
 
             readers.single().run()
 
-            assertEquals(List(1600) { 2.toShort() }, store.written)
+            assertEquals(List(1600) { 2_000.toShort() }, store.written)
             assertEquals(1600L, adapter.droppedAmbiguousSamples)
         } finally {
             scope.cancel()

@@ -65,7 +65,7 @@ class CaptureResultTest {
 
         val bytes = ByteArray(3200 * 2)
         for (i in 0 until 3200) {
-            val sample = (i % 100).toShort().toInt()
+            val sample = (1_000 + i % 100).toShort().toInt()
             bytes[2 * i] = (sample and 0xFF).toByte()
             bytes[2 * i + 1] = ((sample shr 8) and 0xFF).toByte()
         }
@@ -97,7 +97,9 @@ class CaptureResultTest {
             val result = rig.output.recordings.singleOrNull()?.result ?: error("${case.name}：没有交出录音结果")
             assertEquals(case.name, case.expectedReason, result.endReason)
             assertEquals(case.name, case.expectedStatus, result.status)
-            assertEquals("${case.name}：已确认的 200 ms 都在", 200L, result.captureDurationMs)
+            val elapsed = if (case.expectedReason == EndReason.DURATION_LIMIT) rig.config.maxDurationMs else 200L
+            assertEquals("${case.name}：采集时长包含经过的时间", elapsed, result.captureDurationMs)
+            assertEquals("${case.name}：已确认的 200 ms 都在", 200L, result.speechDurationMs)
             assertEquals(case.name, emptyList<String>(), ContractRules.violations(result))
             assertEquals(case.name, CaptureState.ARMED, rig.state)
         }
@@ -183,7 +185,8 @@ class CaptureResultTest {
         val result = rig.output.recordings.single().result
         assertEquals(CaptureStatus.PARTIAL, result.status)
         assertEquals(EndReason.SYSTEM_INTERRUPTION, result.endReason)
-        assertEquals("只有写成功的那 1600 个采样", 100L, result.captureDurationMs)
+        assertEquals("采集时长包含写入失败的那一批", 200L, result.captureDurationMs)
+        assertEquals("只有写成功的那 1600 个采样被保留", 100L, result.speechDurationMs)
         assertEquals(1600, rig.store.written.size)
         assertEquals(Cause.STORAGE_FAILURE, rig.decisions.first { it.trigger == CaptureEvent.SYSTEM_INTERRUPTION }.cause)
         assertEquals(ErrorCode.STORAGE_EXHAUSTED, rig.decisions.first { it.trigger == CaptureEvent.SYSTEM_INTERRUPTION }.errorCode)

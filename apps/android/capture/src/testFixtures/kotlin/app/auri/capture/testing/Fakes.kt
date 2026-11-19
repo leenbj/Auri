@@ -215,7 +215,7 @@ class FakeCaptureAdapter : CaptureAdapter {
 
     /** 递送 [samples] 个采样（值是确定的，便于核对哈希）。 */
     fun frames(samples: Int, epoch: Long, session: Int = requests.lastIndex) {
-        sinks[session].frames(AudioFrames(epoch, ShortArray(samples) { (it % 100).toShort() }))
+        sinks[session].frames(AudioFrames(epoch, ShortArray(samples) { (1_000 + it % 100).toShort() }))
     }
 
     fun interrupt(session: Int = requests.lastIndex) = sinks[session].interrupted()
