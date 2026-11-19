@@ -37,6 +37,7 @@ dependencyResolutionManagement {
 rootProject.name = "AuriAndroid"
 include(":asr")
 include(":capture")
+include(":modelmgmt")
 include(":platform")
 include(":sync")
 include(":syncplatform")

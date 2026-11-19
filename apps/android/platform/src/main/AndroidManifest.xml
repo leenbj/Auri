@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   采集所需的权限与前台服务放在这个库模块里，随它一起合并进应用。
-  没有 INTERNET：本地转录没有任何网络路径（NFR-008），应用的 NoNetworkManifestTest 检查合并后的清单。
+  没有 INTERNET：本模块没有任何网络路径（NFR-008）。合并清单里 INTERNET 的来源恰好是 :modelmgmt（下载模型）与 :syncplatform（同步到局域网网关），
+  由应用的 NoNetworkManifestTest 与本模块的 NetworkIsolationTest 把关。
   麦克风运行时权限（RECORD_AUDIO）与麦克风类前台服务权限（FOREGROUND_SERVICE_MICROPHONE，API 34+）是两层，都要有。
   MODIFY_AUDIO_SETTINGS：录音前把音频模式切到 MODE_IN_COMMUNICATION、结束时恢复（AudioManager.setMode 要求它，
   普通权限、安装即授予，探针清单里也有）。

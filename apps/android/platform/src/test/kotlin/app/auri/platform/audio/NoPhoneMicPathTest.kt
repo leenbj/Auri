@@ -8,7 +8,7 @@ import org.junit.Test
 
 /**
  * 严格蓝牙输入（FR-REC-001、ADR-002）：Android 实现里没有任何向系统请求手机麦克风的路径。
- * 行为上由 BluetoothCaptureAdapterTest 证明；这里还扫六个生产模块（含 Ticket 21 新增的 :sync、:syncplatform）的编译类文件与允许类的源码和字节码。
+ * 行为上由 BluetoothCaptureAdapterTest 证明；这里还扫七个生产模块（含 Ticket 20 的 :modelmgmt 与 Ticket 21 的 :sync、:syncplatform）的编译类文件与允许类的源码和字节码。
  */
 class NoPhoneMicPathTest {
     private val sources: MutableMap<String, String> = File("src/main/kotlin").walkTopDown()
@@ -28,7 +28,7 @@ class NoPhoneMicPathTest {
 
     @Test
     fun `compiled production modules restrict AudioRecord to the Bluetooth implementation`() {
-        val modules = listOf("capture", "asr", "platform", "app", "sync", "syncplatform")
+        val modules = listOf("capture", "asr", "platform", "app", "modelmgmt", "sync", "syncplatform")
         val allowed = setOf(
             "app/auri/platform/audio/AndroidAudioSystem.class",
             "app/auri/platform/audio/AndroidAudioSystem\$AndroidRecorder.class",
@@ -53,7 +53,7 @@ class NoPhoneMicPathTest {
     @Test
     fun `production sources cannot hide inlined audio source constants behind aliases`() {
         val forbidden = Regex("\\b(AudioRecord|MediaRecorder)\\b")
-        val unexpected = listOf("capture", "asr", "platform", "app", "sync", "syncplatform").flatMap { module ->
+        val unexpected = listOf("capture", "asr", "platform", "app", "modelmgmt", "sync", "syncplatform").flatMap { module ->
             File("../$module/src/main").walkTopDown().filter { file ->
                 file.isFile && file.extension in setOf("kt", "java") &&
                     !(module == "platform" && file.invariantSeparatorsPath.endsWith("/app/auri/platform/audio/AndroidAudioSystem.kt")) &&

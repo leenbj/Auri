@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 与局域网里的网关通信（HTTPS，公钥指纹固定）。只有这个模块声明网络权限：
+    <!-- 与局域网里的网关通信（HTTPS，公钥指纹固定）。声明 INTERNET 的只有这个模块与 :modelmgmt（下载模型）：
          :asr、:capture、:platform 的清单里没有，录音与转录的代码里也没有网络类（NoNetworkCodeGuardTest）。 -->
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 网络恢复时自动重试（ConnectivityManager.registerNetworkCallback） -->

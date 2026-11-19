@@ -2,7 +2,7 @@
 // 放在这里的东西：配对载荷校验、固定公钥的 TLS 与 HTTP 客户端、网关接口（GatewayApi）、网关定位（已记录地址 → mDNS）、
 // 同步状态机、同步引擎（待同步任务、退避、结果不确定时先查询再决定重发）、submission 组装、同步状态的汇总。
 // Android 的实现（Keystore、SQLite 任务表、NSD、网络回调、相机取景）在 :syncplatform。
-// 这是 App 里唯一可以碰网络的模块（:capture、:asr、:platform 都没有网络代码，NoNetworkCodeGuardTest 逐个类核对）。
+// 可以碰网络的模块只有这里、:syncplatform（NSD 与网络回调）与 :modelmgmt（下载模型）；:capture、:asr、:platform 都没有网络代码，NoNetworkCodeGuardTest 逐个类核对。
 plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.serialization)

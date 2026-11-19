@@ -17,9 +17,10 @@ REAL_DIRS = [ANDROID / "platform" / "src" / "androidTest", ANDROID / "app" / "sr
 
 @pytest.fixture
 def sources(tmp_path):
-    """一个自己有 @Test 的类，加一个继承真契约基类的子类（它自己没有 @Test）。"""
+    """一个自己有 @Test 的类，加两个分别继承真契约基类（Record 库、任务库）的子类（它们自己没有 @Test）。"""
     (tmp_path / "Own.kt").write_text('package demo\n\nclass OwnTest {\n    @Test\n    fun works() {}\n}\n', encoding="utf-8")
     (tmp_path / "Sub.kt").write_text("package demo.lib\n\nclass SubContractTest : RecordLibraryContract() {\n    override fun newLibrary() = TODO()\n}\n", encoding="utf-8")
+    (tmp_path / "Jobs.kt").write_text("package demo.jobs\n\nclass SubJobsTest : JobStoreContract() {\n    override fun create() = TODO()\n}\n", encoding="utf-8")
     return [tmp_path]
 
 
@@ -35,6 +36,16 @@ def test_a_subclass_of_the_contract_is_expected_to_run_every_inherited_test(sour
     assert len(inherited) == len(ci.contract_test_names()) >= 11
 
 
+def test_a_subclass_of_the_job_store_contract_is_expected_to_run_every_inherited_test_and_only_its_own(sources):
+    expected = expected_for(sources)
+    jobs = {n.split("#")[1] for n in expected if n.startswith("demo.jobs.SubJobsTest#")}
+    library = {n.split("#")[1] for n in expected if n.startswith("demo.lib.SubContractTest#")}
+
+    assert len(jobs) == len(ci.contract_test_names(ci.CONTRACT_BASES["JobStoreContract"])) >= 7
+    assert len(library) == len(ci.contract_test_names(ci.CONTRACT_BASES["RecordLibraryContract"])) >= 11
+    assert not jobs & library, "每个子类只继承自己那个基类的测试，两套名字不能串"
+
+
 def test_a_log_where_everything_ran_and_passed_has_no_problems(sources):
     assert ci.check(log_for(all_pass(expected_for(sources))), sources) == []
 
@@ -42,6 +53,16 @@ def test_a_log_where_everything_ran_and_passed_has_no_problems(sources):
 def test_an_inherited_test_that_never_ran_is_reported(sources):
     entries = all_pass(expected_for(sources))
     missing = next(n for n in entries if n.startswith("demo.lib."))
+    del entries[missing]
+
+    problems = ci.check(log_for(entries), sources)
+
+    assert len(problems) == 1 and missing in problems[0] and "没有这个测试的记录" in problems[0]
+
+
+def test_an_inherited_job_store_test_that_never_ran_is_reported(sources):
+    entries = all_pass(expected_for(sources))
+    missing = next(n for n in entries if n.startswith("demo.jobs."))
     del entries[missing]
 
     problems = ci.check(log_for(entries), sources)
@@ -91,6 +112,10 @@ def test_the_real_sources_expect_the_contract_tests_the_sqlite_tests_and_the_dev
     contract = {n for n in expected if n.startswith("app.auri.platform.library.SqliteRecordLibraryContractTest#")}
     assert len(contract) == len(ci.contract_test_names())
     assert any(n.startswith("app.auri.platform.library.SqliteRecordLibraryTest#") for n in expected)
+    # Ticket 20：任务库继承 JobStoreContract 的测试，和资源监视器自己的设备端测试
+    jobs = {n for n in expected if n.startswith("app.auri.platform.jobs.SqliteTranscriptionJobStoreContractTest#")}
+    assert len(jobs) == len(ci.contract_test_names(ci.CONTRACT_BASES["JobStoreContract"])) >= 7
+    assert any(n.startswith("app.auri.platform.system.AndroidResourceMonitorTest#") for n in expected)
     assert any(n.startswith("app.auri.android.capture.CaptureRefusalOnDeviceTest#") for n in expected)
     assert any(n.startswith("app.auri.android.capture.ForegroundServiceOnDeviceTest#") for n in expected)
     assert not any("TranscribeFileActivityTest" in n or "RealEngineTranscriptionTest" in n for n in expected), "Ticket 14 的设备测试要模型，不在本次验收里"

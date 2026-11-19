@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  主清单本身不声明任何权限（尤其是 INTERNET）：采集需要的权限与前台服务在 :platform 的清单里，合并进来；
-  NoNetworkManifestTest 检查合并后的清单里没有 INTERNET。
+  主清单本身不声明任何权限：采集需要的权限与前台服务在 :platform 的清单里，合并进来；INTERNET 只来自 :modelmgmt（下载模型）与 :syncplatform（同步），
+  NoNetworkManifestTest 检查合并后的清单里它的来源恰好是这两个。
   allowBackup=false：录音与文字不进系统备份。
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">

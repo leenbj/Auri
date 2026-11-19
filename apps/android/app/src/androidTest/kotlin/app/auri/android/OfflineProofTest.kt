@@ -1,10 +1,14 @@
 package app.auri.android
 
 import android.content.pm.PackageManager
+import android.system.ErrnoException
+import android.system.Os
+import android.system.OsConstants
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.auri.asr.TranscriptionState
 import app.auri.asr.engine.SherpaOnnxEngineFactory
 import java.io.File
+import java.net.InetAddress
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
@@ -15,16 +19,20 @@ import org.junit.Test
 import org.junit.runner.RunWith
 
 /**
- * Ticket 14 第 4 项 / NFR-008：本地转录不需要网络。证据分三层，缺一层都不算证明：
- *  1. 已安装的包申请的网络类权限只有网关通信需要的那两个（INTERNET、ACCESS_NETWORK_STATE），没有别的网络/定位类权限；
- *  2. 网络**可用**（有默认网络）时整条转录 SUCCEEDED，该 UID 的收发字节数没有变化——转录本身不碰网络；
- *  3. 在系统飞行模式下整条转录照常 SUCCEEDED，且该 UID 的收发字节数没有变化。
+ * Ticket 14 第 4 项 / NFR-008：本地转录不需要网络。
  *
- * Ticket 21 之前，第 1、2 层是“包里没有 INTERNET，内核对该 UID 的网络 socket 一律拒绝”：权限不存在，字节数为 0 是必然的。
- * Ticket 21 让应用能把文字发到局域网网关，必须声明 INTERNET，那种整体证明不再成立（需求冲突的说明见
- * execution/acceptance/android-sync/README.md）。现在权限在、网络也在，零字节是**测出来**的，不是权限保证的；
- * 代码层面还有 NoNetworkCodeGuardTest（转录、录音、本地库的编译类里没有网络类）与 NoNetworkManifestTest（INTERNET 只来自 :syncplatform）。
+ * 内核层面的证明（“已安装的包没有 INTERNET”“内核拒绝该 UID 建任何网络 socket”）**不可能再成立**，不是放宽：Ticket 20（下载模型）与
+ * Ticket 21（把文字发到局域网网关）都要 INTERNET，Android 按应用（UID）而不是按模块授予它，不能限在某个模块或进程里
+ * （产品负责人已决定：不做不带 INTERNET 的构建变体，那个问题留给 Ticket 30；见 execution/acceptance/android-sync/README.md 第 8 节）。
+ * 剩下的保证是**代码守卫加实测零字节**，所以这里的测试要尽量强：
+ *  1. 静态（JVM，不在这个文件里）：网络 API 只出现在登记过的模块里（`:platform` 的 NetworkIsolationTest、`:app` 的 NoNetworkCodeGuardTest），
+ *     INTERNET 只来自登记过的模块清单（NoNetworkManifestTest）；
+ *  2. 已安装的包申请的网络类权限恰好是 INTERNET 与 ACCESS_NETWORK_STATE（同步层监听网络恢复要用），没有别的网络/定位类权限（第一个测试）；
+ *  3. 飞行模式下系统没有任何出路：有 INTERNET 的应用，socket 能建出来（对照：它不再被内核拒绝），但连出去的尝试在系统层失败（第二个测试）；
+ *  4. 网络**可用**（有默认网络）时整条转录 SUCCEEDED，且该 UID 的收发字节数没有增加——零字节是**测出来**的，不是权限保证的（第三个测试）；
+ *  5. 在系统飞行模式下整条转录照常 SUCCEEDED，且该 UID 的收发字节数没有变化（第四个测试）。
  *
+ * 失去的是什么：Ticket 14 那种“系统层面证明这个进程根本不能联网”的证据没有了，剩下的是代码扫描加行为实测。这一点写进了验收文档，由产品负责人知情。
  * 模拟器上的飞行模式只是“系统没有默认网络”的 E2 证据；真机飞行模式实测是 E3，见 README 的验收步骤（NOT_RUN）。
  */
 @RunWith(AndroidJUnit4::class)
@@ -65,6 +73,27 @@ class OfflineProofTest {
         val report = Json.decodeFromString<RunReport>(File(out, "run-report.json").readText())
         assertNotNull("本机 TrafficStats 必须能读到该 UID 的字节数，读不到就不能证明", report.process.uidNetworkBytesDelta)
         assertEquals(0L, report.process.uidNetworkBytesDelta)
+    }
+
+    @Test
+    fun inAirplaneModeASocketCanBeCreatedButFindsNoRouteOut() {
+        val wasOn = airplaneModeSetting() == "1"
+        try {
+            DeviceEnv.shell("cmd connectivity airplane-mode enable")
+            awaitAirplaneMode()
+            // 有 INTERNET 时建网络 socket 不再被内核拒绝（Ticket 14 当时断言的正是相反的）；没有默认网络，连向保留的测试地址（RFC 5737）立刻失败
+            val fd = Os.socket(OsConstants.AF_INET, OsConstants.SOCK_STREAM, 0)
+            try {
+                Os.connect(fd, InetAddress.getByAddress(byteArrayOf(192.toByte(), 0, 2, 1)), 80)
+                fail("飞行模式下不应该连得出去")
+            } catch (e: ErrnoException) {
+                assertTrue("errno=${e.errno}（${e.message}）", e.errno in setOf(OsConstants.ENETUNREACH, OsConstants.EHOSTUNREACH))
+            } finally {
+                Os.close(fd)
+            }
+        } finally {
+            if (!wasOn) DeviceEnv.shell("cmd connectivity airplane-mode disable")
+        }
     }
 
     @Test

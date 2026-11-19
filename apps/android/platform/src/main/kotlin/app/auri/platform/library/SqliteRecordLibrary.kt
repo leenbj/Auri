@@ -60,7 +60,12 @@ class SqliteRecordLibrary(
         }
 
         override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-            error("没有从版本 $oldVersion 升级到 $newVersion 的迁移")
+            if (oldVersion == 1 && newVersion == 2) {
+                db.execSQL("ALTER TABLE revisions ADD COLUMN publication_key TEXT")
+                db.execSQL("CREATE UNIQUE INDEX revisions_publication_key ON revisions(publication_key)")
+            } else {
+                error("没有从版本 $oldVersion 升级到 $newVersion 的迁移")
+            }
         }
 
         override fun onOpen(db: SQLiteDatabase) {
@@ -99,6 +104,16 @@ class SqliteRecordLibrary(
         db.beginTransaction()
         val revision = try {
             if (!db.exists(draft.recordId)) throw NoSuchRecordException(draft.recordId)
+            val existing = draft.publicationKey?.let { key ->
+                db.rawQuery("SELECT * FROM revisions WHERE publication_key = ?", arrayOf(key)).use {
+                    if (it.moveToFirst()) it.toRevision() else null
+                }
+            }
+            if (existing != null) {
+                require(existing.recordId == draft.recordId)
+                db.setTransactionSuccessful()
+                return@withContext existing
+            }
             val next = db.rawQuery("SELECT COALESCE(MAX(number), 0) + 1 FROM revisions WHERE record_id = ?", arrayOf(draft.recordId))
                 .use { it.moveToFirst(); it.getInt(0) }
             val published = draft.toRevision(next)
@@ -179,7 +194,7 @@ class SqliteRecordLibrary(
         rawQuery("SELECT 1 FROM records WHERE record_id = ?", arrayOf(recordId)).use { it.moveToFirst() }
 
     private companion object {
-        const val SCHEMA_VERSION = 1
+        const val SCHEMA_VERSION = 2
 
         val SCHEMA = listOf(
             """
@@ -222,9 +237,11 @@ class SqliteRecordLibrary(
                 confidence REAL,
                 created_at_s INTEGER NOT NULL,
                 created_at_nano INTEGER NOT NULL,
+                publication_key TEXT,
                 PRIMARY KEY (record_id, number)
             )
             """.trimIndent(),
+            "CREATE UNIQUE INDEX revisions_publication_key ON revisions(publication_key)",
             "CREATE TRIGGER revisions_immutable_update BEFORE UPDATE ON revisions BEGIN SELECT RAISE(ABORT, 'revision 不可改写'); END",
             "CREATE TRIGGER revisions_immutable_delete BEFORE DELETE ON revisions BEGIN SELECT RAISE(ABORT, 'revision 不可删除'); END",
         )
@@ -290,6 +307,7 @@ private fun Revision.toValues() = ContentValues().apply {
     if (confidence == null) putNull("confidence") else put("confidence", confidence)
     put("created_at_s", createdAt.epochSecond)
     put("created_at_nano", createdAt.nano)
+    if (publicationKey == null) putNull("publication_key") else put("publication_key", publicationKey)
 }
 
 private fun Cursor.string(column: String): String = getString(getColumnIndexOrThrow(column))
@@ -342,5 +360,6 @@ private fun Cursor.toRevision(): Revision {
         modelVersion = stringOrNull("model_version"),
         confidence = if (isNull(confidenceIndex)) null else getDouble(confidenceIndex),
         createdAt = Instant.ofEpochSecond(long("created_at_s"), long("created_at_nano")),
+        publicationKey = stringOrNull("publication_key"),
     )
 }

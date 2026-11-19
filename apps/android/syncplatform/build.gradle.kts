@@ -1,5 +1,5 @@
 // :syncplatform —— Ticket 21 的 Android 实现：Keystore 加密的设备令牌、SQLite 待同步任务表、NSD（mDNS）发现、
-// 网络状态回调、二维码取景（CameraX + ZXing）。网络与相机权限只在这个模块的清单里声明：
+// 网络状态回调、二维码取景（CameraX + ZXing）。网络与相机权限在这个模块的清单里声明（INTERNET 另一处是 :modelmgmt，下载模型）：
 // :asr、:capture、:platform 的清单与代码都没有网络，NoNetworkCodeGuardTest 与 NoNetworkManifestTest 把这一点钉死。
 plugins {
     alias(libs.plugins.android.library)
