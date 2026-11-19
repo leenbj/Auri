@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- ProcessKillSurvivalTest 用：在另一个进程里写库，测试进程再把它杀掉。只存在于测试 APK 里。 -->
+    <application>
+        <service
+            android:name="app.auri.syncplatform.WriterService"
+            android:exported="false"
+            android:process=":writer" />
+    </application>
+</manifest>

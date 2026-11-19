@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  整个应用唯一声明 INTERNET 的地方：下载模型要联网。转录、录音、Record 库都不在这个模块里，
-  也不能引用它的网络代码（NetworkIsolationTest 扫四个生产模块的类文件），断网时转录照常（飞行模式零字节实测见仪器测试 OfflineProofTest）。
+  声明 INTERNET 的两个地方之一（另一个是 :syncplatform，把文字同步到局域网网关）：下载模型要联网。转录、录音、Record 库都不在这个模块里，
+  也不能引用它的网络代码（NetworkIsolationTest 与 NoNetworkCodeGuardTest 扫生产模块的类文件），断网时转录照常（飞行模式零字节实测见仪器测试 OfflineProofTest）。
   ACCESS_NETWORK_STATE 故意不要：用户明确点了“下载”才联网，失败了如实报“没有网络”，不靠系统的联网状态猜。
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">

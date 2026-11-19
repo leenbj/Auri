@@ -58,6 +58,11 @@ android {
 tasks.matching { it.name == "testDebugUnitTest" }.configureEach {
     dependsOn("processDebugMainManifest")
     inputs.file(layout.buildDirectory.file("outputs/logs/manifest-merger-debug-report.txt")).withPropertyName("manifestMergerReport")
+
+    // ReleaseVariantTest（评审 F14）要看 release 版编译出来的类：测试前先把它们编译好，并声明为输入，类变了测试就要重跑。
+    dependsOn("compileReleaseKotlin", "compileReleaseJavaWithJavac")
+    inputs.files(layout.buildDirectory.dir("tmp/kotlin-classes/release")).withPropertyName("releaseKotlinClasses")
+    inputs.files(layout.buildDirectory.dir("intermediates/javac/release/compileReleaseJavaWithJavac/classes")).withPropertyName("releaseJavaClasses")
 }
 
 dependencies {
@@ -65,6 +70,7 @@ dependencies {
     implementation(project(":capture"))
     implementation(project(":modelmgmt"))
     implementation(project(":platform"))
+    implementation(project(":syncplatform"))
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.activity.compose)

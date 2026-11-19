@@ -12,17 +12,28 @@ import org.w3c.dom.Element
  *
  * 背景：Ticket 14 靠“应用根本没有 INTERNET 权限”证明本地转录没有网络路径。下载模型需要联网，而 Android 的网络权限是按应用（UID）授予的，
  * 不能只给某个模块——所以那种“整个应用都不能联网”的系统级证据不再成立。取而代之的是分层证据：
- *   1. 静态：下列网络 API 只出现在 :modelmgmt 的编译产物与源码里，其余所有生产模块里一处都没有（本测试）；
- *   2. 静态：INTERNET 权限只在 :modelmgmt 的清单里声明，合并清单里它的唯一来源也是 :modelmgmt（本测试 + :app 的 NoNetworkManifestTest）；
+ *   1. 静态：下列网络 API 只出现在登记过的模块（:modelmgmt、:sync、:syncplatform）的编译产物与源码里，其余所有生产模块里一处都没有（本测试；
+ *      :app 的 NoNetworkCodeGuardTest 再把范围收窄到具体的传输类）；
+ *   2. 静态：INTERNET 权限只在 :modelmgmt 与 :syncplatform 的清单里声明，合并清单里它的来源恰好是这两个（本测试 + :app 的 NoNetworkManifestTest）；
  *   3. 静态：:modelmgmt 看不见音频、文字、Record：它不依赖 :capture / :platform / :app，对 :asr 只引用清单与校验器那一个包（本测试）；
  *   4. 动态：飞行模式下整条转录照常成功，且该 UID 的收发字节数没有增加（仪器测试 OfflineProofTest，模拟器 E2、真机 E3）；
  *   5. 动态：没有用户操作，下载代码一个字节都不发（:modelmgmt 的 ModelManagerTest）。
- * 以后任何新增联网的模块（比如 Ticket 21 的网关同步）必须在 [networkModules] 里显式登记并说明它自己的隔离理由，而不是悄悄加一个权限。
+ * 以后任何新增联网的模块必须在 [networkModules] 里显式登记并说明它自己的隔离理由，而不是悄悄加一个权限。
+ *
+ * Ticket 21 的登记：:sync（固定公钥的 HTTPS 客户端，纯 JVM、没有清单）与 :syncplatform（NsdManager 发现、系统网络回调，清单声明 INTERNET 与
+ * ACCESS_NETWORK_STATE）把文字送到局域网网关。同步层只搬运文字与合同字段、不带音频，也不引用向系统要麦克风的类（NoPhoneMicPathTest 扫它们）。
+ * 按模块登记的粒度太粗：同步层里除了固定公钥的传输类，别的类也不该碰网络，所以 :app 的 NoNetworkCodeGuardTest 另按**类**限定谁能碰网络。
  */
 class NetworkIsolationTest {
     /** 允许出现网络 API 与 INTERNET 权限的模块。 */
-    private val networkModules = setOf("modelmgmt")
-    private val productionModules = listOf("capture", "asr", "platform", "app", "modelmgmt")
+    private val networkModules = setOf("modelmgmt", "sync", "syncplatform")
+
+    /** 其中在自己的清单里声明 INTERNET 的（:sync 是纯 JVM 模块，没有清单）。 */
+    private val internetModules = setOf("modelmgmt", "syncplatform")
+    private val productionModules = listOf("capture", "asr", "platform", "app", "modelmgmt", "sync", "syncplatform")
+
+    /** 纯 JVM 模块（Kotlin/JVM 插件）的类输出目录与 Android 库不同。 */
+    private val pureJvmModules = setOf("capture", "sync")
 
     /** 类文件常量池里出现这些内部名，就是引用了网络 API。java/net/URI、InetAddress 只做解析，不联网，不在其中。 */
     private val networkClassNames = listOf(
@@ -53,7 +64,7 @@ class NetworkIsolationTest {
 
     private fun classRoots(module: String): List<File> {
         val build = File(moduleDir(module), "build")
-        val roots = if (module == "capture") {
+        val roots = if (module in pureJvmModules) {
             listOf(File(build, "classes/kotlin/main"), File(build, "classes/java/main"))
         } else {
             listOf(File(build, "tmp/kotlin-classes/debug"), File(build, "intermediates/javac/debug/compileDebugJavaWithJavac/classes"))
@@ -121,7 +132,7 @@ class NetworkIsolationTest {
             val manifest = File(moduleDir(module), "src/main/AndroidManifest.xml")
             manifest.isFile && "android.permission.INTERNET" in permissionsIn(manifest)
         }.toSet()
-        assertEquals(networkModules, declaring)
+        assertEquals(internetModules, declaring)
     }
 
     @Test

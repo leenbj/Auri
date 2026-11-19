@@ -413,7 +413,22 @@ def test_device_preset_covers_the_refusal_and_airplane_scenarios_with_exact_code
     assert device["refused-truncated"] == "WAITING_MODEL:MODEL_INTEGRITY_FAILED"
     assert device["refused-not-installed"] == "WAITING_MODEL:MODEL_NOT_INSTALLED"
     assert device["airplane-zh"] == "SUCCEEDED"
+    assert device["online-zh"] == "SUCCEEDED"  # Ticket 21：网络可用时转录，字节数仍为 0（OfflineProofTest）
     assert {f"real-{lang}" for lang in ("zh", "en", "ja", "ko", "yue")} <= set(device)
+
+
+def test_every_literal_device_scenario_the_instrumentation_tests_write_is_registered_in_the_device_preset():
+    """仪器测试用 DeviceEnv.outDir("名字") 写出的场景必须登记到 device 预设：否则要等整轮设备验收跑完才在严格模式里暴露
+    （Ticket 21 加 online-zh 时就漏过一次）。变量名（outName）的场景由各自的测试保证，这里只拦字面量。"""
+    sources = sorted((REPO_ROOT / "apps/android/app/src/androidTest/kotlin/app/auri/android").glob("*.kt"))
+    named = {
+        name
+        for source in sources
+        for name in re.findall(r'DeviceEnv\.outDir\("([A-Za-z0-9][A-Za-z0-9._-]*)"\)', source.read_text(encoding="utf-8"))
+    }
+
+    assert {"airplane-zh", "online-zh"} <= named, "正则必须真的认得出字面量，否则下面的包含检查什么也没拦"
+    assert named <= set(cc.PRESETS["device"]), sorted(named - set(cc.PRESETS["device"]))
 
 
 def test_every_run_the_activity_tests_write_is_registered_in_the_runs_preset():
