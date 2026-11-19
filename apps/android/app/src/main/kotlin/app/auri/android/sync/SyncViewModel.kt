@@ -2,6 +2,8 @@ package app.auri.android.sync
 
 import androidx.lifecycle.ViewModel
 import app.auri.sync.SyncController
+import app.auri.sync.SyncLog
+import app.auri.sync.engine.RetryPolicy
 import app.auri.sync.pairing.PairingOutcome
 import app.auri.sync.pairing.PayloadParse
 import app.auri.sync.pairing.PairingPayload
@@ -9,6 +11,7 @@ import app.auri.sync.status.SyncStatus
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -16,6 +19,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
+import kotlinx.coroutines.flow.retryWhen
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -39,6 +43,7 @@ import kotlinx.coroutines.launch
  *   │   ├─ counts                 各状态的任务数（排队 / 发送中 / 等网关 / 稍后重试 / 需处理 / 已入库）。
  *   │   └─ nextRetryAt            等待重试的任务里最早的重试时间（RETRYING_LATER 时可以显示）。
  *   ├─ pairing: PairingProgress   配对这个动作的进展：Idle / Pairing / Failed(problem)。
+ *   ├─ storageProblem             true = 本机存储暂时读不出同步状态（会自动重试）：界面显示一行提示；status 仍是最后一次读到的值，不要清空。
  *   └─ manualEntryAvailable       true 才显示“手动输入配对载荷”：只有调试版为 true（模拟器没有摄像头）；release 版为 false。
  *
  * 写（都不阻塞，可在任何线程调，包括摄像头的分析线程）：
@@ -47,7 +52,8 @@ import kotlinx.coroutines.launch
  *   - dismissPairingProblem()    关掉配对失败的提示。
  *   - syncNow()                  现在同步一轮（回到前台、用户点“现在同步”）。
  *
- * 规则：令牌、配对码、公钥指纹不进界面状态、不进日志（这里没有任何日志）；转录文字是数据，这里根本不读文字（SEC-004）。
+ * 规则：令牌、配对码、公钥指纹不进界面状态、不进日志（这里唯一的日志是“状态流出故障”那一行，只有异常类名）；
+ *       转录文字是数据，这里根本不读文字（SEC-004）。
  * ===================================================================================================================
  */
 
@@ -55,6 +61,7 @@ data class SyncUiState(
     val status: SyncStatus?,
     val pairing: PairingProgress,
     val manualEntryAvailable: Boolean,
+    val storageProblem: Boolean = false,
 )
 
 /** 配对这个动作进行到哪了（与“同步有没有完成”无关）。 */
@@ -105,17 +112,40 @@ class SyncViewModel(
     private val controller: SyncController,
     private val scope: CoroutineScope,
     private val manualEntryAvailable: Boolean,
+    private val log: SyncLog = SyncLog.None,
 ) : ViewModel() {
     private val progress = MutableStateFlow<PairingProgress>(PairingProgress.Idle)
 
     /** 刚刚配成功的那张二维码的文字：取景还有几帧在路上时，同一张码再来不能触发第二次配对（它的配对码已经用掉了）。只在内存里，不对外。 */
     @Volatile private var lastPairedText: String? = null
 
-    // 读到配对记录之前 status 是 null；配对的进展不用等它（先有 null 再有真实状态，combine 才不会卡在等第一份状态上）
-    private val statuses: Flow<SyncStatus?> = controller.status.map<SyncStatus, SyncStatus?> { it }.onStart { emit(null) }
+    private val storageProblem = MutableStateFlow(false)
 
-    val state: StateFlow<SyncUiState> = combine(statuses, progress) { status, pairing ->
-        SyncUiState(status, pairing, manualEntryAvailable)
+    /** 连续失败的次数（只在收集状态流的那一条协程里读写）：读到一个状态就清零。 */
+    private var statusFailures = 0
+    private val retry = RetryPolicy()
+
+    // 读到配对记录之前 status 是 null；配对的进展不用等它（先有 null 再有真实状态，combine 才不会卡在等第一份状态上）。
+    // 读本机任务表的这条流可能暂时出故障（SQLite 被锁、磁盘暂时读不出来）：异常不能冲出作用域——这个作用域没有异常处理器，
+    // 冲出去就是进程崩溃。记一条只有类名的日志，界面显示“存储故障”，按有界退避重新订阅；最后读到的状态保留，不闪回“读取中”。
+    private val statuses: Flow<SyncStatus?> = controller.status
+        .map<SyncStatus, SyncStatus?> { status ->
+            statusFailures = 0
+            storageProblem.value = false
+            status
+        }
+        .retryWhen { failure, _ ->
+            if (failure !is Exception || failure is CancellationException) return@retryWhen false
+            log.event("sync.status.failed ${failure::class.simpleName}")
+            storageProblem.value = true
+            statusFailures += 1
+            delay(retry.delayMs(statusFailures))
+            true
+        }
+        .onStart { emit(null) }
+
+    val state: StateFlow<SyncUiState> = combine(statuses, progress, storageProblem) { status, pairing, problem ->
+        SyncUiState(status, pairing, manualEntryAvailable, problem)
     }.stateIn(scope, SharingStarted.Eagerly, SyncUiState(null, PairingProgress.Idle, manualEntryAvailable))
 
     fun onQrText(text: String) {

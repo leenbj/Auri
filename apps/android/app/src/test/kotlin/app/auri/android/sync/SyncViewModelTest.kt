@@ -1,6 +1,8 @@
 package app.auri.android.sync
 
 import app.auri.sync.SyncController
+import app.auri.sync.SyncLog
+import app.auri.sync.engine.RetryPolicy
 import app.auri.sync.pairing.DeviceToken
 import app.auri.sync.pairing.GatewayAddress
 import app.auri.sync.pairing.PairedGateway
@@ -17,14 +19,18 @@ import java.util.concurrent.CyclicBarrier
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -89,6 +95,101 @@ class SyncViewModelTest {
         assertEquals(PairingProgress.Idle, vm.state.value.pairing)
         controller.statuses.emit(status(SyncHeadline.WAITING_FOR_GATEWAY))
         assertEquals(SyncHeadline.WAITING_FOR_GATEWAY, vm.state.value.status?.headline)
+    }
+
+    // ---- F4：同步状态流读本机的任务表，它抛出的异常不能把进程带崩 ----
+
+    /** 读状态的那条流：第一次订阅先给一个状态再抛异常（SQLite 暂时读不出来），之后恢复正常。 */
+    private class FlakyStatusController(private val failures: Int, private val firstValue: SyncStatus? = null) : SyncController {
+        val subscriptions = AtomicInteger()
+
+        override val status: Flow<SyncStatus> = flow {
+            val round = subscriptions.incrementAndGet()
+            if (round <= failures) {
+                firstValue?.let { emit(it) }
+                throw IllegalStateException("database is locked: secret-looking-detail")
+            }
+            emit(status(SyncHeadline.UP_TO_DATE))
+        }
+
+        override suspend fun pair(payload: PairingPayload): PairingOutcome = error("not used")
+
+        override fun syncNow() = Unit
+    }
+
+    private class Escapes : CoroutineExceptionHandler {
+        val caught = CopyOnWriteArrayList<Throwable>()
+        override val key = CoroutineExceptionHandler.Key
+        override fun handleException(context: kotlin.coroutines.CoroutineContext, exception: Throwable) {
+            caught += exception
+        }
+    }
+
+    private fun TestScope.viewModelOf(controller: SyncController, escapes: Escapes, log: SyncLog = SyncLog.None) =
+        SyncViewModel(controller, CoroutineScope(UnconfinedTestDispatcher(testScheduler) + SupervisorJob() + escapes), true, log)
+
+    @Test
+    fun `状态流读本机存储时出了故障：异常不会冲出视图模型的作用域（否则进程崩溃），界面进入“存储故障”状态并保留最后读到的状态`() = runTest {
+        val escapes = Escapes()
+        val vm = viewModelOf(FlakyStatusController(failures = 1, firstValue = status(SyncHeadline.SENDING)), escapes)
+        runCurrent()
+
+        assertTrue("异常冲出了作用域（Android 上就是进程崩溃）: ${escapes.caught}", escapes.caught.isEmpty())
+        assertTrue("界面应当知道本机存储暂时读不了", vm.state.value.storageProblem)
+        assertEquals("最后一次读到的状态还在，界面不闪回“读取中”", SyncHeadline.SENDING, vm.state.value.status?.headline)
+    }
+
+    @Test
+    fun `状态流连续出故障：重新订阅的间隔 5 秒、10 秒地往上翻，读得出来了就恢复，存储故障状态消失`() = runTest {
+        val escapes = Escapes()
+        val controller = FlakyStatusController(failures = 2)
+        val vm = viewModelOf(controller, escapes)
+        runCurrent()
+        assertEquals("第一次订阅就失败了", 1, controller.subscriptions.get())
+
+        advanceTimeBy(RetryPolicy().delayMs(1) - 1)
+        runCurrent()
+        assertEquals("退避没到：不重新订阅", 1, controller.subscriptions.get())
+        advanceTimeBy(1)
+        runCurrent()
+        assertEquals("第一次退避到了：重新订阅，又失败", 2, controller.subscriptions.get())
+        assertTrue(vm.state.value.storageProblem)
+
+        advanceTimeBy(RetryPolicy().delayMs(2) - 1)
+        runCurrent()
+        assertEquals("连续第二次失败，退避翻倍：还没到", 2, controller.subscriptions.get())
+        advanceTimeBy(1)
+        runCurrent()
+
+        assertEquals(3, controller.subscriptions.get())
+        assertFalse("读得出来了：存储故障状态消失", vm.state.value.storageProblem)
+        assertEquals(SyncHeadline.UP_TO_DATE, vm.state.value.status?.headline)
+        assertTrue(escapes.caught.isEmpty())
+    }
+
+    @Test
+    fun `两次故障之间读到过状态：退避从头算，不是接着上一次往上翻`() = runTest {
+        val controller = FlakyStatusController(failures = 2, firstValue = status(SyncHeadline.SENDING))
+        val vm = viewModelOf(controller, Escapes())
+        runCurrent()
+
+        advanceTimeBy(RetryPolicy().delayMs(1))
+        runCurrent()
+        assertEquals(2, controller.subscriptions.get())
+        advanceTimeBy(RetryPolicy().delayMs(1)) // 第二次订阅读到过状态才失败：这次只等 5 秒，不是 10 秒
+        runCurrent()
+
+        assertEquals(3, controller.subscriptions.get())
+        assertFalse(vm.state.value.storageProblem)
+    }
+
+    @Test
+    fun `状态流出故障只记一条不含内容的日志（异常类名），异常消息不进日志`() = runTest {
+        val lines = CopyOnWriteArrayList<String>()
+        viewModelOf(FlakyStatusController(failures = 1), Escapes(), SyncLog { lines += it })
+        runCurrent()
+
+        assertEquals(listOf("sync.status.failed IllegalStateException"), lines.toList())
     }
 
     @Test

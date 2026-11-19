@@ -66,6 +66,7 @@ STATUS = "apps/android/sync/src/main/kotlin/app/auri/sync/status/SyncStatus.kt"
 LOOP = "apps/android/sync/src/main/kotlin/app/auri/sync/loop/SyncLoop.kt"
 STATUS_TESTS = (":sync:test", "--tests", "*SyncStatusTest*")
 LOOP_TESTS = (":sync:test", "--tests", "*SyncLoopTest*")
+ENGINE_AND_LOOP_TESTS = (":sync:test", "--tests", "*SyncEngineTest*", "--tests", "*SyncScenarioReplayTest*", "--tests", "*SyncLoopTest*")
 
 MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
@@ -350,6 +351,62 @@ MUTATIONS += (
         ("这一轮缓存的旧网关地址不能拿给新网关的指纹用",),
     ),
     Mutation(
+        "engine-offline-failure-schedules-retry",
+        "已经报告没网时，请求被中断要按等待网关处理，不排重试倒计时（F12）",
+        (Edit(ENGINE, "        if (offline) {\n            deliver(key, SyncEvent.GATEWAY_UNREACHABLE)", "        if (false) {\n            deliver(key, SyncEvent.GATEWAY_UNREACHABLE)"),),
+        ENGINE_AND_LOOP_TESTS, SYNC_TEST[0],
+        ("发送途中网络没了、请求随之被中断", "发送途中断了网、请求随之被中断"),
+    ),
+    Mutation(
+        "engine-never-clears-offline",
+        "网络回来之后要清除“没网”：之后的失败按正常重试倒计时算（F12）",
+        (Edit(ENGINE, "        offline = false\n        for (job in jobs.all()) {\n            if (job.state == SyncState.RETRY_SCHEDULED)", "        for (job in jobs.all()) {\n            if (job.state == SyncState.RETRY_SCHEDULED)"),),
+        ENGINE_AND_LOOP_TESTS, SYNC_TEST[0],
+        ("网络回来之后：失败又按正常的重试倒计时算",),
+    ),
+    Mutation(
+        "engine-network-change-keeps-old-retry",
+        "网络变了：等待重试的任务不再干等旧的重试时间（F11）",
+        (Edit(ENGINE, "if (job.state == SyncState.RETRY_SCHEDULED) deliver(job.key, SyncEvent.RETRY_DUE) { it.copy(attempts = 0) }", "if (job.state == SyncState.RETRY_SCHEDULED) Unit"),),
+        ENGINE_AND_LOOP_TESTS, SYNC_TEST[0],
+        ("默认网络换了一个：等待重试的任务不再干等旧的重试时间", "网络变了之后再失败：退避从头算"),
+    ),
+    Mutation(
+        "engine-network-change-keeps-old-attempts",
+        "网络变了：持久化的重试次数清零，退避从头算（F11）",
+        (Edit(ENGINE, "deliver(job.key, SyncEvent.RETRY_DUE) { it.copy(attempts = 0) }", "deliver(job.key, SyncEvent.RETRY_DUE) { it }"),),
+        ENGINE_AND_LOOP_TESTS, SYNC_TEST[0],
+        ("网络变了之后再失败：退避从头算",),
+    ),
+    Mutation(
+        "loop-ignores-network-change-for-scheduled-jobs",
+        "循环在网络回来/换了一个时必须通知引擎重新武装等待重试的任务（F11/F12）",
+        (Edit(LOOP, "                    containNetworkFailure { engine.networkChanged() }\n", ""),),
+        ENGINE_AND_LOOP_TESTS, SYNC_TEST[0],
+        ("默认网络换了一个：等待重试的任务不再干等旧的重试时间", "发送途中断了网、请求随之被中断"),
+    ),
+    Mutation(
+        "loop-observer-ends-after-first-failure",
+        "触发来源暂时出故障后必须重新订阅，不能就此失聪（F4）",
+        (Edit(LOOP, "        while (true) {\n            val startedAt = clock.now()", "        repeat(1) {\n            val startedAt = clock.now()"),),
+        LOOP_TESTS, SYNC_TEST[0],
+        ("任务表的变化信号暂时出了故障", "网络信号暂时出了故障"),
+    ),
+    Mutation(
+        "loop-observer-restarts-densely",
+        "重新订阅要按有界退避，不能每秒一次地空转（F4）",
+        (Edit(LOOP, "            delay(retry.delayMs(failures))\n        }\n    }", "            delay(1_000)\n        }\n    }"),),
+        LOOP_TESTS, SYNC_TEST[0],
+        ("任务表的变化信号一直出故障",),
+    ),
+    Mutation(
+        "loop-observer-backoff-never-resets",
+        "上一次订阅活得够久再出故障，重新订阅的退避从头算（F4）",
+        (Edit(LOOP, "STABLE_MS) failures = 0", "STABLE_MS) failures += 0"),),
+        LOOP_TESTS, SYNC_TEST[0],
+        ("上一次订阅活了一阵",),
+    ),
+    Mutation(
         "engine-confirms-foreign-origin",
         "网关说 Record 是别的设备录的：不能确认入库，也不再提交（F9，ADR-0020）",
         (Edit(ENGINE, "        originDeviceId != deviceId -> Standing.FOREIGN\n", ""),),
@@ -613,7 +670,7 @@ MUTATIONS += (
     Mutation(
         "loop-network-regained-does-not-wake",
         "网络恢复要立刻跑一轮，不能干等下一次探测",
-        (Edit(LOOP, "!initial -> wake.trySend(Unit)", "!initial -> Unit"),),
+        (Edit(LOOP, "containNetworkFailure { engine.networkChanged() }\n                    wake.trySend(Unit)", "containNetworkFailure { engine.networkChanged() }\n                    Unit"),),
         LOOP_TESTS, SYNC_TEST[0],
         ("网络恢复就跑一轮",),
     ),
@@ -1259,6 +1316,55 @@ MUTATIONS += (
         (Edit(VIEWMODEL, ".onStart { emit(null) }", ""),),
         VM_TESTS, APP_TEST,
         ("合规的二维码开始配对", "不是配对载荷的二维码给出 INVALID_QR"),
+    ),
+    Mutation(
+        "sync-vm-status-failure-escapes",
+        "状态流（读本机任务表）出故障：异常不能冲出视图模型的作用域，否则进程崩溃（F4）",
+        (Edit(VIEWMODEL, "            if (failure !is Exception || failure is CancellationException) return@retryWhen false\n", "            return@retryWhen false\n"),),
+        VM_TESTS, APP_TEST,
+        ("状态流读本机存储时出了故障",),
+    ),
+    Mutation(
+        "sync-vm-storage-problem-never-set",
+        "状态流出故障时界面必须知道本机存储暂时读不了（F4）",
+        (Edit(VIEWMODEL, "            storageProblem.value = true\n", "            storageProblem.value = false\n"),),
+        VM_TESTS, APP_TEST,
+        ("状态流读本机存储时出了故障",),
+    ),
+    Mutation(
+        "sync-vm-storage-problem-never-cleared",
+        "读得出来了，存储故障状态必须消失（F4）",
+        (Edit(VIEWMODEL, "            statusFailures = 0\n            storageProblem.value = false\n            status\n", "            statusFailures = 0\n            status\n"),),
+        VM_TESTS, APP_TEST,
+        ("状态流连续出故障",),
+    ),
+    Mutation(
+        "sync-vm-status-retry-without-backoff",
+        "状态流重新订阅要按有界退避，不能一秒一次地空转（F4）",
+        (Edit(VIEWMODEL, "            delay(retry.delayMs(statusFailures))\n", "            delay(1_000)\n"),),
+        VM_TESTS, APP_TEST,
+        ("状态流连续出故障",),
+    ),
+    Mutation(
+        "sync-vm-status-backoff-never-resets",
+        "两次故障之间读到过状态：退避从头算（F4）",
+        (Edit(VIEWMODEL, "            statusFailures = 0\n            storageProblem.value = false\n", "            storageProblem.value = false\n"),),
+        VM_TESTS, APP_TEST,
+        ("两次故障之间读到过状态",),
+    ),
+    Mutation(
+        "sync-vm-status-failure-log-leaks-message",
+        "状态流出故障的日志只有异常类名，异常消息（可能带路径、SQL）不进日志",
+        (Edit(VIEWMODEL, 'log.event("sync.status.failed ${failure::class.simpleName}")', 'log.event("sync.status.failed ${failure.message}")'),),
+        VM_TESTS, APP_TEST,
+        ("状态流出故障只记一条不含内容的日志",),
+    ),
+    Mutation(
+        "screen-text-storage-problem-asks-user-to-act",
+        "本机存储暂时读不了不需要用户做什么：这句话要说明会自动重试，不能读成同步失败（F4）",
+        (Edit(SYNC_SCREEN, "正在自动重试，不需要你做什么。", "请检查存储空间。"),),
+        TEXT_TESTS, APP_TEST,
+        ("本机存储暂时读不了",),
     ),
     Mutation(
         "sync-vm-dismiss-does-nothing",

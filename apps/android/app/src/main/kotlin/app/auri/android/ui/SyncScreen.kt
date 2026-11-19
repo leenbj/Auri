@@ -51,6 +51,7 @@ fun SyncScreen(
             Button(onClick = onSyncNow, enabled = state.status != null && state.status.headline != SyncHeadline.NOT_PAIRED) { Text("现在同步") }
         }
         val status = state.status
+        if (state.storageProblem) Text(describeStorageProblem())
         if (status == null) {
             Text("正在读取配对信息…")
         } else {
@@ -97,6 +98,9 @@ internal fun describeHeadline(status: SyncStatus): String = when (status.headlin
     SyncHeadline.SENDING -> "正在发送…"
     SyncHeadline.UP_TO_DATE -> "已同步：所有文字都已进入网关。"
 }
+
+/** 读本机的同步记录时出了故障（比如数据库暂时被锁）：和“网关连不上”是两回事，下面显示的状态是最后一次读到的。 */
+internal fun describeStorageProblem(): String = "本机的同步记录暂时读不出来，正在自动重试，不需要你做什么。下面显示的是最后一次读到的状态。"
 
 internal fun describeCause(cause: UserCause): String = when (cause) {
     UserCause.KEY_MISMATCH -> "这台网关的身份与配对时记录的不一样（可能换了网关或证书）。为安全起见没有发送任何内容。请在网关上重新生成配对二维码，重新配对。"

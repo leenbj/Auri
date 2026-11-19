@@ -4,12 +4,16 @@ package app.auri.sync.loop
 
 import app.auri.sync.engine.JobKey
 import app.auri.sync.engine.RetryPolicy
+import app.auri.sync.engine.SyncJob
+import app.auri.sync.engine.SyncJobStore
 import app.auri.sync.machine.SyncState
 import app.auri.sync.testing.FakeGateway.Fault
 import app.auri.sync.testing.FakeNetwork
 import app.auri.sync.testing.SyncRig
 import app.auri.sync.testing.SyncSamples
 import app.auri.sync.testing.TlsFixtures
+import java.time.Duration
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -281,6 +285,87 @@ class SyncLoopTest {
         assertEquals(SyncState.STORED, rig.job(key).state)
     }
 
+    // ---- F11：网络变了，等待重试的任务不再干等旧的重试时间 ----
+
+    private suspend fun SyncRig.parkInLongBackoff(key: JobKey) {
+        // 已经连失败了六次：退避涨到 5·2^5 = 160 秒，下一次重试还要等一阵
+        jobs.update(job(key).copy(state = SyncState.RETRY_SCHEDULED, attempts = 6, uncertain = true, retryAt = clock.now().plusSeconds(160)))
+    }
+
+    @Test
+    fun `默认网络换了一个：等待重试的任务不再干等旧的重试时间，立刻再试（旧的失败发生在另一个网络上）`() = loopRig { rig, network, loop ->
+        val key = rig.publish()
+        rig.parkInLongBackoff(key)
+        loop.start(backgroundScope)
+        runCurrent()
+        assertEquals("启动那一轮：还没到重试时间，什么也不发", SyncState.RETRY_SCHEDULED, rig.job(key).state)
+
+        network.switchToAnotherNetwork()
+        runCurrent()
+
+        assertEquals("换了网络就该立刻重试，而不是再等两分多钟", SyncState.STORED, rig.job(key).state)
+        assertEquals("上次的结果不确定：先问再发", listOf("GET status ${key.recordId}", "PUT ${key.recordId}#1"), rig.server.calls.toList())
+    }
+
+    @Test
+    fun `网络变了之后再失败：退避从头算（5 秒），不是接着旧的 160 秒翻倍；已持久化的次数也清零了`() = loopRig { rig, network, loop ->
+        val key = rig.publish()
+        rig.parkInLongBackoff(key)
+        loop.start(backgroundScope)
+        runCurrent()
+
+        rig.server.faults += Fault.Reject(503, "GATEWAY_UNREACHABLE", retryable = true) // 新网络上网关也答 503
+        network.switchToAnotherNetwork()
+        runCurrent()
+
+        val job = rig.job(key)
+        assertEquals(SyncState.RETRY_SCHEDULED, job.state)
+        assertEquals("次数从头数：这一次失败是第 1 次", 1, job.attempts)
+        assertEquals(Duration.ofMillis(RetryPolicy().delayMs(1)), Duration.between(rig.clock.now(), job.retryAt))
+    }
+
+    // ---- F12：发送途中断网 ----
+
+    @Test
+    fun `发送途中断了网、请求随之被中断：任务等网关，网络一回来就先问再补传，不用等旧的重试时间`() = loopRig { rig, network, loop ->
+        val gate = CompletableDeferred<Fault?>()
+        rig.server.holdNext = gate
+        loop.start(backgroundScope)
+        runCurrent()
+        val key = rig.publish()
+        runCurrent()
+        assertEquals(SyncState.SENDING, rig.job(key).state)
+
+        network.set(false)
+        runCurrent()
+        gate.complete(Fault.LoseRequest)
+        runCurrent()
+        assertEquals("断网时排重试倒计时没有意义", SyncState.WAITING_GATEWAY, rig.job(key).state)
+        assertTrue(rig.job(key).uncertain)
+
+        network.set(true)
+        runCurrent()
+
+        assertEquals("网络一回来就补传", SyncState.STORED, rig.job(key).state)
+        assertEquals(listOf("PUT ${key.recordId}#1", "GET status ${key.recordId}", "PUT ${key.recordId}#1"), rig.server.calls.toList())
+    }
+
+    @Test
+    fun `网络回来之后：失败又按正常的重试倒计时算，不会还当成断着网`() = loopRig { rig, network, loop ->
+        loop.start(backgroundScope)
+        runCurrent()
+        network.set(false)
+        runCurrent()
+        network.set(true)
+        runCurrent()
+
+        rig.server.faults += Fault.Reject(503, "GATEWAY_UNREACHABLE", retryable = true)
+        val key = rig.publish()
+        runCurrent()
+
+        assertEquals(SyncState.RETRY_SCHEDULED, rig.job(key).state)
+    }
+
     // ---- 不出错 ----
 
     @Test
@@ -407,6 +492,98 @@ class SyncLoopTest {
 
         assertEquals("启动时那一轮不依赖变化信号", SyncState.STORED, rig.job(key).state)
         assertTrue(rig.log.lines.any { it.startsWith("loop.jobs.failed IllegalStateException") })
+    }
+
+    // ---- F4：观察者的故障是暂时的，不能让它永远失聪 ----
+
+    private fun SyncJobStore.failingFirstSubscriptions(count: Int, cause: () -> Exception = { IllegalStateException("database is locked") }): SyncJobStore {
+        val remaining = AtomicInteger(count)
+        val real = this
+        return object : SyncJobStore by real {
+            override fun observe(): Flow<List<SyncJob>> = if (remaining.getAndDecrement() > 0) flow { throw cause() } else real.observe()
+        }
+    }
+
+    @Test
+    fun `任务表的变化信号暂时出了故障（比如数据库被锁）：按退避重新订阅，恢复之后新任务照样自动发出去`() = runTest {
+        val rig = SyncRig(this)
+        val loop = SyncLoop(rig.engine, rig.jobs.failingFirstSubscriptions(2), FakeNetwork(), rig.clock, RetryPolicy(), rig.log)
+        loop.start(backgroundScope)
+        runCurrent()
+        assertEquals("第一次订阅就失败了", 1, rig.log.lines.count { it.startsWith("loop.jobs.failed IllegalStateException") })
+
+        after(5_000) // 第一次重新订阅：又失败
+        after(10_000) // 第二次重新订阅：成功
+        assertEquals("恰好失败了两次，没有密集重试", 2, rig.log.lines.count { it.startsWith("loop.jobs.failed IllegalStateException") })
+
+        val key = rig.publish()
+        runCurrent()
+
+        assertEquals("观察者以前失败一次就永远结束，新任务没人发现", SyncState.STORED, rig.job(key).state)
+    }
+
+    @Test
+    fun `任务表的变化信号一直出故障：重新订阅的间隔 5、10、20 秒……封顶在退避上限，一小时内只有十来次，不会密集空转`() = runTest {
+        val rig = SyncRig(this)
+        val loop = SyncLoop(rig.engine, rig.jobs.failingFirstSubscriptions(Int.MAX_VALUE), FakeNetwork(), rig.clock, RetryPolicy(), rig.log)
+        loop.start(backgroundScope)
+        runCurrent()
+
+        after(60 * 60_000L)
+
+        val failures = rig.log.lines.count { it.startsWith("loop.jobs.failed IllegalStateException") }
+        assertTrue("一小时里失败了 $failures 次：应当在 8 到 14 之间（5+10+…+640 秒之后每次 15 分钟）", failures in 8..14)
+    }
+
+    @Test
+    fun `上一次订阅活了一阵（一分钟以上）才出故障：重新订阅的退避从头算，不是接着上一次的往上翻`() = runTest {
+        val rig = SyncRig(this)
+        val subscribedAt = java.util.concurrent.CopyOnWriteArrayList<java.time.Instant>()
+        val real = rig.jobs
+        val shaped = object : SyncJobStore by real {
+            override fun observe(): Flow<List<SyncJob>> = when (subscribedAt.size.also { subscribedAt += rig.clock.now() }) {
+                0 -> flow { throw IllegalStateException("database is locked") } // 立刻失败
+                1 -> flow {
+                    kotlinx.coroutines.delay(120_000) // 活了两分钟才失败
+                    throw IllegalStateException("database is locked")
+                }
+                else -> real.observe()
+            }
+        }
+        val loop = SyncLoop(rig.engine, shaped, FakeNetwork(), rig.clock, RetryPolicy(), rig.log)
+        loop.start(backgroundScope)
+        runCurrent()
+
+        after(5_000 + 120_000 + 5_000 + 1)
+
+        assertEquals("共订阅了三次", 3, subscribedAt.size)
+        assertEquals("第二次订阅活了两分钟才失败：下一次在 5 秒之后，不是 10 秒", Duration.ofMillis(120_000 + 5_000), Duration.between(subscribedAt[1], subscribedAt[2]))
+    }
+
+    @Test
+    fun `网络信号暂时出了故障：按退避重新订阅，恢复之后网络回来的事件照样触发补传`() = runTest {
+        val rig = SyncRig(this, gatewayOnLan = false)
+        val subscriptions = AtomicInteger()
+        val network = FakeNetwork()
+        val flaky = object : NetworkSignal {
+            override val available: Flow<Boolean> = flow {
+                if (subscriptions.incrementAndGet() == 1) throw IllegalStateException("系统服务暂时不可用")
+                network.available.collect { emit(it) }
+            }
+        }
+        val key = rig.publish()
+        val loop = SyncLoop(rig.engine, rig.jobs, flaky, rig.clock, RetryPolicy(), rig.log)
+        loop.start(backgroundScope)
+        runCurrent()
+        assertEquals(SyncState.WAITING_GATEWAY, rig.job(key).state)
+
+        after(5_000) // 重新订阅成功
+        rig.bringGatewayUp()
+        network.switchToAnotherNetwork()
+        runCurrent()
+
+        assertEquals("网络观察者恢复了：换网络的事件到了就补传", SyncState.STORED, rig.job(key).state)
+        assertEquals(2, subscriptions.get())
     }
 
     @Test

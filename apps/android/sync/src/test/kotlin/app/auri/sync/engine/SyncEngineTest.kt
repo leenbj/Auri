@@ -714,6 +714,28 @@ class SyncEngineTest {
         assertNotEquals("旧配对的公钥不符不能把任务停在“需要用户处理”", SyncState.BLOCKED, rig.job(key).state)
     }
 
+    // ---- F12：发送途中断网。请求随之被中断，不能排进（断网时没有意义的）重试倒计时 ----
+
+    @Test
+    fun `发送途中网络没了、请求随之被中断：按等待网关处理并保持结果不确定，不排重试倒计时`() = runRig { rig ->
+        val key = rig.publish()
+        val gate = CompletableDeferred<Fault?>()
+        rig.server.holdNext = gate
+        val sending = rig.scope.launch { rig.engine.send(key) }
+        rig.scope.runCurrent()
+        assertEquals(SyncState.SENDING, rig.job(key).state)
+
+        rig.engine.networkLost() // 平台报告网络没了：发送中的任务由请求自己的结果决定
+        assertEquals(SyncState.SENDING, rig.job(key).state)
+        gate.complete(Fault.LoseRequest) // 随之请求被中断
+        sending.join()
+
+        val after = rig.job(key)
+        assertEquals("断网时排重试倒计时没有意义：等网络回来", SyncState.WAITING_GATEWAY, after.state)
+        assertTrue("请求可能已经送到：之后仍然要先问再发", after.uncertain)
+        assertNull(after.retryAt)
+    }
+
     // ---- 进程、取消、故障 ----
 
     @Test

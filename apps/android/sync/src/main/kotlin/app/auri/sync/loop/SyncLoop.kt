@@ -36,8 +36,10 @@ interface NetworkSignal {
  * - 启动时跑一轮（接回上次进程被杀时留下的任务）；运行中出现新任务就跑；网络恢复或默认网络换了一个就跑；[nudge]（刚配对、回到前台）就跑。
  * - 任务在等重试：到了重试时间跑一轮。重试时间由引擎按有界指数退避排好（5 秒起、翻倍、封顶 15 分钟）。
  * - 网关一直连不上（网络是好的）：同样按退避去探，封顶 15 分钟一次，不会密集，也不会放弃（网关可能晚点开机）。
- * - 网络断开：没有请求在途的任务改为等待网关，断网期间一律不探测。
+ * - 网络断开：没有请求在途的任务改为等待网关，断网期间一律不探测；在途的请求若随之失败，结果出来时也按等待网关处理。
+ * - 网络回来或默认网络换了一个：等待重试的任务立刻回到排队、退避从头算（旧的失败发生在另一个网络上）。
  * - 被永久拒绝（停下等用户处理）的任务不产生任何计时与唤醒：没有“再试几次”的路。
+ * - 触发来源（任务表的变化、网络信号）暂时出故障：记一条不含内容的日志，按有界退避重新订阅，不会永远失聪。
  *
  * 几处设计要点：
  * - 所有触发只往一个“合并”的信号里投一票；跑一轮的是唯一的一个协程，一轮永远不会被别的触发或任务表的变化取消或重叠
@@ -60,6 +62,9 @@ class SyncLoop(
 
     @Volatile
     private var online = true
+
+    @Volatile
+    private var networkSeen = false
 
     @Volatile
     private var probeAttempt = 0
@@ -85,38 +90,58 @@ class SyncLoop(
         }
     }
 
-    /** 一个触发来源出了故障只记日志，不拖垮别的来源（比如系统的网络服务不可用时，任务表与手动触发照常工作）。 */
+    /**
+     * 一个触发来源出了故障只记日志，不拖垮别的来源（比如系统的网络服务不可用时，任务表与手动触发照常工作）；
+     * 然后按有界退避重新订阅：本机数据库暂时读不出来、系统网络服务暂时不可用都是暂时的，不该让这个来源永远失聪。
+     * 来源自己正常结束就不再重启。上一次订阅活得够久（至少 [STABLE_MS]）再出故障，退避从头算。
+     */
     private fun CoroutineScope.producer(name: String, body: suspend () -> Unit) = launch {
-        try {
-            body()
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (failure: Exception) {
-            log.event("loop.$name.failed ${failure::class.simpleName}")
+        var failures = 0
+        while (true) {
+            val startedAt = clock.now()
+            try {
+                body()
+                return@launch
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                log.event("loop.$name.failed ${failure::class.simpleName}")
+            }
+            if (Duration.between(startedAt, clock.now()).toMillis() >= STABLE_MS) failures = 0
+            failures += 1
+            delay(retry.delayMs(failures))
         }
     }
 
     private suspend fun watchNetwork() {
-        var first = true
         // 不去重：手机常开着移动数据，Wi-Fi 回来时系统只是把默认网络从蜂窝换回 Wi-Fi，信号一直是“可用”；
         // 去重会把这一刻吞掉，补传就要干等探测的退避（最长 15 分钟）
         network.available.collect { available ->
-            val initial = first
-            first = false
+            // 重新订阅之后的第一个值不算“启动时的第一个”：订阅中断期间可能错过了网络变化，当作变化处理更稳妥
+            val initial = !networkSeen
+            networkSeen = true
             online = available
             probeAttempt = 0
             rearm.value += 1
             when {
-                !available -> try {
-                    engine.networkLost()
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (failure: Exception) {
-                    log.event("loop.network.failed ${failure::class.simpleName}")
-                }
+                !available -> containNetworkFailure { engine.networkLost() }
                 // 启动时的第一轮已经由 start 安排了
-                !initial -> wake.trySend(Unit)
+                !initial -> {
+                    // 网络回来了或换了一个：等待重试的任务不必再等旧的重试时间（旧的失败发生在另一个网络上）
+                    containNetworkFailure { engine.networkChanged() }
+                    wake.trySend(Unit)
+                }
             }
+        }
+    }
+
+    private suspend fun containNetworkFailure(block: suspend () -> Unit) {
+        try {
+            block()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            log.event("loop.network.failed ${failure::class.simpleName}")
         }
     }
 
@@ -157,5 +182,10 @@ class SyncLoop(
                 }
             }
         }
+    }
+
+    private companion object {
+        /** 一次订阅至少活这么久再出故障，就不算“连续失败”：重新订阅的退避从头算。 */
+        const val STABLE_MS = 60_000L
     }
 }

@@ -64,7 +64,7 @@ enum class SendResult {
  * - **结果跟着配对走**：请求发出时是哪份配对，结果就只对那份有效。途中用户重新配对、改配别的网关，晚到的结果（被拒、
  *   公钥不符、甚至“已入库”）全部作废，任务回到排队、对新配对重新来过；一轮同步里缓存的网关地址也只对同一份配对有效。
  *
- * 引擎自己不计时、不监听网络：什么时候调用 [runOnce]、[networkLost] 由 SyncLoop 决定。
+ * 引擎自己不计时、不监听网络：什么时候调用 [runOnce]、[networkLost]、[networkChanged] 由 SyncLoop 决定。
  */
 class SyncEngine(
     private val jobs: SyncJobStore,
@@ -80,6 +80,10 @@ class SyncEngine(
     private val passLock = Mutex()
     private val jobLocks = ConcurrentHashMap<JobKey, Mutex>()
     private val inFlight: MutableSet<JobKey> = ConcurrentHashMap.newKeySet()
+
+    /** 平台最近一次报告的网络状态（[networkLost] 置位、[networkChanged] 清除）。引擎自己不监听网络，只记下被告知的结果。 */
+    @Volatile
+    private var offline = false
 
     /** 一轮同步：接回中断的、到点的重试回到排队、等待网关的探一下、然后按创建先后发送排队中的任务。适配器出的任何异常都被收在这里。 */
     suspend fun runOnce() {
@@ -122,10 +126,25 @@ class SyncEngine(
         deliver(key, SyncEvent.RETRY_DUE)
     }
 
-    /** 平台报告网络没了：没有请求在途的任务改为等待网关。在途的由请求自己的结果决定。 */
+    /**
+     * 平台报告网络没了：没有请求在途的任务改为等待网关。在途的由请求自己的结果决定——
+     * 引擎记下“现在没网”，请求若是因此失败，结果出来时按“等网关”处理（见 [retryLater]），不排重试倒计时。
+     */
     suspend fun networkLost() {
+        offline = true // 先记下再动任务：在途的请求这时完成，也能看到“没网”
         for (job in jobs.all()) {
             if (job.state in NO_REQUEST_IN_FLIGHT) deliver(job.key, SyncEvent.GATEWAY_UNREACHABLE)
+        }
+    }
+
+    /**
+     * 平台报告网络回来了，或默认网络换成了另一个：等待重试的任务不必再等旧的重试时间——旧的失败发生在另一个网络上。
+     * 立刻回到排队，持久化的重试次数清零（退避从头算）。停下等用户的任务不动：网络变了不会让一个被拒绝的请求变得可以接受。
+     */
+    suspend fun networkChanged() {
+        offline = false
+        for (job in jobs.all()) {
+            if (job.state == SyncState.RETRY_SCHEDULED) deliver(job.key, SyncEvent.RETRY_DUE) { it.copy(attempts = 0) }
         }
     }
 
@@ -279,8 +298,16 @@ class SyncEngine(
         return SendResult.WAITING_GATEWAY
     }
 
-    /** 请求可能已经送到：保持“不确定”（SEND_STARTED 已经记下）。 */
+    /**
+     * 请求可能已经送到：保持“不确定”（SEND_STARTED 已经记下）。
+     * 平台已经报告没网时，这次失败多半就是断网造成的：排重试倒计时没有意义（网络回来时才是该再试的时候），
+     * 按“等网关”处理，仍然记着结果不确定。
+     */
     private suspend fun retryLater(key: JobKey): SendResult {
+        if (offline) {
+            deliver(key, SyncEvent.GATEWAY_UNREACHABLE)
+            return SendResult.WAITING_GATEWAY
+        }
         deliver(key, SyncEvent.RETRYABLE_FAILURE) { it.copy(retryAt = clock.now().plusMillis(retry.delayMs(it.attempts))) }
         return SendResult.RETRY_LATER
     }

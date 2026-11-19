@@ -4,6 +4,7 @@ import app.auri.android.ui.describeCause
 import app.auri.android.ui.describeCounts
 import app.auri.android.ui.describeHeadline
 import app.auri.android.ui.describeProblem
+import app.auri.android.ui.describeStorageProblem
 import app.auri.sync.status.SyncCounts
 import app.auri.sync.status.SyncHeadline
 import app.auri.sync.status.SyncStatus
@@ -69,6 +70,14 @@ class SyncScreenTextTest {
         for (problem in listOf(PairingProblem.EXPIRED, PairingProblem.CODE_REJECTED, PairingProblem.UNCERTAIN)) {
             assertTrue("$problem", "重新生成" in describeProblem(problem))
         }
+    }
+
+    @Test
+    fun `本机存储暂时读不了：是另一种情形，明说会自动重试、不需要用户做什么，不能被读成“同步失败”`() {
+        val storage = describeStorageProblem()
+
+        assertTrue(storage, "自动重试" in storage && "不需要你做什么" in storage)
+        assertFalse(storage, SyncHeadline.entries.any { describeHeadline(status(it)) == storage })
     }
 
     @Test

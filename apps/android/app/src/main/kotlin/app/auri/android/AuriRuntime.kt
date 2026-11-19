@@ -44,6 +44,7 @@ import app.auri.platform.system.AndroidResourceMonitor
 import app.auri.platform.system.AppLifecycleTracker
 import app.auri.platform.system.RandomIds
 import app.auri.platform.system.SystemClock
+import app.auri.syncplatform.AndroidSyncLog
 import app.auri.syncplatform.SyncRuntime
 import app.auri.syncplatform.SyncStorage
 import java.io.File
@@ -169,7 +170,7 @@ class AuriRuntime(
     val syncViewModelFactory = object : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
-            SyncViewModel(sync, CoroutineScope(SupervisorJob() + Dispatchers.Default), manualPairingEntryAvailable) as T
+            SyncViewModel(sync, CoroutineScope(SupervisorJob() + Dispatchers.Default), manualPairingEntryAvailable, AndroidSyncLog) as T
     }
 
     val modelsViewModelFactory = object : ViewModelProvider.Factory {
