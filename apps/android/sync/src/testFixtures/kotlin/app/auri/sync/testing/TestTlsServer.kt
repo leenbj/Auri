@@ -27,10 +27,12 @@ sealed interface ServerAction {
         val status: Int,
         val body: ByteArray = ByteArray(0),
         val headers: Map<String, String> = mapOf("Content-Type" to "application/json"),
-        /** true：用 chunked 传输编码发正文（每块 7 字节，故意切碎）。 */
+        /** true：用 chunked 传输编码发正文（每块 [chunkSize] 字节，默认 7，故意切碎）。 */
         val chunked: Boolean = false,
         /** true：不发 Content-Length，靠关闭连接表示结束。 */
         val closeDelimited: Boolean = false,
+        /** chunked 时每块的字节数。 */
+        val chunkSize: Int = 7,
     ) : ServerAction
 
     /** 收到请求就断开，什么都不回：手机看到“请求可能已经送到了，结果不知道”。 */
@@ -134,7 +136,7 @@ class TestTlsServer(
                     action.chunked -> {
                         headers += "Transfer-Encoding" to "chunked"
                         out.write(head(action.status, headers))
-                        action.body.toList().chunked(7).forEach { piece ->
+                        action.body.toList().chunked(action.chunkSize).forEach { piece ->
                             out.write("${piece.size.toString(16)}\r\n".toByteArray())
                             out.write(piece.toByteArray())
                             out.write("\r\n".toByteArray())

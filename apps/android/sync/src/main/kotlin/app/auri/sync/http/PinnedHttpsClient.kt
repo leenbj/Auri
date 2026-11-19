@@ -158,17 +158,25 @@ class PinnedHttpsClient(
         private fun readChunked(input: InputStream, socket: SSLSocket): ByteArray {
             val out = ByteArrayOutputStream()
             while (true) {
-                val sizeLine = readLine(input, socket)
-                val size = sizeLine.substringBefore(';').trim().toIntOrNull(16)?.takeIf { it >= 0 } ?: throw IOException("bad chunk size")
-                if (size == 0) {
+                val size = chunkSize(readLine(input, socket))
+                if (size == 0L) {
                     // 拖尾头：读到空行为止
                     while (readLine(input, socket).isNotEmpty()) Unit
                     return out.toByteArray()
                 }
-                if (out.size() + size > maxResponseBytes) throw IOException("response too large")
-                out.write(readFully(input, size, socket))
+                // 用 Long 比、先比后分配：已读字节加上声称的块大小在 Int 里会溢出成负数，从而绕过上限去分配 2 GB 的数组；
+                // 比较通过之后 size 不会超过剩余额度，所以 toInt 与分配都被上限卡住
+                if (size > maxResponseBytes - out.size().toLong()) throw IOException("response too large")
+                out.write(readFully(input, size.toInt(), socket))
                 if (readLine(input, socket).isNotEmpty()) throw IOException("missing chunk terminator")
             }
+        }
+
+        /** 块大小行：最多 16 位十六进制数字（装得进 Long），允许 ";扩展"；不接受正负号、0x 前缀、空白或空串。 */
+        private fun chunkSize(line: String): Long {
+            val digits = line.substringBefore(';').trim()
+            if (!CHUNK_SIZE.matches(digits)) throw IOException("bad chunk size")
+            return digits.toLongOrNull(16) ?: throw IOException("bad chunk size")
         }
 
         private fun readToEnd(input: InputStream, socket: SSLSocket): ByteArray {
@@ -219,6 +227,7 @@ class PinnedHttpsClient(
 
     private companion object {
         val STATUS_LINE = Regex("^HTTP/1\\.[01] ([0-9]{3})(?: .*)?$")
+        val CHUNK_SIZE = Regex("[0-9a-fA-F]{1,16}")
         const val MAX_HEAD_BYTES = 16 * 1024
         const val CRLF_CRLF = 0x0D0A0D0A
     }

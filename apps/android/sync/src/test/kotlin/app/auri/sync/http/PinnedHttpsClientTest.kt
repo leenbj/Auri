@@ -206,6 +206,77 @@ class PinnedHttpsClientTest {
         assertEquals(text, get(client(TlsFixtures.gatewayA), delimited).body.toString(Charsets.UTF_8))
     }
 
+    // ---- F3：分块响应的长度算术（对端可以是被配对的网关，也可以是被攻破或写错的网关：不能让它把手机撑爆） ----
+
+    private fun rawChunked(vararg pieces: String): ServerAction = ServerAction.Raw(
+        ("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n" + pieces.joinToString("")).toByteArray(Charsets.ISO_8859_1),
+    )
+
+    // 协程的异常栈恢复会把异常复制一份、原异常挂在 cause 下面：顺着因果链找第一个 IOException
+    private fun causeOf(failure: TransportFailure.Interrupted): String? =
+        generateSequence<Throwable>(failure) { it.cause }.filterIsInstance<java.io.IOException>().firstOrNull()?.message
+
+    @Test
+    fun `一个字节的块之后声称下一块有 7fffffff 字节：已读加块大小在 Int 里会溢出成负数，必须按响应过大拒绝，不能去分配 2 GB 的数组`() {
+        val server = serve(TlsFixtures.gatewayA) { rawChunked("1\r\nA\r\n", "7fffffff\r\n") }
+
+        val failure = failureOf<TransportFailure.Interrupted> { get(client(TlsFixtures.gatewayA), server) }
+
+        assertEquals("response too large", causeOf(failure))
+    }
+
+    @Test
+    fun `格式正确但超出上限的块大小（超出 Int、超出 Long 的一半）一律在读正文之前按响应过大拒绝`() {
+        for (huge in listOf("7fffffff", "80000000", "ffffffff", "100000000", "7fffffffffffffff")) {
+            val server = serve(TlsFixtures.gatewayA) { rawChunked("$huge\r\n") }
+
+            val failure = failureOf<TransportFailure.Interrupted> { get(client(TlsFixtures.gatewayA), server) }
+
+            assertEquals("块大小 $huge", "response too large", causeOf(failure))
+        }
+    }
+
+    @Test
+    fun `写不成非负十六进制数的块大小（负号、正号、超出 Long、空、0x 前缀、非数字）都是畸形响应，哪怕后面跟着看起来正常的正文`() {
+        for (bad in listOf("-1", "-7fffffff", "+5", "ffffffffffffffffff", "", " ", "0x5", "zz", "5 5")) {
+            val server = serve(TlsFixtures.gatewayA) { rawChunked("$bad\r\nhello\r\n", "0\r\n\r\n") }
+
+            val failure = failureOf<TransportFailure.Interrupted> { get(client(TlsFixtures.gatewayA), server) }
+
+            assertEquals("块大小 '$bad'", "bad chunk size", causeOf(failure))
+        }
+    }
+
+    @Test
+    fun `一个块比上限大、或者前面的块用掉了一部分额度后这一块放不下：在读它的正文之前就拒绝`() {
+        // 声称 2000 字节、一个字节也没发：按声明就拒绝，不是等到读不到数据
+        val single = serve(TlsFixtures.gatewayA) { rawChunked("7d0\r\n") }
+        assertEquals("response too large", causeOf(failureOf<TransportFailure.Interrupted> { get(client(TlsFixtures.gatewayA, maxResponse = 1024), single) }))
+
+        // 第一块 1000 字节，第二块声称 100：1000 + 100 超过 1024
+        val cumulative = serve(TlsFixtures.gatewayA) { rawChunked("3e8\r\n" + "a".repeat(1000) + "\r\n", "64\r\n") }
+        assertEquals("response too large", causeOf(failureOf<TransportFailure.Interrupted> { get(client(TlsFixtures.gatewayA, maxResponse = 1024), cumulative) }))
+    }
+
+    @Test
+    fun `很多个很小的块：总量在上限内就完整按顺序读出，超过上限就在越界的那一块拒绝`() {
+        val within = (0 until 3000).joinToString("") { ('a' + it % 26).toString() }
+        val fits = serve(TlsFixtures.gatewayA) { ServerAction.Respond(200, within.toByteArray(), chunked = true, chunkSize = 1) }
+        assertEquals(within, get(client(TlsFixtures.gatewayA, maxResponse = 4096), fits).body.toString(Charsets.UTF_8))
+
+        val over = serve(TlsFixtures.gatewayA) { ServerAction.Respond(200, ByteArray(5000) { 'b'.code.toByte() }, chunked = true, chunkSize = 1) }
+        assertEquals("response too large", causeOf(failureOf<TransportFailure.Interrupted> { get(client(TlsFixtures.gatewayA, maxResponse = 4096), over) }))
+    }
+
+    @Test
+    fun `Content-Length 声称的长度同样不能把手机撑爆：超过上限在分配之前拒绝，写不成 Int 的是畸形`() {
+        val huge = serve(TlsFixtures.gatewayA) { ServerAction.Raw("HTTP/1.1 200 OK\r\nContent-Length: 2147483647\r\nConnection: close\r\n\r\n".toByteArray()) }
+        assertEquals("response too large", causeOf(failureOf<TransportFailure.Interrupted> { get(client(TlsFixtures.gatewayA), huge) }))
+
+        val beyondInt = serve(TlsFixtures.gatewayA) { ServerAction.Raw("HTTP/1.1 200 OK\r\nContent-Length: 99999999999999999999\r\nConnection: close\r\n\r\n".toByteArray()) }
+        assertEquals("bad content-length", causeOf(failureOf<TransportFailure.Interrupted> { get(client(TlsFixtures.gatewayA), beyondInt) }))
+    }
+
     @Test
     fun `4xx 与 5xx 是正常返回的响应，不是传输失败；头名字小写`() {
         val server = serve(TlsFixtures.gatewayA) { ServerAction.Respond(401, """{"code":"GATEWAY_AUTH_REVOKED"}""".toByteArray(), mapOf("Content-Type" to "application/json", "X-Custom" to "v")) }
