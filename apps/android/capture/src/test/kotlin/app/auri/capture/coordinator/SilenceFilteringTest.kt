@@ -100,6 +100,50 @@ class SilenceFilteringTest {
     }
 
     @Test
+    fun `one minute limit stops without duration warning while two minute limit warns at one minute`() = runTest {
+        val oneMinute = CaptureRig(this, CaptureConfig(maxDurationMs = 60_000))
+        oneMinute.coordinator.enableControlMode()
+        oneMinute.settle()
+        oneMinute.control.press(BusinessCommand.START)
+        oneMinute.settle()
+        oneMinute.capture.verifiedRoute(epoch = 1)
+        oneMinute.settle()
+
+        assertTrue(oneMinute.decisions.none { it.cause == Cause.DURATION_WARNING })
+        assertTrue(!oneMinute.coordinator.snapshot.value.durationWarning)
+        assertEquals("STARTED", oneMinute.decisions.mapNotNull(::feedbackFor).last().name)
+
+        oneMinute.advance(59_999)
+        assertEquals(CaptureState.RECORDING, oneMinute.state)
+        assertTrue(oneMinute.decisions.none { it.cause == Cause.DURATION_WARNING })
+        oneMinute.advance(1)
+        assertEquals(CaptureState.ARMED, oneMinute.state)
+        assertEquals(EndReason.DURATION_LIMIT, oneMinute.output.recordings.single().result.endReason)
+        assertEquals(60_000L, oneMinute.coordinator.snapshot.value.durationLimitMs)
+        assertTrue(oneMinute.decisions.none { it.cause == Cause.DURATION_WARNING })
+
+        val twoMinutes = CaptureRig(this, CaptureConfig(maxDurationMs = 120_000))
+        twoMinutes.coordinator.enableControlMode()
+        twoMinutes.settle()
+        twoMinutes.control.press(BusinessCommand.START)
+        twoMinutes.settle()
+        twoMinutes.capture.verifiedRoute(epoch = 1)
+        twoMinutes.settle()
+
+        assertEquals("STARTED", twoMinutes.decisions.mapNotNull(::feedbackFor).last().name)
+        twoMinutes.advance(59_999)
+        assertTrue(twoMinutes.decisions.none { it.cause == Cause.DURATION_WARNING })
+        twoMinutes.advance(1)
+        assertEquals(1, twoMinutes.decisions.count { it.cause == Cause.DURATION_WARNING })
+        assertEquals("DURATION_WARNING", twoMinutes.decisions.mapNotNull(::feedbackFor).last().name)
+        assertTrue(twoMinutes.coordinator.snapshot.value.durationWarning)
+        twoMinutes.advance(60_000)
+        assertEquals(CaptureState.ARMED, twoMinutes.state)
+        assertEquals(EndReason.DURATION_LIMIT, twoMinutes.output.recordings.single().result.endReason)
+        assertEquals(120_000L, twoMinutes.coordinator.snapshot.value.durationLimitMs)
+    }
+
+    @Test
     fun `a verified 50 millisecond speech frame is stored promptly`() = runTest {
         val rig = CaptureRig(this)
         rig.coordinator.enableControlMode()

@@ -647,10 +647,13 @@ class CaptureCoordinator(
         current.speech = SpeechFilter(config.format, vad)
         val tag = Tag(current.id, current.generation)
         current.durationTimer = scope.launch {
-            val warningAt = (current.limitMs - 60_000).coerceAtLeast(0)
-            delay(warningAt)
-            post(Message.Timeout(tag, TimerKind.DURATION_WARNING))
-            delay(current.limitMs - warningAt)
+            if (current.limitMs > 60_000) {
+                delay(current.limitMs - 60_000)
+                post(Message.Timeout(tag, TimerKind.DURATION_WARNING))
+                delay(60_000)
+            } else {
+                delay(current.limitMs)
+            }
             post(Message.Timeout(tag, TimerKind.DURATION))
         }
         return true
