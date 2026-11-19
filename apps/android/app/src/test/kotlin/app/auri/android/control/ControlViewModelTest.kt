@@ -382,7 +382,7 @@ class ControlViewModelTest {
     // ---- 反馈 ----
 
     @Test
-    fun `三种反馈的屏幕文字都能读到，互相不同；没有反馈时没有文字`() = runUnconfined {
+    fun `四种反馈的屏幕文字都能读到，互相不同；没有反馈时没有文字`() = runUnconfined {
         val rig = rig(CaptureState.ARMED)
         assertNull(rig.state.feedback)
 
@@ -391,7 +391,7 @@ class ControlViewModelTest {
             checkNotNull(rig.state.feedback).also { assertEquals(kind, it.kind) }.screenText
         }
 
-        assertEquals(3, texts.toSet().size)
+        assertEquals(4, texts.toSet().size)
     }
 
     // ---- 校准：向导接线 ----

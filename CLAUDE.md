@@ -116,7 +116,7 @@ Android 静音过滤与时长上限（先取共享 Gradle 锁；真机验收步�
 ```bash
 source ~/.config/auri/android-env.sh
 cd apps/android && ./gradlew :capture:test --tests app.auri.capture.contract.ContractOutputTest --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2
-cd ../.. && .venv/bin/pytest execution/acceptance/android-silence/test_contract_output.py
+cd ../.. && .venv/bin/pytest execution/acceptance/android-silence/test_silence_contract_output.py
 ```
 
 Android 耳机手势控制与校准（Ticket 17，同在 `apps/android/`：`:capture` 里是按键归一化与去抖、校准向导与 Headset Profile、反馈映射（纯 Kotlin/JVM），`:platform` 是媒体按键通道（只在控制模式开着时占用）、振动 + 静音通知、锁屏监测的 Android 实现，`:app` 加了“耳机控制”页与校准页；步骤、真机流程（`NOT_RUN`）、**已知限制（没有音频播放时系统不把媒体键交给我们的会话，需要范围决策）**与结果见 `execution/acceptance/android-control/README.md`）：

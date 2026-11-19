@@ -1,6 +1,6 @@
 # Ticket 18 Android silence and limits — verification
 
-Branch: `ticket/18-silence-and-limits`. Verification is **INCOMPLETE / BLOCKED_EXTERNAL** until the full Gradle and Python suites complete without a conflicting build; see the final worker report for the branch head.
+Branch: `ticket/18-silence-and-limits`. Host verification is **INCOMPLETE**: all five Gradle JVM suites, the debug build, and the contract/integration/security suite passed, but 22 acceptance cases requiring a Gradle subprocess inside pytest remain NOT_RUN under the limit of one Gradle or pytest process at a time. Device evidence remains NOT_RUN as described below.
 
 ## Checklist and evidence
 
@@ -12,21 +12,101 @@ Branch: `ticket/18-silence-and-limits`. Verification is **INCOMPLETE / BLOCKED_E
 | No-speech Record without Revision or transcription | `SilenceFilteringTest` connects the real coordinator and Record pipeline; `HomeViewModelTest` and `HomeScreen` map `NO_SPEECH` to `无语音`. | E2 JVM |
 | Persisted 30-minute default, maximum 120, warning and auto-stop | `DurationLimitSettingTest`, `CaptureConfigTest`, `HomeViewModelTest`, and `SilenceFilteringTest` cover validation, persistence, visible warning, feedback, automatic stop and no automatic restart. | E2 JVM |
 | End reasons | `CaptureResultTest` exercises screen, headset, volume, duration, route, permission and system interruption; `CaptureStalenessTest` covers process restoration. | E2 JVM |
-| Contract and semantics | `ContractOutputTest` writes speech, mixed, no-speech and limit results; `test_contract_output.py` uses the existing schema/semantic checker and rejects an SR-04 mutation. | E2 JVM/Python |
+| Contract and semantics | `ContractOutputTest` writes speech, mixed, no-speech and limit results; `test_silence_contract_output.py` uses the existing schema/semantic checker and rejects an SR-04 mutation. | E2 JVM/Python |
 
 The former 29.5-second capture cap was removed as a **requirement change**. Tests that encoded that interim cap now assert the 30-minute default or an explicit independent test limit. The local adapter streams long WAV recordings in windows no longer than the engine's declared limit, without creating a partial Revision when a later window fails.
 
 Real headset, long real recording, lock screen, process death and device-only instrumented checks: **NOT_RUN (reason: deferred, emulator disabled to save memory)**. The exact device command and product-owner procedure are in [README.md](README.md). No emulator, AVD, simulator or instrumented test was started.
 
-## Recorded results
+## Fresh verification (2026-11-19, UTC)
+
+The branch already contained the fetched `origin/integration/auri-v2` tip. Each Gradle task below was run separately with the shared lock and passed; the successful test runs had zero failures and zero skips. The initial app run had 110 passes and one failure: an existing test still expected three distinct feedback messages after the duration warning added a fourth. Its assertion now requires four distinct messages, preserving the original checks, and the fresh app rerun passed all 111. The combined acceptance collection initially failed because two test files were named `test_contract_output.py`; renaming the ticket's file preserved every test and corrected collection from 297 items plus one error to 300 items with no errors.
+
+| Gradle task | Fresh result |
+| --- | --- |
+| `:capture:test` | 339 passed |
+| `:modelmgmt:testDebugUnitTest` | 84 passed |
+| `:platform:testDebugUnitTest` | 183 passed |
+| `:app:testDebugUnitTest` | 111 passed after the test fix |
+| `:asr:testDebugUnitTest` | 112 passed |
+| `:app:assembleDebug` | BUILD SUCCESSFUL |
+
+Exact Gradle commands, each run separately after taking `~/.cache/auri/gradle.lock`, recording memory, and sourcing `~/.config/auri/android-env.sh`:
+
+```bash
+cd apps/android
+./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2 :capture:test --rerun
+./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2 :modelmgmt:testDebugUnitTest --rerun
+./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2 :platform:testDebugUnitTest --rerun
+./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2 :app:testDebugUnitTest --rerun
+./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2 :asr:testDebugUnitTest --rerun
+./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2 :app:assembleDebug --rerun
+```
+
+`.venv/bin/pytest tests/contract tests/integration tests/security` passed **492 tests**. The device-free acceptance selection passed **278 tests** with six deselected and 16 additional cases in three ignored files; these **22 NOT_RUN** cases launch real Gradle processes from pytest, conflicting with the binding limit of one Gradle or pytest process at a time. The same selection passed again after the filename fix. Running the complete acceptance command later requires a decision on that process restriction and per-invocation Gradle locking and memory checks:
+
+```bash
+.venv/bin/pytest execution/acceptance/android-silence execution/acceptance/android-capture execution/acceptance/android-control execution/acceptance/android-models execution/acceptance/asr-android
+```
+
+The actual acceptance selection command was:
+
+```bash
+.venv/bin/pytest execution/acceptance/android-silence execution/acceptance/android-capture execution/acceptance/android-control execution/acceptance/android-models execution/acceptance/asr-android \
+  --ignore execution/acceptance/android-capture/test_capture_contract_output.py \
+  --ignore execution/acceptance/android-control/test_control_contract_output.py \
+  --ignore execution/acceptance/asr-android/test_contract_output.py \
+  --deselect execution/acceptance/asr-android/test_engine_pin_guard.py::test_build_refuses_an_aar_with_one_flipped_byte \
+  --deselect execution/acceptance/asr-android/test_engine_pin_guard.py::test_build_refuses_a_truncated_aar \
+  --deselect execution/acceptance/asr-android/test_engine_pin_guard.py::test_build_accepts_exactly_the_pinned_aar \
+  --deselect execution/acceptance/asr-android/test_engine_pin_guard.py::test_missing_aar_is_not_silently_replaced_when_offline \
+  --deselect execution/acceptance/asr-android/test_engine_pin_guard.py::test_every_module_build_runs_the_aar_check_first
+```
+
+For collection only, the complete command above plus `--collect-only` was run before and after the rename. It never executed the cases. An attempted selection rerun was interrupted by the monitor's history-gap guard; it was not a test failure. The guard was corrected and the selection rerun.
+
+Every real-device, simulator, and instrumented check is **NOT_RUN (reason: deferred, emulator disabled to save memory)**. The exact command for the instrumented suites, to use later on a suitable device after taking the shared lock, is:
+
+```bash
+source ~/.config/auri/android-env.sh
+cd apps/android
+./gradlew :app:connectedDebugAndroidTest :platform:connectedDebugAndroidTest --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2
+```
+
+The headset and timing procedure and its metadata command are in [README.md](README.md). The Python launcher-script tests used fake shell tools, not a real emulator, AVD, device, or instrumented test.
+
+### Fresh suite memory readings
+
+Readings are machine-wide; swap values are `total / used / free` in MiB. Every row records the requested `memory_pressure | grep -i 'free percentage'` and `sysctl vm.swapusage` before and after the suite. Between the initial failed app run and its rerun, swap use increased by 698.69 MiB in less than 60 seconds; the runner waited 120 seconds while continuing to monitor memory before starting the rerun.
+
+| Suite and result | Before: UTC, free, swap | After: UTC, free, swap |
+| --- | --- | --- |
+| :capture:test — 339 passed | 12:03:46Z; 57%; 4096.00 / 2971.38 / 1124.62 | 12:04:31Z; 51%; 4096.00 / 2971.38 / 1124.62 |
+| :modelmgmt:testDebugUnitTest — 84 passed | 12:04:31Z; 51%; 4096.00 / 2971.38 / 1124.62 | 12:05:37Z; 42%; 4096.00 / 3008.06 / 1087.94 |
+| :platform:testDebugUnitTest — 183 passed | 12:05:37Z; 42%; 4096.00 / 3008.06 / 1087.94 | 12:06:07Z; 42%; 4096.00 / 3008.06 / 1087.94 |
+| :app:testDebugUnitTest — 110 passed, 1 failed (before fix) | 12:06:07Z; 42%; 4096.00 / 3008.06 / 1087.94 | 12:06:22Z; 43%; 4096.00 / 3008.06 / 1087.94 |
+| :app:testDebugUnitTest — 111 passed (rerun) | 12:09:45Z; 55%; 4096.00 / 3690.75 / 405.25 | 12:10:00Z; 47%; 4096.00 / 3690.75 / 405.25 |
+| :asr:testDebugUnitTest — 112 passed | 12:10:00Z; 47%; 4096.00 / 3690.75 / 405.25 | 12:10:15Z; 50%; 4096.00 / 3690.75 / 405.25 |
+| :app:assembleDebug — passed | 12:10:15Z; 50%; 4096.00 / 3690.75 / 405.25 | 12:10:35Z; 50%; 4096.00 / 3690.75 / 405.25 |
+| Acceptance selection — 278 passed, 6 deselected, 16 ignored | 12:10:35Z; 51%; 4096.00 / 3690.75 / 405.25 | 12:12:26Z; 59%; 4096.00 / 3682.75 / 413.25 |
+| Contract, integration, security — 492 passed | 12:12:26Z; 59%; 4096.00 / 3682.75 / 413.25 | 12:16:28Z; 52%; 4096.00 / 3650.75 / 445.25 |
+| Full acceptance collection — 297 collected, 1 error (before rename) | 12:16:33Z; 51%; 4096.00 / 3650.75 / 445.25 | 12:16:38Z; 52%; 4096.00 / 3650.75 / 445.25 |
+| Full acceptance collection — 300 collected (after rename) | 12:16:55Z; 51%; 4096.00 / 3650.75 / 445.25 | 12:17:00Z; 52%; 4096.00 / 3650.75 / 445.25 |
+| Acceptance selection — interrupted by monitor history guard | 12:17:00Z; 52%; 4096.00 / 3650.75 / 445.25 | 12:17:45Z; 42%; 4096.00 / 3650.75 / 445.25 |
+| Acceptance selection — 278 passed, 6 deselected, 16 ignored (post-rename rerun) | 12:19:42Z; 52%; 4096.00 / 3634.75 / 461.25 | 12:21:38Z; 62%; 4096.00 / 3634.75 / 461.25 |
+| GitNexus index refresh — passed | 12:22:55Z; 63%; 4096.00 / 3634.75 / 461.25 | 12:23:20Z; 60%; 4096.00 / 3634.75 / 461.25 |
+
+The verification removed its `/tmp/auri-t18-verify-task_a0875a4da8f8` helpers and logs and the generated `.serena` directory. The shared Gradle lock was released, and no verification Gradle, Kotlin, pytest, or fake device-tool process remained. The newly created Python 3.12 `.venv` and generated build outputs were retained for the deferred rerun.
+
+## Previous worker's historical results
 
 - Direct JVM capture suite: **339 passed, 0 failed**, with the updated state-machine replay overlaid on the classes compiled by Gradle. A preceding run had 338 passed, 1 failed because the new warning was counted as a state-machine transition; the replay now separately asserts the warning and all original transitions.
 - `SilenceFilteringTest`: **8 passed, 0 failed** after the segment-hash assertions were added. Deliberately stopping on silence produced **2 failures of 4 tests**, including the long-pause test, and was reverted.
 - `CaptureResultTest`: **10 passed, 0 failed**; `CaptureScenarioReplayTest`: **1 passed, 0 failed**; `RouteBoundaryTest`: **1 passed, 0 failed**.
 - `LocalTranscriptionAdapterTest`: **15 passed, 0 failed** in direct JVM execution, including a synthetic 31-second recording with a 30-second engine limit. The deliberate pre-implementation Gradle run had **12 tests, 2 failed**, demonstrating the long-audio requirement was absent.
 - `DurationLimitSettingTest`: **2 passed, 0 failed**; `CaptureConfigTest` plus `HomeViewModelTest`: **17 passed, 0 failed**.
-- `ContractOutputTest`: **4 passed, 0 failed**; the three schema/semantic/timeline/mutation functions in `test_contract_output.py` passed when called directly. Their pytest invocation and the repository-wide Python suite still require a non-conflicting window.
-- Full Android Gradle run was **interrupted (exit 130)** after a second Gradle process started despite this branch holding the shared lock. No complete five-module result or complete debug-build result is claimed.
+- `ContractOutputTest`: **4 passed, 0 failed**; the three schema/semantic/timeline/mutation functions in the then-named `test_contract_output.py` passed when called directly. The fresh pytest results are recorded above.
+- Full Android Gradle run was **interrupted (exit 130)** after a second Gradle process started despite this branch holding the shared lock. At that point no complete five-module result or complete debug-build result was claimed; fresh results are recorded above.
 - On the Mac JVM, the capture contention test reported 150 synthetic frames, 2,981 ms producer duration, and 59 ms maximum delivery latency. These are E2 test measurements, not phone or headset performance.
 
 The interrupted full run's last output was:
@@ -51,13 +131,13 @@ The expected red ASR run ended with `12 tests completed, 2 failed`: long audio w
 - The contract has no storage-exhaustion `end_reason`; the existing `system_interruption` partial-record mapping is retained. No contract fields or enums were changed and no dependency was added.
 - The read-only main-checkout GitNexus/aoci index did not contain `CaptureCoordinator` or `AuriRuntime`; lookup and impact reported not found, so callers and sources were confirmed with `rg` in this worktree.
 
-## Cleanup
+## Previous cleanup
 
 Created for this task and removed after copying the evidence here: `/tmp/auri-t18-*` helper scripts and logs, temporary JVM class directories, this worktree's `.venv` and `.serena` directories, and the generated `apps/android` Gradle/build directories. The shared Gradle lock was released when held. No other worker's processes, caches, branch, or worktree were removed.
 
-## Commands and memory readings
+## Previous commands and memory readings
 
-The Gradle command attempted for the final Android run was:
+The previous worker's interrupted full Gradle command was:
 
 ```bash
 source ~/.config/auri/android-env.sh
@@ -73,7 +153,7 @@ cd apps/android
 ./gradlew :platform:testDebugUnitTest --tests 'app.auri.platform.asr.LocalTranscriptionAdapterTest' --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2
 ```
 
-The required pending Python command is:
+The formerly pending Python command, now completed, was:
 
 ```bash
 source ~/.config/auri/android-env.sh
@@ -86,7 +166,7 @@ Direct JUnit and Python commands, their helper bodies, and the before/after memo
 
 ### Direct JVM and Python invocations
 
-The temporary helper bodies below are included verbatim for reproduction; they were created only in `/tmp` and removed during cleanup. The latest focused runs used:
+The temporary helper bodies below record the earlier runs; they were created only in `/tmp` and removed during cleanup. The historical direct Python command used the former filename `test_contract_output.py`, since renamed to `test_silence_contract_output.py`. The latest focused runs used:
 
 ```bash
 /tmp/auri-t18-capture-suite.sh
@@ -101,7 +181,7 @@ The temporary helper bodies below are included verbatim for reproduction; they w
 .venv/bin/python -c 'import runpy; tests=runpy.run_path("execution/acceptance/android-silence/test_contract_output.py"); tests["test_real_recording_results_satisfy_schema_and_semantics"](); tests["test_result_scenarios_preserve_timeline_and_end_reason"](); tests["test_mutated_speech_duration_is_rejected"](); print("3 contract-output checks passed")'
 ```
 
-The final retry was deferred before invoking Gradle when another build was already present. Its intended command was:
+The previous retry was deferred before invoking Gradle when another build was already present. Its intended command was:
 
 ```bash
 cd apps/android
