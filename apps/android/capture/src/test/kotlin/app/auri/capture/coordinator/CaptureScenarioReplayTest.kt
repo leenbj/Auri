@@ -113,7 +113,15 @@ class CaptureScenarioReplayTest {
 
                     val before = rig.decisions.size
                     stimulate(rig, event)
-                    val produced = rig.decisions.drop(before)
+                    val observed = rig.decisions.drop(before)
+                    val warnings = observed.filter { it.cause == Cause.DURATION_WARNING }
+                    if (event == CaptureEvent.DURATION_LIMIT) {
+                        assertEquals("$context：到上限前恰好一次提醒", 1, warnings.size)
+                        assertEquals(CaptureState.RECORDING, warnings.single().stateAfter)
+                    } else {
+                        assertTrue("$context：没有多余的时长提醒", warnings.isEmpty())
+                    }
+                    val produced = observed.filterNot { it.cause == Cause.DURATION_WARNING }
 
                     assertEquals("$context：应当恰好产生一个决定，实际 $produced", 1, produced.size)
                     val decision = produced.single()
