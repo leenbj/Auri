@@ -63,6 +63,7 @@ ADR 文件在 `docs/adr/`，编号沿用 PRD 第 28 章（0002、0008、0009）�
 
 | 要做的事 | 先读 |
 | --- | --- |
+| 要改不熟悉的代码、查调用关系或影响面 | `docs/agent/code-intelligence.md` |
 | 改采集、耳机控制、转录、授权、网关、MCP 相关设计或代码；记录兼容性结论或验收证据 | `docs/agent/product-and-constraints.md` 和 PRD 对应章节 |
 | 开始实施一个阶段 | PRD 第 29 章 |
 | 改 schema、状态机、授权规则、样本 | `contracts/README.md` 的“修改规则” |
