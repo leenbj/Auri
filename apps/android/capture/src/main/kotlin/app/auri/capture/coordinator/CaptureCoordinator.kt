@@ -225,6 +225,7 @@ class CaptureCoordinator(
         var writer: RecordingWriter? = null
         var startedAt: Instant? = null
         var writtenSamples = 0L
+        var storageFailed = false
         var startedNs = 0L
         var speech: SpeechFilter? = null
         val segments = mutableListOf<Segment>()
@@ -377,6 +378,7 @@ class CaptureCoordinator(
                 try {
                     appendSpeech(current, handle, (current.speech ?: error("RECORDING 必有 VAD")).offer(samples))
                 } catch (e: IOException) {
+                    current.storageFailed = true
                     dispatch(CaptureEvent.SYSTEM_INTERRUPTION, Context(errorCode = ErrorCode.STORAGE_EXHAUSTED, cause = Cause.STORAGE_FAILURE))
                     return
                 }
@@ -475,9 +477,11 @@ class CaptureCoordinator(
 
     private fun transition(rule: MachineRule, context: Context) {
         val before = state
-        val errorCode = context.errorCode
+        var errorCode = context.errorCode
+        var cause = context.cause
         var eligibilityDenied: ErrorCode? = null
         var eligibilityEvent: CaptureEvent? = null
+        var storageFailedDuringStop = false
         when (rule.event) {
             CaptureEvent.ENABLE_CONTROL_MODE -> {
                 if (!context.manual && !control.enableUserControlMode()) {
@@ -504,13 +508,13 @@ class CaptureCoordinator(
                 }
 
                 ROUTING -> abandonSession()
-                RECORDING -> stopRecording(rule.endReason ?: context.endReason ?: EndReason.HEADSET_COMMAND)
+                RECORDING -> storageFailedDuringStop = stopRecording(rule.endReason ?: context.endReason ?: EndReason.HEADSET_COMMAND)
                 else -> error("转移表不会给 ${rule.from} 配 ${rule.event}")
             }
 
             CaptureEvent.STOP -> when (rule.from) {
                 ROUTING -> abandonSession()
-                RECORDING -> stopRecording(rule.endReason ?: context.endReason ?: EndReason.HEADSET_COMMAND)
+                RECORDING -> storageFailedDuringStop = stopRecording(rule.endReason ?: context.endReason ?: EndReason.HEADSET_COMMAND)
                 else -> error("转移表不会给 ${rule.from} 配 STOP")
             }
 
@@ -527,7 +531,7 @@ class CaptureCoordinator(
             CaptureEvent.ROUTE_UNVERIFIED, CaptureEvent.ROUTE_TIMEOUT -> abandonSession()
             CaptureEvent.PERMISSION_REVOKED -> when (rule.from) {
                 ROUTING -> abandonSession()
-                RECORDING -> stopRecording(EndReason.PERMISSION_REVOKED)
+                RECORDING -> storageFailedDuringStop = stopRecording(EndReason.PERMISSION_REVOKED)
                 else -> Unit
             }
 
@@ -539,7 +543,7 @@ class CaptureCoordinator(
             }
 
             CaptureEvent.DURATION_LIMIT, CaptureEvent.ROUTE_LOST, CaptureEvent.SYSTEM_INTERRUPTION ->
-                stopRecording(rule.endReason ?: error("${rule.event} 的转移必须带 end_reason"), context.cause != Cause.STORAGE_FAILURE)
+                storageFailedDuringStop = stopRecording(rule.endReason ?: error("${rule.event} 的转移必须带 end_reason"), context.cause != Cause.STORAGE_FAILURE)
 
             CaptureEvent.FINALIZE_COMPLETE -> {
                 session = null
@@ -552,7 +556,7 @@ class CaptureCoordinator(
                 when (rule.from) {
                     ROUTING -> abandonSession()
                     RECORDING -> {
-                        stopRecording(rule.endReason ?: EndReason.PROCESS_TERMINATED)
+                        storageFailedDuringStop = stopRecording(rule.endReason ?: EndReason.PROCESS_TERMINATED)
                         session = null
                     }
 
@@ -564,9 +568,13 @@ class CaptureCoordinator(
                 disableWhenIdle = false
             }
         }
+        if (storageFailedDuringStop) {
+            cause = Cause.STORAGE_FAILURE
+            errorCode = ErrorCode.STORAGE_EXHAUSTED
+        }
         state = rule.to
         blockedReason = if (rule.to == BLOCKED) errorCode ?: ErrorCode.INPUT_ROUTE_UNVERIFIED else null
-        emit(CaptureDecision(rule.event, Outcome.TRANSITION, before, rule.to, context.cause, errorCode))
+        emit(CaptureDecision(rule.event, Outcome.TRANSITION, before, rule.to, cause, errorCode))
         if ((disableWhenIdle || !controlModeEnabled) && state == ARMED && rule.event != CaptureEvent.ENABLE_CONTROL_MODE) {
             dispatch(CaptureEvent.DISABLE_CONTROL_MODE)
         }
@@ -659,17 +667,20 @@ class CaptureCoordinator(
         return true
     }
 
-    /** 关闸、立刻释放麦克风，然后在后台封存；封存结果以消息回到邮箱。 */
-    private fun stopRecording(endReason: EndReason, flush: Boolean = true) {
+    /** 关闸、立刻释放麦克风，然后在后台封存；封存结果以消息回到邮箱。返回尾帧冲刷是否遇到存储失败。 */
+    private fun stopRecording(endReason: EndReason, flush: Boolean = true): Boolean {
         val current = session ?: error("RECORDING 必有会话")
         current.cancelJobs()
         durationWarning = false
         releaseCapture(current.operationId)
         val handle = current.handle ?: error("RECORDING 必有句柄")
+        var flushFailed = false
         val reason = try {
             if (flush) appendSpeech(current, handle, current.speech?.finish().orEmpty())
             endReason
         } catch (e: IOException) {
+            flushFailed = true
+            current.storageFailed = true
             EndReason.SYSTEM_INTERRUPTION
         }
         durationLimitMs = if (reason == EndReason.DURATION_LIMIT) current.limitMs else null
@@ -681,6 +692,7 @@ class CaptureCoordinator(
         val evidenceId = current.evidenceId ?: error("RECORDING 必有证据标识")
         val startedAt = current.startedAt ?: error("RECORDING 必有开始时间")
         val written = current.writtenSamples
+        val storageFailed = current.storageFailed
         val sessionId = current.id
         val epoch = evidence.epoch
         val observedSamples = current.speech?.receivedSamples ?: 0L
@@ -694,11 +706,15 @@ class CaptureCoordinator(
         scope.launch(adapterDispatcher) {
             val outcome = try {
                 if (written == 0L) {
-                    // 确认了路由却没收到任何采样：没有音频可留，不留空文件
+                    // 确认了路由却没收到任何采样：没有音频可留，不留空文件；若是存储写入失败，按丢失处理而不是无语音
                     writer.abort()
-                    SealOutcome.Done(
-                        SealedRecording(resultFor(recordId, sessionId, reason, captureMs, observedSamples, chunks), evidence, evidenceId, startedAt, null),
-                    )
+                    if (storageFailed) {
+                        SealOutcome.Failed(recordId, Cause.STORAGE_FAILURE)
+                    } else {
+                        SealOutcome.Done(
+                            SealedRecording(resultFor(recordId, sessionId, reason, captureMs, observedSamples, chunks), evidence, evidenceId, startedAt, null),
+                        )
+                    }
                 } else {
                     val audio = writer.seal()
                     SealOutcome.Done(
@@ -718,6 +734,7 @@ class CaptureCoordinator(
             }
             post(Message.Sealed(tag, outcome))
         }
+        return flushFailed
     }
 
     private fun releaseCapture(operationId: String) {

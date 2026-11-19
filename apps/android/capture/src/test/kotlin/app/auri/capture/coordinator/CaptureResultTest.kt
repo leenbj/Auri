@@ -11,13 +11,22 @@ import app.auri.capture.contract.ErrorCode
 import app.auri.capture.contract.RecordingResult
 import app.auri.capture.machine.CaptureEvent
 import app.auri.capture.machine.Outcome
+import app.auri.capture.pipeline.PipelineNotice
+import app.auri.capture.pipeline.RecordPipeline
 import app.auri.capture.testing.CaptureRig
+import app.auri.capture.testing.FakeTranscriptionAdapter
+import app.auri.capture.testing.InMemoryRecordLibrary
 import app.auri.capture.testing.StoreEvent
 import java.io.IOException
 import java.security.MessageDigest
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.toCollection
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -190,6 +199,96 @@ class CaptureResultTest {
         assertEquals(1600, rig.store.written.size)
         assertEquals(Cause.STORAGE_FAILURE, rig.decisions.first { it.trigger == CaptureEvent.SYSTEM_INTERRUPTION }.cause)
         assertEquals(ErrorCode.STORAGE_EXHAUSTED, rig.decisions.first { it.trigger == CaptureEvent.SYSTEM_INTERRUPTION }.errorCode)
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun `first speech append failure reports storage loss instead of no speech`() = runTest {
+        // Case 1: disk full on the very first speech window during recording
+        val firstWindow = CaptureRig(this)
+        firstWindow.store.failAppendOnCall = 1
+        val firstLibrary = InMemoryRecordLibrary()
+        val firstPipeline = RecordPipeline(firstLibrary, FakeTranscriptionAdapter(), firstWindow.clock, backgroundScope)
+        val firstNotices = mutableListOf<PipelineNotice>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { firstPipeline.notices.toCollection(firstNotices) }
+        firstWindow.output.forwardTo = firstPipeline
+        firstWindow.coordinator.enableControlMode()
+        firstWindow.settle()
+        firstWindow.control.press(BusinessCommand.START)
+        firstWindow.settle()
+        firstWindow.capture.verifiedRoute(epoch = 1)
+        firstWindow.settle()
+        firstWindow.capture.frames(samples = 160, epoch = 1)
+        firstWindow.settle()
+
+        val firstRecordId = firstWindow.store.events.filterIsInstance<StoreEvent.Begin>().single().recordId
+        assertEquals(CaptureState.ARMED, firstWindow.state)
+        assertTrue(firstWindow.output.recordings.isEmpty())
+        assertEquals(listOf(firstRecordId to ErrorCode.STORAGE_EXHAUSTED), firstWindow.output.lost)
+        assertNull(firstLibrary.get(firstRecordId))
+        assertEquals(listOf<PipelineNotice>(PipelineNotice.RecordingLost(firstRecordId, ErrorCode.STORAGE_EXHAUSTED)), firstNotices)
+        assertEquals(Cause.STORAGE_FAILURE, firstWindow.decisions.last { it.trigger == CaptureEvent.FINALIZE_COMPLETE }.cause)
+        assertEquals(ErrorCode.STORAGE_EXHAUSTED, firstWindow.decisions.last { it.trigger == CaptureEvent.FINALIZE_COMPLETE }.errorCode)
+
+        // Case 2: disk full on the very first append during tail flush on stop
+        val tailOnly = CaptureRig(this)
+        tailOnly.store.failAppendOnCall = 1
+        val tailLibrary = InMemoryRecordLibrary()
+        val tailPipeline = RecordPipeline(tailLibrary, FakeTranscriptionAdapter(), tailOnly.clock, backgroundScope)
+        val tailNotices = mutableListOf<PipelineNotice>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { tailPipeline.notices.toCollection(tailNotices) }
+        tailOnly.output.forwardTo = tailPipeline
+        tailOnly.coordinator.enableControlMode()
+        tailOnly.settle()
+        tailOnly.control.press(BusinessCommand.START)
+        tailOnly.settle()
+        tailOnly.capture.verifiedRoute(epoch = 1)
+        tailOnly.settle()
+        tailOnly.capture.frames(samples = 80, epoch = 1) // buffered (< 10 ms), flushed on stop
+        tailOnly.settle()
+        assertEquals(CaptureState.RECORDING, tailOnly.state)
+        tailOnly.stop()
+
+        val tailRecordId = tailOnly.store.events.filterIsInstance<StoreEvent.Begin>().single().recordId
+        assertEquals(CaptureState.ARMED, tailOnly.state)
+        assertTrue(tailOnly.output.recordings.isEmpty())
+        assertEquals(listOf(tailRecordId to ErrorCode.STORAGE_EXHAUSTED), tailOnly.output.lost)
+        assertNull(tailLibrary.get(tailRecordId))
+        assertEquals(listOf<PipelineNotice>(PipelineNotice.RecordingLost(tailRecordId, ErrorCode.STORAGE_EXHAUSTED)), tailNotices)
+        val stopDecision = tailOnly.decisions.first { it.trigger == CaptureEvent.STOP }
+        assertEquals(Cause.STORAGE_FAILURE, stopDecision.cause)
+        assertEquals(ErrorCode.STORAGE_EXHAUSTED, stopDecision.errorCode)
+        assertEquals(Cause.STORAGE_FAILURE, tailOnly.decisions.last { it.trigger == CaptureEvent.FINALIZE_COMPLETE }.cause)
+        assertEquals(ErrorCode.STORAGE_EXHAUSTED, tailOnly.decisions.last { it.trigger == CaptureEvent.FINALIZE_COMPLETE }.errorCode)
+    }
+
+    @Test
+    fun `tail flush failure after written speech seals partial record with storage failure decision`() = runTest {
+        val rig = CaptureRig(this)
+        rig.store.failAppendOnCall = 2
+        rig.coordinator.enableControlMode()
+        rig.settle()
+        rig.control.press(BusinessCommand.START)
+        rig.settle()
+        rig.capture.verifiedRoute(epoch = 1)
+        rig.settle()
+        rig.capture.frames(samples = 160, epoch = 1) // 1st append succeeds
+        rig.capture.frames(samples = 80, epoch = 1) // buffered (< 10 ms), flushed as 2nd append on stop
+        rig.settle()
+        assertEquals(CaptureState.RECORDING, rig.state)
+        assertEquals(160, rig.store.written.size)
+
+        rig.stop()
+
+        assertEquals(CaptureState.ARMED, rig.state)
+        assertTrue(rig.output.lost.isEmpty())
+        val sealed = rig.output.recordings.single()
+        assertNotNull(sealed.audio)
+        assertEquals(CaptureStatus.PARTIAL, sealed.result.status)
+        assertEquals(EndReason.SYSTEM_INTERRUPTION, sealed.result.endReason)
+        val stopDecision = rig.decisions.first { it.trigger == CaptureEvent.STOP }
+        assertEquals(Cause.STORAGE_FAILURE, stopDecision.cause)
+        assertEquals(ErrorCode.STORAGE_EXHAUSTED, stopDecision.errorCode)
     }
 
     @Test
