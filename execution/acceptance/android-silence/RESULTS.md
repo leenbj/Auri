@@ -1,6 +1,64 @@
 # Ticket 18 Android silence and limits — verification
 
-Branch: `ticket/18-silence-and-limits`. Host verification is **INCOMPLETE**: all five Gradle JVM suites, the debug build, and the contract/integration/security suite passed, but 22 acceptance cases requiring a Gradle subprocess inside pytest remain NOT_RUN under the limit of one Gradle or pytest process at a time. Device evidence remains NOT_RUN as described below.
+Branch: `ticket/18-silence-and-limits`. Host verification is **COMPLETE** for the requested review checks, including all 300 Android acceptance cases. Device evidence remains NOT_RUN as described below.
+
+## Review findings: host verification (2026-11-19 UTC)
+
+The three fixes were present as separate commits when this work resumed: `802afe7` (R1), `0a05fbc` (R2), and `f2d551c` (R3). To independently verify the regression tests, the coordinator was temporarily restored to its `59f3ff6` pre-fix implementation while keeping the new tests and fakes; all four tests below failed, and the fixed source was then restored. All four passed in the fresh capture suite.
+
+| Finding | Regression tests and observed pre-fix failure |
+| --- | --- |
+| R1: limits at or below one minute must not warn immediately | `SilenceFilteringTest`: `one minute limit stops without duration warning while two minute limit warns at one minute` failed on the unexpected one-minute warning; the test also verifies the two-minute warning and both stops. |
+| R2: first append or tail-flush storage failure must not become no-speech; retained audio must be partial with a storage decision | `CaptureResultTest`: `first speech append failure reports storage loss instead of no speech` failed because a recording was incorrectly delivered; it covers both the first speech window and first tail append. `tail flush failure after written speech seals partial record with storage failure decision` failed with `MACHINE` instead of `STORAGE_FAILURE`. |
+| R3: an already-truncated end reason must survive a flush failure | `CaptureResultTest`: `flush failure preserves already truncated end reasons and converts non truncated reasons to system interruption` failed with `SYSTEM_INTERRUPTION` instead of `ROUTE_LOST`; the fixed test also covers permission revocation, process termination, and a non-truncated duration limit. |
+
+The main-checkout GitNexus index did not return the Kotlin coordinator or pipeline symbols; their callers and storage mapping were verified directly with `rg` and the current source. A storage failure has no dedicated contract `end_reason`, so a non-truncated stop uses the existing `SYSTEM_INTERRUPTION` mapping.
+
+### Fresh suite results
+
+All requested host suites passed with zero failures and zero skipped cases: capture **343**, app **111**, platform **183**, full Android acceptance **300**, and contract/integration/security **492**. The full acceptance run includes the 22 Gradle-launching cases previously deferred. Every pytest was started with `NO_PROXY` and `no_proxy` set to `localhost,127.0.0.1,::1`; the full acceptance run held the shared Gradle lock throughout. `pgrep -fl auri_gateway` found no gateway processes before or after any pytest run, so zero were killed.
+
+The first repository pytest run started before the lock was acquired; a guard was acquired while it was running. It passed all 492 cases and launched no Gradle process, but the suite was repeated with the lock held from before pytest started through its exit, also passing all 492. The rows below preserve both runs rather than counting the first as fully locked.
+
+Commands for the final host checks (the Gradle lock was acquired separately for each):
+
+```bash
+source ~/.config/auri/android-env.sh
+cd apps/android
+./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2 :capture:test --rerun
+./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2 :app:testDebugUnitTest --rerun
+./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2 :platform:testDebugUnitTest --rerun
+cd ../..
+export AURI_GRADLE_ARGS='--no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2'
+NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 .venv/bin/pytest execution/acceptance/android-silence execution/acceptance/android-capture execution/acceptance/android-control execution/acceptance/android-models execution/acceptance/asr-android
+NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 .venv/bin/pytest tests/contract tests/integration tests/security
+```
+
+### Memory readings
+
+These are machine-wide snapshots from `memory_pressure | grep -i 'free percentage'` and `sysctl vm.swapusage`; each entry shows UTC time, memory free percentage, and swap total / used / free in MiB. Memory was sampled throughout every run. The red run's nonzero result was expected; all other listed runs exited successfully.
+
+| Suite | Before | After |
+| --- | --- | --- |
+| Regression tests against pre-fix code — 4 expected failures | 16:09:37Z; 55%; 6144.00 / 4663.38 / 1480.62 | 16:11:08Z; 56%; 6144.00 / 4543.38 / 1600.62 |
+| :capture:test — 343 passed | 16:11:08Z; 56%; 6144.00 / 4543.38 / 1600.62 | 16:11:48Z; 50%; 6144.00 / 4543.38 / 1600.62 |
+| :app:testDebugUnitTest — 111 passed | 16:11:48Z; 51%; 6144.00 / 4543.38 / 1600.62 | 16:11:58Z; 46%; 6144.00 / 4543.38 / 1600.62 |
+| :platform:testDebugUnitTest — 183 passed | 16:11:58Z; 46%; 6144.00 / 4543.38 / 1600.62 | 16:12:18Z; 50%; 6144.00 / 4535.38 / 1608.62 |
+| Full Android acceptance — 300 passed | 16:12:18Z; 50%; 6144.00 / 4535.38 / 1608.62 | 16:15:19Z; 52%; 6144.00 / 4511.38 / 1632.62 |
+| Contract, integration, security — 492 passed; lock acquired after start | 16:15:19Z; 52%; 6144.00 / 4511.38 / 1632.62 | 16:19:19Z; 52%; 6144.00 / 4495.38 / 1648.62 |
+| Contract, integration, security rerun — 492 passed; locked throughout | 16:20:31Z; 43%; 6144.00 / 4487.38 / 1656.62 | 16:24:12Z; 40%; 6144.00 / 4491.50 / 1652.50 |
+
+Real-device, emulator and instrumented tests remain **NOT_RUN (reason: deferred, emulator disabled to save memory)**. No actual emulator, AVD, simulator, or instrumented test was started. The device flow and headset procedure are in [README.md](README.md); later commands include:
+
+```bash
+source ~/.config/auri/android-env.sh
+execution/acceptance/android-capture/run_emulator_acceptance.sh
+cd apps/android
+./gradlew :app:connectedDebugAndroidTest :platform:connectedDebugAndroidTest --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2
+adb shell run-as app.auri.android sqlite3 databases/auri.db 'SELECT status,end_reason,capture_duration_ms,speech_duration_ms,speech_segments,transcription,(SELECT COUNT(*) FROM revisions WHERE revisions.record_id=records.record_id) FROM records ORDER BY started_at_s DESC,started_at_nano DESC,rowid DESC LIMIT 1;'
+```
+
+The validation removed its own `/tmp/auri-t18-run.py`, `/tmp/auri-t18-report.py`, and `/tmp/auri-t18-verify/` helpers and logs after recording this evidence. Its Gradle locks were released; no test gateway or validation Gradle/Kotlin/pytest process remained. The pre-existing untracked `.serena/` directory was left in place.
 
 ## Checklist and evidence
 
@@ -18,7 +76,7 @@ The former 29.5-second capture cap was removed as a **requirement change**. Test
 
 Real headset, long real recording, lock screen, process death and device-only instrumented checks: **NOT_RUN (reason: deferred, emulator disabled to save memory)**. The exact device command and product-owner procedure are in [README.md](README.md). No emulator, AVD, simulator or instrumented test was started.
 
-## Fresh verification (2026-11-19, UTC)
+## Historical host verification before the review fixes (2026-11-19, UTC)
 
 The branch already contained the fetched `origin/integration/auri-v2` tip. Each Gradle task below was run separately with the shared lock and passed; the successful test runs had zero failures and zero skips. The initial app run had 110 passes and one failure: an existing test still expected three distinct feedback messages after the duration warning added a fourth. Its assertion now requires four distinct messages, preserving the original checks, and the fresh app rerun passed all 111. The combined acceptance collection initially failed because two test files were named `test_contract_output.py`; renaming the ticket's file preserved every test and corrected collection from 297 items plus one error to 300 items with no errors.
 
@@ -43,7 +101,7 @@ cd apps/android
 ./gradlew --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2 :app:assembleDebug --rerun
 ```
 
-`.venv/bin/pytest tests/contract tests/integration tests/security` passed **492 tests**. The device-free acceptance selection passed **278 tests** with six deselected and 16 additional cases in three ignored files; these **22 NOT_RUN** cases launch real Gradle processes from pytest, conflicting with the binding limit of one Gradle or pytest process at a time. The same selection passed again after the filename fix. Running the complete acceptance command later requires a decision on that process restriction and per-invocation Gradle locking and memory checks:
+In this earlier run, `.venv/bin/pytest tests/contract tests/integration tests/security` passed **492 tests**, and the device-free acceptance selection passed **278 tests** with six deselected and 16 additional cases in three ignored files. The remaining 22 Gradle-launching cases were deferred under the prior process interpretation; the later clarification permits the fully locked 300-case run reported above. The historical full acceptance command was:
 
 ```bash
 .venv/bin/pytest execution/acceptance/android-silence execution/acceptance/android-capture execution/acceptance/android-control execution/acceptance/android-models execution/acceptance/asr-android
