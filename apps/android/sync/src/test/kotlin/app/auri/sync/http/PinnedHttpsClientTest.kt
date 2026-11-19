@@ -3,11 +3,17 @@ package app.auri.sync.http
 import app.auri.sync.pairing.GatewayAddress
 import app.auri.sync.testing.PlainTcpServer
 import app.auri.sync.testing.ServerAction
+import app.auri.sync.testing.SilentTcpServer
 import app.auri.sync.testing.TestTlsServer
 import app.auri.sync.testing.TlsFixtures
+import java.net.InetAddress
 import java.net.ServerSocket
+import java.net.UnknownHostException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
@@ -275,6 +281,70 @@ class PinnedHttpsClientTest {
 
         val beyondInt = serve(TlsFixtures.gatewayA) { ServerAction.Raw("HTTP/1.1 200 OK\r\nContent-Length: 99999999999999999999\r\nConnection: close\r\n\r\n".toByteArray()) }
         assertEquals("bad content-length", causeOf(failureOf<TransportFailure.Interrupted> { get(client(TlsFixtures.gatewayA), beyondInt) }))
+    }
+
+    // ---- F8：一个总时限管住从解析、连接、握手、写到读的全过程（以前只有读响应才受它约束） ----
+
+    // 每一步各自的上限（连接、每次读写）都远大于总时限：能让调用提前结束的只有那一个总时限
+    private fun patient(totalMs: Long) = Timeouts(connectMs = 20_000, ioMs = 20_000, totalMs = totalMs)
+
+    /** 调用必须在总时限附近以 [F] 失败返回；返回得太晚（或根本不返回）、太早、居然成功了，都是错。 */
+    private inline fun <reified F : TransportFailure> boundedByTotal(totalMs: Long, noinline call: suspend () -> HttpReply): F {
+        val started = System.nanoTime()
+        val outcome = runBlocking { runCatching { withTimeout(totalMs + 4_000) { call() } }.exceptionOrNull() }
+        val elapsedMs = (System.nanoTime() - started) / 1_000_000
+        if (outcome is TimeoutCancellationException) fail("总时限是 $totalMs ms，可是调用在 ${totalMs + 4_000} ms 之后还没有返回（实际 $elapsedMs ms）")
+        assertTrue("期望 ${F::class.simpleName}，实际 $outcome", outcome is F)
+        assertTrue("失败应当由总时限触发（约 $totalMs ms），实际 $elapsedMs ms", elapsedMs in (totalMs - 150)..(totalMs + 2_500))
+        return outcome as F
+    }
+
+    @Test
+    fun `主机名解析卡住：总时限一到就按不可达返回，不等解析器`() {
+        val release = CountDownLatch(1)
+        val stuck: (String) -> InetAddress = {
+            release.await(10, TimeUnit.SECONDS)
+            throw UnknownHostException("stuck resolver")
+        }
+        val pinned = PinnedHttpsClient(TlsFixtures.gatewayA.pin, patient(800), 1 shl 20, stuck)
+        try {
+            boundedByTotal<TransportFailure.Unreachable>(800) { pinned.execute(GatewayAddress("gateway.example", 8443), HttpRequest("GET", "/health")) }
+        } finally {
+            release.countDown()
+        }
+    }
+
+    @Test
+    fun `对端接受了连接却不回 ServerHello：握手卡住，总时限一到就按不可达返回，请求一定没发出`() {
+        val silent = SilentTcpServer().also { closeables += it }
+        boundedByTotal<TransportFailure.Unreachable>(800) {
+            client(TlsFixtures.gatewayA, patient(800)).execute(
+                GatewayAddress("127.0.0.1", silent.port),
+                HttpRequest("PUT", "/v1/records/x/revisions/1", mapOf("Authorization" to "Bearer secret-token-value"), "{}".toByteArray()),
+            )
+        }
+    }
+
+    @Test
+    fun `握手完成之后对端不收数据：大请求的写在发送缓冲写满后阻塞，总时限一到关掉套接字，按结果不确定返回`() {
+        val server = serve(TlsFixtures.gatewayA).also { it.stallAfterHandshake = true }
+        val bigBody = ByteArray(32 shl 20)
+
+        boundedByTotal<TransportFailure.Interrupted>(800) {
+            client(TlsFixtures.gatewayA, patient(800)).execute(address(server), HttpRequest("PUT", "/v1/records/x/revisions/1", body = bigBody))
+        }
+
+        assertEquals("握手是完成了的", 1, server.completedHandshakes.get())
+        assertTrue("对端一个字节的请求都没读", server.received.isEmpty())
+    }
+
+    @Test
+    fun `对端一点一点滴响应：每一步都没超时，总时限一到就按结果不确定返回`() {
+        val server = serve(TlsFixtures.gatewayA) { ServerAction.Dribble(declaredLength = 100_000, intervalMs = 100) }
+
+        boundedByTotal<TransportFailure.Interrupted>(800) { client(TlsFixtures.gatewayA, patient(800)).execute(address(server), HttpRequest("GET", "/health")) }
+
+        assertEquals("请求确实送到了服务器", 1, server.received.size)
     }
 
     @Test

@@ -46,6 +46,9 @@ sealed interface ServerAction {
 
     /** 原样写出这些字节再断开（畸形响应）。 */
     class Raw(val bytes: ByteArray) : ServerAction
+
+    /** 声明 [declaredLength] 字节的正文，但每隔 [intervalMs] 毫秒只滴一个字节：每一步都没超时，总时间却会被拖得很长。 */
+    class Dribble(val declaredLength: Int, val intervalMs: Long) : ServerAction
 }
 
 /**
@@ -68,6 +71,9 @@ class TestTlsServer(
     val failedHandshakes = AtomicInteger()
 
     val received = CopyOnWriteArrayList<ReceivedRequest>()
+
+    /** true：握手完成后既不读请求也不回应（对端“活着但不收数据”，大请求的写会在发送缓冲写满后阻塞）。 */
+    @Volatile var stallAfterHandshake: Boolean = false
 
     /** 每次握手之后会话的创建时间：复用了会话的连接，看到的是第一次握手的时间。 */
     val sessionCreationTimes = CopyOnWriteArrayList<Long>()
@@ -103,6 +109,7 @@ class TestTlsServer(
                 failedHandshakes.incrementAndGet()
                 return
             }
+            if (stallAfterHandshake) Thread.sleep(60_000)
             val request = readRequest(socket.getInputStream()) ?: return
             received += request
             respond(socket.getOutputStream(), script(request))
@@ -127,6 +134,16 @@ class TestTlsServer(
             is ServerAction.Raw -> {
                 out.write(action.bytes)
                 out.flush()
+            }
+
+            is ServerAction.Dribble -> {
+                out.write(head(200, listOf("Content-Type" to "application/json", "Content-Length" to action.declaredLength.toString())))
+                out.flush()
+                repeat(action.declaredLength) {
+                    out.write('x'.code)
+                    out.flush()
+                    Thread.sleep(action.intervalMs)
+                }
             }
 
             is ServerAction.Respond -> {
@@ -243,5 +260,30 @@ class PlainTcpServer(private val reply: ByteArray = "HTTP/1.1 200 OK\r\nContent-
 
     override fun close() {
         runCatching { serverSocket.close() }
+    }
+}
+
+/** 接受连接，但既不读也不写：TLS 握手发出 ClientHello 之后一直等不到回应（握手阶段卡住）。 */
+class SilentTcpServer : AutoCloseable {
+    private val serverSocket = ServerSocket(0, 50, java.net.InetAddress.getByName("127.0.0.1"))
+    private val held = CopyOnWriteArrayList<Socket>()
+    val port: Int get() = serverSocket.localPort
+
+    init {
+        thread(isDaemon = true, name = "test-silent-accept") {
+            while (!serverSocket.isClosed) {
+                val socket = try {
+                    serverSocket.accept()
+                } catch (_: SocketException) {
+                    break
+                }
+                held += socket
+            }
+        }
+    }
+
+    override fun close() {
+        runCatching { serverSocket.close() }
+        held.forEach { runCatching { it.close() } }
     }
 }
