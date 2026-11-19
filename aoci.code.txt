@@ -1,0 +1,261 @@
+#AOCI-CODE-VOLUME: 1
+
+===/<repository>/===
+.gitattributes[FV5T]: F:固定文本检出的 LF 行尾 | R:- | A:- | S:基线绑定原始字节；二进制由 Git 自动识别
+.gitignore[FS5T]: F:排除本地录音、密钥、模型、数据库、构建产物和原始日志 | R:- | A:- | S:-
+CLAUDE.md[SG5T]: F:给出仓库常用命令、产品红线与 worker 合并后清理规则 | R:code:docs/agent/commands.md,code:docs/agent/product-and-constraints.md | A:- | S:只清理自己创建且已合并的工作树和分支
+GLOSSARY.md[SB5T]: F:定义采集、文本、投递、状态和租户隔离的领域术语 | R:- | A:- | S:路由已连接不等于输入来源已验证
+VoiceBridge_PRD_Agent_Ready_v1.0.md[SG5L]: F:规定 Auri 产品需求、架构边界、状态机、安全和真机验收基线 | R:code:docs/agent/product-and-constraints.md | A:- | S:部分原计划被后续 ADR 覆盖，需对照现行决策
+
+===/<repository>/.github/workflows/===
+ci.yml[TQ5T]: F:在推送和拉取请求时运行合同、集成及安全测试 | R:code:tests/contract/requirements.txt,code:services/gateway/requirements.txt,code:tests/integration/requirements.txt | A:- | S:-
+
+===/<repository>/.scratch/auri-v1/issues/===
+01-gateway-pair-and-store.md[SB4T]: F:规划网关配对、设备令牌与 Revision 入库的首条闭环及验收 | R:- | A:- | S:首阶段只走回环明文；令牌只存哈希
+02-gateway-destinations.md[SB4T]: F:规划 Destination 创建、凭证轮换和 Revision 的逐目标投递 | R:code:.scratch/auri-v1/issues/01-gateway-pair-and-store.md | A:- | S:-
+03-gateway-mcp-delivery.md[SM4T]: F:规划 Agent 经 MCP 领取、续租、确认及拒收投递 | R:code:.scratch/auri-v1/issues/02-gateway-destinations.md | A:- | S:目标隔离，正文标为用户数据而非系统指令
+04-gateway-rejections-and-delete.md[SB4T]: F:规划版本冲突、源设备写权限、删除和旧投递撤销 | R:code:.scratch/auri-v1/issues/02-gateway-destinations.md | A:- | S:删除后的 Record 不得因补传复活
+05-gateway-readonly-tools-and-queries.md[SB4T]: F:规划目标隔离的 MCP 只读工具及手机状态查询合同 | R:code:.scratch/auri-v1/issues/03-gateway-mcp-delivery.md | A:- | S:-
+06-gateway-lan-transport.md[SN4T]: F:规划局域网 TLS、公钥指纹配对和 mDNS 发现 | R:code:.scratch/auri-v1/issues/01-gateway-pair-and-store.md | A:- | S:指纹不符必须拒绝连接
+07-gateway-operations.md[SO4T]: F:规划设备与凭证管理、备份恢复、迁移及日志约束 | R:code:.scratch/auri-v1/issues/04-gateway-rejections-and-delete.md | A:- | S:-
+08-agent-hosts-integration.md[SE4T]: F:规划 Hermes 与 Claude Code 连接网关并领取确认的真机联调 | R:code:.scratch/auri-v1/issues/03-gateway-mcp-delivery.md,code:.scratch/auri-v1/issues/06-gateway-lan-transport.md | A:- | S:无真机结果须标记未运行或外部阻塞
+09-android-probe.md[SH4T]: F:定义 Android 耳机事件、麦克风路由与生命周期探针的验收 | R:- | A:- | S:路由证据不足时不回退手机麦克风
+10-harmonyos-probe.md[SH4T]: F:定义鸿蒙 NEXT 耳机、音频路由、生命周期和 mDNS 真机探针 | R:- | A:- | S:路由证据不足时不回退手机麦克风
+11-ios-volume-gesture-stop.md[SH4T]: F:规划 iOS 音量手势停止规则、真机复测与后台音频签名验证 | R:code:docs/adr/0014-ios-stop-via-volume-gesture.md | A:- | S:不得使用私有蓝牙协议或保活手段
+12-g0-summary.md[SH4T]: F:规划三端探针支持矩阵、最低系统版本和阻塞决策 | R:code:.scratch/auri-v1/issues/09-android-probe.md,code:.scratch/auri-v1/issues/10-harmonyos-probe.md | A:- | S:-
+13-asr-candidate-verification.md[SA4T]: F:规划候选本地转录模型的运行时、平台、体积与许可核实 | R:code:docs/adr/0017-qwen3-asr-as-candidate-model.md | A:- | S:未查到一手证据的结论标为未核实
+14-asr-on-one-android-phone.md[SA4T]: F:规划 Android 真机离线转录的首条端到端路径 | R:code:.scratch/auri-v1/issues/13-asr-candidate-verification.md | A:- | S:音频要真实重采样，模型哈希不符拒绝加载
+15-asr-benchmark-and-default-model.md[SA4T]: F:规划三端同语料模型评测、VAD 验证和默认模型决策 | R:code:.scratch/auri-v1/issues/14-asr-on-one-android-phone.md,code:.scratch/auri-v1/issues/12-g0-summary.md | A:- | S:真实口述音频不入库
+16-android-record-and-transcribe.md[SB4T]: F:规划 Android 耳机路由确认、屏幕录音和本地转录闭环 | R:code:.scratch/auri-v1/issues/09-android-probe.md,code:.scratch/auri-v1/issues/14-asr-on-one-android-phone.md | A:- | S:确认前音频仅在内存，失败后丢弃
+17-android-headset-control.md[SH4T]: F:规划 Android 控制模式、耳机事件归一化和校准 | R:code:.scratch/auri-v1/issues/16-android-record-and-transcribe.md | A:- | S:未开启控制模式时媒体事件不触发录音
+18-android-silence-and-limits.md[SB4T]: F:规划静音过滤、无语音记录与录音时长上限 | R:code:.scratch/auri-v1/issues/16-android-record-and-transcribe.md | A:- | S:停顿本身不结束录音
+19-android-interruptions-and-recovery.md[SR4T]: F:规划 Android 断连、中断、权限或存储异常与崩溃恢复 | R:code:.scratch/auri-v1/issues/16-android-record-and-transcribe.md | A:- | S:恢复后不自动开始录音
+20-android-model-management.md[SA4T]: F:规划 Android 模型下载校验、原子启用与后台转录排队 | R:code:.scratch/auri-v1/issues/16-android-record-and-transcribe.md | A:- | S:更新失败保留旧模型
+21-android-pair-and-sync.md[SN4T]: F:规划 Android 安全配对、局域网同步和离线重传 | R:code:.scratch/auri-v1/issues/06-gateway-lan-transport.md | A:- | S:公钥指纹不符须拒绝连接
+22-android-destinations-and-sending.md[SB4T]: F:规划 Android 目标管理、自动发送与预览确认 | R:code:.scratch/auri-v1/issues/21-android-pair-and-sync.md,code:.scratch/auri-v1/issues/03-gateway-mcp-delivery.md | A:- | S:确认只代表接收，不代表已处理
+23-android-revisions-and-delete.md[SB4T]: F:规划 Android 修订、人工确认重发、删除和保留策略 | R:code:.scratch/auri-v1/issues/22-android-destinations-and-sending.md | A:- | S:删除不能收回 Agent 已读内容
+24-ios-record-transcribe-robustness.md[SB4T]: F:规划 iOS 录音转录、静音上限和中断恢复 | R:code:.scratch/auri-v1/issues/16-android-record-and-transcribe.md | A:- | S:后台新建不可行时须如实提示限制
+25-ios-control-and-models.md[SH4T]: F:规划 iOS 控制模式、校准、模型管理和转录调度 | R:code:.scratch/auri-v1/issues/24-ios-record-transcribe-robustness.md | A:- | S:录音中耳机按键不可用，冷启动不能仅靠手势开始
+26-ios-sync-revisions-delete.md[SN4T]: F:规划 iOS 配对、发送、修订删除和局域网恢复同步 | R:code:.scratch/auri-v1/issues/24-ios-record-transcribe-robustness.md,code:.scratch/auri-v1/issues/23-android-revisions-and-delete.md | A:- | S:本地网络权限被拒须提供恢复入口
+27-harmonyos-record-transcribe-robustness.md[SB4T]: F:规划鸿蒙录音、本地转录、静音过滤与恢复验收 | R:code:.scratch/auri-v1/issues/16-android-record-and-transcribe.md | A:- | S:共享引擎通过原生绑定接入
+28-harmonyos-control-and-models.md[SH4T]: F:规划鸿蒙耳机控制、校准和模型管理 | R:code:.scratch/auri-v1/issues/27-harmonyos-record-transcribe-robustness.md | A:- | S:做不到的能力应如实标明
+29-harmonyos-sync-revisions-delete.md[SN4T]: F:规划鸿蒙配对、发送、修订和删除 | R:code:.scratch/auri-v1/issues/27-harmonyos-record-transcribe-robustness.md | A:- | S:mDNS 不可用时只用配对地址
+30-privacy-and-licence-audit.md[SS4T]: F:规划音频、文字、凭证去向及依赖模型许可审计 | R:- | A:- | S:确认无音频传出手机的路径
+31-end-to-end-regression.md[SQ4T]: F:规划三端、网关与两个 Agent 的端到端回归和证据矩阵 | R:code:.scratch/auri-v1/issues/30-privacy-and-licence-audit.md | A:- | S:不得修改期望或删除负例提高通过率
+32-signing-and-distribution.md[SV4T]: F:规划三端测试签名包及网关安装、备份和回滚说明 | R:code:.scratch/auri-v1/issues/31-end-to-end-regression.md | A:- | S:签名材料和密钥不入库
+
+===/<repository>/contracts/===
+README.md[SG5T]: F:说明跨端与网关合同、状态机样本、语义规则和变更流程 | R:code:contracts/schemas/common.schema.json | A:- | S:SR-01 至 SR-06 不能只靠 JSON Schema 校验
+
+===/<repository>/contracts/schemas/===
+adapter.schema.json[FH5M]: F:定义控制事件、采集路由及转录能力等进程内跨平台类型 | R:code:contracts/schemas/common.schema.json | A:normalized_control_event,capture_eligibility,prepared_input,capture_handle,route_change_event,recording_result | S:准备输入不等于验证路由；代次和路由纪元均匹配才可写入
+common.schema.json[FG5S]: F:定义跨合同共用标识、时间、哈希和状态枚举 | R:- | A:- | S:保留的云端值不表示 V1 允许运行云转录
+delivery.schema.json[FM5S]: F:定义 MCP 领取、续租、确认和拒收的请求响应 | R:code:contracts/schemas/common.schema.json | A:claim_request,claim_response,renew_request,renew_response,ack_request,ack_response | S:调用身份由认证确定；确认不证明已处理
+destination.schema.json[FB5T]: F:定义目标创建、资源与一次性凭证响应 | R:code:contracts/schemas/common.schema.json | A:create_request,resource,credential_response | S:已有凭证不在资源响应回显
+error.schema.json[FG4T]: F:定义带错误码、可重试性和所需操作的统一错误响应 | R:code:contracts/schemas/common.schema.json | A:- | S:错误不得伪装成正常空结果
+headset-profile.schema.json[FH5S]: F:定义耳机命令映射、输入策略和逐项能力证据 | R:code:contracts/schemas/common.schema.json | A:capability | S:未知能力不等于测试通过
+pairing.schema.json[FI5T]: F:定义配对载荷、兑换请求与设备令牌响应 | R:code:contracts/schemas/common.schema.json | A:payload,redeem_request,redeem_response | S:网关身份绑定公钥指纹，设备令牌只返回一次
+revision.schema.json[FB5M]: F:定义 Revision 提交、入库和 Record 删除的 HTTP 数据 | R:code:contracts/schemas/common.schema.json | A:submission,stored,record_deleted | S:租户由认证推导；删除墓碑后拒绝再次提交
+state-machine.schema.json[FQ5T]: F:定义状态转移表和事件序列样本的跨语言结构 | R:code:contracts/schemas/common.schema.json | A:machine,scenarios | S:未列出的状态事件组合被拒绝
+
+===/<repository>/docs/adr/===
+0002-ios-restricted-fallback.md[SH4T]: F:决定 iOS 后台新建不可行时按有证据的受限版本交付 | R:- | A:- | S:严格蓝牙输入不可行仍是阻塞项
+0008-self-hosted-gateway-credentials.md[SI4T]: F:决定自托管网关分离设备令牌与每目标 Agent 凭证 | R:code:docs/adr/0018-lan-only-gateway.md | A:- | S:公网域名部分已由 ADR-0018 取代
+0009-auto-send-per-destination.md[SB4T]: F:决定每个 Destination 显式选择自动发送或预览确认 | R:- | A:- | S:新修订不自动重发，未领取旧投递可取消
+0013-tenant-from-auth.md[SI4T]: F:决定租户只能从认证映射，V1 对应唯一租户 | R:- | A:- | S:不信请求体自报租户
+0014-ios-stop-via-volume-gesture.md[SH4T]: F:依据真机证据决定 iOS 录音中以音量手势和屏幕方式停止 | R:code:execution/p0-spikes/ios-probe/results/2026-10-20-freeclip2-iphone-air.md | A:- | S:冷启动后纯耳机手势开始仍无可用路径
+0015-handy-as-pipeline-reference.md[SA4T]: F:决定仅借鉴 Handy 的处理流程而不移植其桌面代码 | R:code:docs/adr/0016-vad-filters-silence-within-session.md | A:- | S:-
+0016-vad-filters-silence-within-session.md[SA4T]: F:决定 VAD 只过滤已开始采集会话内的静音 | R:- | A:- | S:静音不能触发停止，也不能绕过路由隔离
+0017-qwen3-asr-as-candidate-model.md[SA4T]: F:将 Qwen3-ASR 列为待真机比较和许可核实的模型候选 | R:- | A:- | S:未实测前不定为默认模型
+0018-lan-only-gateway.md[SN4T]: F:决定网关只在局域网提供服务并绑定公钥指纹 | R:code:docs/adr/0008-self-hosted-gateway-credentials.md | A:- | S:指纹是 SPKI 的 SHA-256；不符时拒绝连接
+0019-v1-local-transcription-only.md[SA4T]: F:决定 V1 仅在设备本地转录并推迟云端接口 | R:- | A:- | S:本地失败不得自动回退云端
+0020-origin-device-writes-record.md[SB4T]: F:决定仅原录音设备可提交修订或删除对应记录 | R:- | A:- | S:允许不连续版本号；设备身份来自令牌
+0021-ios-volume-gesture-stop-rule.md[SH4T]: F:提议 iOS 录音中以限时音量反向变化作为停止手势 | R:code:docs/adr/0014-ios-stop-via-volume-gesture.md | A:- | S:仍为 proposed，等待真机证据和负责人确认
+
+===/<repository>/docs/agent/===
+commands.md[SO4T]: F:Lists GitNexus, gateway test, and platform probe commands | R:code:services/gateway/OPERATIONS.md,code:docs/agent/code-intelligence.md | A:- | S:Offline tests do not establish real-device capability
+product-and-constraints.md[SG5T]: F:汇总产品决策、隐私红线、领域合同和证据要求 | R:code:GLOSSARY.md,code:contracts/README.md | A:- | S:未知兼容性不能标为通过
+project-snapshot.md[SG4T]: F:保留 2026-11-17 项目进展和工具链历史快照 | R:code:docs/agent/commands.md | A:- | S:快照已过期，不代表当前进度
+code-intelligence.md[SG5T]: F:Documents GitNexus and aoci lookup and index maintenance | R:code:docs/agent/commands.md,code:aoci.txt,code:aoci.code.txt | A:- | S:GitNexus reflects the main checkout, not unmerged worktree changes
+
+===/<repository>/docs/research/===
+asr-candidates.md[SA5L]: F:核实本地转录候选模型、引擎支持、许可和评测名单 | R:code:docs/adr/0017-qwen3-asr-as-candidate-model.md | A:- | S:列有未核实事项，不等同真机性能结论
+
+===/<repository>/docs/spec/===
+auri-v1-spec.md[SG5M]: F:定义 Auri V1 用户故事、模块边界、行为和验收测试决策 | R:code:GLOSSARY.md,code:contracts/README.md | A:- | S:真实设备能力需独立证据
+
+===/<repository>/execution/baseline/===
+README.md[SO4T]: F:记录 DEV-001 的仓库、开发机和三端工具链基线 | R:code:docs/adr/0018-lan-only-gateway.md | A:- | S:历史公网网关描述已被局域网决策取代
+
+===/<repository>/execution/p0-spikes/android-probe/===
+README.md[SH5S]: F:说明 Android 控制、路由和前台服务探针与真机验证步骤 | R:code:.scratch/auri-v1/issues/09-android-probe.md | A:- | S:文档记录的未运行状态不是兼容性证明
+build.gradle.kts[FV3T]: F:固定 Android 与 Kotlin Gradle 插件版本 | R:- | A:- | S:-
+gradle.properties[FV3T]: F:配置 Gradle JVM、AndroidX 和 Kotlin 风格 | R:- | A:- | S:-
+gradlew[OV3M]: F:通过 Gradle Wrapper 在 Unix 启动项目构建 | R:code:execution/p0-spikes/android-probe/gradle/wrapper/gradle-wrapper.properties | A:- | S:-
+gradlew.bat[OV3T]: F:通过 Gradle Wrapper 在 Windows 启动项目构建 | R:code:execution/p0-spikes/android-probe/gradle/wrapper/gradle-wrapper.properties | A:- | S:-
+settings.gradle.kts[FV3T]: F:配置 Gradle 插件和依赖仓库及 Android app 模块 | R:- | A:- | S:-
+
+===/<repository>/execution/p0-spikes/android-probe/app/===
+build.gradle.kts[FV4T]: F:配置 Android 探针的 SDK、Java、Kotlin 及依赖版本 | R:- | A:- | S:-
+proguard-rules.pro[FV3T]: F:声明保留探针类的混淆规则 | R:- | A:- | S:-
+
+===/<repository>/execution/p0-spikes/android-probe/app/src/main/===
+AndroidManifest.xml[FH5T]: F:声明探针权限、入口、麦克风前台服务和媒体按钮接收器 | R:code:execution/p0-spikes/android-probe/app/src/main/java/app/auri/probe/MicCaptureForegroundService.kt | A:- | S:前台服务不对外导出
+
+===/<repository>/execution/p0-spikes/android-probe/app/src/main/java/app/auri/probe/===
+CaptureProbe.kt[AH5L]: F:协调 Android 探针的权限、前台服务、蓝牙输入、路由门禁和 PCM 采集 | R:code:execution/p0-spikes/android-probe/app/src/main/java/app/auri/probe/core/RouteEvidenceGate.kt | A:start,stop,evaluateTwoLayers,applyNormalizedCommand | S:仅路由验证后接受帧；无接受帧时清理文件
+LifecycleProbe.kt[OH5S]: F:根据 Activity、屏幕和锁屏状态记录前后台生命周期 | R:- | A:start,currentState | S:锁屏优先于前后台判定
+MainActivity.kt[EU5M]: F:提供权限检查、待命控制、采集操作、场景标记和日志界面 | R:- | A:onCreate,onKeyDown,onKeyUp | S:播放状态选项仅改变媒体会话元数据
+MediaControlProbe.kt[IH5S]: F:注册媒体会话并记录转发按键和传输回调 | R:- | A:arm,disarm,setPlaybackStateMode | S:不播放音频；可切换播放状态元数据
+MicCaptureForegroundService.kt[RH5S]: F:为采集或显式探测启动麦克风类型前台服务并回报结果 | R:- | A:onStartCommand,onDestroy | S:服务为非粘性，不用于永久保活
+ProbeApplication.kt[AH5S]: F:初始化进程级探针并归一化控制事件、转发前台服务结果 | R:- | A:init,setArmed,handleControlInput | S:进程恢复不自动进入待命
+ProbeLogger.kt[OO5T]: F:记录按单调时钟排序的探针 JSONL 并导出脱敏副本 | R:- | A:init,log,writeRedactedCopy | S:界面回调接收脱敏行，原始日志仍留本机
+ProbeMediaButtonReceiver.kt[EH5T]: F:观察媒体按钮广播并在待命时转发输入 | R:- | A:onReceive | S:冷进程或未待命时忽略，不自动开麦
+
+===/<repository>/execution/p0-spikes/android-probe/app/src/main/java/app/auri/probe/core/===
+CaptureEligibilityEvaluator.kt[DH5S]: F:综合运行时权限、生命周期和麦克风前台服务状态评估采集资格 | R:- | A:evaluate | S:仅有权限且服务未运行时资格为未知
+ControlEventNormalizer.kt[DH5M]: F:归一化 Android 按键、媒体回调和屏幕命令并去重 | R:- | A:normalize | S:配对传输回调默认 150ms 窗口；不猜物理手势
+JsonLineCodec.kt[CO4T]: F:将日志字段编码为无依赖的 JSON 行 | R:- | A:encodeObject | S:对象键按字符串排序
+LogRedactor.kt[CS5T]: F:遮蔽探针日志中的敏感字符串字段和蓝牙 MAC | R:- | A:redactLine,redactLines | S:按字符串字段正则脱敏，调用者仍需审阅输出
+ProbeTypes.kt[CH4S]: F:定义探针业务命令、路由、权限和兼容性枚举 | R:code:contracts/schemas/common.schema.json | A:- | S:-
+RouteEvidenceGate.kt[DH5S]: F:按会话代次、路由证据和纪元控制 Android 音频帧进入 | R:- | A:beginSession,onRouteObserved,recordFrames,onRoutingTimeout | S:路由不匹配即关闸，拒绝旧代次或纪元帧
+ScenarioBookkeeper.kt[DH5T]: F:按耳机、手机、系统和场景维护兼容性结果 | R:- | A:seed,record,entries,toMarkdownTable | S:兼容结论须 E3 或 E4 及非空证据标识
+
+===/<repository>/execution/p0-spikes/android-probe/app/src/main/res/layout/===
+activity_main.xml[FU4S]: F:布置 Android 探针的权限、采集、模式、标记和日志控件 | R:- | A:- | S:-
+
+===/<repository>/execution/p0-spikes/android-probe/app/src/main/res/values/===
+strings.xml[FU3T]: F:提供探针名称和麦克风前台通知文案 | R:- | A:- | S:-
+
+===/<repository>/execution/p0-spikes/android-probe/app/src/test/java/app/auri/probe/core/===
+CaptureEligibilityEvaluatorTest.kt[TH4T]: F:测试权限及前台服务对采集资格的影响 | R:- | A:- | S:服务未运行时不把已授权推断为可开始
+ControlEventNormalizerTest.kt[TH4M]: F:测试媒体事件映射、跨通道去重、合同缺口及屏幕按钮 | R:- | A:- | S:-
+LogRedactorTest.kt[TS4T]: F:测试日志设备标识、MAC、正文与音频字段的脱敏 | R:- | A:- | S:-
+RouteEvidenceGateTest.kt[TH4S]: F:测试未验证路由隔离、蓝牙开闸、断路和旧会话拒绝 | R:- | A:- | S:-
+ScenarioBookkeeperTest.kt[TH4T]: F:测试兼容矩阵默认未测及结论证据要求 | R:- | A:- | S:-
+
+===/<repository>/execution/p0-spikes/android-probe/gradle/wrapper/===
+gradle-wrapper.properties[FV4T]: F:固定 Gradle 发行包地址和 SHA-256 校验值 | R:- | A:- | S:-
+
+===/<repository>/execution/p0-spikes/android-probe/results/===
+RESULTS-TEMPLATE.md[SH4T]: F:提供 Android 真机分场景结果与兼容证据模板 | R:- | A:- | S:默认 NOT_TESTED，不能把模拟当真机证据
+
+===/<repository>/execution/p0-spikes/harmonyos-probe/AppScope/===
+app.json5[FV3T]: F:声明鸿蒙探针包名、版本和应用资源 | R:- | A:- | S:-
+
+===/<repository>/execution/p0-spikes/harmonyos-probe/AppScope/resources/base/element/===
+string.json[FU3T]: F:提供鸿蒙探针应用名称 | R:- | A:- | S:-
+
+===/<repository>/execution/p0-spikes/harmonyos-probe/AppScope/resources/base/media/===
+layered_image.json[FU3T]: F:组合鸿蒙应用图标的前景和背景资源 | R:- | A:- | S:-
+
+===/<repository>/execution/p0-spikes/harmonyos-probe/===
+README.md[SH5S]: F:说明鸿蒙控制、蓝牙路由、后台和 mDNS 探针及真机流程 | R:code:.scratch/auri-v1/issues/10-harmonyos-probe.md | A:- | S:未验证接口和真机结果须如实记录
+build-profile.json5[FV4T]: F:配置鸿蒙应用产品、目标 SDK、构建模式和 entry 模块 | R:- | A:- | S:签名配置列表为空，需本机配置
+code-linter.json5[FV3T]: F:将鸿蒙 API 兼容性检查配置为警告 | R:- | A:- | S:-
+hvigorfile.ts[FV3T]: F:启用鸿蒙应用级构建任务 | R:- | A:- | S:-
+oh-package.json5[FV3T]: F:声明鸿蒙探针包版本和依赖 | R:- | A:- | S:-
+
+===/<repository>/execution/p0-spikes/harmonyos-probe/entry/===
+build-profile.json5[FV3T]: F:配置鸿蒙 entry 模块的 Stage 模式和默认目标 | R:- | A:- | S:-
+hvigorfile.ts[FV3T]: F:启用鸿蒙 entry 模块的 HAP 构建任务 | R:- | A:- | S:-
+oh-package.json5[FV3T]: F:声明鸿蒙 entry 模块包信息与依赖 | R:- | A:- | S:-
+
+===/<repository>/execution/p0-spikes/harmonyos-probe/entry/src/main/ets/entryability/===
+EntryAbility.ets[EH4T]: F:初始化探针控制器、加载首页并转发生命周期 | R:- | A:onCreate,onWindowStageCreate,onForeground,onBackground,onDestroy | S:-
+
+===/<repository>/execution/p0-spikes/harmonyos-probe/entry/src/main/ets/logic/===
+ControlNormalizer.ts[DH5M]: F:把 AVSession、按键与屏幕输入映射为合同控制事件并去重 | R:- | A:normalize | S:远端来源保持 unknown，不推测耳侧或物理手势
+LogRedactor.ts[CS5S]: F:脱敏鸿蒙日志中的设备名、秘密、内容和 MAC | R:- | A:redactMacTail,redactDeviceName,redactLogRecord,redactLogLineJson | S:MAC 仅保留尾部；解析失败输出占位事件
+ProbeTypes.ts[CH4S]: F:定义鸿蒙探针对齐合同的事件、路由和日志类型 | R:code:contracts/schemas/common.schema.json | A:- | S:纯类型模块不依赖鸿蒙 SDK
+RouteEvidenceGate.ts[DH5M]: F:用实际输入设备、会话代次与路由纪元控制音频帧 | R:- | A:beginRouting,acceptFrame,evaluateObservedInput,onRouteChanged | S:NEARLINK 暂映射为未知蓝牙配置并记录合同缺口
+ScenarioBookkeeper.ts[DH5S]: F:创建鸿蒙场景矩阵、记录证据并输出 Markdown | R:- | A:createInitialMatrix,recordObservation,formatMatrixMarkdown | S:兼容结论要求 E3 或 E4 及证据标识
+
+===/<repository>/execution/p0-spikes/harmonyos-probe/entry/src/main/ets/pages/===
+Index.ets[EU4M]: F:提供鸿蒙探针待命、采集、对照变量、mDNS 和日志界面 | R:- | A:- | S:-
+
+===/<repository>/execution/p0-spikes/harmonyos-probe/entry/src/main/ets/probes/===
+AVSessionProbe.ets[IH5M]: F:注册 AVSession 控制事件并归一化后转发命令 | R:- | A:arm,disarm,setMapping,setPlaybackStateContrast | S:播放状态仅作元数据对照，不播放音频
+BackgroundTaskProbe.ets[RH4T]: F:管理采集期间的 AUDIO_RECORDING 长时任务 | R:- | A:startRecordingTask,stopRecordingTask | S:不伪造播放或使用其他后台模式
+CaptureProbe.ets[AH5L]: F:协调鸿蒙麦克风权限、蓝牙路由验证、后台任务和音频采集 | R:- | A:setControlMode,requestMicPermission,apply,start,stop | S:验证前帧隔离，路由失效关闸；旧代次不能接管会话
+LifecycleProbe.ets[OH4T]: F:记录鸿蒙 Ability 前后台及屏幕、锁屏系统事件 | R:- | A:start,stop,onAbilityForeground,onAbilityBackground,onAbilityDestroy | S:-
+MdnsProbe.ets[IN4S]: F:发现并解析局域网 Auri 网关 mDNS 服务 | R:- | A:start,stop,setOnStatusChange | S:发现只提供地址，连接身份仍需独立验证
+ProbeController.ets[AH4S]: F:连接鸿蒙探针界面、采集、AVSession、生命周期和 mDNS | R:- | A:init,setArmed,manualStart,manualStop,startMdns,stopMdns | S:AVSession 启动失败会撤销待命
+ProbeLogger.ets[OO4S]: F:记录脱敏 JSONL 到应用沙盒、系统日志及界面 | R:- | A:log,setAppState,setOnLine | S:写入前执行脱敏，不记录音频字节
+
+===/<repository>/execution/p0-spikes/harmonyos-probe/entry/src/main/===
+module.json5[FH4T]: F:声明鸿蒙入口 Ability、麦克风、后台录音和网络权限 | R:- | A:- | S:-
+
+===/<repository>/execution/p0-spikes/harmonyos-probe/entry/src/main/resources/base/element/===
+color.json[FU2T]: F:定义鸿蒙启动窗口背景色 | R:- | A:- | S:-
+string.json[FU3T]: F:定义鸿蒙入口名称、描述及麦克风权限说明 | R:- | A:- | S:-
+
+===/<repository>/execution/p0-spikes/harmonyos-probe/entry/src/main/resources/base/media/===
+layered_image.json[FU2T]: F:组合鸿蒙入口图标前景与背景 | R:- | A:- | S:-
+
+===/<repository>/execution/p0-spikes/harmonyos-probe/entry/src/main/resources/base/profile/===
+main_pages.json[FU3T]: F:指定鸿蒙入口页面为 pages/Index | R:- | A:- | S:-
+
+===/<repository>/execution/p0-spikes/harmonyos-probe/hvigor/===
+hvigor-config.json5[FV3T]: F:配置 Hvigor 模型版本、执行与日志选项 | R:- | A:- | S:-
+
+===/<repository>/execution/p0-spikes/harmonyos-probe/results/===
+template-harmonyos-probe-results.md[SH4T]: F:提供鸿蒙耳机、路由、后台和 mDNS 真机结果模板 | R:- | A:- | S:初始状态未运行，不得用单测代替 E3
+
+===/<repository>/execution/p0-spikes/harmonyos-probe/tools/===
+redact-log.mjs[XS4T]: F:逐行调用鸿蒙日志脱敏器并输出文件或标准输出 | R:- | A:- | S:解析失败由脱敏器替换为占位事件
+
+===/<repository>/execution/p0-spikes/ios-probe/===
+README.md[SH5S]: F:说明 iOS 音量手势复测、构建、签名、日志与证据流程 | R:code:docs/adr/0021-ios-volume-gesture-stop-rule.md | A:- | S:后台与锁屏能力仍需真机核验
+project.yml[FV4T]: F:用 XcodeGen 声明 iOS 探针、单测目标、权限和后台音频 | R:- | A:- | S:签名使用自动模式，团队信息由本机提供
+
+===/<repository>/execution/p0-spikes/ios-probe/Sources/===
+BleProbe.swift[IH4S]: F:只读扫描 FreeClip 外设、发现服务特征并观察通知 | R:- | A:start,stop | S:不向特征写入；其他外设仅计数
+CaptureProbe.swift[AH5L]: F:协调 iOS 蓝牙路由验证、音频采集、中断和音量手势停止 | R:- | A:requestMicPermission,apply,start,stop | S:非蓝牙输入关闸并停止；中断后不自动续录
+LifecycleProbe.swift[OH4T]: F:记录 iOS 前后台、保护数据、内存警告和终止通知 | R:- | A:start | S:-
+LogRedactor.swift[CS5T]: F:递归清理日志中的敏感字段并遮蔽 MAC | R:- | A:redactUID,maskMACAddresses,redactPort,sanitizeData | S:UID 仅保留尾部
+ProbeApp.swift[EU4M]: F:提供 iOS 采集、远程命令、BLE 和音量手势复测界面 | R:- | A:- | S:复测标记与触发计数按场景记录
+ProbeLogger.swift[OO4T]: F:向沙盒追加脱敏 JSONL 并向界面推送事件 | R:- | A:monoNanos,log,setAppState | S:时间戳用单调时钟对齐路由与音频帧
+RemoteCommandProbe.swift[IH5S]: F:注册 iOS 媒体命令并按所选模式映射为业务命令 | R:- | A:arm,disarm,publishNowPlaying | S:Now Playing 仅发布元数据，不创建播放器
+RetestBookkeeper.swift[DH4T]: F:按场景汇总音量停止、误停、漏停和人工停止计数 | R:- | A:markIntendedStop,recordVolumeStopTriggered,markFalseStop,markMissedStop,reset | S:-
+RouteEvidenceGate.swift[DH5T]: F:分类 iOS 输入端口并判定是否全部为蓝牙输入 | R:- | A:classify,evaluate | S:空、未知及非蓝牙端口均不通过
+VolumeGestureDetector.swift[DH5M]: F:在录音时识别限时音量反向变化并生成停止或忽略事件 | R:code:docs/adr/0021-ios-volume-gesture-stop-rule.md | A:classifyBoundary,evaluate | S:默认 0.5 秒保护期和 2.5 秒反向窗口，规则仍待真机确认
+
+===/<repository>/execution/p0-spikes/ios-probe/Tests/===
+LogRedactorTests.swift[TS4T]: F:测试 iOS 设备 UID、MAC、敏感键和嵌套日志脱敏 | R:- | A:- | S:-
+RetestBookkeeperTests.swift[TH4T]: F:测试音量停止复测计数的分场景汇总和重置 | R:- | A:- | S:-
+RouteEvidenceGateTests.swift[TH4T]: F:测试 iOS 蓝牙输入通过及空、内置麦和混合路由拒绝 | R:- | A:- | S:-
+VolumeGestureDetectorTests.swift[TH4M]: F:测试音量往返、边界、保护期、超时和跨会话重置 | R:- | A:- | S:-
+
+===/<repository>/execution/p0-spikes/ios-probe/results/===
+2026-10-20-freeclip2-iphone-air.md[SH5S]: F:记录 iPhone Air 与 FreeClip 2 的探针真机观察及限制 | R:code:docs/adr/0014-ios-stop-via-volume-gesture.md | A:- | S:结论限于已测组合；BLE 手势未得结论
+retest-volume-gesture-template.md[SH4T]: F:提供音量往返停止、锁屏、后台及误漏停复测模板 | R:- | A:- | S:模板结果均待真机填写
+
+===/<repository>/execution/p0-spikes/ios-probe/scripts/===
+summarize_log.py[XO4T]: F:汇总 iOS JSONL 的音量停止、误漏停、路由阻断及写入失败 | R:- | A:summarize_jsonl_lines,main | S:-
+
+===/<repository>/services/gateway/===
+OPERATIONS.md[SO5T]: F:说明网关 TLS 密钥、证书续签、局域网监听和 mDNS 运维 | R:code:docs/adr/0018-lan-only-gateway.md | A:- | S:同一私钥续签保持 SPKI 指纹；密钥不能入库
+requirements.txt[FV4T]: F:固定网关运行依赖及 MCP、密码学和网络库版本 | R:- | A:- | S:密码学版本固定以避免已记录的兼容问题
+
+===/<repository>/services/gateway/auri_gateway/===
+__init__.py[CV2T]: F:声明网关包版本 | R:- | A:__version__ | S:-
+__main__.py[EV3T]: F:通过模块入口调用网关 CLI 并返回退出码 | R:code:services/gateway/auri_gateway/cli.py | A:- | S:-
+app.py[EB7M]: F:组装网关 HTTP 路由、认证、合同验证、MCP 和错误处理 | R:code:services/gateway/auri_gateway/store.py,code:services/gateway/auri_gateway/contracts.py,code:services/gateway/auri_gateway/mcp_endpoint.py | A:create_app | S:Revision 路径与正文标识须一致，认证与语义检查后才入库
+cli.py[EV6M]: F:提供网关启动、生成配对载荷、续签证书和数据库迁移命令 | R:code:services/gateway/auri_gateway/network.py,code:services/gateway/auri_gateway/tls.py | A:main | S:明文模式只允许绑定回环地址
+client.py[IN7M]: F:提供固定 SPKI 指纹的网关 HTTPS 客户端和 mDNS 地址回退 | R:code:services/gateway/auri_gateway/tls.py,code:services/gateway/auri_gateway/mdns.py | A:GatewayKeyMismatchError,GatewayUnreachableError,PinnedGatewayClient | S:握手后请求前校验公钥指纹；不匹配立即拒绝且不继续回退
+contracts.py[CG7S]: F:加载冻结 JSON Schema 并验证 Revision 的六项语义规则 | R:code:contracts/README.md | A:validator_for,inline_schema,validate_schema,text_sha256,check_revision_semantic_rules | S:正文哈希按原始 UTF-8 字节；V1 只允许本地转录且正文至多 1 MiB
+db.py[PD7S]: F:管理 SQLite 连接、事务迁移与网关和租户初始化 | R:code:services/gateway/auri_gateway/migrations/0001_initial.sql | A:open_connection,apply_migrations,ensure_gateway_initialized | S:逐语句执行迁移以保持同一事务，失败回滚
+deliveries.py[DM8M]: F:对认证目标执行投递领取、续租、确认和拒收 | R:code:services/gateway/auri_gateway/delivery_machine.py,code:services/gateway/auri_gateway/store.py | A:claim_deliveries,renew_lease,ack_delivery,nack_delivery | S:写锁内再次检查凭证并结算过期租约；令牌只保存哈希
+delivery_machine.py[DM7T]: F:定义投递状态事件转移、幂等忽略和拒绝规则 | R:code:contracts/schemas/state-machine.schema.json | A:step | S:未列出的状态事件保持原状态并拒绝
+error_codes.py[CG5T]: F:定义网关错误码和统一响应载荷 | R:code:contracts/schemas/error.schema.json | A:GatewayError,build_error_payload | S:消息和操作提示按合同长度截断
+mcp_endpoint.py[EN7M]: F:通过无状态 MCP 暴露目标隔离的领取、续租、确认和拒收工具 | R:code:services/gateway/auri_gateway/deliveries.py,code:services/gateway/auri_gateway/contracts.py | A:AgentMcpEndpoint | S:先认证，再按合同验证工具输入；口述文本是数据而非指令
+mdns.py[IN5S]: F:广播网关服务并按网关身份发现局域网地址 | R:code:services/gateway/auri_gateway/network.py | A:MdnsAdvertiser,discover_gateways | S:发现结果仅为地址线索，客户端仍校验指纹
+network.py[RN6M]: F:校验网关监听地址、绑定套接字并维护运行时地址 | R:- | A:is_loopback_ip,is_lan_ip,resolve_bind_hosts,bind_tcp_sockets,build_pairing_addresses | S:仅接受回环和允许的私网地址，拒绝通配与公网
+store.py[PB8L]: F:持久化配对、认证、目标凭证和不可变 Revision | R:code:services/gateway/auri_gateway/db.py,code:services/gateway/auri_gateway/delivery_machine.py | A:issue_pairing_code,redeem_pairing_code,authenticate_device,authenticate_destination,store_revision,revoke_destination | S:配对码单次短效且仅存哈希；同版本同文本幂等，异文本冲突；仅来源设备可写
+tls.py[CS7M]: F:生成和续签网关自签证书并计算 SPKI 公钥指纹 | R:code:services/gateway/auri_gateway/network.py | A:tls_paths,spki_sha256_from_cert_der,ensure_tls_material,renew_certificate | S:续签复用已有私钥；现存证书与私钥不匹配时拒绝
+
+===/<repository>/services/gateway/auri_gateway/migrations/===
+0001_initial.sql[PD6T]: F:创建网关、租户、配对码、设备、记录和修订基础表 | R:- | A:- | S:配对码和设备令牌存哈希，记录绑定来源设备
+0002_destinations_and_deliveries.sql[PD6T]: F:创建 Destination、凭证及逐目标投递表和索引 | R:- | A:- | S:租户、记录、版本、目标共同构成投递唯一键
+0003_delivery_lease_seconds.sql[PD4T]: F:为投递表增加记录领取租期的字段 | R:- | A:- | S:续租复用原租期

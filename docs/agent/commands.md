@@ -3,6 +3,13 @@
 这是按需阅读的文件，入口在根目录 `CLAUDE.md`。
 新增工具链命令请补充到本文件。
 
+GitNexus 查询和刷新（使用说明见 `docs/agent/code-intelligence.md`）：
+
+```bash
+/Users/ethan/.local/bin/gitnexus context claim_deliveries --repo /Users/ethan/Desktop/CODE/auri
+(cd /Users/ethan/Desktop/CODE/auri && /Users/ethan/.local/bin/gitnexus analyze --index-only)
+```
+
 网关与集成/安全测试（在仓库根目录执行，依赖版本固定在 `services/gateway/requirements.txt` 与 `tests/integration/requirements.txt`）：
 
 ```bash
