@@ -90,6 +90,9 @@ enum class Cause {
     /** 存储写入失败。 */
     STORAGE_FAILURE,
 
+    /** A recording is one minute away from its configured limit. */
+    DURATION_WARNING,
+
     /** 命令本身就是 IGNORE（平台事件归一化后确认与录音无关）。 */
     IGNORE_COMMAND,
 
@@ -147,4 +150,5 @@ data class CaptureSnapshot(
     val durationLimitMs: Long? = null,
     /** 耳机控制由用户显式开启；手动采集不改变它。 */
     val controlModeEnabled: Boolean = state != CaptureState.DISARMED,
+    val durationWarning: Boolean = false,
 )

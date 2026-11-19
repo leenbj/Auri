@@ -38,7 +38,7 @@ class MainActivity : ComponentActivity() {
             val controlState by controlViewModel.state.collectAsStateWithLifecycle()
             val models by modelsViewModel.state.collectAsStateWithLifecycle()
             AppRoot(
-                home = { HomeScreen(state, onStart = ::onStartPressed, onStop = viewModel::stop, onDismissNotice = viewModel::dismissNotice) },
+                home = { HomeScreen(state, onStart = ::onStartPressed, onStop = viewModel::stop, onDismissNotice = viewModel::dismissNotice, onSetDuration = viewModel::setDurationLimit) },
                 control = { ControlScreen(controlState, controlViewModel, onStart = ::onStartPressed) },
                 models = {
                     ModelsScreen(

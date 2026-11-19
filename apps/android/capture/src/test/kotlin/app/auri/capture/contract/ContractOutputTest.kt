@@ -2,6 +2,8 @@ package app.auri.capture.contract
 
 import app.auri.capture.adapter.TranscriptionOutcome
 import app.auri.capture.adapter.TranscriptionRequest
+import app.auri.capture.adapter.AudioFrames
+import app.auri.capture.coordinator.CaptureConfig
 import app.auri.capture.coordinator.SealedRecording
 import app.auri.capture.library.RecordEntry
 import app.auri.capture.library.Revision
@@ -47,8 +49,10 @@ class ContractOutputTest {
     private suspend fun TestScope.record(
         endWithMismatch: Boolean = false,
         outcome: (TranscriptionRequest) -> TranscriptionOutcome = { TranscriptionOutcome.Text("你好，Auri 😀 hello", "zh", 0.93) },
+        frames: List<ShortArray>? = null,
+        limitStopped: Boolean = false,
     ): Outcome {
-        val rig = CaptureRig(this)
+        val rig = CaptureRig(this, CaptureConfig(maxDurationMs = if (limitStopped) 120_000 else CaptureConfig().maxDurationMs))
         val library = InMemoryRecordLibrary()
         val transcription = FakeTranscriptionAdapter().also { it.outcome = outcome }
         rig.output.forwardTo = RecordPipeline(library, transcription, rig.clock, backgroundScope)
@@ -59,9 +63,12 @@ class ContractOutputTest {
         rig.settle()
         rig.capture.verifiedRoute(epoch = 1)
         rig.settle()
-        rig.capture.frames(samples = 16_000, epoch = 1)
+        if (frames == null) rig.capture.frames(samples = 16_000, epoch = 1)
+        else frames.forEach { rig.capture.sink().frames(AudioFrames(1, it)) }
         rig.settle()
-        if (endWithMismatch) rig.capture.mismatchRoute(epoch = 2) else rig.control.press(BusinessCommand.STOP)
+        if (limitStopped) rig.advance(120_000)
+        else if (endWithMismatch) rig.capture.mismatchRoute(epoch = 2)
+        else rig.control.press(BusinessCommand.STOP)
         rig.settle()
         rig.settle()
 
@@ -125,6 +132,28 @@ class ContractOutputTest {
     private fun writeText(dir: File, result: Outcome) {
         dir.write("capture-block.json", json.encodeToString(JsonObject.serializer(), captureBlock(result.entry)))
         dir.write("revision-content.json", json.encodeToString(JsonObject.serializer(), contentBlock(result.entry.revisions.single())))
+    }
+
+    @Test
+    fun `speech mixed silence no speech and duration limit produce contract output`() = runTest {
+        val sound = ShortArray(16_000) { 1_000 }
+        val silence = ShortArray(16_000)
+        val scenarios = listOf(
+            "speech" to record(frames = listOf(sound)),
+            "mixed" to record(frames = listOf(silence, sound, silence, silence, sound, silence)),
+            "no-speech" to record(frames = listOf(silence)),
+            "limit" to record(frames = listOf(sound), limitStopped = true),
+        )
+        val root = File(outRoot.parentFile, "silence-jvm")
+        for ((name, result) in scenarios) {
+            val dir = File(root, name).also { it.deleteRecursively(); it.mkdirs() }
+            writeCommon(dir, result)
+            if (result.entry.revisions.isNotEmpty()) writeText(dir, result)
+            assertEquals(result.sealed.result.verifiedRanges, result.entry.speechSegments)
+        }
+        assertTrue(scenarios.single { it.first == "no-speech" }.second.entry.revisions.isEmpty())
+        assertTrue(scenarios.single { it.first == "no-speech" }.second.transcription.requests.isEmpty())
+        assertEquals(EndReason.DURATION_LIMIT, scenarios.single { it.first == "limit" }.second.entry.endReason)
     }
 
     @Test

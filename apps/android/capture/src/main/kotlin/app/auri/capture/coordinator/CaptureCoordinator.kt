@@ -92,8 +92,9 @@ class CaptureCoordinator(
     private val config: CaptureConfig = CaptureConfig(),
     private val scope: CoroutineScope,
     private val adapterDispatcher: CoroutineDispatcher,
+    private val durationLimit: () -> Long = { config.maxDurationMs },
+    private val vad: VoiceActivityDetector = EnergyVoiceActivityDetector(),
 ) {
-    private val vad: VoiceActivityDetector = EnergyVoiceActivityDetector()
     // ---- 只在邮箱协程里读写的状态 ----
     private var state: CaptureState = CaptureMachine.initialState
     private var blockedReason: ErrorCode? = null
@@ -103,6 +104,7 @@ class CaptureCoordinator(
     private var publishVersion = 0L
     private var lastFinalizedNs: Long? = null
     private var durationLimitMs: Long? = null
+    private var durationWarning = false
     private var controlModeEnabled = false
     private var disableWhenIdle = false
 
@@ -170,7 +172,7 @@ class CaptureCoordinator(
 
     private class Tag(val sessionId: String, val generation: Long)
 
-    private enum class TimerKind { ROUTE, DURATION }
+    private enum class TimerKind { ROUTE, DURATION_WARNING, DURATION }
 
     private sealed interface SealOutcome {
         class Done(val sealed: SealedRecording?) : SealOutcome
@@ -213,7 +215,7 @@ class CaptureCoordinator(
     }
 
     /** 一次 Capture Session 的内部状态。 */
-    private class Session(val id: String, val generation: Long, val operationId: String, val quarantine: Quarantine) {
+    private class Session(val id: String, val generation: Long, val operationId: String, val quarantine: Quarantine, val limitMs: Long) {
         var lastEpoch = -1L
         var observed: ObservedInput? = null
         var handle: CaptureHandle? = null
@@ -397,6 +399,13 @@ class CaptureCoordinator(
     private fun onTimeout(message: Message.Timeout) {
         val event = if (message.kind == TimerKind.ROUTE) CaptureEvent.ROUTE_TIMEOUT else CaptureEvent.DURATION_LIMIT
         currentSession(message.tag, event) ?: return
+        if (message.kind == TimerKind.DURATION_WARNING) {
+            if (state == RECORDING) {
+                durationWarning = true
+                emit(CaptureDecision(null, Outcome.IGNORED, state, state, Cause.DURATION_WARNING))
+            }
+            return
+        }
         dispatch(event, Context(errorCode = if (message.kind == TimerKind.ROUTE) ErrorCode.INPUT_ROUTE_UNVERIFIED else null))
     }
 
@@ -571,12 +580,14 @@ class CaptureCoordinator(
     /** 创建新的 Capture Session：分配标识与 generation，起路由确认超时，资格通过时请求蓝牙输入。 */
     private fun beginSession(eligible: Boolean) {
         durationLimitMs = null
+        durationWarning = false
         generation += 1
         val created = Session(
             id = ids.newUuid(),
             generation = generation,
             operationId = ids.newUuid(),
             quarantine = Quarantine(config.quarantineMaxMs * config.format.sampleRateHz * config.format.channels / 1000),
+            limitMs = durationLimit().also { require(it in 1..120L * 60_000) },
         )
         session = created
         val tag = Tag(created.id, created.generation)
@@ -636,7 +647,10 @@ class CaptureCoordinator(
         current.speech = SpeechFilter(config.format, vad)
         val tag = Tag(current.id, current.generation)
         current.durationTimer = scope.launch {
-            delay(config.maxDurationMs)
+            val warningAt = (current.limitMs - 60_000).coerceAtLeast(0)
+            delay(warningAt)
+            post(Message.Timeout(tag, TimerKind.DURATION_WARNING))
+            delay(current.limitMs - warningAt)
             post(Message.Timeout(tag, TimerKind.DURATION))
         }
         return true
@@ -646,6 +660,7 @@ class CaptureCoordinator(
     private fun stopRecording(endReason: EndReason, flush: Boolean = true) {
         val current = session ?: error("RECORDING 必有会话")
         current.cancelJobs()
+        durationWarning = false
         releaseCapture(current.operationId)
         val handle = current.handle ?: error("RECORDING 必有句柄")
         val reason = try {
@@ -654,7 +669,7 @@ class CaptureCoordinator(
         } catch (e: IOException) {
             EndReason.SYSTEM_INTERRUPTION
         }
-        durationLimitMs = if (reason == EndReason.DURATION_LIMIT) config.maxDurationMs else null
+        durationLimitMs = if (reason == EndReason.DURATION_LIMIT) current.limitMs else null
         current.handle = handle.closed()
 
         val writer = current.writer ?: error("RECORDING 必有写入器")
@@ -783,6 +798,7 @@ class CaptureCoordinator(
             version = publishVersion,
             durationLimitMs = durationLimitMs,
             controlModeEnabled = controlModeEnabled,
+            durationWarning = durationWarning,
         )
     }
 }

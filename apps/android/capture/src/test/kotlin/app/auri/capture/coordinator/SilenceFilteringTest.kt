@@ -3,7 +3,9 @@ package app.auri.capture.coordinator
 import app.auri.capture.adapter.AudioFrames
 import app.auri.capture.contract.BusinessCommand
 import app.auri.capture.contract.CaptureState
+import app.auri.capture.contract.EndReason
 import app.auri.capture.contract.TimeRange
+import app.auri.capture.feedback.feedbackFor
 import app.auri.capture.library.TranscriptionStatus
 import app.auri.capture.pipeline.RecordPipeline
 import app.auri.capture.testing.CaptureRig
@@ -16,6 +18,84 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SilenceFilteringTest {
+    @Test
+    fun `VAD receives only frames from the verified route epoch`() = runTest {
+        val seen = mutableListOf<Short>()
+        val rig = CaptureRig(this, vad = VoiceActivityDetector { samples ->
+            seen += samples.first()
+            true
+        })
+        rig.coordinator.enableControlMode()
+        rig.settle()
+        rig.control.press(BusinessCommand.START)
+        rig.settle()
+        rig.capture.sink().frames(AudioFrames(0, ShortArray(1_600) { 2_000 }))
+        rig.settle()
+        assertTrue(seen.isEmpty())
+        rig.capture.verifiedRoute(epoch = 1)
+        rig.settle()
+        rig.capture.sink().frames(AudioFrames(2, ShortArray(1_600) { 3_000 }))
+        rig.settle()
+        assertTrue(seen.isEmpty())
+        rig.capture.sink().frames(AudioFrames(1, ShortArray(1_600) { 1_000 }))
+        rig.settle()
+        assertTrue(seen.isNotEmpty())
+        assertTrue(seen.all { it == 1_000.toShort() })
+    }
+
+    @Test
+    fun `a changed duration setting applies to the next session only`() = runTest {
+        var limit = 120_000L
+        val rig = CaptureRig(this, durationLimit = { limit })
+        rig.coordinator.enableControlMode()
+        rig.settle()
+        rig.control.press(BusinessCommand.START)
+        rig.settle()
+        rig.capture.verifiedRoute(epoch = 1)
+        rig.settle()
+        limit = 180_000L
+        rig.advance(120_000)
+        assertEquals(CaptureState.ARMED, rig.state)
+        assertEquals(120_000L, rig.coordinator.snapshot.value.durationLimitMs)
+
+        rig.control.press(BusinessCommand.START)
+        rig.settle()
+        rig.capture.verifiedRoute(epoch = 1)
+        rig.settle()
+        rig.advance(120_000)
+        assertEquals(CaptureState.RECORDING, rig.state)
+        rig.advance(60_000)
+        assertEquals(CaptureState.ARMED, rig.state)
+        assertEquals(180_000L, rig.coordinator.snapshot.value.durationLimitMs)
+    }
+
+    @Test
+    fun `one minute warning precedes automatic limit and no new recording starts`() = runTest {
+        val rig = CaptureRig(this, CaptureConfig(maxDurationMs = 120_000))
+        rig.coordinator.enableControlMode()
+        rig.settle()
+        rig.control.press(BusinessCommand.START)
+        rig.settle()
+        rig.capture.verifiedRoute(epoch = 1)
+        rig.settle()
+
+        rig.advance(59_999)
+        assertTrue(rig.decisions.none { it.cause.name == "DURATION_WARNING" })
+        rig.advance(1)
+        val warning = rig.decisions.single { it.cause.name == "DURATION_WARNING" }
+        assertEquals("DURATION_WARNING", feedbackFor(warning)?.name)
+        assertTrue(rig.coordinator.snapshot.value.durationWarning)
+        assertEquals(CaptureState.RECORDING, rig.state)
+        rig.advance(59_999)
+        assertEquals(CaptureState.RECORDING, rig.state)
+        rig.advance(1)
+        assertEquals(CaptureState.ARMED, rig.state)
+        assertTrue(!rig.coordinator.snapshot.value.durationWarning)
+        assertEquals(EndReason.DURATION_LIMIT, rig.output.recordings.single().result.endReason)
+        rig.advance(120_000)
+        assertEquals(1, rig.capture.requests.size)
+    }
+
     @Test
     fun `a verified 50 millisecond speech frame is stored promptly`() = runTest {
         val rig = CaptureRig(this)

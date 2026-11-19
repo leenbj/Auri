@@ -172,14 +172,57 @@ class LocalTranscriptionAdapterTest {
     }
 
     @Test
-    fun `超过引擎时长上限：读文件之前就拒绝，引擎一次也没被叫到`() = runBlocking {
+    fun `超过引擎单次上限时分段转录并按顺序合并`() = runBlocking {
+        var part = 0
+        val engine = FakeEngine(maxMs = 1_000, reply = {
+            part += 1
+            app.auri.asr.TranscriptionOutcome.Succeeded(content("第${part}段"))
+        })
+        val samples = ShortArray(40_000) { (it % 1_000).toShort() }
+
+        val outcome = LocalTranscriptionAdapter(engine).transcribe(request(sealed(samples))).outcome as TranscriptionOutcome.Text
+
+        assertEquals(listOf(1_000L, 1_000L, 500L), engine.received.map { it.durationMs })
+        assertArrayEquals(samples, engine.received.flatMap { it.samples.toList() }.toShortArray())
+        assertEquals("第1段 第2段 第3段", outcome.text)
+    }
+
+    @Test
+    fun `后一个分段失败时不发布前面分段的部分文字`() = runBlocking {
+        var part = 0
+        val engine = FakeEngine(maxMs = 1_000, reply = {
+            if (part++ == 0) app.auri.asr.TranscriptionOutcome.Succeeded(content("第一段"))
+            else app.auri.asr.TranscriptionOutcome.Failed(asrError(app.auri.asr.contract.ErrorCode.ASR_RESOURCE_LIMIT, retryable = true), null)
+        })
+
+        val result = LocalTranscriptionAdapter(engine).transcribe(request(sealed(ShortArray(40_000))))
+
+        val failure = result.outcome as TranscriptionOutcome.Failed
+        assertEquals(ErrorCode.ASR_RESOURCE_LIMIT, failure.code)
+        assertTrue(failure.retryable)
+        assertEquals(2, engine.received.size)
+    }
+
+    @Test
+    fun `长 WAV 被截断时在调用引擎前失败`() = runBlocking {
+        val engine = FakeEngine(maxMs = 1_000)
+        val audio = sealed(ShortArray(32_000))
+        java.io.RandomAccessFile(audio.location, "rw").use { it.setLength(it.length() - 100) }
+
+        val result = LocalTranscriptionAdapter(engine).transcribe(request(audio))
+
+        assertNull((result.outcome as TranscriptionOutcome.Failed).code)
+        assertTrue(engine.received.isEmpty())
+    }
+
+    @Test
+    fun `超过引擎上限但文件不存在时仍然安全失败`() = runBlocking {
         val engine = FakeEngine(maxMs = 30_000)
-        // 位置指向一个不存在的文件：如果适配器先读文件，拿到的会是“读不了”而不是“太长”
         val tooLong = SealedAudio("/does/not/exist.wav", sha, 1_000_000, 16_000L * 31, PcmFormat(16_000))
 
         val outcome = LocalTranscriptionAdapter(engine).transcribe(request(tooLong)).outcome
 
-        assertEquals(ErrorCode.ASR_RESOURCE_LIMIT, (outcome as TranscriptionOutcome.Failed).code)
+        assertNull((outcome as TranscriptionOutcome.Failed).code)
         assertTrue(engine.received.isEmpty())
     }
 

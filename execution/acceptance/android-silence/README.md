@@ -5,6 +5,29 @@ to save memory; no phone or headset was attached. JVM tests are E2 evidence and
 cannot establish Bluetooth routing, VAD quality, background execution or timing
 on a real device.
 
+The initial VAD uses mean absolute 16-bit PCM energy of at least 300 over
+10 ms windows, retaining 200 ms before and 300 ms after detected speech. The
+reported speech duration includes that padding. The threshold is an uncalibrated
+starting point: quiet, distant and noisy headset speech must be measured on real
+hardware before making an accuracy claim. A setting of 1–120 whole minutes is
+accepted; the default is 30. An active session keeps its original setting.
+
+Verified frame offsets use the delivered PCM sample timeline from the verified
+boundary. Capture duration also includes monotonic elapsed time, so missing
+frame delivery cannot shorten the reported session; actual alignment under
+device scheduling and dropped buffers still requires E3 validation.
+
+After taking the shared Gradle lock, generate the four contract scenarios and
+run the schema, semantic and mutation checks (JVM/Python, E2):
+
+```bash
+source ~/.config/auri/android-env.sh
+cd apps/android
+./gradlew :capture:test --tests app.auri.capture.contract.ContractOutputTest --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2
+cd ../..
+.venv/bin/pytest execution/acceptance/android-silence/test_contract_output.py
+```
+
 ## Product-owner procedure (real Android phone and headset, E3)
 
 1. Record phone model, Android version, headset model and firmware, app commit,

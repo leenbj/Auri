@@ -41,6 +41,8 @@ import app.auri.capture.coordinator.CaptureOutput
 import app.auri.capture.coordinator.Clock
 import app.auri.capture.coordinator.IdGenerator
 import app.auri.capture.coordinator.SealedRecording
+import app.auri.capture.coordinator.EnergyVoiceActivityDetector
+import app.auri.capture.coordinator.VoiceActivityDetector
 import java.io.IOException
 import java.security.MessageDigest
 import java.time.Instant
@@ -356,6 +358,8 @@ class CaptureRig(
     // 默认排队：准备任务要等 settle 才开始，“发出又立刻取消”的请求永远不会运行，测试看不见它；
     // 传 UnconfinedTestDispatcher 则一发出就当场开始（线上的适配器跑在真线程上，取消可能来不及）
     adapterDispatcher: CoroutineDispatcher = StandardTestDispatcher(scope.testScheduler),
+    durationLimit: () -> Long = { config.maxDurationMs },
+    vad: VoiceActivityDetector = EnergyVoiceActivityDetector(),
 ) {
     val clock = FakeClock(scope.testScheduler)
     val ids = SequentialIds()
@@ -376,6 +380,8 @@ class CaptureRig(
         config = config,
         scope = scope.backgroundScope,
         adapterDispatcher = adapterDispatcher,
+        durationLimit = durationLimit,
+        vad = vad,
     )
 
     init {

@@ -217,13 +217,26 @@ class HomeViewModelTest {
     @Test
     fun `duration limit stop is visible with its reason and seconds`() = runUnconfined {
         val rig = rig(snapshot(CaptureState.ARMED))
-        val audio = Samples.audio(Samples.uuid(7), samples = 16_000L * 29_500 / 1000)
+        val audio = Samples.audio(Samples.uuid(7), samples = 16_000L * 1_800_000 / 1000)
         rig.library.addRecord(Samples.entry(7, audio = audio).copy(endReason = EndReason.DURATION_LIMIT))
-        rig.controls.emit(snapshot(CaptureState.ARMED).copy(durationLimitMs = 29_500))
+        rig.controls.emit(snapshot(CaptureState.ARMED).copy(durationLimitMs = 1_800_000))
 
         assertTrue("the view state must identify the automatic stop", rig.state.toString().contains("DURATION_LIMIT"))
-        assertTrue("the view state must include the limit in seconds", rig.state.toString().contains("29.5"))
-        assertEquals(DurationLimitStop(EndReason.DURATION_LIMIT, 29.5), rig.state.durationLimit)
+        assertTrue("the view state must include the limit in seconds", rig.state.toString().contains("1800.0"))
+        assertEquals(DurationLimitStop(EndReason.DURATION_LIMIT, 1800.0), rig.state.durationLimit)
+    }
+
+    @Test
+    fun `duration warning and valid or invalid settings are visible`() = runUnconfined {
+        val rig = rig(snapshot(CaptureState.RECORDING))
+        rig.controls.emit(snapshot(CaptureState.RECORDING).copy(durationWarning = true))
+        assertTrue(rig.state.durationWarning)
+        rig.viewModel.setDurationLimit("121")
+        assertEquals(30, rig.state.durationMinutes)
+        assertEquals("请输入 1–120 分钟", rig.state.durationSettingError)
+        rig.viewModel.setDurationLimit("45")
+        assertEquals(45, rig.state.durationMinutes)
+        assertNull(rig.state.durationSettingError)
     }
 
     @Test

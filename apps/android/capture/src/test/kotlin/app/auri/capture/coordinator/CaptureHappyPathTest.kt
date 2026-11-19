@@ -21,7 +21,7 @@ import org.junit.Test
 class CaptureHappyPathTest {
     @Test
     fun `duration limit remains visible until the next recording starts`() = runTest {
-        val rig = CaptureRig(this, CaptureConfig(maxDurationMs = 29_500))
+        val rig = CaptureRig(this, CaptureConfig(maxDurationMs = 120_000))
         rig.coordinator.enableControlMode()
         rig.settle()
         rig.control.press(BusinessCommand.START)
@@ -29,9 +29,9 @@ class CaptureHappyPathTest {
         rig.capture.verifiedRoute()
         rig.settle()
 
-        rig.advance(29_500)
+        rig.advance(120_000)
         assertEquals(CaptureState.ARMED, rig.state)
-        assertEquals(29_500L, rig.coordinator.snapshot.value.durationLimitMs)
+        assertEquals(120_000L, rig.coordinator.snapshot.value.durationLimitMs)
         assertEquals(EndReason.DURATION_LIMIT, rig.output.recordings.single().result.endReason)
         rig.control.press(BusinessCommand.START)
         rig.settle()
