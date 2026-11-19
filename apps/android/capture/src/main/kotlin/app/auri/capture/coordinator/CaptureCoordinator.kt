@@ -681,7 +681,7 @@ class CaptureCoordinator(
         } catch (e: IOException) {
             flushFailed = true
             current.storageFailed = true
-            EndReason.SYSTEM_INTERRUPTION
+            if (endReason.truncated) endReason else EndReason.SYSTEM_INTERRUPTION
         }
         durationLimitMs = if (reason == EndReason.DURATION_LIMIT) current.limitMs else null
         current.handle = handle.closed()

@@ -292,6 +292,38 @@ class CaptureResultTest {
     }
 
     @Test
+    fun `flush failure preserves already truncated end reasons and converts non truncated reasons to system interruption`() = runTest {
+        data class Case(val name: String, val expectedReason: EndReason, val trigger: (CaptureRig) -> Unit)
+
+        val cases = listOf(
+            Case("route_lost", EndReason.ROUTE_LOST) { it.capture.mismatchRoute() },
+            Case("permission_revoked", EndReason.PERMISSION_REVOKED) { it.capture.revokePermission() },
+            Case("process_terminated", EndReason.PROCESS_TERMINATED) { it.coordinator.processRestored() },
+            Case("duration_limit", EndReason.SYSTEM_INTERRUPTION) { it.advance(it.config.maxDurationMs) },
+        )
+        for (case in cases) {
+            val rig = CaptureRig(this)
+            rig.store.failAppendOnCall = 2
+            rig.coordinator.enableControlMode()
+            rig.settle()
+            rig.control.press(BusinessCommand.START)
+            rig.settle()
+            rig.capture.verifiedRoute(epoch = 1)
+            rig.settle()
+            rig.capture.frames(samples = 160, epoch = 1)
+            rig.capture.frames(samples = 80, epoch = 1)
+            rig.settle()
+
+            case.trigger(rig)
+            rig.settle()
+
+            val result = rig.output.recordings.single().result
+            assertEquals(case.name, CaptureStatus.PARTIAL, result.status)
+            assertEquals(case.name, case.expectedReason, result.endReason)
+        }
+    }
+
+    @Test
     fun `封存失败：通知录音丢失并回到待命，存储被要求清理，不交出任何结果`() = runTest {
         val rig = recording()
         rig.store.failSeal = IOException("封存失败（测试注入）")
