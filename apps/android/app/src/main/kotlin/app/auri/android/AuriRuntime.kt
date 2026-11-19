@@ -18,6 +18,8 @@ import app.auri.capture.contract.CaptureState
 import app.auri.capture.coordinator.CaptureConfig
 import app.auri.capture.coordinator.CaptureCoordinator
 import app.auri.capture.pipeline.RecordPipeline
+import app.auri.capture.recovery.OrphanRecovery
+import app.auri.capture.recovery.StartupRecovery
 import app.auri.capture.scheduler.RecordingAwareResourceMonitor
 import app.auri.capture.scheduler.TranscriptionScheduler
 import app.auri.modelmgmt.HttpTransport
@@ -121,10 +123,12 @@ class AuriRuntime(
     val pipeline = RecordPipeline(library, scheduler, scope)
     val durationSetting = DurationLimitSetting(File(application.filesDir, "capture-duration-limit"))
 
+    private val recordingStore = WavRecordingStore(recordingsDir)
+
     val coordinator = CaptureCoordinator(
         control = controlWiring.control,
         capture = captureAdapter,
-        store = WavRecordingStore(recordingsDir),
+        store = recordingStore,
         output = pipeline,
         clock = SystemClock,
         ids = RandomIds,
@@ -142,6 +146,11 @@ class AuriRuntime(
         scope.launch { coordinator.snapshot.collect { captureState.value = it.state } }
         pipeline.resume() // 上次没转完的、等模型的 Record 重新排队
         scope.launch { coordinator.snapshot.map(::captureLogLine).distinctUntilChanged().collect { Log.i(CAPTURE_LOG_TAG, it) } }
+        // 上次进程没来得及交付的录音（被杀、封存没完成）：逐段验证后登记成被截断的 Record，像别的 Record 一样转录（Ticket 19）。
+        // 恢复只读磁盘、只写库：不开麦、不起前台服务、不碰采集状态；协调器此刻必然是 DISARMED，之后也只有用户的操作能让它开始录音
+        scope.launch(Dispatchers.IO) {
+            StartupRecovery(OrphanRecovery(recordingStore, library, pipeline)) { Log.i(CAPTURE_LOG_TAG, it) }.run()
+        }
     }
 
     val controlViewModelFactory = controlWiring.connect(coordinator, scope)
