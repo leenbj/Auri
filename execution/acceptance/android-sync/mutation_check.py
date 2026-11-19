@@ -1133,6 +1133,15 @@ PLATFORM_TEST = "platform/build/test-results/testDebugUnitTest"
 GUARD_TESTS = (":app:testDebugUnitTest", "--tests", "*NoNetworkCodeGuardTest*")
 MANIFEST_TESTS = (":app:testDebugUnitTest", "--tests", "*NoNetworkManifestTest*")
 RESUME_MANIFEST_TESTS = (":app:testDebugUnitTest", "--tests", "*ResumeManifestTest*")
+BACKUP_TESTS = (":app:testDebugUnitTest", "--tests", "*BackupRulesTest*")
+STORAGE_GUARD_TESTS = (":app:testDebugUnitTest", "--tests", "*StorageLocationGuardTest*")
+NOBACKUP_TESTS = (":platform:testDebugUnitTest", "--tests", "*NoBackupStorageTest*")
+PLATFORM_TEST = "platform/build/test-results/testDebugUnitTest"
+NOBACKUP = "apps/android/platform/src/main/kotlin/app/auri/platform/storage/NoBackupStorage.kt"
+EXTRACTION_RULES = "apps/android/app/src/main/res/xml/data_extraction_rules.xml"
+BACKUP_RULES_FILE = "apps/android/app/src/main/res/xml/backup_rules.xml"
+AURI_RUNTIME = "apps/android/app/src/main/kotlin/app/auri/android/AuriRuntime.kt"
+SYNC_RUNTIME = "apps/android/syncplatform/src/main/kotlin/app/auri/syncplatform/SyncRuntime.kt"
 RESUME_TESTS = (":sync:test", "--tests", "*ResumePlannerTest*", "--tests", "*ResumeRunnerTest*")
 RESUME_PLANNER = "apps/android/sync/src/main/kotlin/app/auri/sync/resume/ResumePlanner.kt"
 RESUME_RUNNER = "apps/android/sync/src/main/kotlin/app/auri/sync/resume/ResumeRunner.kt"
@@ -1369,6 +1378,94 @@ MUTATIONS += (
         (Edit(SYNCPLATFORM_MANIFEST, '            android:permission="android.permission.BIND_JOB_SERVICE" />', '            />'),),
         RESUME_MANIFEST_TESTS, APP_TEST,
         ("叫醒服务只允许系统绑定",),
+    ),
+    Mutation(
+        "manifest-allow-backup-true",
+        "allowBackup 必须是 false（F2）",
+        (Edit(APP_MANIFEST, 'android:allowBackup="false"', 'android:allowBackup="true"'),),
+        BACKUP_TESTS, APP_TEST,
+        ("合并后的清单：allowBackup 关闭",),
+    ),
+    Mutation(
+        "manifest-drops-data-extraction-rules",
+        "Android 12+ 的换机迁移要靠 dataExtractionRules 才关得上，只有 allowBackup=false 不够（F2）",
+        (Edit(APP_MANIFEST, '        android:dataExtractionRules="@xml/data_extraction_rules"\n', ""),),
+        BACKUP_TESTS, APP_TEST,
+        ("合并后的清单：allowBackup 关闭",),
+    ),
+    Mutation(
+        "manifest-drops-full-backup-content",
+        "Android 11 及以下的备份规则必须成套声明（F2）",
+        (Edit(APP_MANIFEST, '        android:fullBackupContent="@xml/backup_rules"\n', ""),),
+        BACKUP_TESTS, APP_TEST,
+        ("合并后的清单：allowBackup 关闭",),
+    ),
+    Mutation(
+        "rules-transfer-leaves-database",
+        "设备到设备迁移也要把数据库域整个排除（F2）",
+        (Edit(
+            EXTRACTION_RULES,
+            '    <device-transfer>\n        <exclude domain="root" path="." />\n        <exclude domain="file" path="." />\n        <exclude domain="database" path="." />\n',
+            '    <device-transfer>\n        <exclude domain="root" path="." />\n        <exclude domain="file" path="." />\n',
+        ),),
+        BACKUP_TESTS, APP_TEST,
+        ("换机迁移规则",),
+    ),
+    Mutation(
+        "rules-cloud-backup-includes-something",
+        "规则里不许有 include（它会把排除的数据重新放进备份）（F2）",
+        (Edit(EXTRACTION_RULES, "    <cloud-backup>\n", '    <cloud-backup>\n        <include domain="file" path="keep" />\n'),),
+        BACKUP_TESTS, APP_TEST,
+        ("换机迁移规则",),
+    ),
+    Mutation(
+        "rules-legacy-backup-partial-exclusion",
+        "旧版备份规则要把整个域排除，不能只排除一个子目录（F2）",
+        (Edit(BACKUP_RULES_FILE, '<exclude domain="external" path="." />', '<exclude domain="external" path="cache" />'),),
+        BACKUP_TESTS, APP_TEST,
+        ("旧版备份规则",),
+    ),
+    Mutation(
+        "pairing-file-back-in-files-dir",
+        "配对记录（设备令牌）必须在 noBackupFilesDir（F2）",
+        (Edit(SYNC_RUNTIME, "pairingFile = NoBackupStorage.place(application.noBackupFilesDir, application.filesDir, PAIRING_FILE),", "pairingFile = File(application.filesDir, PAIRING_FILE),"),),
+        STORAGE_GUARD_TESTS, APP_TEST,
+        ("每一处 filesDir", "三个敏感文件都经 NoBackupStorage"),
+    ),
+    Mutation(
+        "recordings-back-in-files-dir",
+        "录音必须在 noBackupFilesDir（F2）",
+        (Edit(AURI_RUNTIME, 'recordingsDir: File = NoBackupStorage.place(application.noBackupFilesDir, application.filesDir, "recordings"),', 'recordingsDir: File = File(application.filesDir, "recordings"),'),),
+        STORAGE_GUARD_TESTS, APP_TEST,
+        ("每一处 filesDir", "三个敏感文件都经 NoBackupStorage"),
+    ),
+    Mutation(
+        "headset-profile-back-in-files-dir",
+        "耳机配置必须在 noBackupFilesDir（F2）",
+        (Edit(AURI_RUNTIME, "FileProfileStore(NoBackupStorage.place(application.noBackupFilesDir, application.filesDir, PROFILE_FILE_NAME))", "FileProfileStore(File(application.filesDir, PROFILE_FILE_NAME))"),),
+        STORAGE_GUARD_TESTS, APP_TEST,
+        ("每一处 filesDir", "三个敏感文件都经 NoBackupStorage"),
+    ),
+    Mutation(
+        "nobackup-place-ignores-legacy-data",
+        "老位置的敏感文件要挪过来，不能丢（F2）",
+        (Edit(NOBACKUP, "            legacy.renameTo(target)\n", "            legacy.exists()\n"),),
+        NOBACKUP_TESTS, PLATFORM_TEST,
+        ("旧位置有文件、新位置没有", "整个目录（录音）也能挪"),
+    ),
+    Mutation(
+        "nobackup-place-overwrites-new-with-legacy",
+        "新位置已经有了就不能被旧文件覆盖（F2）",
+        (Edit(NOBACKUP, "if (!target.exists() && legacy.exists()) {", "if (legacy.exists()) {"),),
+        NOBACKUP_TESTS, PLATFORM_TEST,
+        ("新位置已经有了",),
+    ),
+    Mutation(
+        "nobackup-place-returns-legacy-location",
+        "敏感文件的位置必须在 noBackup 目录之下（F2）",
+        (Edit(NOBACKUP, "val target = File(noBackupDir, name)", "val target = File(legacyDir, name)"),),
+        NOBACKUP_TESTS, PLATFORM_TEST,
+        ("敏感文件的位置在 noBackup 目录之下",),
     ),
     Mutation(
         "manifest-app-declares-internet",

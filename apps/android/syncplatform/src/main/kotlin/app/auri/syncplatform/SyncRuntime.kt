@@ -3,6 +3,7 @@ package app.auri.syncplatform
 import android.app.Application
 import app.auri.capture.coordinator.Clock
 import app.auri.platform.library.SqliteRecordLibrary
+import app.auri.platform.storage.NoBackupStorage
 import app.auri.platform.system.SystemClock
 import app.auri.sync.SyncController
 import app.auri.sync.SyncLog
@@ -155,7 +156,7 @@ class SyncRuntime(
             val version = application.packageManager.getPackageInfo(application.packageName, 0).versionName.orEmpty()
             return SyncRuntime(
                 library = library,
-                pairingFile = File(application.filesDir, PAIRING_FILE),
+                pairingFile = NoBackupStorage.place(application.noBackupFilesDir, application.filesDir, PAIRING_FILE),
                 box = AesGcmSecretBox({ KeystoreKeys.aesKey(PAIRING_KEY_ALIAS) }, purpose = "pairing"),
                 scope = scope,
                 clock = SystemClock,

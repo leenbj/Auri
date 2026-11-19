@@ -38,6 +38,7 @@ import app.auri.platform.jobs.SqliteTranscriptionJobStore
 import app.auri.platform.service.AndroidForegroundServiceController
 import app.auri.platform.service.bindForegroundService
 import app.auri.platform.storage.FileProfileStore
+import app.auri.platform.storage.NoBackupStorage
 import app.auri.platform.storage.WavRecordingStore
 import app.auri.platform.system.AndroidCaptureEnvironment
 import app.auri.platform.system.AndroidResourceMonitor
@@ -78,11 +79,11 @@ class AuriRuntime(
     application: Application,
     audio: AudioSystem = AndroidAudioSystem(application),
     databaseName: String? = "auri.db",
-    recordingsDir: File = File(application.filesDir, "recordings"),
+    recordingsDir: File = NoBackupStorage.place(application.noBackupFilesDir, application.filesDir, "recordings"),
     /** Ticket 14 的调试布局（files/models/<id>/<版本>）。产品转录不再读它：模型由 [modelManager] 下载并启用，放在 [modelStoreRoot] 下。 */
     @Suppress("UNUSED_PARAMETER") modelsDir: File = File(application.filesDir, "models"),
     transcriptionOverride: TranscriptionAdapter? = null,
-    headsetProfileStore: ProfileStore = FileProfileStore(File(application.filesDir, PROFILE_FILE_NAME)),
+    headsetProfileStore: ProfileStore = FileProfileStore(NoBackupStorage.place(application.noBackupFilesDir, application.filesDir, PROFILE_FILE_NAME)),
     /** 模型管理器的根目录；里面的 model-store/、model-downloads/、model-staging/ 是它自己的（布局见 ModelStore）。 */
     modelStoreRoot: File = application.filesDir,
     transport: HttpTransport = UrlConnectionTransport(),
