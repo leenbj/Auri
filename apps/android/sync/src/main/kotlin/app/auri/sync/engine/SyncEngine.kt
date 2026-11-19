@@ -52,8 +52,9 @@ enum class SendResult {
  * 几条硬规矩（每条都有测试把它打破一次、看测试变红）：
  * - **先落盘后发送**：SEND_STARTED 把任务记成“发送中、结果不确定”并落盘之后，才会有第一个字节离开手机。进程在途中被杀，
  *   下次启动 [recoverInterrupted] 把它接回来，并且仍然记着不确定。
- * - **不确定就先问**：只要任务带着“可能已送到”的标记，就先向网关查这条 Revision 的结果，网关明确说已入库（哈希相同）才确认；
- *   明确说没有（404 或没有这个版本）才重新提交；问不到答案就不重发，稍后再问。
+ * - **不确定就先问**：只要任务带着“可能已送到”的标记，就先向网关查这条 Revision 的结果，网关明确说已入库（Record 没被删、
+ *   是本机录的、这一版的哈希相同）才确认；明确说没有（404 或没有这个版本）才重新提交；说 Record 已删除、不是本机录的、
+ *   同一版本号是另一份正文，都直接停下（重发也只会被拒绝）；问不到答案就不重发，稍后再问。
  * - **永久拒绝不重试**：4xx 类的明确拒绝让任务停在 BLOCKED，只有 USER_RESOLVED 能让它离开；没有“次数用尽”的捷径。
  *   sync.machine.json 里只有 VERSION_CONFLICT 一个“永久拒绝”事件，其余永久拒绝（记录已删除、不是来源设备、请求不合规、
  *   本机数据丢失）借用它，真正的原因记在 [SyncJob.blockedReason]。
@@ -216,7 +217,14 @@ class SyncEngine(
         if (wasUncertain) {
             // 上一次可能已经送到：先问网关。只有网关明确说“已入库”才确认，明确说“没有”才往下重发；问不到就不重发。
             when (val answer = client.recordStatus(address, gateway.token, key.recordId)) {
-                is GatewayResult.Success -> if (answer.value.holds(key.revision, submission.textSha256)) return stored(key)
+                is GatewayResult.Success -> when (answer.value.standing(key.revision, submission.textSha256, gateway.deviceId)) {
+                    Standing.SAME_STORED -> return stored(key)
+                    Standing.MISSING -> Unit // 网关没有这一版：往下重新提交
+                    // 下面三种网关都已经说明白了，再 PUT 只会白白把正文再发一遍、换来同样的拒绝
+                    Standing.CONFLICTING -> return blocked(key, BlockedReason.VERSION_CONFLICT)
+                    Standing.DELETED -> return blocked(key, BlockedReason.RECORD_DELETED)
+                    Standing.FOREIGN -> return blocked(key, BlockedReason.NOT_ORIGIN_DEVICE)
+                }
                 is GatewayResult.Rejected -> if (!(answer.status == 404 && answer.code == ErrorCode.REQUEST_INVALID)) return failed(key, gateway, answer, wasUncertain)
                 else -> return failed(key, gateway, answer, wasUncertain)
             }
@@ -342,7 +350,18 @@ class SyncEngine(
         suspend fun get(gateway: PairedGateway): Located = value ?: locator.locate(gateway).also { value = it }
     }
 
-    private fun RecordStatus.holds(revision: Int, textSha256: String) = revisions.any { it.revision == revision && it.textSha256 == textSha256 }
+    /** 网关对“这一版在不在”的回答，换算成引擎的下一步。先看 Record 本身（已删除、不是本机录的），再看这一版。 */
+    private enum class Standing { SAME_STORED, MISSING, CONFLICTING, DELETED, FOREIGN }
+
+    private fun RecordStatus.standing(revision: Int, textSha256: String, deviceId: String): Standing = when {
+        deleted -> Standing.DELETED
+        originDeviceId != deviceId -> Standing.FOREIGN
+        else -> when (revisions.firstOrNull { it.revision == revision }?.textSha256) {
+            null -> Standing.MISSING
+            textSha256 -> Standing.SAME_STORED
+            else -> Standing.CONFLICTING
+        }
+    }
 
     private fun PairedGateway.isSamePairing(other: PairedGateway) = deviceId == other.deviceId && pairedAt == other.pairedAt && pin == other.pin
 

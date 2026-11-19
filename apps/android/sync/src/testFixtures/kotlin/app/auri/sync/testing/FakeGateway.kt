@@ -17,7 +17,15 @@ import kotlinx.serialization.json.jsonPrimitive
  * 语义取自真网关：同一（Record, Revision）再提交相同正文 = 重复（duplicate=true），不同正文 = 409；没见过的 Record 查询 = 404 REQUEST_INVALID。
  * 它是系统边界上的替身；与真网关的对照由 realgateway 测试负责。
  */
-class FakeGateway(private val now: () -> Instant, private val originDeviceId: String = SyncSamples.DEVICE_ID) {
+class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncSamples.DEVICE_ID) {
+    /** 网关上这些 Record 的来源设备（状态查询回答它）；测试改成别的设备，就是“别的手机录的”。 */
+    @Volatile
+    var originDeviceId: String = originDeviceId
+
+    /** 网关上这些 Record 已被删除（状态查询回答 deleted=true；PUT 仍按原样处理，这里只模拟状态查询的说法）。 */
+    @Volatile
+    var deleted: Boolean = false
+
     sealed interface Fault {
         /** 连接层失败：请求没有到达服务器逻辑。 */
         data class Transport(val failure: TransportFailure) : Fault
@@ -106,7 +114,7 @@ class FakeGateway(private val now: () -> Instant, private val originDeviceId: St
         val list = revisions.entries.joinToString(",") { (key, sha) -> """{"revision":${key.revision},"state":"PUBLISHED","text_sha256":"$sha","stored_at":"2026-11-18T08:00:00Z","intent":"context"}""" }
         return ScriptedExchange.json(
             200,
-            """{"schema_version":"1.1","record_id":"$recordId","origin_device_id":"$originDeviceId","deleted":false,"deleted_at":null,""" +
+            """{"schema_version":"1.1","record_id":"$recordId","origin_device_id":"$originDeviceId","deleted":$deleted,"deleted_at":${if (deleted) "\"2026-11-18T08:30:00Z\"" else "null"},""" +
                 """"latest_revision":${revisions.keys.maxOf { it.revision }},"revisions":[$list],"destinations":[]}""",
         )
     }

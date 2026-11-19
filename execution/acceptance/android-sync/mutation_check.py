@@ -296,9 +296,37 @@ MUTATIONS += (
     Mutation(
         "engine-confirms-without-comparing-hash",
         "只有网关上同一版本的正文哈希相同才能确认入库",
-        (Edit(ENGINE, "revisions.any { it.revision == revision && it.textSha256 == textSha256 }", "revisions.any { it.revision == revision }"),),
+        (Edit(ENGINE, "            textSha256 -> Standing.SAME_STORED\n            else -> Standing.CONFLICTING", "            else -> Standing.SAME_STORED"),),
         ENGINE_TESTS, SYNC_TEST[0],
         ("网关上同一版本号是另一份正文",),
+    ),
+    Mutation(
+        "engine-resends-on-conflicting-hash",
+        "网关上同一版本号是另一份正文：不再提交，直接停下（F10）",
+        (Edit(ENGINE, "Standing.CONFLICTING -> return blocked(key, BlockedReason.VERSION_CONFLICT)", "Standing.CONFLICTING -> Unit"),),
+        ENGINE_TESTS, SYNC_TEST[0],
+        ("网关上同一版本号是另一份正文",),
+    ),
+    Mutation(
+        "engine-confirms-missing-revision",
+        "网关没有这一版就是没入库，必须重新提交，不能当成已入库（F10 的对照）",
+        (Edit(ENGINE, "Standing.MISSING -> Unit // 网关没有这一版：往下重新提交", "Standing.MISSING -> return stored(key)"),),
+        ENGINE_TESTS, SYNC_TEST[0],
+        ("网关上有这条 Record 的别的版本、唯独没有这一版", "网关里查不到这条 Record（404）等于没入库"),
+    ),
+    Mutation(
+        "engine-confirms-deleted-record",
+        "网关说 Record 已删除：哪怕那一版哈希相同也不能确认入库，也不再提交（F9）",
+        (Edit(ENGINE, "        deleted -> Standing.DELETED\n", ""),),
+        ENGINE_TESTS, SYNC_TEST[0],
+        ("网关说这条 Record 已被删除：哪怕那一版的哈希相同", "网关说这条 Record 已被删除、而且没有这一版"),
+    ),
+    Mutation(
+        "engine-confirms-foreign-origin",
+        "网关说 Record 是别的设备录的：不能确认入库，也不再提交（F9，ADR-0020）",
+        (Edit(ENGINE, "        originDeviceId != deviceId -> Standing.FOREIGN\n", ""),),
+        ENGINE_TESTS, SYNC_TEST[0],
+        ("网关说这条 Record 是别的设备录的",),
     ),
     Mutation(
         "engine-resends-when-status-rejected",
@@ -1117,7 +1145,7 @@ MUTATIONS += (
         "应用主清单自己声明 INTERNET（而不是只来自 :syncplatform）必须被清单测试抓到",
         (Edit(APP_MANIFEST, '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n', '<manifest xmlns:android="http://schemas.android.com/apk/res/android">\n    <uses-permission android:name="android.permission.INTERNET" />\n'),),
         MANIFEST_TESTS, APP_TEST,
-        ("合并后的应用清单里 INTERNET 只来自 syncplatform", "只有 syncplatform 的清单声明 INTERNET"),
+        ("合并后的应用清单申请 INTERNET 恰好一次", "只有 modelmgmt 与 syncplatform 的清单声明 INTERNET"),
     ),
     Mutation(
         "manifest-allows-cleartext-traffic",

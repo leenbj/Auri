@@ -178,7 +178,7 @@ class SyncEngineTest {
     }
 
     @Test
-    fun `网关上同一版本号是另一份正文：不能确认入库，提交后得到冲突并停下`() = runRig { rig ->
+    fun `网关上同一版本号是另一份正文：不能确认入库，也不再提交，直接停下并报版本冲突`() = runRig { rig ->
         val key = rig.publish()
         rig.jobs.update(rig.job(key).copy(uncertain = true))
         rig.server.stored[key] = SyncSamples.sha256Hex("不一样的正文")
@@ -187,6 +187,63 @@ class SyncEngineTest {
 
         assertEquals(SyncState.BLOCKED, rig.job(key).state)
         assertEquals(BlockedReason.VERSION_CONFLICT, rig.job(key).blockedReason)
+        // 查询已经说明白了（同一版本号、另一份正文）：再 PUT 一次只是白白把本机正文再发给网关一遍，得到的还是冲突
+        assertEquals("不能再提交", 0, rig.server.putCount)
+        assertEquals(listOf("GET status ${key.recordId}"), rig.server.calls.toList())
+    }
+
+    @Test
+    fun `网关上有这条 Record 的别的版本、唯独没有这一版：等于没入库，再提交（对照：冲突与相同都不提交）`() = runRig { rig ->
+        val key = rig.publish(revision = 2)
+        rig.jobs.update(rig.job(key).copy(uncertain = true))
+        rig.server.stored[JobKey(key.recordId, 1)] = SyncSamples.sha256Hex("第一版的正文")
+
+        rig.engine.runOnce()
+
+        assertEquals(SyncState.STORED, rig.job(key).state)
+        assertEquals(listOf("GET status ${key.recordId}", "PUT ${key.recordId}#2"), rig.server.calls.toList())
+    }
+
+    @Test
+    fun `网关说这条 Record 已被删除：哪怕那一版的哈希相同也不能确认入库，也不再提交，停在需要用户处理`() = runRig { rig ->
+        val key = rig.publish()
+        rig.jobs.update(rig.job(key).copy(uncertain = true))
+        rig.server.stored[key] = rig.submissions.getValue(key).textSha256
+        rig.server.deleted = true
+
+        rig.engine.runOnce()
+
+        assertEquals("已删除的 Record 上的文字不算“已送达”", SyncState.BLOCKED, rig.job(key).state)
+        assertEquals(BlockedReason.RECORD_DELETED, rig.job(key).blockedReason)
+        assertEquals(0, rig.server.putCount)
+    }
+
+    @Test
+    fun `网关说这条 Record 已被删除、而且没有这一版：同样停下，不去提交一个复活墓碑的版本`() = runRig { rig ->
+        val key = rig.publish(revision = 2)
+        rig.jobs.update(rig.job(key).copy(uncertain = true))
+        rig.server.stored[JobKey(key.recordId, 1)] = SyncSamples.sha256Hex("第一版的正文")
+        rig.server.deleted = true
+
+        rig.engine.runOnce()
+
+        assertEquals(SyncState.BLOCKED, rig.job(key).state)
+        assertEquals(BlockedReason.RECORD_DELETED, rig.job(key).blockedReason)
+        assertEquals(0, rig.server.putCount)
+    }
+
+    @Test
+    fun `网关说这条 Record 是别的设备录的：哪怕那一版的哈希相同也不能确认入库，也不再提交，停在需要用户处理`() = runRig { rig ->
+        val key = rig.publish()
+        rig.jobs.update(rig.job(key).copy(uncertain = true))
+        rig.server.stored[key] = rig.submissions.getValue(key).textSha256
+        rig.server.originDeviceId = "11111111-2222-4333-8444-555555555555"
+
+        rig.engine.runOnce()
+
+        assertEquals("只有录下它的那台设备能为它写 Revision（ADR-0020），别的设备那里看到相同文字也不是本机的送达", SyncState.BLOCKED, rig.job(key).state)
+        assertEquals(BlockedReason.NOT_ORIGIN_DEVICE, rig.job(key).blockedReason)
+        assertEquals(0, rig.server.putCount)
     }
 
     // ---- 第 6 项：等待网关 / 稍后重试 / 要用户处理 ----
