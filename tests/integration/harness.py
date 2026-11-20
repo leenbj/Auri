@@ -1,11 +1,13 @@
 """Black-box test harness for Auri Gateway integration and security tests."""
 from __future__ import annotations
 
+import atexit
 import asyncio
 import hashlib
 import json
 import os
 import pathlib
+import signal
 import socket
 import ssl
 import subprocess
@@ -104,7 +106,15 @@ class GatewayProcess:
     def start(self, timeout_seconds: float = 10.0) -> None:
         cmd = [
             sys.executable,
-            "-m",
+            "-c",
+            # The pipe closes even if pytest is killed, so the gateway cannot outlive it.
+            "import os, runpy, signal, sys, threading\n"
+            "def watch_parent():\n"
+            "    sys.stdin.buffer.read()\n"
+            "    os.killpg(os.getpgrp(), signal.SIGKILL) if os.name == 'posix' else os._exit(1)\n"
+            "threading.Thread(target=watch_parent, daemon=True).start()\n"
+            "sys.argv.pop(0)\n"
+            "runpy.run_module('auri_gateway', run_name='__main__')",
             "auri_gateway",
             "serve",
             "--data-dir",
@@ -122,65 +132,86 @@ class GatewayProcess:
 
         env = subprocess_env()
         env.update(self.env_overrides)
-        self._proc = subprocess.Popen(
-            cmd,
-            cwd=str(REPO_ROOT),
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        # Drain both pipes while the gateway runs: a full pipe would block it on its next log line.
-        self._collected = {"stdout": [], "stderr": []}
-        self._readers = [
-            threading.Thread(target=self._drain, args=(name, stream), daemon=True)
-            for name, stream in (("stdout", self._proc.stdout), ("stderr", self._proc.stderr))
-        ]
-        for reader in self._readers:
-            reader.start()
-        deadline = time.monotonic() + timeout_seconds
-        while time.monotonic() < deadline:
-            if self._proc.poll() is not None:
-                self._proc.wait(timeout=2)
-                for reader in self._readers:
-                    reader.join(timeout=2)
-                raise RuntimeError(
-                    f"Gateway exited prematurely ({self._proc.returncode}): "
-                    f"stdout={self._joined('stdout')!r} stderr={self._joined('stderr')!r}"
-                )
-            try:
-                if self.tls:
-                    cert_path = self.data_dir / "tls" / "gateway.cert.pem"
-                    if cert_path.exists():
-                        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                        ctx.check_hostname = False
-                        ctx.verify_mode = ssl.CERT_NONE
-                        with socket.create_connection((self._connect_host, self.port), timeout=0.5) as raw_sock:
-                            with ctx.wrap_socket(raw_sock, server_hostname=self._connect_host):
-                                return
-                else:
-                    resp = httpx.get(f"{self.base_url}/health", timeout=0.5)
-                    if resp.status_code == 200:
-                        return
-            except (OSError, httpx.HTTPError, ssl.SSLError):
-                pass
-            time.sleep(0.05)
-        self.stop()
-        raise TimeoutError(f"Gateway did not become healthy within {timeout_seconds}s")
+        try:
+            self._proc = subprocess.Popen(
+                cmd,
+                cwd=str(REPO_ROOT),
+                env=env,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=os.name == "posix",
+            )
+            atexit.register(self.stop)
+            # Drain both pipes while the gateway runs: a full pipe would block its next log line.
+            self._collected = {"stdout": [], "stderr": []}
+            self._readers = []
+            for name, stream in (("stdout", self._proc.stdout), ("stderr", self._proc.stderr)):
+                reader = threading.Thread(target=self._drain, args=(name, stream), daemon=True)
+                reader.start()
+                self._readers.append(reader)
+            deadline = time.monotonic() + timeout_seconds
+            while time.monotonic() < deadline:
+                if self._proc.poll() is not None:
+                    self._proc.wait(timeout=2)
+                    for reader in self._readers:
+                        reader.join(timeout=2)
+                    raise RuntimeError(
+                        f"Gateway exited prematurely ({self._proc.returncode}): "
+                        f"stdout={self._joined('stdout')!r} stderr={self._joined('stderr')!r}"
+                    )
+                try:
+                    if self.tls:
+                        cert_path = self.data_dir / "tls" / "gateway.cert.pem"
+                        if cert_path.exists():
+                            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                            ctx.check_hostname = False
+                            ctx.verify_mode = ssl.CERT_NONE
+                            with socket.create_connection((self._connect_host, self.port), timeout=0.5) as raw_sock:
+                                with ctx.wrap_socket(raw_sock, server_hostname=self._connect_host):
+                                    return
+                    else:
+                        resp = httpx.get(f"{self.base_url}/health", timeout=0.5, trust_env=False)
+                        if resp.status_code == 200:
+                            return
+                except httpx.InvalidURL as exc:
+                    raise RuntimeError(f"Invalid gateway health URL {self.base_url!r}: {exc}") from exc
+                except (OSError, httpx.HTTPError, ssl.SSLError):
+                    pass
+                time.sleep(0.05)
+            raise TimeoutError(f"Gateway did not become healthy within {timeout_seconds}s")
+        except BaseException:
+            self.stop()
+            raise
 
     def stop(self) -> tuple[str, str]:
         if self._proc is None:
             return "", ""
-        if self._proc.poll() is None:
-            self._proc.terminate()
+        if os.name == "posix":
             try:
-                self._proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                self._proc.kill()
-                self._proc.wait(timeout=5)
+                os.killpg(self._proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        elif self._proc.poll() is None:
+            self._proc.terminate()
+        try:
+            self._proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                if os.name == "posix":
+                    os.killpg(self._proc.pid, signal.SIGKILL)
+                else:
+                    self._proc.kill()
+            except ProcessLookupError:
+                pass
+            self._proc.wait(timeout=5)
+        if self._proc.stdin is not None:
+            self._proc.stdin.close()
         for reader in self._readers:
             reader.join(timeout=5)
         self._proc = None
+        atexit.unregister(self.stop)
         return self._joined("stdout"), self._joined("stderr")
 
     def _drain(self, name: str, stream: Any) -> None:
@@ -237,7 +268,7 @@ class GatewayProcess:
         code = self.issue_pairing_code()
         req = make_redeem_request(code, display_name=display_name)
         assert_valid_contract("pairing.schema.json#/$defs/redeem_request", req)
-        resp = httpx.post(f"{self.base_url}/v1/pairing/redeem", json=req, timeout=5.0)
+        resp = httpx.post(f"{self.base_url}/v1/pairing/redeem", trust_env=False, json=req, timeout=5.0)
         assert resp.status_code == 200, f"redeem failed: {resp.status_code} {resp.text}"
         body = resp.json()
         assert_valid_contract("pairing.schema.json#/$defs/redeem_response", body)
@@ -259,12 +290,12 @@ class GatewayProcess:
         }
         assert_valid_contract("destination.schema.json#/$defs/create_request", create_req)
         created = httpx.post(
-            f"{self.base_url}/v1/destinations", json=create_req, headers=headers, timeout=5.0
+            f"{self.base_url}/v1/destinations", trust_env=False, json=create_req, headers=headers, timeout=5.0
         )
         assert created.status_code == 200, created.text
         destination_id = created.json()["destination_id"]
         issued = httpx.post(
-            f"{self.base_url}/v1/destinations/{destination_id}/credential",
+            f"{self.base_url}/v1/destinations/{destination_id}/credential", trust_env=False,
             headers=headers,
             timeout=5.0,
         )
@@ -294,7 +325,7 @@ class GatewayProcess:
         submission["publication"]["intent"] = intent
         assert_valid_contract("revision.schema.json#/$defs/submission", submission)
         resp = httpx.put(
-            f"{self.base_url}/v1/records/{submission['record_id']}/revisions/{revision}",
+            f"{self.base_url}/v1/records/{submission['record_id']}/revisions/{revision}", trust_env=False,
             json=submission,
             headers={"Authorization": f"Bearer {device_token}"},
             timeout=5.0,
@@ -353,6 +384,7 @@ class McpAgent:
 
         async def session():
             async with httpx2.AsyncClient(
+                trust_env=False,
                 headers={"Authorization": f"Bearer {self.credential}"}, timeout=20.0
             ) as http:
                 kwargs = {} if self.mode == "modern" else {"mode": "legacy"}
@@ -539,7 +571,7 @@ class World:
     def rotate_credential(self, destination: AgentDestination) -> AgentDestination:
         """The phone issues a new credential; the previous one stops working at once."""
         issued = httpx.post(
-            f"{self.gw.base_url}/v1/destinations/{destination.destination_id}/credential",
+            f"{self.gw.base_url}/v1/destinations/{destination.destination_id}/credential", trust_env=False,
             headers={"Authorization": f"Bearer {self.device_token}"},
             timeout=5.0,
         )
@@ -553,7 +585,7 @@ class World:
     def revoke(self, destination: AgentDestination) -> None:
         """The phone revokes a Destination over HTTP (`DELETE /v1/destinations/{id}`)."""
         revoked = httpx.delete(
-            f"{self.gw.base_url}/v1/destinations/{destination.destination_id}",
+            f"{self.gw.base_url}/v1/destinations/{destination.destination_id}", trust_env=False,
             headers={"Authorization": f"Bearer {self.device_token}"},
             timeout=5.0,
         )

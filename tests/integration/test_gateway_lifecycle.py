@@ -18,7 +18,7 @@ def test_gateway_persists_paired_devices_and_revisions_across_restart(
     gw1 = GatewayProcess(data_dir)
     gw1.start()
     try:
-        health = httpx.get(f"{gw1.base_url}/health", timeout=5.0)
+        health = httpx.get(f"{gw1.base_url}/health", trust_env=False, timeout=5.0)
         assert health.status_code == 200
         assert health.json() == {"status": "ok"}
 
@@ -30,7 +30,7 @@ def test_gateway_persists_paired_devices_and_revisions_across_restart(
         sub = make_submission(record_id=record_id, revision=1, text="重启前入库的内容。")
         assert_valid_contract("revision.schema.json#/$defs/submission", sub)
         put_resp = httpx.put(
-            f"{gw1.base_url}/v1/records/{record_id}/revisions/1",
+            f"{gw1.base_url}/v1/records/{record_id}/revisions/1", trust_env=False,
             json=sub,
             headers={"Authorization": f"Bearer {token}"},
             timeout=5.0,
@@ -50,7 +50,7 @@ def test_gateway_persists_paired_devices_and_revisions_across_restart(
     try:
         # Existing device token still authenticates, duplicate submit returns the original stored result.
         dup_resp = httpx.put(
-            f"{gw2.base_url}/v1/records/{record_id}/revisions/1",
+            f"{gw2.base_url}/v1/records/{record_id}/revisions/1", trust_env=False,
             json=sub,
             headers={"Authorization": f"Bearer {token}"},
             timeout=5.0,

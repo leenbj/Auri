@@ -105,10 +105,10 @@ def test_readonly_and_query_logs_never_contain_text_queries_or_credentials(
     agent = world.agent(dest)
 
     headers = {"Authorization": f"Bearer {world.device_token}"}
-    assert httpx.get(f"{world.gw.base_url}/v1/capabilities", headers=headers, timeout=5.0).status_code == 200
+    assert httpx.get(f"{world.gw.base_url}/v1/capabilities", trust_env=False, headers=headers, timeout=5.0).status_code == 200
     assert (
         httpx.get(
-            f"{world.gw.base_url}/v1/operations/{stored['operation_id']}",
+            f"{world.gw.base_url}/v1/operations/{stored['operation_id']}", trust_env=False,
             headers=headers,
             timeout=5.0,
         ).status_code
@@ -116,7 +116,7 @@ def test_readonly_and_query_logs_never_contain_text_queries_or_credentials(
     )
     assert (
         httpx.get(
-            f"{world.gw.base_url}/v1/records/{stored['record_id']}/status",
+            f"{world.gw.base_url}/v1/records/{stored['record_id']}/status", trust_env=False,
             headers=headers,
             timeout=5.0,
         ).status_code
@@ -161,7 +161,7 @@ def test_revoked_device_token_is_rejected_on_all_new_http_query_endpoints(
         f"/v1/operations/{stored['operation_id']}",
         f"/v1/records/{stored['record_id']}/status",
     ):
-        resp = httpx.get(f"{gateway.base_url}{path}", headers=headers, timeout=5.0)
+        resp = httpx.get(f"{gateway.base_url}{path}", trust_env=False, headers=headers, timeout=5.0)
         assert resp.status_code == 401
         body = resp.json()
         assert_valid_contract("error.schema.json", body)

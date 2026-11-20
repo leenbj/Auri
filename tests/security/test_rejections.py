@@ -72,7 +72,7 @@ def test_missing_or_invalid_token_is_rejected(
     sub = make_submission()
     headers = {} if auth_header is None else {"Authorization": auth_header}
     resp = httpx.put(
-        f"{gateway.base_url}/v1/records/{sub['record_id']}/revisions/{sub['revision']}",
+        f"{gateway.base_url}/v1/records/{sub['record_id']}/revisions/{sub['revision']}", trust_env=False,
         json=sub,
         headers=headers,
         timeout=5.0,
@@ -85,7 +85,7 @@ def test_pairing_rejects_unknown_used_and_expired_codes_with_uniform_response(
     gateway: GatewayProcess,
 ) -> None:
     unknown_resp = httpx.post(
-        f"{gateway.base_url}/v1/pairing/redeem",
+        f"{gateway.base_url}/v1/pairing/redeem", trust_env=False,
         json=make_redeem_request("UNKNOWN-PAIRING-CODE-123456"),
         timeout=5.0,
     )
@@ -96,12 +96,12 @@ def test_pairing_rejects_unknown_used_and_expired_codes_with_uniform_response(
 
     code = gateway.issue_pairing_code(ttl_seconds=60)
     ok_resp = httpx.post(
-        f"{gateway.base_url}/v1/pairing/redeem", json=make_redeem_request(code), timeout=5.0
+        f"{gateway.base_url}/v1/pairing/redeem", trust_env=False, json=make_redeem_request(code), timeout=5.0
     )
     assert ok_resp.status_code == 200
 
     reuse_resp = httpx.post(
-        f"{gateway.base_url}/v1/pairing/redeem", json=make_redeem_request(code), timeout=5.0
+        f"{gateway.base_url}/v1/pairing/redeem", trust_env=False, json=make_redeem_request(code), timeout=5.0
     )
     reuse_body = assert_contract_error(
         reuse_resp, expected_status=401, expected_code="PAIRING_CODE_INVALID"
@@ -111,7 +111,7 @@ def test_pairing_rejects_unknown_used_and_expired_codes_with_uniform_response(
     expired_code = gateway.issue_pairing_code(ttl_seconds=1)
     time.sleep(1.2)
     expired_resp = httpx.post(
-        f"{gateway.base_url}/v1/pairing/redeem",
+        f"{gateway.base_url}/v1/pairing/redeem", trust_env=False,
         json=make_redeem_request(expired_code),
         timeout=5.0,
     )
@@ -132,7 +132,7 @@ def test_schema_invalid_pairing_requests_rejected(
 ) -> None:
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
     resp = httpx.post(
-        f"{gateway.base_url}/v1/pairing/redeem",
+        f"{gateway.base_url}/v1/pairing/redeem", trust_env=False,
         json=fixture["instance"],
         timeout=5.0,
     )
@@ -143,12 +143,12 @@ def test_pairing_request_with_tenant_id_is_rejected(gateway: GatewayProcess) -> 
     code = gateway.issue_pairing_code(ttl_seconds=60)
     req = make_redeem_request(code)
     req["tenant_id"] = str(uuid.uuid4())
-    resp = httpx.post(f"{gateway.base_url}/v1/pairing/redeem", json=req, timeout=5.0)
+    resp = httpx.post(f"{gateway.base_url}/v1/pairing/redeem", trust_env=False, json=req, timeout=5.0)
     assert_contract_error(resp, expected_status=422, expected_code="REQUEST_INVALID")
 
     # Rejecting the malformed request must not consume the pairing code.
     clean_resp = httpx.post(
-        f"{gateway.base_url}/v1/pairing/redeem", json=make_redeem_request(code), timeout=5.0
+        f"{gateway.base_url}/v1/pairing/redeem", trust_env=False, json=make_redeem_request(code), timeout=5.0
     )
     assert clean_resp.status_code == 200
     assert_valid_contract("pairing.schema.json#/$defs/redeem_response", clean_resp.json())
@@ -171,7 +171,7 @@ def test_schema_invalid_revision_submissions_rejected(
     url_revision = revision if revision >= 1 else 1
 
     resp = httpx.put(
-        f"{gateway.base_url}/v1/records/{url_record_id}/revisions/{url_revision}",
+        f"{gateway.base_url}/v1/records/{url_record_id}/revisions/{url_revision}", trust_env=False,
         json=instance,
         headers=headers,
         timeout=5.0,
@@ -181,7 +181,7 @@ def test_schema_invalid_revision_submissions_rejected(
     # Verify via HTTP that nothing was stored at that (record_id, revision).
     valid_follow_up = make_submission(record_id=url_record_id, revision=url_revision, text="正常正文。")
     ok = httpx.put(
-        f"{gateway.base_url}/v1/records/{url_record_id}/revisions/{url_revision}",
+        f"{gateway.base_url}/v1/records/{url_record_id}/revisions/{url_revision}", trust_env=False,
         json=valid_follow_up,
         headers=headers,
         timeout=5.0,
@@ -198,7 +198,7 @@ def test_submission_with_tenant_id_and_path_mismatch_rejected(gateway: GatewayPr
         "instance"
     ]
     resp_tenant = httpx.put(
-        f"{gateway.base_url}/v1/records/{tenant_fixture['record_id']}/revisions/{tenant_fixture['revision']}",
+        f"{gateway.base_url}/v1/records/{tenant_fixture['record_id']}/revisions/{tenant_fixture['revision']}", trust_env=False,
         json=tenant_fixture,
         headers=headers,
         timeout=5.0,
@@ -208,7 +208,7 @@ def test_submission_with_tenant_id_and_path_mismatch_rejected(gateway: GatewayPr
     sub = make_submission()
     other_record_id = str(uuid.uuid4())
     resp_rec_mismatch = httpx.put(
-        f"{gateway.base_url}/v1/records/{other_record_id}/revisions/{sub['revision']}",
+        f"{gateway.base_url}/v1/records/{other_record_id}/revisions/{sub['revision']}", trust_env=False,
         json=sub,
         headers=headers,
         timeout=5.0,
@@ -216,7 +216,7 @@ def test_submission_with_tenant_id_and_path_mismatch_rejected(gateway: GatewayPr
     assert_contract_error(resp_rec_mismatch, expected_status=422, expected_code="REQUEST_INVALID")
 
     resp_rev_mismatch = httpx.put(
-        f"{gateway.base_url}/v1/records/{sub['record_id']}/revisions/2",
+        f"{gateway.base_url}/v1/records/{sub['record_id']}/revisions/2", trust_env=False,
         json=sub,
         headers=headers,
         timeout=5.0,
@@ -229,7 +229,7 @@ def test_malformed_json_and_invalid_path_params_are_rejected(gateway: GatewayPro
     headers = {"Authorization": f"Bearer {paired['device_token']}"}
 
     resp_bad_json = httpx.put(
-        f"{gateway.base_url}/v1/records/{uuid.uuid4()}/revisions/1",
+        f"{gateway.base_url}/v1/records/{uuid.uuid4()}/revisions/1", trust_env=False,
         content=b"{not-json",
         headers={**headers, "Content-Type": "application/json"},
         timeout=5.0,
@@ -237,7 +237,7 @@ def test_malformed_json_and_invalid_path_params_are_rejected(gateway: GatewayPro
     assert_contract_error(resp_bad_json, expected_status=400, expected_code="REQUEST_INVALID")
 
     resp_non_object = httpx.put(
-        f"{gateway.base_url}/v1/records/{uuid.uuid4()}/revisions/1",
+        f"{gateway.base_url}/v1/records/{uuid.uuid4()}/revisions/1", trust_env=False,
         json=["not", "an", "object"],
         headers=headers,
         timeout=5.0,
@@ -246,7 +246,7 @@ def test_malformed_json_and_invalid_path_params_are_rejected(gateway: GatewayPro
 
     sub = make_submission()
     resp_bad_uuid = httpx.put(
-        f"{gateway.base_url}/v1/records/NOT-A-UUID/revisions/1",
+        f"{gateway.base_url}/v1/records/NOT-A-UUID/revisions/1", trust_env=False,
         json=sub,
         headers=headers,
         timeout=5.0,
@@ -254,7 +254,7 @@ def test_malformed_json_and_invalid_path_params_are_rejected(gateway: GatewayPro
     assert_contract_error(resp_bad_uuid, expected_status=422, expected_code="REQUEST_INVALID")
 
     resp_zero_rev = httpx.put(
-        f"{gateway.base_url}/v1/records/{sub['record_id']}/revisions/0",
+        f"{gateway.base_url}/v1/records/{sub['record_id']}/revisions/0", trust_env=False,
         json=sub,
         headers=headers,
         timeout=5.0,
@@ -276,7 +276,7 @@ def test_semantic_invalid_fixtures_sr01_to_sr05_rejected(
     assert_valid_contract("revision.schema.json#/$defs/submission", instance)
 
     resp = httpx.put(
-        f"{gateway.base_url}/v1/records/{instance['record_id']}/revisions/{instance['revision']}",
+        f"{gateway.base_url}/v1/records/{instance['record_id']}/revisions/{instance['revision']}", trust_env=False,
         json=instance,
         headers=headers,
         timeout=5.0,
@@ -289,7 +289,7 @@ def test_semantic_invalid_fixtures_sr01_to_sr05_rejected(
         record_id=instance["record_id"], revision=instance["revision"], text="合法正文。"
     )
     ok = httpx.put(
-        f"{gateway.base_url}/v1/records/{instance['record_id']}/revisions/{instance['revision']}",
+        f"{gateway.base_url}/v1/records/{instance['record_id']}/revisions/{instance['revision']}", trust_env=False,
         json=valid_sub,
         headers=headers,
         timeout=5.0,
@@ -312,7 +312,7 @@ def test_semantic_rule_sr06_over_1mib_utf8_bytes_rejected(gateway: GatewayProces
     assert_valid_contract("revision.schema.json#/$defs/submission", sub)
 
     resp = httpx.put(
-        f"{gateway.base_url}/v1/records/{sub['record_id']}/revisions/{sub['revision']}",
+        f"{gateway.base_url}/v1/records/{sub['record_id']}/revisions/{sub['revision']}", trust_env=False,
         json=sub,
         headers=headers,
         timeout=10.0,
@@ -323,7 +323,7 @@ def test_semantic_rule_sr06_over_1mib_utf8_bytes_rejected(gateway: GatewayProces
     # Confirm via HTTP that nothing was stored.
     valid_sub = make_submission(record_id=sub["record_id"], revision=1, text="合法短文本。")
     ok = httpx.put(
-        f"{gateway.base_url}/v1/records/{sub['record_id']}/revisions/1",
+        f"{gateway.base_url}/v1/records/{sub['record_id']}/revisions/1", trust_env=False,
         json=valid_sub,
         headers=headers,
         timeout=5.0,
@@ -334,23 +334,23 @@ def test_semantic_rule_sr06_over_1mib_utf8_bytes_rejected(gateway: GatewayProces
 
 def test_unknown_route_404_returns_unified_error(gateway: GatewayProcess) -> None:
     for method, path in (("GET", "/v1/does-not-exist"), ("POST", "/unknown")):
-        resp = httpx.request(method, f"{gateway.base_url}{path}", timeout=5.0)
+        resp = httpx.request(method, f"{gateway.base_url}{path}", trust_env=False, timeout=5.0)
         assert_contract_error(resp, expected_status=404, expected_code="REQUEST_INVALID")
 
 
 def test_method_not_allowed_405_returns_unified_error(gateway: GatewayProcess) -> None:
-    resp_health = httpx.post(f"{gateway.base_url}/health", timeout=5.0)
+    resp_health = httpx.post(f"{gateway.base_url}/health", trust_env=False, timeout=5.0)
     assert_contract_error(resp_health, expected_status=405, expected_code="REQUEST_INVALID")
     assert "GET" in resp_health.headers.get("allow", "")
 
-    resp_redeem = httpx.delete(f"{gateway.base_url}/v1/pairing/redeem", timeout=5.0)
+    resp_redeem = httpx.delete(f"{gateway.base_url}/v1/pairing/redeem", trust_env=False, timeout=5.0)
     assert_contract_error(resp_redeem, expected_status=405, expected_code="REQUEST_INVALID")
     assert "POST" in resp_redeem.headers.get("allow", "")
 
     paired = gateway.pair_device("MCP 405 Phone")
     dest = gateway.create_agent_destination(paired["device_token"], "MCP 405 Agent")
     resp_mcp = httpx.get(
-        f"{gateway.base_url}/mcp",
+        f"{gateway.base_url}/mcp", trust_env=False,
         headers={"Authorization": f"Bearer {dest.credential}", "Accept": "text/event-stream"},
         timeout=5.0,
     )
@@ -369,7 +369,7 @@ def test_unhandled_500_returns_unified_error_without_leaking_internals(
         with sqlite3.connect(gw.data_dir / "gateway.db") as conn:
             conn.execute("DROP TABLE destinations")
 
-        resp = httpx.get(f"{gw.base_url}/v1/destinations", headers=headers, timeout=5.0)
+        resp = httpx.get(f"{gw.base_url}/v1/destinations", trust_env=False, headers=headers, timeout=5.0)
     finally:
         gw.stop()
 
@@ -407,7 +407,7 @@ def test_non_origin_device_cannot_submit_or_delete_record(gateway: GatewayProces
             record_id=record_id, revision=rev, text=text, destination_ids=[dest.destination_id]
         )
         resp = httpx.put(
-            f"{gateway.base_url}/v1/records/{record_id}/revisions/{rev}",
+            f"{gateway.base_url}/v1/records/{record_id}/revisions/{rev}", trust_env=False,
             json=sub,
             headers=other_headers,
             timeout=5.0,
@@ -416,7 +416,7 @@ def test_non_origin_device_cannot_submit_or_delete_record(gateway: GatewayProces
 
     # Non-origin device cannot delete the record.
     del_resp = httpx.delete(
-        f"{gateway.base_url}/v1/records/{record_id}",
+        f"{gateway.base_url}/v1/records/{record_id}", trust_env=False,
         headers=other_headers,
         timeout=5.0,
     )
@@ -440,13 +440,13 @@ def test_non_origin_device_cannot_submit_or_delete_record(gateway: GatewayProces
 
     # Origin device deletes the record; non-origin device still receives RECORD_NOT_ORIGIN_DEVICE.
     ok_del = httpx.delete(
-        f"{gateway.base_url}/v1/records/{record_id}",
+        f"{gateway.base_url}/v1/records/{record_id}", trust_env=False,
         headers=origin_headers,
         timeout=5.0,
     )
     assert ok_del.status_code == 200
     del_after = httpx.delete(
-        f"{gateway.base_url}/v1/records/{record_id}",
+        f"{gateway.base_url}/v1/records/{record_id}", trust_env=False,
         headers=other_headers,
         timeout=5.0,
     )
@@ -463,7 +463,7 @@ def test_delete_record_rejects_bad_auth_bad_path_and_body_payloads(gateway: Gate
     # Unauthenticated and Destination-credential callers are rejected with 401.
     for headers in ({}, {"Authorization": "Bearer invalid-token"}, dest_headers):
         resp = httpx.delete(
-            f"{gateway.base_url}/v1/records/{record_id}",
+            f"{gateway.base_url}/v1/records/{record_id}", trust_env=False,
             headers=headers,
             timeout=5.0,
         )
@@ -472,7 +472,7 @@ def test_delete_record_rejects_bad_auth_bad_path_and_body_payloads(gateway: Gate
     # Uppercase UUID or non-UUID path parameter is rejected.
     for bad_id in ("NOT-A-UUID", record_id.upper()):
         resp = httpx.delete(
-            f"{gateway.base_url}/v1/records/{bad_id}",
+            f"{gateway.base_url}/v1/records/{bad_id}", trust_env=False,
             headers=device_headers,
             timeout=5.0,
         )
@@ -481,7 +481,7 @@ def test_delete_record_rejects_bad_auth_bad_path_and_body_payloads(gateway: Gate
     # Malformed JSON or non-empty body (such as spoofed tenant_id / device_id) is rejected.
     bad_json = httpx.request(
         "DELETE",
-        f"{gateway.base_url}/v1/records/{record_id}",
+        f"{gateway.base_url}/v1/records/{record_id}", trust_env=False,
         content=b"{not-json",
         headers={**device_headers, "Content-Type": "application/json"},
         timeout=5.0,
@@ -491,7 +491,7 @@ def test_delete_record_rejects_bad_auth_bad_path_and_body_payloads(gateway: Gate
     for spoofed in ({"tenant_id": str(uuid.uuid4())}, {"origin_device_id": str(uuid.uuid4())}):
         spoof_resp = httpx.request(
             "DELETE",
-            f"{gateway.base_url}/v1/records/{record_id}",
+            f"{gateway.base_url}/v1/records/{record_id}", trust_env=False,
             json=spoofed,
             headers=device_headers,
             timeout=5.0,
@@ -511,7 +511,7 @@ def test_path_mismatch_non_canonical_revision_and_conflict_leave_no_side_effects
     sub_1 = make_submission(revision=1, destination_ids=[dest.destination_id])
     for bad_rev in ("01", "1_0", "+1", "-1", "abc"):
         resp = httpx.put(
-            f"{gateway.base_url}/v1/records/{sub_1['record_id']}/revisions/{bad_rev}",
+            f"{gateway.base_url}/v1/records/{sub_1['record_id']}/revisions/{bad_rev}", trust_env=False,
             json=sub_1,
             headers=headers,
             timeout=5.0,
@@ -521,7 +521,7 @@ def test_path_mismatch_non_canonical_revision_and_conflict_leave_no_side_effects
     # Path/body mismatch on record_id or revision stores nothing at either path or body target.
     other_record_id = str(uuid.uuid4())
     mismatch_rec = httpx.put(
-        f"{gateway.base_url}/v1/records/{other_record_id}/revisions/1",
+        f"{gateway.base_url}/v1/records/{other_record_id}/revisions/1", trust_env=False,
         json=sub_1,
         headers=headers,
         timeout=5.0,
@@ -529,7 +529,7 @@ def test_path_mismatch_non_canonical_revision_and_conflict_leave_no_side_effects
     assert_contract_error(mismatch_rec, expected_status=422, expected_code="REQUEST_INVALID")
 
     mismatch_rev = httpx.put(
-        f"{gateway.base_url}/v1/records/{sub_1['record_id']}/revisions/2",
+        f"{gateway.base_url}/v1/records/{sub_1['record_id']}/revisions/2", trust_env=False,
         json=sub_1,
         headers=headers,
         timeout=5.0,
@@ -546,7 +546,7 @@ def test_path_mismatch_non_canonical_revision_and_conflict_leave_no_side_effects
         destination_ids=[dest.destination_id],
     )
     ok = httpx.put(
-        f"{gateway.base_url}/v1/records/{valid_sub['record_id']}/revisions/1",
+        f"{gateway.base_url}/v1/records/{valid_sub['record_id']}/revisions/1", trust_env=False,
         json=valid_sub,
         headers=headers,
         timeout=5.0,
@@ -562,7 +562,7 @@ def test_path_mismatch_non_canonical_revision_and_conflict_leave_no_side_effects
         destination_ids=[dest.destination_id],
     )
     conflict_resp = httpx.put(
-        f"{gateway.base_url}/v1/records/{valid_sub['record_id']}/revisions/1",
+        f"{gateway.base_url}/v1/records/{valid_sub['record_id']}/revisions/1", trust_env=False,
         json=conflict_sub,
         headers=headers,
         timeout=5.0,
