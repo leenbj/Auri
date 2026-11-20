@@ -50,6 +50,8 @@ class JdbcDispatchStore(private val sql: JdbcSqlDb, private val signal: MutableS
 
     override suspend fun items(limit: Int): List<DispatchItem> = logic.items(limit)
 
+    override suspend fun awaiting(): List<DispatchItem> = logic.awaiting()
+
     override suspend fun itemsFor(destinationId: String, limit: Int): List<DispatchItem> = logic.itemsFor(destinationId, limit)
 
     override suspend fun decide(key: JobKey, destinationId: String, choice: Choice, now: Instant): DecideResult =

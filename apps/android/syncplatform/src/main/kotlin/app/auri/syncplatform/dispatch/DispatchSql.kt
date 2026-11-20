@@ -97,6 +97,18 @@ class DispatchSql(private val sql: SqlDb) {
             .mapNotNull { loadItem(it, known) }
     }
 
+    /** 有目标在等用户决定的（先按“决定还是等待”粗筛，再按目的地现状精确判断 awaitingUser），不设条数上限（评审 M1）。 */
+    fun awaiting(): List<DispatchItem> {
+        val known = destinationsById()
+        return sql.query(
+            """
+            SELECT i.record_id, i.revision FROM dispatch_items i
+            WHERE EXISTS (SELECT 1 FROM dispatch_targets t WHERE t.record_id = i.record_id AND t.revision = i.revision AND t.decision = '${TargetDecision.AWAITING.name}')
+            ORDER BY i.rowid DESC
+            """.trimIndent(),
+        ) { it.toKey() }.mapNotNull { loadItem(it, known) }.filter { it.awaitingUser }
+    }
+
     fun itemsFor(destinationId: String, limit: Int): List<DispatchItem> {
         val known = destinationsById()
         return sql.query(

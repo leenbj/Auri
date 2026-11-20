@@ -972,6 +972,34 @@ MUTATIONS: tuple = (
         (Edit(DETAIL_SCREEN, "        if (state.unreadable) item { Text(describeUnreadable()) }\n", ""),),
         app_tests("ReadFailureContainmentTest"), APP_RESULTS,
         ("三个页面都把读不到的那句话摆出来",),
+    ),    # ---- 评审 M1：等用户决定的文字不受“最近一页”的限制 ----
+    Mutation(
+        "m1-view-model-only-reads-the-latest-page",
+        "评审 M1：待发送页只读最近一页：更新的文字多过一页之后，更早那条等确认的预览就在页面上消失了，够不着，没法确认或选择不发送",
+        (Edit(SEND_REVIEW_VM, "        val items = (recent + dispatch.awaiting().filter { it.key !in shown }).map { it.toReview() }", "        val items = recent.map { it.toReview() }"),),
+        app_tests("SendReviewBacklogTest"), APP_RESULTS,
+        ("更新的文字多过一页", "更新的文字都已决定"),
+    ),
+    Mutation(
+        "m1-view-model-lists-recent-awaiting-twice",
+        "评审 M1：最近一页里本来就在等确认的文字又被“更早的等确认”补了一遍：同一条出现两次（列表按它的键排版，重复的键会让界面崩）",
+        (Edit(SEND_REVIEW_VM, "dispatch.awaiting().filter { it.key !in shown }", "dispatch.awaiting()"),),
+        app_tests("SendReviewBacklogTest"), APP_RESULTS,
+        ("更新的文字多过一页",),
+    ),
+    Mutation(
+        "m1-awaiting-has-a-page-limit",
+        "评审 M1：发送账读“等确认的文字”时也只读一页：超过一页的更早的又够不着了",
+        (Edit(DISPATCH_SQL, '            ORDER BY i.rowid DESC\n            """.trimIndent(),\n        ) { it.toKey() }.mapNotNull { loadItem(it, known) }.filter { it.awaitingUser }', '            ORDER BY i.rowid DESC LIMIT 30\n            """.trimIndent(),\n        ) { it.toKey() }.mapNotNull { loadItem(it, known) }.filter { it.awaitingUser }'),),
+        platform_tests("SqliteDispatchStoreContractTest"), PLATFORM_RESULTS,
+        ("awaiting_returns_every_text_still_waiting_for_the_user_newest_first_beyond_any_page_limit",),
+    ),
+    Mutation(
+        "m1-awaiting-keeps-what-can-no-longer-be-decided",
+        "评审 M1：目的地被撤销、没什么可决定的文字还留在“等确认”里：页面上一直挂着点了也没用的按钮",
+        (Edit(DISPATCH_SQL, ".mapNotNull { loadItem(it, known) }.filter { it.awaitingUser }", ".mapNotNull { loadItem(it, known) }"),),
+        platform_tests("SqliteDispatchStoreContractTest"), PLATFORM_RESULTS,
+        ("awaiting_leaves_out_what_the_user_decided",),
     ),
 )
 

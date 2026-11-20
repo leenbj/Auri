@@ -585,6 +585,42 @@ abstract class DispatchStoreContract {
         assertEquals("已撤销的不接收新文字：不为它规划目标", emptyList<String>(), fixture.store.item(keyA)!!.targets.map { it.destinationId })
     }
 
+    // ---- 等用户决定的文字不受条数限制（评审 M1） ----
+
+    @Test
+    fun awaiting_returns_every_text_still_waiting_for_the_user_newest_first_beyond_any_page_limit() = runBlocking {
+        val fixture = newFixture()
+        fixture.know(destination(preview, SendMode.PREVIEW_CONFIRM))
+        val keys = (1..40).map { JobKey("00000abc-0000-4000-8000-%012d".format(it), 1) }
+        keys.forEach { fixture.publish(it, RevisionSource.ASR, t0) }
+
+        assertEquals("按页读只有一页", 30, fixture.store.items(30).size)
+        val waiting = fixture.store.awaiting()
+        assertEquals("等用户决定的一条不少，最新的在前", keys.reversed(), waiting.map { it.key })
+        assertTrue(waiting.all { it.awaitingUser })
+    }
+
+    @Test
+    fun awaiting_leaves_out_what_the_user_decided_what_needs_no_decision_and_what_can_no_longer_be_decided() = runBlocking {
+        val fixture = newFixture()
+        fixture.know(destination(auto, SendMode.AUTO_SEND))
+        fixture.publish(keyA, RevisionSource.ASR, t0) // 只有自动发送的目标：没有什么要等
+        assertEquals(emptyList<JobKey>(), fixture.store.awaiting().map { it.key })
+
+        fixture.know(destination(preview, SendMode.PREVIEW_CONFIRM))
+        fixture.publish(keyB, RevisionSource.ASR, t0)
+        assertEquals(listOf(keyB), fixture.store.awaiting().map { it.key })
+
+        fixture.store.decide(keyB, preview, Choice.SKIP, t0)
+        assertEquals("决定过了就不再等", emptyList<JobKey>(), fixture.store.awaiting().map { it.key })
+
+        val third = JobKey("00000abc-0000-4000-8000-000000000003", 1)
+        fixture.publish(third, RevisionSource.ASR, t0)
+        assertEquals(listOf(third), fixture.store.awaiting().map { it.key })
+        fixture.know(destination(preview, SendMode.PREVIEW_CONFIRM, revokedAt = t0.plusSeconds(1)), authoritative = false)
+        assertEquals("目的地被撤销了：没有什么可决定的，也不再拦着页面", emptyList<JobKey>(), fixture.store.awaiting().map { it.key })
+    }
+
     // ---- 凭证被撤销 = Destination 暂停（评审 B3）：网关不为它建新 Delivery、撤销时排着的取消了、恢复之后也不补发 ----
 
     @Test

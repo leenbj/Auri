@@ -86,6 +86,10 @@ class InMemoryDispatchStore(private val disk: InMemoryDispatchDisk) : DispatchSt
         disk.items.entries.sortedByDescending { it.value.order }.take(limit).map { (key, item) -> view(key, item) }
     }
 
+    override suspend fun awaiting(): List<DispatchItem> = disk.lock.withLock {
+        disk.items.entries.sortedByDescending { it.value.order }.map { (key, item) -> view(key, item) }.filter { it.awaitingUser }
+    }
+
     override suspend fun itemsFor(destinationId: String, limit: Int): List<DispatchItem> = disk.lock.withLock {
         disk.items.entries.filter { destinationId in it.value.rows }.sortedByDescending { it.value.order }.take(limit).map { (key, item) -> view(key, item) }
     }

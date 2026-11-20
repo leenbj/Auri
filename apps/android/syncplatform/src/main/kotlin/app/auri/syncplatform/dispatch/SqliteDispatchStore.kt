@@ -54,6 +54,8 @@ class SqliteDispatchStore(private val library: SqliteRecordLibrary) : DispatchSt
 
     override suspend fun items(limit: Int): List<DispatchItem> = read { items(limit) }
 
+    override suspend fun awaiting(): List<DispatchItem> = read { awaiting() }
+
     override suspend fun itemsFor(destinationId: String, limit: Int): List<DispatchItem> = read { itemsFor(destinationId, limit) }
 
     override suspend fun decide(key: JobKey, destinationId: String, choice: Choice, now: Instant): DecideResult =

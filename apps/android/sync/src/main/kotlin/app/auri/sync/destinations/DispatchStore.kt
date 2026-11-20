@@ -130,6 +130,12 @@ interface DispatchStore : PublicationSource, DeliveryAdditions {
     /** 最新的在前。 */
     suspend fun items(limit: Int): List<DispatchItem>
 
+    /**
+     * 所有还有目标在等用户决定的文字（[DispatchItem.awaitingUser]），最新的在前。**不受条数限制**（评审 M1）：
+     * 等用户决定的文字不能因为后面又来了很多新文字就够不着——够不着就没法确认或选择不发送，它的 Agent 永远领不到。
+     */
+    suspend fun awaiting(): List<DispatchItem>
+
     /** 有这个 Destination 作为目标的文字，最新的在前。 */
     suspend fun itemsFor(destinationId: String, limit: Int): List<DispatchItem>
 

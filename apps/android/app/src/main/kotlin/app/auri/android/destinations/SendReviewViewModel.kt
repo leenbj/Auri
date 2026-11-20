@@ -32,7 +32,8 @@ import kotlinx.coroutines.launch
  * 读：`SendReviewViewModel.state: StateFlow<SendReviewUiState>`（唯一的可观察入口）。
  *
  *   SendReviewUiState
- *   ├─ items: List<ReviewItem>        最近的文字：等你决定的在前，其余按时间从新到旧。
+ *   ├─ items: List<ReviewItem>        最近 [SendReviewViewModel.ITEM_LIMIT] 条文字，加上更早的、还在等你决定的（等你决定的不能因为后来的文字多了就够不着，评审 M1）：
+ *   │                                  等你决定的在前，其余按时间从新到旧。
  *   │   ├─ text                       正文（只给用户看，数据而非指令）；本机已经没有时为 null。
  *   │   ├─ intent                     标签：CONTEXT 备忘 / ACTION_REQUEST 请求执行。只是数据上的标记，不执行任何东西、不给 Agent 额外权限。
  *   │   ├─ intentLocked               标签已冻结：引擎开始为它构造提交（网关马上就要拿到这一版）的那一刻起，标签不可更改，canChangeIntent 为 false。
@@ -136,7 +137,10 @@ class SendReviewViewModel(
     }
 
     private suspend fun load(dataFlow: DataFlowState): SendReviewUiState {
-        val items = dispatch.items(ITEM_LIMIT).map { it.toReview() }
+        // 最近一页，再补上更早的、还在等用户决定的：等你决定的不能因为后面又来了很多新文字就够不着（评审 M1）
+        val recent = dispatch.items(ITEM_LIMIT)
+        val shown = recent.mapTo(HashSet()) { it.key }
+        val items = (recent + dispatch.awaiting().filter { it.key !in shown }).map { it.toReview() }
         return SendReviewUiState(
             items = items.sortedWith(compareByDescending<ReviewItem> { it.awaitingUser }.thenByDescending { it.createdAt }),
             defaultIntent = dispatch.defaultIntent(),
