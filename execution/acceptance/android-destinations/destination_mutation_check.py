@@ -972,7 +972,8 @@ MUTATIONS: tuple = (
         (Edit(DETAIL_SCREEN, "        if (state.unreadable) item { Text(describeUnreadable()) }\n", ""),),
         app_tests("ReadFailureContainmentTest"), APP_RESULTS,
         ("三个页面都把读不到的那句话摆出来",),
-    ),    # ---- 评审 M1：等用户决定的文字不受“最近一页”的限制 ----
+    ),
+    # ---- 评审 M1：等用户决定的文字不受“最近一页”的限制 ----
     Mutation(
         "m1-view-model-only-reads-the-latest-page",
         "评审 M1：待发送页只读最近一页：更新的文字多过一页之后，更早那条等确认的预览就在页面上消失了，够不着，没法确认或选择不发送",
@@ -1000,6 +1001,63 @@ MUTATIONS: tuple = (
         (Edit(DISPATCH_SQL, ".mapNotNull { loadItem(it, known) }.filter { it.awaitingUser }", ".mapNotNull { loadItem(it, known) }"),),
         platform_tests("SqliteDispatchStoreContractTest"), PLATFORM_RESULTS,
         ("awaiting_leaves_out_what_the_user_decided",),
+    ),
+    # ---- 评审 M2：预览确认的文字在等用户时，同步页如实说有几条，不只剩一句“已同步” ----
+    Mutation(
+        "m2-status-never-counts-the-waiting-texts",
+        "评审 M2：状态流里等用户确认的条数永远是 0：页面又只剩一句“已同步”，用户不知道有文字在等他，Agent 也一直领不到",
+        (Edit(SYNC_STATUS, ".map { dispatch.awaiting().size }", ".map { 0 }"),),
+        sync_tests("SyncStatusAwaitingTest"), SYNC_RESULTS,
+        ("状态数出有几条在等", "等待的条数随之减少", "只有预览确认目标的那一条"),
+    ),
+    Mutation(
+        "m2-status-does-not-follow-the-ledger",
+        "评审 M2：等确认的条数只在订阅那一刻数一次，用户确认或选择不发送之后页面上的数不再变",
+        (Edit(SYNC_STATUS, "dispatch.changes().onStart { emit(0L) }", "kotlinx.coroutines.flow.flowOf(0L)"),),
+        sync_tests("SyncStatusAwaitingTest"), SYNC_RESULTS,
+        ("等待的条数随之减少",),
+    ),
+    Mutation(
+        "m2-status-counts-every-text",
+        "评审 M2：把所有文字都数成“在等确认”：自动发送的、已决定的也算，页面天天喊用户去确认",
+        (Edit(SYNC_STATUS, ".map { dispatch.awaiting().size }", ".map { dispatch.items(1000).size }"),),
+        sync_tests("SyncStatusAwaitingTest"), SYNC_RESULTS,
+        ("没有等用户的文字时不多报", "等待的条数随之减少"),
+    ),
+    Mutation(
+        "m2-summary-drops-the-count",
+        "评审 M2：汇总函数收到了等确认的条数却没放进状态",
+        (Edit(SYNC_STATUS, "SyncStatus(headline, causes.toList(), counts, nextRetryAt, dataFlow, awaitingYou)", "SyncStatus(headline, causes.toList(), counts, nextRetryAt, dataFlow)"),),
+        sync_tests("SyncStatusAwaitingTest"), SYNC_RESULTS,
+        ("状态数出有几条在等", "只有预览确认目标的那一条"),
+    ),
+    Mutation(
+        "m2-sentence-never-shown",
+        "评审 M2：那句话永远不出现（条数再多也返回 null）",
+        (Edit(APP_UI + "SyncScreen.kt", "    if (count <= 0) null else \"有 $count 条文字在等你确认", "    if (count <= 100000) null else \"有 $count 条文字在等你确认"),),
+        app_tests("SyncScreenTextTest"), APP_RESULTS,
+        ("有文字在等用户确认",),
+    ),
+    Mutation(
+        "m2-sentence-claims-synced",
+        "评审 M2：那句话说成“已同步”：把等人确认说成了已经送达，用户更不会去处理",
+        (Edit(APP_UI + "SyncScreen.kt", "确认之前不会发给对应的 Agent，Agent 领不到它们。", "已同步，Agent 领不到它们。"),),
+        app_tests("SyncScreenTextTest"), APP_RESULTS,
+        ("有文字在等用户确认",),
+    ),
+    Mutation(
+        "m2-runtime-bypasses-the-ledger",
+        "评审 M2：SyncRuntime 又自己拼 combine、只看任务表：设备上页面照旧只剩“已同步”，而单测全绿",
+        (Edit(SYNC_RUNTIME, "SyncStatus.watch(pairing.states, jobs.observe(), policy.states(), dispatch)", "kotlinx.coroutines.flow.combine(pairing.states, jobs.observe(), policy.states()) { p, l, d -> SyncStatus.of(p, l, d) }"),),
+        app_tests("SyncStatusWiringTest"), APP_RESULTS,
+        ("同步状态流经 SyncStatus 的 watch",),
+    ),
+    Mutation(
+        "m2-screen-forgets-the-sentence",
+        "评审 M2：同步页不再把那句话摆出来（文案与状态都对，用户看不到）",
+        (Edit(APP_UI + "SyncScreen.kt", "            describeAwaitingYou(status.awaitingYou)?.let { Text(it) }\n", ""),),
+        app_tests("SyncStatusWiringTest"), APP_RESULTS,
+        ("同步页把等用户确认的那句话摆出来",),
     ),
 )
 

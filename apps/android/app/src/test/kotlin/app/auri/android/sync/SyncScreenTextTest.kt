@@ -1,5 +1,6 @@
 package app.auri.android.sync
 
+import app.auri.android.ui.describeAwaitingYou
 import app.auri.android.ui.describeCause
 import app.auri.android.ui.describeCounts
 import app.auri.android.ui.describeGrantHint
@@ -16,6 +17,7 @@ import java.time.Instant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -103,5 +105,18 @@ class SyncScreenTextTest {
     @Test
     fun `计数那一行六个数都在，顺序固定`() {
         assertEquals("排队 1 · 发送中 2 · 等网关 3 · 稍后重试 4 · 需处理 5 · 已入库 6", describeCounts(SyncCounts(1, 2, 3, 4, 5, 6)))
+    }
+
+    @Test
+    fun `有文字在等用户确认：页面说出几条、说清确认之前对应的 Agent 领不到，也不假装已经送达；一条都没有就不多说（评审 M2）`() {
+        assertNull(describeAwaitingYou(0))
+
+        val text = describeAwaitingYou(3)!!
+
+        assertTrue(text, "3 条" in text)
+        assertTrue(text, "确认" in text)
+        assertTrue("要说清后果：确认之前 Agent 领不到", "Agent" in text && "领不到" in text)
+        assertFalse("在等确认不是已送达：$text", "已同步" in text || "已送达" in text || "已发送" in text)
+        assertNotEquals("条数不同话也不同", describeAwaitingYou(1), describeAwaitingYou(2))
     }
 }

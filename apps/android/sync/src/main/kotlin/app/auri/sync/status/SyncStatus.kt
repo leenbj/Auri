@@ -1,5 +1,6 @@
 package app.auri.sync.status
 
+import app.auri.sync.destinations.DispatchStore
 import app.auri.sync.engine.BlockedReason
 import app.auri.sync.engine.SyncJob
 import app.auri.sync.machine.SyncState
@@ -7,6 +8,11 @@ import app.auri.sync.pairing.NeedsUser
 import app.auri.sync.pairing.PairingState
 import app.auri.sync.policy.DataFlowState
 import java.time.Instant
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onStart
 
 /**
  * 界面要区分的情形，互斥，越靠前越需要人出手。关键在三种“同步没完成”的情形（Ticket 21 第 6 项）：
@@ -31,7 +37,7 @@ enum class SyncHeadline {
     /** 排队或正在发送。 */
     SENDING,
 
-    /** 配了对，并且没有没入库的东西。 */
+    /** 配了对，并且没有没入库的东西（文字都在网关里；预览确认的投递可能还在等用户，数见 [SyncStatus.awaitingYou]，不改变这一句）。 */
     UP_TO_DATE,
 }
 
@@ -66,10 +72,25 @@ data class SyncStatus(
     val nextRetryAt: Instant?,
     /** 文字能不能进网关的两道开关（界面上要显示、要能改）。 */
     val dataFlow: DataFlowState,
+    /**
+     * 有多少条文字的发送在等用户确认（预览确认的目标，见 DispatchItem.awaitingUser）。文字本身照常入库（评审 B2），
+     * 但对应的 Agent 在用户确认之前领不到它；页面只说“已同步”会让人以为 Agent 早就有了（评审 M2）。
+     * 这是发送账里的数，不是任务状态，所以不在 [counts] 里。
+     */
+    val awaitingYou: Int = 0,
 ) {
     companion object {
-        /** 纯函数：同一份配对状态和任务表永远汇总出同一个结果。 */
-        fun of(pairing: PairingState, jobs: List<SyncJob>, dataFlow: DataFlowState): SyncStatus {
+        /**
+         * 界面要的同步状态流：配对状态、任务表、数据流开关与发送账里等用户确认的文字，任何一边变了都重新汇总。
+         * shortcut: 数等确认的文字是把它们读出来再数；攒到成百上千条时换成一条 COUNT 查询。
+         */
+        fun watch(pairing: Flow<PairingState>, jobs: Flow<List<SyncJob>>, dataFlow: Flow<DataFlowState>, dispatch: DispatchStore): Flow<SyncStatus> {
+            val awaiting = dispatch.changes().onStart { emit(0L) }.map { dispatch.awaiting().size }.distinctUntilChanged()
+            return combine(pairing, jobs, dataFlow, awaiting) { pairingState, list, flow, waiting -> of(pairingState, list, flow, waiting) }.distinctUntilChanged()
+        }
+
+        /** 纯函数：同一份配对状态、任务表和等确认的条数永远汇总出同一个结果。 */
+        fun of(pairing: PairingState, jobs: List<SyncJob>, dataFlow: DataFlowState, awaitingYou: Int = 0): SyncStatus {
             fun count(state: SyncState) = jobs.count { it.state == state }
             val counts = SyncCounts(
                 queued = count(SyncState.PENDING),
@@ -101,7 +122,7 @@ data class SyncStatus(
                 else -> SyncHeadline.UP_TO_DATE
             }
             val nextRetryAt = jobs.filter { it.state == SyncState.RETRY_SCHEDULED }.mapNotNull { it.retryAt }.minOrNull()
-            return SyncStatus(headline, causes.toList(), counts, nextRetryAt, dataFlow)
+            return SyncStatus(headline, causes.toList(), counts, nextRetryAt, dataFlow, awaitingYou)
         }
 
         private fun BlockedReason.toCause(): UserCause = when (this) {

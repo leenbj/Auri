@@ -41,6 +41,7 @@ import kotlinx.coroutines.launch
  *   │   │     UP_TO_DATE          配了对，并且没有没入库的东西。
  *   │   ├─ causes                 NEEDS_USER 的原因（可能不止一个，顺序固定）。
  *   │   ├─ counts                 各状态的任务数（排队 / 发送中 / 等网关 / 稍后重试 / 需处理 / 已入库）。
+ *   │   ├─ awaitingYou            有几条文字的发送在等用户确认（预览确认的目的地）：文字照常入库，但对应的 Agent 确认前领不到；不是任务状态，与 headline 无关，> 0 时界面要另说一句（评审 M2）。
  *   │   └─ nextRetryAt            等待重试的任务里最早的重试时间（RETRYING_LATER 时可以显示）。
  *   ├─ pairing: PairingProgress   配对这个动作的进展：Idle / Pairing / Failed(problem)。
  *   ├─ storageProblem             true = 本机存储暂时读不出同步状态（会自动重试）：界面显示一行提示；status 仍是最后一次读到的值，不要清空。

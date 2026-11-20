@@ -49,9 +49,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -139,9 +136,8 @@ class SyncRuntime(
         log = log,
     )
 
-    /** 界面要的同步状态汇总：配对状态与任务表任何一边变了都重新汇总。 */
-    override val status: Flow<SyncStatus> =
-        combine(pairing.states, jobs.observe(), policy.states()) { pairingState, list, dataFlow -> SyncStatus.of(pairingState, list, dataFlow) }.distinctUntilChanged()
+    /** 界面要的同步状态汇总：配对状态、任务表、数据流开关与发送账里等用户确认的文字，任何一边变了都重新汇总（评审 M2）。 */
+    override val status: Flow<SyncStatus> = SyncStatus.watch(pairing.states, jobs.observe(), policy.states(), dispatch)
 
     fun start(): Job = scope.launch {
         // 同步出故障不能带倒整个进程（录音在同一个进程里，这个作用域又没有异常处理器，逃出来的异常就是应用崩溃）：

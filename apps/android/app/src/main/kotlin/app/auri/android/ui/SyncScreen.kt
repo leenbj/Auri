@@ -57,6 +57,7 @@ fun SyncScreen(
         } else {
             Text(describeHeadline(status))
             status.causes.forEach { Text("· " + describeCause(it)) }
+            describeAwaitingYou(status.awaitingYou)?.let { Text(it) }
             Text(describeCounts(status.counts))
             DataFlowSwitch("允许把文字发送到我配对的网关", describeGrantHint(), status.dataFlow.gatewayTextGranted, onGatewayTextGranted)
             DataFlowSwitch("严格仅本地", describeStrictLocalHint(), status.dataFlow.strictLocal, onStrictLocal)
@@ -107,6 +108,10 @@ internal fun describeHeadline(status: SyncStatus): String = when (status.headlin
     SyncHeadline.SENDING -> "正在发送…"
     SyncHeadline.UP_TO_DATE -> "已同步：所有文字都已进入网关。"
 }
+
+/** 有文字在等用户确认（预览确认的目的地）：说出几条，并说清确认之前对应的 Agent 领不到——只说“已同步”会让人以为 Agent 早就有了（评审 M2）。一条都没有就不多说。 */
+internal fun describeAwaitingYou(count: Int): String? =
+    if (count <= 0) null else "有 $count 条文字在等你确认：确认之前不会发给对应的 Agent，Agent 领不到它们。请到“发送”页逐条确认，或选择不发送。"
 
 internal fun describeGrantHint(): String = "默认关闭。关闭时，即使已经配对，录下的文字也只留在这台手机上；这与“音频上传”“Agent 读取”“自动发送”是各自独立的授权。"
 
