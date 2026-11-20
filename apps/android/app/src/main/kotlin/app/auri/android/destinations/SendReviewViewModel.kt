@@ -42,8 +42,9 @@ import kotlinx.coroutines.launch
  *   │   ├─ awaitingUser               还有等你决定的目标。
  *   │   └─ 所有这些文字都是转录出来的**未审核初稿**（UNREVIEWED_LABEL）：自动发送出去的请求里就是 review_state=not_reviewed。
  *   ├─ defaultIntent                  新录出来的文字用的标签（默认备忘）；在录音之前改。
- *   └─ dataFlow                       文字能不能进网关（评审 B1：与配对、与各 Destination 的发送方式都是各自独立的授权，默认关；“严格仅本地”压过授权）。
- *                                     没放行时页面如实说“确认只是记下你的决定，现在不会发出”，不假装发出去了；没读到时按没放行算。
+ *   ├─ dataFlow                       文字能不能进网关（评审 B1：与配对、与各 Destination 的发送方式都是各自独立的授权，默认关；“严格仅本地”压过授权）。
+ *   │                                  没放行时页面如实说“确认只是记下你的决定，现在不会发出”，不假装发出去了；没读到时按没放行算。
+ *   └─ unreadable                     读不到本机保存的发送记录（评审 H4）：items 是最近一次读到的，会自动重试；页面如实说读不到，不把空白当成“没有文字”。
  *
  * 写（都不阻塞）：confirm(key, destinationId) / skip(key, destinationId) / setIntent(key, intent) / setDefaultIntent(intent)。
  *   决定是持久的、幂等的：同一个决定重复多少次（双击、进程被杀后重来）只放行一次，重复的什么也不改。
@@ -83,6 +84,8 @@ data class SendReviewUiState(
     val defaultIntent: Intent = Intent.CONTEXT,
     /** 还没读到之前按“没放行”算（fail-closed）。 */
     val dataFlow: DataFlowState = DataFlowState.Closed,
+    /** 读不到本机保存的发送记录（评审 H4）：[items] 是最近一次读到的（可能是旧的，也可能是空的），会自动重试，读到之后恢复。 */
+    val unreadable: Boolean = false,
 )
 
 class SendReviewViewModel(
@@ -95,6 +98,8 @@ class SendReviewViewModel(
     private val log: SyncLog = SyncLog.None,
 ) : ViewModel() {
     val state: StateFlow<SendReviewUiState> = combine(dispatch.changes().onStart { emit(0L) }, dataFlow.onStart { emit(DataFlowState.Closed) }) { _, flow -> load(flow) }
+        // 读发送账失败不能逃出作用域（评审 H4）：记一行日志、如实标上“读不到”（留着最近读到的）、过一会儿重读
+        .containReadFailures("send.review", log) { last -> emit((last ?: SendReviewUiState()).copy(unreadable = true)) }
         .stateIn(scope, SharingStarted.Eagerly, SendReviewUiState())
 
     fun confirm(key: JobKey, destinationId: String) = decide(key, destinationId, Choice.CONFIRM)

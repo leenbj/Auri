@@ -24,6 +24,7 @@ import app.auri.android.destinations.describeFailure
 import app.auri.android.destinations.describeIntent
 import app.auri.android.destinations.describeSendMode
 import app.auri.android.destinations.describeSendModeDetail
+import app.auri.android.destinations.describeUnreadable
 import app.auri.sync.gateway.SendMode
 
 /**
@@ -50,6 +51,7 @@ fun DestinationsScreen(
                 Button(onClick = onRefresh, enabled = !state.refreshing) { Text(if (state.refreshing) "正在刷新…" else "刷新") }
             }
         }
+        if (state.unreadable) item { Text(describeUnreadable()) }
         state.problem?.let { problem ->
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

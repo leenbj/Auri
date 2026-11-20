@@ -108,6 +108,8 @@ data class DestinationDetailUiState(
     val problem: ServiceFailure? = null,
     /** 缓存已经读过一次：false 时 [destination] 为 null 只是“还没读到”，不是“找不到”。 */
     val loaded: Boolean = false,
+    /** 读不到本机缓存的目的地（评审 H4）：[destination] 是最近一次读到的（没读到过就是 null，此时 [loaded] 为 false），会自动重试，读到之后恢复。 */
+    val unreadable: Boolean = false,
 )
 
 class DestinationDetailViewModel(
@@ -136,13 +138,18 @@ class DestinationDetailViewModel(
 
     private class Operations(val credential: CredentialUi, val revoke: RevokeUi, val problem: ServiceFailure?)
 
+    /** 读本机缓存的结果：没读到过就是 loaded=false（不是“找不到”）；读不到时留着最近读到的，并标上 [unreadable]（评审 H4）。 */
+    private data class Cache(val destination: DestinationItem? = null, val loaded: Boolean = false, val unreadable: Boolean = false)
+
     val state: StateFlow<DestinationDetailUiState> = combine(
-        controller.destinations.map { list -> list.firstOrNull { it.destinationId == destinationId }?.toItem() },
+        controller.destinations
+            .map { list -> Cache(list.firstOrNull { it.destinationId == destinationId }?.toItem(), loaded = true) }
+            .containReadFailures("destination.detail", log) { last -> emit((last ?: Cache()).copy(unreadable = true)) },
         items,
         itemsLoading,
         combine(panel.map { it.ui }, revoke, problem) { credential, revoke, problem -> Operations(credential, revoke, problem) },
-    ) { destination, items, loading, operations ->
-        DestinationDetailUiState(destination, items, loading, operations.credential, operations.revoke, operations.problem, loaded = true)
+    ) { cache, items, loading, operations ->
+        DestinationDetailUiState(cache.destination, items, loading, operations.credential, operations.revoke, operations.problem, loaded = cache.loaded, unreadable = cache.unreadable)
     }.stateIn(scope, SharingStarted.Eagerly, DestinationDetailUiState())
 
     init {
@@ -152,7 +159,7 @@ class DestinationDetailViewModel(
                 delay(MIN_GAP_MS)
             }
         }
-        scope.launch { controller.destinations.collect { triggers.trySend(Unit) } } // 缓存变了（新文字、新的决定）：重读一遍
+        scope.launch { controller.destinations.containReadFailures("destination.detail.watch", log).collect { triggers.trySend(Unit) } } // 缓存变了（新文字、新的决定）：重读一遍
         scope.launch { refreshOn.collect { triggers.trySend(Unit) } }
     }
 

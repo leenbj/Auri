@@ -141,5 +141,9 @@ internal const val SUSPENDED_TAG = "（已暂停）"
 internal fun describeSuspension(): String =
     "已暂停：它的凭证被撤销了。新的文字不会再送给它，撤销时还没被领走的也已取消。重新生成凭证后恢复，但只对之后的文字生效——暂停期间的文字不会补发。"
 
+/** 读不到本机保存的发送记录时（评审 H4）：如实说读不到、下面的不一定是最新的、会自动重试；不说“没有文字”，也不承诺别的。 */
+internal fun describeUnreadable(): String =
+    "读不到这台手机上保存的发送记录（存储暂时出了问题）：下面显示的可能不是最新的，也可能是空的，并不代表没有。会自动重试，不需要你操作。"
+
 internal fun describeCreateHint(): String =
     "创建时必须选一种发送方式，没有默认值：这是你对“转录出来的文字可以发给这个 Agent”的授权。"

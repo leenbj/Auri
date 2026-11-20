@@ -21,6 +21,7 @@ import app.auri.android.destinations.describeDecision
 import app.auri.android.destinations.describeIntent
 import app.auri.android.destinations.describeIntentNote
 import app.auri.android.destinations.describeSendMode
+import app.auri.android.destinations.describeUnreadable
 import app.auri.sync.engine.JobKey
 import app.auri.sync.gateway.Intent
 
@@ -39,6 +40,7 @@ fun SendReviewScreen(
 ) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Button(onClick = onBack) { Text("返回") } }
+        if (state.unreadable) item { Text(describeUnreadable()) }
         describeDataFlowHold(state.dataFlow)?.let { hold -> item { Text(hold) } }
         item {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {

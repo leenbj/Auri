@@ -79,7 +79,10 @@ sealed interface CredentialOutcome {
 
 /** 界面（视图模型）用的 Destination 管理入口。 */
 interface DestinationController {
-    /** 本机缓存的 Destination（含已撤销的），缓存每变一次重新发出。读它不联网。 */
+    /**
+     * 本机缓存的 Destination（含已撤销的），缓存每变一次重新发出。读它不联网。
+     * 读本机缓存（SQLite）失败时流以异常结束：订阅者要自己包住并重读（视图模型用 containReadFailures），否则异常会逃出它的作用域（评审 H4）。
+     */
     val destinations: Flow<List<Destination>>
 
     /** 向网关要完整列表并更新缓存。 */

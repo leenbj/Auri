@@ -28,6 +28,7 @@ import app.auri.android.destinations.describeIntent
 import app.auri.android.destinations.describeNotAuthenticated
 import app.auri.android.destinations.describeSendModeDetail
 import app.auri.android.destinations.describeSuspension
+import app.auri.android.destinations.describeUnreadable
 import app.auri.sync.gateway.DestinationCredential
 
 /**
@@ -58,6 +59,7 @@ fun DestinationDetailScreen(
                 Button(onClick = onRefresh, enabled = !state.itemsLoading) { Text(if (state.itemsLoading) "正在查询…" else "刷新状态") }
             }
         }
+        if (state.unreadable) item { Text(describeUnreadable()) }
         state.problem?.let { problem ->
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

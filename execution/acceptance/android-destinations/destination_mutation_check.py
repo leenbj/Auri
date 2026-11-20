@@ -60,6 +60,11 @@ SYNC_STATUS = ANDROID + "sync/src/main/kotlin/app/auri/sync/status/SyncStatus.kt
 SEND_REVIEW_VM = APP_DEST + "SendReviewViewModel.kt"
 CLIPBOARD_GUARD = APP_DEST + "SecretClipboardGuard.kt"
 MAIN_ACTIVITY = ANDROID + "app/src/main/kotlin/app/auri/android/MainActivity.kt"
+AURI_RUNTIME = ANDROID + "app/src/main/kotlin/app/auri/android/AuriRuntime.kt"
+CONTAINED_READS = APP_DEST + "ContainedReads.kt"
+SEND_REVIEW_SCREEN = APP_UI + "SendReviewScreen.kt"
+DESTINATIONS_SCREEN = APP_UI + "DestinationsScreen.kt"
+DETAIL_SCREEN = APP_UI + "DestinationDetailScreen.kt"
 
 APP_RESULTS, SYNC_RESULTS, REAL_RESULTS, PLATFORM_RESULTS = (
     "app/build/test-results/testDebugUnitTest",
@@ -826,6 +831,147 @@ MUTATIONS: tuple = (
         (Edit(DISPATCH_SQL, ".firstOrNull() ?: destination.revokedAt", ".firstOrNull().let { destination.revokedAt }"),),
         platform_tests("SqliteDispatchStoreContractTest"), PLATFORM_RESULTS,
         ("a_revoked_destination_is_never_restored_by_an_older_snapshot",),
+    ),
+    # ---- 评审 H4：读发送账失败不能杀掉进程（录音时尤其）；页面如实说读不到并自动重试 ----
+    Mutation(
+        "h4-send-review-not-contained",
+        "评审 H4：待发送页的读没有包：发送账读失败的异常逃出视图模型的作用域（线上就是进程退出，包括正在录音的前台服务）",
+        (Edit(SEND_REVIEW_VM, '        .containReadFailures("send.review", log) { last -> emit((last ?: SendReviewUiState()).copy(unreadable = true)) }\n', ""),),
+        app_tests("ReadFailureContainmentTest"), APP_RESULTS,
+        ("待发送页读不到发送账", "待发送页读到过又读不到了"),
+    ),
+    Mutation(
+        "h4-send-review-pretends-all-is-well",
+        "评审 H4：待发送页读失败之后不标“读不到”：页面一直空白或一直显示旧内容，装作没事",
+        (Edit(SEND_REVIEW_VM, "{ last -> emit((last ?: SendReviewUiState()).copy(unreadable = true)) }", "{ last -> emit(last ?: SendReviewUiState()) }"),),
+        app_tests("ReadFailureContainmentTest"), APP_RESULTS,
+        ("待发送页读不到发送账", "待发送页读到过又读不到了"),
+    ),
+    Mutation(
+        "h4-destinations-not-contained",
+        "评审 H4：目的地页的读没有包：本机缓存读失败的异常逃出作用域",
+        (Edit(DESTINATIONS_VM, '            .containReadFailures("destinations", log) { last -> emit((last ?: Cache()).copy(unreadable = true)) },\n', "            ,\n"),),
+        app_tests("ReadFailureContainmentTest"), APP_RESULTS,
+        ("目的地页读不到本机缓存",),
+    ),
+    Mutation(
+        "h4-detail-state-not-contained",
+        "评审 H4：详情页的状态流没有包：读失败的异常逃出作用域",
+        (Edit(DETAIL_VM, '            .containReadFailures("destination.detail", log) { last -> emit((last ?: Cache()).copy(unreadable = true)) },\n', "            ,\n"),),
+        app_tests("ReadFailureContainmentTest"), APP_RESULTS,
+        ("详情页读不到本机缓存",),
+    ),
+    Mutation(
+        "h4-detail-watch-not-contained",
+        "评审 H4：详情页“缓存变了就重读状态”的那个收集器没有包：它是第二个订阅，照样会把读失败的异常带出作用域",
+        (Edit(DETAIL_VM, 'controller.destinations.containReadFailures("destination.detail.watch", log).collect', "controller.destinations.collect"),),
+        app_tests("ReadFailureContainmentTest"), APP_RESULTS,
+        ("详情页读不到本机缓存",),
+    ),
+    Mutation(
+        "h4-detail-says-not-found-when-unreadable",
+        "评审 H4：详情页读不到时把 loaded 记成已读过：界面会说“找不到这个目的地（可能已被删除）”，把读不到说成了不存在",
+        (Edit(DETAIL_VM, "loaded = cache.loaded, unreadable = cache.unreadable)", "loaded = true, unreadable = cache.unreadable)"),),
+        app_tests("ReadFailureContainmentTest"), APP_RESULTS,
+        ("详情页读不到本机缓存",),
+    ),
+    Mutation(
+        "h4-read-never-retried",
+        "评审 H4：读失败之后不再重试（发出“读不到”就结束）：存储恢复了页面也读不回来",
+        (Edit(CONTAINED_READS, "        onFailure(last)\n", "        onFailure(last)\n        return@flow\n"),),
+        app_tests("ReadFailureContainmentTest"), APP_RESULTS,
+        ("读得到之后自动读回来", "恢复之后换成新的", "恢复后读回来", "重试间隔翻倍增长到上限"),
+    ),
+    Mutation(
+        "h4-retry-backoff-uncapped",
+        "评审 H4：重试间隔只翻倍不封顶：存储恢复之后要等越来越久（几分钟到几小时）才读回来",
+        (Edit(CONTAINED_READS, ".coerceAtMost(READ_RETRY_MAX_MS))", ")"),),
+        app_tests("ReadFailureContainmentTest"), APP_RESULTS,
+        ("重试间隔翻倍增长到上限",),
+    ),
+    Mutation(
+        "h4-retry-backoff-never-resets",
+        "评审 H4：读到一次之后退避不从头算：偶尔读成功的页面也越等越久",
+        (Edit(CONTAINED_READS, "                last = value\n                failures = 0\n", "                last = value\n"),),
+        app_tests("ReadFailureContainmentTest"), APP_RESULTS,
+        ("读到一次就从头算",),
+    ),
+    Mutation(
+        "h4-retry-hammers-the-store",
+        "评审 H4：读失败之后几乎不等就重读（没有退避，只等 1 毫秒）：存储一直坏着，就一直在原地打转，吃满一个核（等 0 毫秒在虚拟时间里会让测试自己死循环，所以用 1）",
+        (Edit(CONTAINED_READS, "        delay((READ_RETRY_BASE_MS shl failures.coerceAtMost(MAX_DOUBLINGS)).coerceAtMost(READ_RETRY_MAX_MS))\n", "        delay(1)\n"),),
+        app_tests("ReadFailureContainmentTest"), APP_RESULTS,
+        ("重试间隔翻倍增长到上限",),
+    ),
+    Mutation(
+        "h4-error-swallowed-as-read-failure",
+        "评审 H4：把 Error（比如内存耗尽）也当成读失败吞掉重试：真正的致命问题被藏起来",
+        (Edit(CONTAINED_READS, "                if (cause is CancellationException || cause !is Exception) throw cause\n                failure = cause\n", "                if (cause is CancellationException) throw cause\n                failure = cause as? Exception ?: IllegalStateException()\n"),),
+        app_tests("ReadFailureContainmentTest"), APP_RESULTS,
+        ("Error 不当作读失败吞掉",),
+    ),
+    Mutation(
+        "h4-upstream-cancellation-retried",
+        "评审 H4：上游自己抛出的取消异常也当成读失败去重试：取消传不出去，收集者一直收不到取消",
+        (Edit(CONTAINED_READS, "                if (cause is CancellationException || cause !is Exception) throw cause\n", "                if (cause !is Exception) throw cause\n"),),
+        app_tests("ReadFailureContainmentTest"), APP_RESULTS,
+        ("上游自己抛出的取消异常照常往外传",),
+    ),
+    Mutation(
+        "h4-failure-not-logged",
+        "评审 H4：读失败不记日志：真机上出了存储问题，adb logcat 里什么线索也没有",
+        (Edit(CONTAINED_READS, '        log.event("$name.read.failed ${caught::class.simpleName}")\n', ""),),
+        app_tests("ReadFailureContainmentTest"), APP_RESULTS,
+        ("待发送页读不到发送账", "目的地页读不到本机缓存", "重试间隔翻倍增长到上限"),
+    ),
+    Mutation(
+        "h4-failure-log-carries-the-message",
+        "评审 H4：读失败的日志带上异常信息：里面有数据库路径与文字，写进了 logcat",
+        (Edit(CONTAINED_READS, '"$name.read.failed ${caught::class.simpleName}"', '"$name.read.failed ${caught::class.simpleName} ${caught.message}"'),),
+        app_tests("ReadFailureContainmentTest"), APP_RESULTS,
+        ("待发送页读不到发送账", "目的地页读不到本机缓存", "重试间隔翻倍增长到上限"),
+    ),
+    Mutation(
+        "h4-runtime-scope-without-handler",
+        "评审 H4：scopeOf 造的作用域不带异常处理器：逃出来的异常又走到线程默认处理器，进程退出",
+        (Edit(AURI_RUNTIME, "CoroutineScope(SupervisorJob() + dispatcher + escapedFailureHandler)", "CoroutineScope(SupervisorJob() + dispatcher)"),),
+        app_tests("RuntimeScopeGuardTest"), APP_RESULTS,
+        ("运行时里只有一处直接造作用域",),
+    ),
+    Mutation(
+        "h4-one-viewmodel-scope-built-raw",
+        "评审 H4：待发送页的视图模型用一个裸作用域（没经 scopeOf）：只有它没有处理器",
+        (Edit(AURI_RUNTIME, "SendReviewViewModel(sync.dispatch, itemTexts, SystemClock, sync::syncNow, scopeOf(),", "SendReviewViewModel(sync.dispatch, itemTexts, SystemClock, sync::syncNow, CoroutineScope(SupervisorJob() + Dispatchers.Default),"),),
+        app_tests("RuntimeScopeGuardTest"), APP_RESULTS,
+        ("运行时里只有一处直接造作用域",),
+    ),
+    Mutation(
+        "h4-handler-logs-the-message",
+        "评审 H4：处理器把异常信息也记进日志：里面可能有路径与文字",
+        (Edit(AURI_RUNTIME, 'AndroidSyncLog.event("scope.escaped ${failure::class.simpleName}")', 'AndroidSyncLog.event("scope.escaped ${failure::class.simpleName} ${failure.message}")'),),
+        app_tests("RuntimeScopeGuardTest"), APP_RESULTS,
+        ("逃出来的异常只记事件名与异常类名",),
+    ),
+    Mutation(
+        "h4-unreadable-banner-missing-on-review-page",
+        "评审 H4：待发送页没有摆出“读不到”的那句话：状态里说了，页面上看不到",
+        (Edit(SEND_REVIEW_SCREEN, "        if (state.unreadable) item { Text(describeUnreadable()) }\n", ""),),
+        app_tests("ReadFailureContainmentTest"), APP_RESULTS,
+        ("三个页面都把读不到的那句话摆出来",),
+    ),
+    Mutation(
+        "h4-unreadable-banner-missing-on-destinations-page",
+        "评审 H4：目的地页没有摆出“读不到”的那句话",
+        (Edit(DESTINATIONS_SCREEN, "        if (state.unreadable) item { Text(describeUnreadable()) }\n", ""),),
+        app_tests("ReadFailureContainmentTest"), APP_RESULTS,
+        ("三个页面都把读不到的那句话摆出来",),
+    ),
+    Mutation(
+        "h4-unreadable-banner-missing-on-detail-page",
+        "评审 H4：详情页没有摆出“读不到”的那句话",
+        (Edit(DETAIL_SCREEN, "        if (state.unreadable) item { Text(describeUnreadable()) }\n", ""),),
+        app_tests("ReadFailureContainmentTest"), APP_RESULTS,
+        ("三个页面都把读不到的那句话摆出来",),
     ),
 )
 

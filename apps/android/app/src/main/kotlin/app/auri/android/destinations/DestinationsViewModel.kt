@@ -37,8 +37,9 @@ import kotlinx.coroutines.launch
  *   │   ├─ allowActionRequests               是否也接收“请求执行”标签的文字（默认否：只收备忘）。
  *   │   └─ canSubmit                         名字合格并且已选发送方式——创建按钮只在这时可点。
  *   ├─ creating: Boolean                     创建请求在途：期间再点没有用（创建没有幂等键，重复请求会多出同名目的地）。
- *   └─ problem: ServiceFailure?              最近一次操作没做成的原因（界面用 describeFailure 说话）；dismissProblem() 关掉。
- *                                            “结果不确定”（Unreadable / Interrupted）时表单不清空，提示用户先刷新确认。
+ *   ├─ problem: ServiceFailure?              最近一次操作没做成的原因（界面用 describeFailure 说话）；dismissProblem() 关掉。
+ *   │                                         “结果不确定”（Unreadable / Interrupted）时表单不清空，提示用户先刷新确认。
+ *   └─ unreadable: Boolean                   读不到本机缓存的目的地（评审 H4）：destinations 是最近一次读到的，会自动重试；页面如实说读不到。
  *
  * 写（都不阻塞）：setName / chooseSendMode / setAllowActionRequests / submit / refresh / dismissProblem。
  *
@@ -87,6 +88,8 @@ data class DestinationsUiState(
     val form: CreateForm = CreateForm(),
     val creating: Boolean = false,
     val problem: ServiceFailure? = null,
+    /** 读不到本机缓存的目的地（评审 H4）：[destinations] 是最近一次读到的（可能是旧的，也可能是空的），会自动重试，读到之后恢复。 */
+    val unreadable: Boolean = false,
 )
 
 class DestinationsViewModel(
@@ -99,14 +102,19 @@ class DestinationsViewModel(
     private val creating = MutableStateFlow(false)
     private val problem = MutableStateFlow<ServiceFailure?>(null)
 
+    /** 读本机缓存的结果：读不到时留着最近读到的，并标上 [unreadable]（评审 H4）。 */
+    private data class Cache(val destinations: List<DestinationItem> = emptyList(), val unreadable: Boolean = false)
+
     val state: StateFlow<DestinationsUiState> = combine(
-        controller.destinations.map { list -> list.sortedWith(compareByDescending<Destination> { it.active }.thenByDescending { it.createdAt }).map { it.toItem() } },
+        controller.destinations
+            .map { list -> Cache(list.sortedWith(compareByDescending<Destination> { it.active }.thenByDescending { it.createdAt }).map { it.toItem() }) }
+            .containReadFailures("destinations", log) { last -> emit((last ?: Cache()).copy(unreadable = true)) },
         form,
         refreshing,
         creating,
         problem,
-    ) { destinations, form, refreshing, creating, problem ->
-        DestinationsUiState(destinations, refreshing, form, creating, problem)
+    ) { cache, form, refreshing, creating, problem ->
+        DestinationsUiState(cache.destinations, refreshing, form, creating, problem, cache.unreadable)
     }.stateIn(scope, SharingStarted.Eagerly, DestinationsUiState())
 
     init {
