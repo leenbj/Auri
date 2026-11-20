@@ -1,6 +1,7 @@
 package app.auri.android.home
 
 import app.auri.capture.contract.CaptureState
+import app.auri.capture.contract.CaptureStatus
 import app.auri.capture.contract.ErrorCode
 import app.auri.capture.contract.EndReason
 import app.auri.capture.contract.ObservedInput
@@ -210,6 +211,53 @@ class HomeViewModelTest {
 
         assertEquals(text, (rig.state.records.single().text as TextState.Done).text)
         assertEquals("显示一段口述不会触发任何控制调用", emptyList<String>(), rig.controls.calls)
+    }
+
+    // ---- 录音被打断（Ticket 19 第 1、2、5、6 项的界面这一侧）----
+
+    private val interrupted = listOf(
+        InterruptionFact(EndReason.ROUTE_LOST, ErrorCode.INPUT_ROUTE_CHANGED),
+        InterruptionFact(EndReason.SYSTEM_INTERRUPTION, ErrorCode.AUDIO_INTERRUPTED),
+        InterruptionFact(EndReason.PERMISSION_REVOKED, ErrorCode.PERMISSION_MIC_DENIED),
+        InterruptionFact(EndReason.SYSTEM_INTERRUPTION, ErrorCode.STORAGE_EXHAUSTED),
+    )
+
+    @Test
+    fun `录音被打断：首页如实带出结束原因与错误码（同一个错误码不能代替结束原因），按钮回到能开始，不会自己开始；下一次开始时提示清除`() = runUnconfined {
+        for (fact in interrupted) {
+            val rig = rig(snapshot(CaptureState.RECORDING, ObservedInput(ObservedInputRouteType.BLUETOOTH_HFP, "FreeClip 2")))
+            assertNull("${fact.reason}：没被打断过", rig.state.interruption)
+
+            rig.controls.emit(snapshot(CaptureState.FINALIZING).copy(interruption = fact.code, interruptionReason = fact.reason))
+            assertEquals("${fact.reason}：封存中就能看到原因", fact, rig.state.interruption)
+
+            rig.controls.emit(snapshot(CaptureState.DISARMED).copy(interruption = fact.code, interruptionReason = fact.reason))
+            assertEquals(fact, rig.state.interruption)
+            assertTrue("${fact.reason}：打断之后能重新开始", rig.state.startEnabled)
+            assertEquals("${fact.reason}：界面什么都没替用户按", emptyList<String>(), rig.controls.calls)
+
+            rig.controls.emit(snapshot(CaptureState.ROUTING)) // 用户重新开始：协调器清掉了上一次的打断
+            assertNull("${fact.reason}：新一次开始时清除", rig.state.interruption)
+        }
+    }
+
+    @Test
+    fun `被截断的 Record 在列表里标出结束原因；完整的、用户停止的没有标记`() = runUnconfined {
+        val rig = rig()
+        val stopped = Samples.entry(1)
+        val cut = EndReason.entries.filter { it.truncated }
+        cut.forEachIndexed { index, reason ->
+            rig.library.addRecord(Samples.entry(10 + index).copy(status = CaptureStatus.PARTIAL, endReason = reason))
+        }
+        rig.library.addRecord(stopped)
+        rig.library.addRecord(Samples.entry(2).copy(endReason = EndReason.DURATION_LIMIT))
+
+        val byId = rig.state.records.associateBy { it.recordId }
+
+        assertNull("用户停止：不是截断", byId.getValue(stopped.recordId).truncatedBy)
+        assertNull("到时长上限自动停止：录完了，不是截断", byId.getValue(Samples.uuid(2)).truncatedBy)
+        cut.forEachIndexed { index, reason -> assertEquals("$reason", reason, byId.getValue(Samples.uuid(10 + index)).truncatedBy) }
+        assertTrue("四种截断原因都覆盖到（合同新增原因时这里要跟着补）", cut.containsAll(listOf(EndReason.ROUTE_LOST, EndReason.SYSTEM_INTERRUPTION, EndReason.PERMISSION_REVOKED, EndReason.PROCESS_TERMINATED)))
     }
 
     // ---- 提示 ----

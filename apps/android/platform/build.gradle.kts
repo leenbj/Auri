@@ -44,6 +44,8 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(testFixtures(project(":capture")))
+    // 只给 JVM 测试：真 SQLite 引擎验证改音频位置的 SQL（评审 H1）。与 :syncplatform 用的是同一个固定版本的 jar（哈希在它的 SqliteJdbcPinTest 里），不进 APK
+    testImplementation(libs.sqlite.jdbc)
 
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.test.runner)

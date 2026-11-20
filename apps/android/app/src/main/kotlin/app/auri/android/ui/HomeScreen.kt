@@ -18,10 +18,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import app.auri.android.home.HomeUiState
+import app.auri.android.home.InterruptionFact
 import app.auri.android.home.Notice
 import app.auri.android.home.RecordItem
 import app.auri.android.home.TextState
 import app.auri.capture.contract.CaptureState
+import app.auri.capture.contract.EndReason
+import app.auri.capture.contract.ErrorCode
 import app.auri.capture.contract.ObservedInputRouteType
 
 /**
@@ -37,6 +40,7 @@ fun HomeScreen(state: HomeUiState, onStart: () -> Unit, onStop: () -> Unit, onDi
         Text("耳机：" + if (state.headset.connected) "已连接" + (state.headset.name?.let { "（$it）" } ?: "") else "未连接")
         Text("实际输入：" + describeInput(state.input.source, state.input.deviceName))
         Text("采集状态：" + describeCapture(state.capture.state) + (state.capture.blockedReason?.let { "（原因：$it）" } ?: ""))
+        state.interruption?.let { Text(describeInterruption(it)) }
         if (state.durationWarning) Text("录音将在一分钟后停止")
         state.durationLimit?.let { Text("已达到录音时长上限（${it.limitSeconds} 秒），录音已自动停止") }
         state.notice?.let {
@@ -65,6 +69,7 @@ private fun RecordRow(item: RecordItem) {
     Column {
         Text("${item.startedAt}　${item.durationMs / 1000.0} 秒")
         Text(describeText(item.text))
+        item.truncatedBy?.let { Text(describeTruncation(it)) }
         (item.text as? TextState.Done)?.let { Text("模型：${it.modelId ?: "未知"} ${it.modelVersion ?: ""}") }
     }
 }
@@ -97,7 +102,40 @@ private fun describeText(text: TextState): String = when (text) {
     is TextState.Failed -> "转录失败" + (text.reason?.let { "（$it）" } ?: "")
 }
 
-private fun describeNotice(notice: Notice): String = when (notice) {
-    is Notice.RecordingLost -> "这次录音没能保存（${notice.reason}）"
+/**
+ * 录音被打断之后首页要说的话：停了、为什么、已录的部分怎么样了、不会自己继续。
+ * 先看结束原因（同一个错误码在不同原因下含义不同：INPUT_DEVICE_MISSING 可以是耳机断开，也可以是蓝牙权限被关），再看错误码。
+ */
+internal fun describeInterruption(fact: InterruptionFact): String {
+    val cause = when {
+        fact.reason == EndReason.PERMISSION_REVOKED -> when (fact.code) {
+            ErrorCode.PERMISSION_MIC_DENIED -> "麦克风权限被关闭"
+            ErrorCode.INPUT_DEVICE_MISSING -> "蓝牙连接权限被关闭"
+            else -> "录音所需的权限被关闭"
+        }
+        fact.code == ErrorCode.STORAGE_EXHAUSTED -> "存储空间已满"
+        fact.code == ErrorCode.AUDIO_INTERRUPTED -> "来电或其他应用占用了音频"
+        fact.code == ErrorCode.BACKGROUND_START_DENIED -> "系统没有允许应用在后台继续录音"
+        fact.reason == EndReason.ROUTE_LOST -> "耳机断开，或输入来源变了"
+        else -> "被系统中断"
+    }
+    val saved = when (fact.code) {
+        ErrorCode.STORAGE_EXHAUSTED -> "已写入的部分（如果有）已保存，列表里没有的话下次启动应用时会找回，腾出空间后请重新开始"
+        else -> "已录下并确认来自耳机的部分已保存，需要时请重新开始"
+    }
+    return "录音已停止：$cause。$saved；不会自动继续。"
+}
+
+/** 列表里一条被截断的 Record 的标记：为什么被截断（只含已确认的那部分）。 */
+internal fun describeTruncation(reason: EndReason): String = when (reason) {
+    EndReason.ROUTE_LOST -> "被截断：耳机断开或输入来源变了，只含断开之前确认的部分"
+    EndReason.SYSTEM_INTERRUPTION -> "被截断：被系统打断（来电、存储写满等），只含打断之前保存的部分"
+    EndReason.PERMISSION_REVOKED -> "被截断：录音所需的权限被关闭，只含关闭之前保存的部分"
+    EndReason.PROCESS_TERMINATED -> "被截断：应用被中途关闭，已从磁盘找回写入过的部分，结尾可能少一小段"
+    else -> "被截断"
+}
+
+internal fun describeNotice(notice: Notice): String = when (notice) {
+    is Notice.RecordingLost -> "这次录音没能完整保存（${notice.reason}）；如果手机上已经写下了一部分，下次启动应用时会尝试找回"
     Notice.RecordNotSaved -> "录音已保存，但没能记入列表"
 }

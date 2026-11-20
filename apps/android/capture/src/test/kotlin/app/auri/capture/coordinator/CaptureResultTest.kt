@@ -171,7 +171,12 @@ class CaptureResultTest {
         assertEquals(0L, sealed.result.captureDurationMs)
         assertTrue(sealed.result.chunks.isEmpty())
         assertTrue(sealed.result.verifiedRanges.isEmpty())
-        assertEquals("存储被要求清理（abort），没有 seal", listOf(StoreEvent.Abort(sealed.result.recordId)), rig.store.events.filter { it is StoreEvent.Abort || it is StoreEvent.Seal })
+        // 评审 M1：不能 abort。abort 会连恢复记录一起删，而这个没有语音的 Record 登记是异步的：登记之前被杀或库写失败就永远丢了
+        assertEquals(
+            "存储被告知“没有音频，但 Record 还欠着”（恢复记录留到登记），不 abort、不 seal",
+            listOf(StoreEvent.FinishWithoutAudio(sealed.result.recordId)),
+            rig.store.events.filter { it is StoreEvent.Abort || it is StoreEvent.Seal || it is StoreEvent.FinishWithoutAudio },
+        )
         assertEquals(emptyList<String>(), ContractRules.violations(sealed.result))
     }
 
@@ -225,6 +230,11 @@ class CaptureResultTest {
         assertEquals(CaptureState.ARMED, firstWindow.state)
         assertTrue(firstWindow.output.recordings.isEmpty())
         assertEquals(listOf(firstRecordId to ErrorCode.STORAGE_EXHAUSTED), firstWindow.output.lost)
+        assertEquals(
+            "通知丢失、不留 Record 的这一路才 abort（没有 Record 欠着，恢复记录也一起清掉）；不是“没有语音”的那一路",
+            listOf<StoreEvent>(StoreEvent.Abort(firstRecordId)),
+            firstWindow.store.events.filter { it is StoreEvent.Abort || it is StoreEvent.FinishWithoutAudio },
+        )
         assertNull(firstLibrary.get(firstRecordId))
         assertEquals(listOf<PipelineNotice>(PipelineNotice.RecordingLost(firstRecordId, ErrorCode.STORAGE_EXHAUSTED)), firstNotices)
         assertEquals(Cause.STORAGE_FAILURE, firstWindow.decisions.last { it.trigger == CaptureEvent.FINALIZE_COMPLETE }.cause)
@@ -324,7 +334,7 @@ class CaptureResultTest {
     }
 
     @Test
-    fun `封存失败：通知录音丢失并回到待命，存储被要求清理，不交出任何结果`() = runTest {
+    fun `封存失败：通知录音没能封存并回到待命，已写下的部分留在磁盘上给恢复流程，不删除，不交出任何结果`() = runTest {
         val rig = recording()
         rig.store.failSeal = IOException("封存失败（测试注入）")
         rig.stop()
@@ -334,7 +344,8 @@ class CaptureResultTest {
         val (recordId, reason) = rig.output.lost.single()
         assertEquals(ErrorCode.STORAGE_EXHAUSTED, reason)
         assertEquals("丢失通知里的标识就是 begin 时的 Record 标识", rig.store.events.filterIsInstance<StoreEvent.Begin>().single().recordId, recordId)
-        assertEquals("残留被要求清理", listOf(StoreEvent.Abort(recordId)), rig.store.events.filterIsInstance<StoreEvent.Abort>())
+        assertEquals("已写下的段落不能删：下次启动由恢复流程接手", emptyList<StoreEvent>(), rig.store.events.filterIsInstance<StoreEvent.Abort>())
+        assertEquals("只释放写入器，保留磁盘上的一切", listOf(StoreEvent.Release(recordId)), rig.store.events.filterIsInstance<StoreEvent.Release>())
         assertEquals(Cause.STORAGE_FAILURE, rig.decisions.last().cause)
     }
 

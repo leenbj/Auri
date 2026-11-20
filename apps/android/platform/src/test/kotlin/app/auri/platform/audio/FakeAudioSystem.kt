@@ -35,6 +35,13 @@ class FakeRecorder(val input: BluetoothInput, var routed: InputDevice?) : Record
     var onRead: (() -> Unit)? = null
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
 
+    /**
+     * true 时系统的路由通知先攒着、不递送：模拟占住的主线程（真机上通知经主线程的 Handler 递送）。
+     * 攒下的通知由 [deliverHeldCallbacks] 一起递送；每一条递送时读到的都是**此刻**的路由，和真实系统一样。
+     */
+    var holdCallbacks = false
+    private var heldCallbacks = 0
+
     override fun startRecording() {
         startFailure?.let { throw it }
         started = true
@@ -46,12 +53,30 @@ class FakeRecorder(val input: BluetoothInput, var routed: InputDevice?) : Record
         onRead?.invoke()
         val changed = routed != step.routedAfter
         routed = step.routedAfter
-        if (changed && step.notify) listeners.forEach { it() }
+        if (changed && step.notify) notifyListeners()
         step.chunk.copyInto(buffer)
         return step.chunk.size
     }
 
-    override fun routedDevice(): InputDevice? = routed
+    private fun notifyListeners() {
+        if (holdCallbacks) heldCallbacks += 1 else listeners.forEach { it() }
+    }
+
+    /** 主线程腾出手：把攒下的通知按次数逐条递送，并恢复为即时递送。 */
+    fun deliverHeldCallbacks() {
+        val pending = heldCallbacks
+        heldCallbacks = 0
+        holdCallbacks = false
+        repeat(pending) { listeners.forEach { it() } }
+    }
+
+    /** 每次被问到当前路由时执行；测试用它在读线程的两个语句之间插入“这段时间里发生的事”。 */
+    var onRoutedDevice: (() -> Unit)? = null
+
+    override fun routedDevice(): InputDevice? {
+        onRoutedDevice?.invoke()
+        return routed
+    }
 
     override fun onRoutingChanged(callback: () -> Unit): Subscription {
         listeners += callback
@@ -67,7 +92,7 @@ class FakeRecorder(val input: BluetoothInput, var routed: InputDevice?) : Record
     /** 系统自己改了路由（没有读数据的时候也会通知）。 */
     fun systemChangesRoute(to: InputDevice?) {
         routed = to
-        listeners.forEach { it() }
+        notifyListeners()
     }
 }
 
@@ -79,6 +104,9 @@ class FakeAudioSystem : AudioSystem {
     var openFailure: RuntimeException? = null
     var onOpen: (() -> Unit)? = null
     var onFocus: (() -> Unit)? = null
+
+    /** true 时系统不给音频焦点：requestAudioFocus 返回 null。 */
+    var focusDenied = false
 
     /** 非空时新打开的录音在 startRecording 时抛它。 */
     var recorderStartFailure: RuntimeException? = null
@@ -111,6 +139,7 @@ class FakeAudioSystem : AudioSystem {
     override fun requestAudioFocus(onLost: () -> Unit): Subscription? {
         focusRequests += onLost
         onFocus?.invoke()
+        if (focusDenied) return null // 系统不给焦点（别的应用占着）
         return Subscription { focusAbandoned += 1 }
     }
 
@@ -144,6 +173,10 @@ class RecordingSink : CaptureSink {
     val routeEvents = CopyOnWriteArrayList<RouteChangeEvent>()
     val frames = CopyOnWriteArrayList<AudioFrames>()
     val unavailable = CopyOnWriteArrayList<ErrorCode>()
+    val permissionRevocations = CopyOnWriteArrayList<ErrorCode>()
+
+    /** 收到权限撤销通知时执行（协调器的反应：关闸、释放采集）。 */
+    var onPermissionRevoked: ((ErrorCode) -> Unit)? = null
     var interrupted = 0
         private set
 
@@ -168,5 +201,11 @@ class RecordingSink : CaptureSink {
     override fun interrupted() {
         interrupted += 1
         order += "interrupted"
+    }
+
+    override fun permissionRevoked(reason: ErrorCode) {
+        permissionRevocations += reason
+        order += "permission:${reason.name}"
+        onPermissionRevoked?.invoke(reason)
     }
 }

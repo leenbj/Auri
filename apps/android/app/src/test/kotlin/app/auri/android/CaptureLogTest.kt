@@ -1,6 +1,7 @@
 package app.auri.android
 
 import app.auri.capture.contract.CaptureState
+import app.auri.capture.contract.EndReason
 import app.auri.capture.contract.ErrorCode
 import app.auri.capture.contract.GateState
 import app.auri.capture.contract.ObservedInput
@@ -45,6 +46,18 @@ class CaptureLogTest {
         val line = captureLogLine(snapshot(CaptureState.RECORDING, input = ObservedInput(ObservedInputRouteType.BUILT_IN_MIC, null)))
 
         assertEquals("state=RECORDING reason=- input=BUILT_IN_MIC", line)
+    }
+
+    @Test
+    fun `被打断之后：写出结束原因与错误码，真机上据此核对“是不是按预期收场”；没被打断的行不变`() {
+        val line = captureLogLine(
+            snapshot(CaptureState.ARMED).copy(interruption = ErrorCode.STORAGE_EXHAUSTED, interruptionReason = EndReason.SYSTEM_INTERRUPTION),
+        )
+        val noCode = captureLogLine(snapshot(CaptureState.ARMED).copy(interruptionReason = EndReason.SYSTEM_INTERRUPTION))
+
+        assertEquals("state=ARMED reason=- input=- interrupted=SYSTEM_INTERRUPTION code=STORAGE_EXHAUSTED", line)
+        assertEquals("state=ARMED reason=- input=- interrupted=SYSTEM_INTERRUPTION code=-", noCode)
+        assertEquals("state=ARMED reason=- input=-", captureLogLine(snapshot(CaptureState.ARMED)))
     }
 
     @Test

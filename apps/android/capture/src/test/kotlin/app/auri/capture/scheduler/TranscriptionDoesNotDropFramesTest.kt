@@ -5,6 +5,7 @@ import app.auri.capture.contract.CaptureState
 import app.auri.capture.contract.CaptureStatus
 import app.auri.capture.contract.CaptureHandle
 import app.auri.capture.adapter.PcmFormat
+import app.auri.capture.adapter.RecordingMeta
 import app.auri.capture.adapter.RecordingStore
 import app.auri.capture.adapter.RecordingWriter
 import app.auri.capture.coordinator.CaptureConfig
@@ -69,12 +70,12 @@ class TranscriptionDoesNotDropFramesTest : BoundedSchedulerTest() {
         val sent = ConcurrentLinkedQueue<Long>()
         val latencies = CopyOnWriteArrayList<Long>()
         val store = object : RecordingStore {
-            override fun begin(recordId: String, handle: CaptureHandle, format: PcmFormat): RecordingWriter {
-                val writer = stored.begin(recordId, handle, format)
+            override fun begin(recordId: String, handle: CaptureHandle, format: PcmFormat, meta: RecordingMeta): RecordingWriter {
+                val writer = stored.begin(recordId, handle, format, meta)
                 return object : RecordingWriter by writer {
-                    override fun append(handle: CaptureHandle, samples: ShortArray) {
+                    override fun append(handle: CaptureHandle, startSample: Long, samples: ShortArray) {
                         if (measuring.get()) latencies += System.nanoTime() - checkNotNull(sent.poll())
-                        writer.append(handle, samples)
+                        writer.append(handle, startSample, samples)
                     }
                 }
             }

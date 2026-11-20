@@ -1,6 +1,7 @@
 package app.auri.capture.testing
 
 import app.auri.capture.adapter.PcmFormat
+import app.auri.capture.adapter.RecordingMeta
 import app.auri.capture.adapter.SealedAudio
 import app.auri.capture.contract.AsrCapabilities
 import app.auri.capture.contract.AsrFormat
@@ -72,6 +73,13 @@ object Samples {
         val evidence = RouteChangeEvent(uuid(1000 + n), 1, ObservedInput(ObservedInputRouteType.BLUETOOTH_HFP, "Fixture Headset"), 0, VerificationState.VERIFIED)
         return SealedRecording(result, evidence, uuid(2000 + n), start.plusSeconds(n.toLong()), audio)
     }
+
+    /** 开始录音时交给存储的恢复信息：已确认的蓝牙路由，属于 [sessionId] 这次会话（默认是 [uuid](1000+n)）。 */
+    fun recordingMeta(n: Int = 1, sessionId: String = uuid(1000 + n), epoch: Long = 1) = RecordingMeta(
+        startedAt = start.plusSeconds(n.toLong()),
+        routeEvidenceId = uuid(2000 + n),
+        evidence = RouteChangeEvent(sessionId, epoch, ObservedInput(ObservedInputRouteType.BLUETOOTH_HFP, "Fixture Headset"), 0, VerificationState.VERIFIED),
+    )
 
     fun draft(recordId: String, text: String = "你好，这是一段测试文字。", at: Instant = start.plusSeconds(60)) = RevisionDraft(
         recordId = recordId,
