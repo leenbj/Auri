@@ -342,7 +342,7 @@ MUTATIONS += (
     Mutation(
         "engine-blocks-on-stale-connection-verdict",
         "旧配对的公钥不符/令牌被拒结论到得太晚：配对记录已经不是同一份，就作废而不是停下任务（F6）",
-        (Edit(ENGINE, "if (!pairing.update { current -> if (current.isSamePairing(gateway)) current.copy(needsUser = needs) else null }) return stale(key)", "pairing.update { current -> if (current.isSamePairing(gateway)) current.copy(needsUser = needs) else null }"),),
+        (Edit(ENGINE, "if (!recordConnectionProblem(gateway, needs)) return stale(key)", "recordConnectionProblem(gateway, needs)"),),
         ENGINE_TESTS, SYNC_TEST[0],
         ("旧公钥的探测这时才报公钥不符",),
     ),
@@ -363,7 +363,7 @@ MUTATIONS += (
     Mutation(
         "engine-never-clears-offline",
         "网络回来之后要清除“没网”：之后的失败按正常重试倒计时算（F12）",
-        (Edit(ENGINE, "        offline = false\n        for (job in jobs.all()) {\n            if (job.state == SyncState.RETRY_SCHEDULED)", "        for (job in jobs.all()) {\n            if (job.state == SyncState.RETRY_SCHEDULED)"),),
+        (Edit(ENGINE, "        offline = false\n        resetAdditionsBackoff()", "        resetAdditionsBackoff()"),),
         ENGINE_AND_LOOP_TESTS, SYNC_TEST[0],
         ("网络回来之后：失败又按正常的重试倒计时算",),
     ),
@@ -475,7 +475,7 @@ MUTATIONS += (
     Mutation(
         "engine-does-not-persist-connection-gate",
         "公钥不符、令牌被拒要记进配对记录",
-        (Edit(ENGINE, "        if (!pairing.update { current -> if (current.isSamePairing(gateway)) current.copy(needsUser = needs) else null }) return stale(key)\n", ""),),
+        (Edit(ENGINE, "        if (!recordConnectionProblem(gateway, needs)) return stale(key)\n", ""),),
         ENGINE_TESTS, SYNC_TEST[0],
         ("令牌被撤销：整个连接停下", "没有任何继续的路"),
     ),
@@ -742,7 +742,7 @@ MUTATIONS += (
     Mutation(
         "loop-nudge-does-not-rearm",
         "催一下要重新计时：已经睡着的旧计时器不能还按旧的退避去响",
-        (Edit(LOOP, "        probeAttempt = 0\n        rearm.value += 1\n        wake.trySend(Unit)", "        probeAttempt = 0\n        wake.trySend(Unit)"),),
+        (Edit(LOOP, "        probeAttempt = 0\n        engine.resetAdditionsBackoff()\n        rearm.value += 1\n        wake.trySend(Unit)", "        probeAttempt = 0\n        engine.resetAdditionsBackoff()\n        wake.trySend(Unit)"),),
         LOOP_TESTS, SYNC_TEST[0],
         ("nudge 立刻跑一轮",),
     ),

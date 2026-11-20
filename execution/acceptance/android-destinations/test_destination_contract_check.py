@@ -26,9 +26,20 @@ def submission(destination_ids, *, intent="context", review_state="not_reviewed"
     return value
 
 
+def additions(destination_ids, *, intent="context") -> dict:
+    value = sample("revision.delivery_additions.confirmed-preview.json")
+    value["intent"] = intent
+    value["destination_ids"] = list(destination_ids)
+    return value
+
+
 def write(dir_: pathlib.Path, name: str, value) -> None:
     dir_.mkdir(parents=True, exist_ok=True)
     (dir_ / name).write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+
+
+def observed(*, puts, additions=0, deliveries, destination_ids) -> dict:
+    return {"puts": puts, "additions": additions, "deliveries": deliveries, "destination_ids": list(destination_ids)}
 
 
 def good_tree(root: pathlib.Path) -> dict[str, str]:
@@ -36,12 +47,16 @@ def good_tree(root: pathlib.Path) -> dict[str, str]:
     write(root / "create-auto-send", "create-request.json", sample("destination.create_request.auto-send.json"))
     write(root / "create-preview-confirm", "create-request.json", sample("destination.create_request.preview-confirm.json"))
     write(root / "auto-send-unreviewed", "submission.json", submission([AUTO_ID]))
-    write(root / "auto-send-unreviewed", "scenario.json", {"puts": 1, "deliveries": 1, "destination_ids": [AUTO_ID]})
-    write(root / "preview-held-before-confirm", "scenario.json", {"puts": 0, "deliveries": 0, "destination_ids": []})
-    write(root / "preview-after-confirm", "submission.json", submission([PREVIEW_ID]))
-    write(root / "preview-after-confirm", "scenario.json", {"puts": 1, "deliveries": 1, "destination_ids": [PREVIEW_ID]})
+    write(root / "auto-send-unreviewed", "scenario.json", observed(puts=1, deliveries=1, destination_ids=[AUTO_ID]))
+    # 预览确认且没确认：文字已入库、没点名任何目的地、没有 Delivery（评审 B2）
+    write(root / "preview-held-before-confirm", "submission.json", submission([]))
+    write(root / "preview-held-before-confirm", "scenario.json", observed(puts=1, deliveries=0, destination_ids=[]))
+    # 确认之后：Revision 不重发，追加请求补上它的 Delivery
+    write(root / "preview-after-confirm", "submission.json", submission([]))
+    write(root / "preview-after-confirm", "additions-request.json", additions([PREVIEW_ID]))
+    write(root / "preview-after-confirm", "scenario.json", observed(puts=1, additions=1, deliveries=1, destination_ids=[PREVIEW_ID]))
     write(root / "action-request-tag", "submission.json", submission([PREVIEW_ID], intent="action_request"))
-    write(root / "action-request-tag", "scenario.json", {"puts": 1, "deliveries": 1, "destination_ids": [PREVIEW_ID]})
+    write(root / "action-request-tag", "scenario.json", observed(puts=1, deliveries=1, destination_ids=[PREVIEW_ID]))
     return dict(dc.EXPECTED_JVM_SCENARIOS)
 
 
@@ -100,11 +115,13 @@ def test_an_auto_sent_draft_that_claims_to_be_reviewed_is_rejected(tree):
     assert any("必须是 not_reviewed" in p for p in problems), problems
 
 
-def test_a_preview_draft_confirmed_by_the_user_is_still_not_reviewed(tree):
+@pytest.mark.parametrize("scenario", ["preview-held-before-confirm", "preview-after-confirm", "action-request-tag"])
+def test_every_draft_the_phone_sends_is_still_not_reviewed_whatever_the_send_path(tree, scenario):
     root, expected = tree
-    write(root / "preview-after-confirm", "submission.json", submission([PREVIEW_ID], review_state="reviewed"))
+    named = json.loads((root / scenario / "submission.json").read_text(encoding="utf-8"))["publication"]
+    write(root / scenario, "submission.json", submission(named["destination_ids"], intent=named["intent"], review_state="reviewed"))
 
-    problems = problems_of(root, expected, "preview-after-confirm")
+    problems = problems_of(root, expected, scenario)
 
     assert any("必须是 not_reviewed" in p for p in problems), problems
 
@@ -112,14 +129,14 @@ def test_a_preview_draft_confirmed_by_the_user_is_still_not_reviewed(tree):
 def test_a_submission_without_destinations_in_an_auto_send_scenario_is_rejected(tree):
     root, expected = tree
     write(root / "auto-send-unreviewed", "submission.json", submission([]))
-    write(root / "auto-send-unreviewed", "scenario.json", {"puts": 1, "deliveries": 0, "destination_ids": []})
+    write(root / "auto-send-unreviewed", "scenario.json", observed(puts=1, deliveries=0, destination_ids=[]))
 
     assert any("至少一个目的地" in p for p in problems_of(root, expected, "auto-send-unreviewed"))
 
 
 def test_the_destinations_in_the_request_must_be_the_ones_the_scenario_recorded(tree):
     root, expected = tree
-    write(root / "auto-send-unreviewed", "scenario.json", {"puts": 1, "deliveries": 1, "destination_ids": [PREVIEW_ID]})
+    write(root / "auto-send-unreviewed", "scenario.json", observed(puts=1, deliveries=1, destination_ids=[PREVIEW_ID]))
 
     assert any("不一致" in p for p in problems_of(root, expected, "auto-send-unreviewed"))
 
@@ -131,27 +148,65 @@ def test_the_action_request_scenario_must_carry_that_tag(tree):
     assert any("action_request" in p for p in problems_of(root, expected, "action-request-tag"))
 
 
-@pytest.mark.parametrize("puts, deliveries", [(2, 1), (1, 2), (0, 1)])
-def test_the_gateway_must_have_seen_exactly_one_put_and_one_delivery_per_destination(tree, puts, deliveries):
+@pytest.mark.parametrize("puts, deliveries, additions_seen", [(2, 1, 0), (1, 2, 0), (0, 1, 0), (1, 1, 1)])
+def test_the_gateway_must_have_seen_exactly_one_put_and_one_delivery_per_destination_and_no_addition(tree, puts, deliveries, additions_seen):
     root, expected = tree
-    write(root / "auto-send-unreviewed", "scenario.json", {"puts": puts, "deliveries": deliveries, "destination_ids": [AUTO_ID]})
+    write(root / "auto-send-unreviewed", "scenario.json", observed(puts=puts, additions=additions_seen, deliveries=deliveries, destination_ids=[AUTO_ID]))
 
-    assert problems_of(root, expected, "auto-send-unreviewed"), (puts, deliveries)
+    assert problems_of(root, expected, "auto-send-unreviewed"), (puts, deliveries, additions_seen)
 
 
-def test_a_held_scenario_with_a_submission_is_rejected_nothing_may_leave_before_the_user_confirms(tree):
+def test_an_auto_send_scenario_that_also_added_deliveries_is_rejected_the_request_already_named_them(tree):
+    root, expected = tree
+    write(root / "auto-send-unreviewed", "additions-request.json", additions([AUTO_ID]))
+
+    assert any("不应当还有追加请求" in p for p in problems_of(root, expected, "auto-send-unreviewed"))
+
+
+def test_a_create_scenario_that_also_added_deliveries_is_rejected(tree):
+    root, expected = tree
+    write(root / "create-auto-send", "additions-request.json", additions([AUTO_ID]))
+
+    assert any("不应当有追加请求" in p for p in problems_of(root, expected, "create-auto-send"))
+
+
+def test_a_held_scenario_whose_submission_names_the_preview_destination_is_rejected_that_would_create_the_delivery_early(tree):
     root, expected = tree
     write(root / "preview-held-before-confirm", "submission.json", submission([PREVIEW_ID]))
+    write(root / "preview-held-before-confirm", "scenario.json", observed(puts=1, deliveries=1, destination_ids=[PREVIEW_ID]))
 
-    assert any("不得有入库请求" in p for p in problems_of(root, expected, "preview-held-before-confirm"))
+    problems = problems_of(root, expected, "preview-held-before-confirm")
+
+    assert any("不得点名任何目的地" in p for p in problems), problems
 
 
-@pytest.mark.parametrize("puts, deliveries", [(1, 0), (0, 1)])
-def test_a_held_scenario_where_the_gateway_saw_anything_is_rejected(tree, puts, deliveries):
+def test_a_held_scenario_without_a_submission_is_rejected_the_text_must_already_be_on_the_gateway(tree):
     root, expected = tree
-    write(root / "preview-held-before-confirm", "scenario.json", {"puts": puts, "deliveries": deliveries, "destination_ids": []})
+    (root / "preview-held-before-confirm" / "submission.json").unlink()
+    write(root / "preview-held-before-confirm", "scenario.json", observed(puts=0, deliveries=0, destination_ids=[]))
 
-    assert any("都必须是 0" in p for p in problems_of(root, expected, "preview-held-before-confirm"))
+    problems = problems_of(root, expected, "preview-held-before-confirm")
+
+    assert any("文字也必须已经入库" in p for p in problems), problems
+    assert any("恰好一次 PUT" in p for p in problems), problems
+
+
+@pytest.mark.parametrize(
+    "puts, additions_seen, deliveries, destination_ids",
+    [(2, 0, 0, []), (0, 0, 0, []), (1, 1, 0, []), (1, 0, 1, []), (1, 0, 0, [PREVIEW_ID])],
+)
+def test_a_held_scenario_where_the_gateway_saw_anything_but_the_text_is_rejected(tree, puts, additions_seen, deliveries, destination_ids):
+    root, expected = tree
+    write(root / "preview-held-before-confirm", "scenario.json", observed(puts=puts, additions=additions_seen, deliveries=deliveries, destination_ids=destination_ids))
+
+    assert any("恰好一次 PUT" in p for p in problems_of(root, expected, "preview-held-before-confirm"))
+
+
+def test_a_held_scenario_with_an_addition_request_is_rejected_nothing_may_be_added_before_the_user_confirms(tree):
+    root, expected = tree
+    write(root / "preview-held-before-confirm", "additions-request.json", additions([PREVIEW_ID]))
+
+    assert any("不得有追加请求" in p for p in problems_of(root, expected, "preview-held-before-confirm"))
 
 
 def test_a_held_scenario_without_the_gateway_side_observation_proves_nothing(tree):
@@ -159,6 +214,65 @@ def test_a_held_scenario_without_the_gateway_side_observation_proves_nothing(tre
     (root / "preview-held-before-confirm" / "scenario.json").unlink()
 
     assert problems_of(root, expected, "preview-held-before-confirm")
+
+
+def test_an_addition_scenario_without_the_addition_request_is_rejected_the_delivery_never_got_made(tree):
+    root, expected = tree
+    (root / "preview-after-confirm" / "additions-request.json").unlink()
+
+    assert any("必须有追加 Delivery 的请求" in p for p in problems_of(root, expected, "preview-after-confirm"))
+
+
+def test_an_addition_request_that_breaks_the_schema_is_reported_with_the_contract_name(tree):
+    root, expected = tree
+    broken = additions([PREVIEW_ID])
+    broken["destination_ids"] = []  # 合同要求至少一个目的地
+    write(root / "preview-after-confirm", "additions-request.json", broken)
+
+    problems = problems_of(root, expected, "preview-after-confirm")
+
+    assert any("delivery_additions" in p and "destination_ids" in p for p in problems), problems
+
+
+def test_an_addition_request_naming_other_destinations_than_the_confirmed_one_is_rejected(tree):
+    root, expected = tree
+    write(root / "preview-after-confirm", "additions-request.json", additions([AUTO_ID]))
+
+    assert any("追加的目的地与场景记下的目的地不一致" in p for p in problems_of(root, expected, "preview-after-confirm"))
+
+
+def test_an_addition_request_that_changes_the_default_label_is_rejected(tree):
+    root, expected = tree
+    write(root / "preview-after-confirm", "additions-request.json", additions([PREVIEW_ID], intent="action_request"))
+
+    assert any("追加请求的 intent 必须是默认的 context" in p for p in problems_of(root, expected, "preview-after-confirm"))
+
+
+def test_a_confirmed_destination_named_in_the_first_submission_is_rejected_the_delivery_would_exist_before_the_confirmation(tree):
+    root, expected = tree
+    write(root / "preview-after-confirm", "submission.json", submission([PREVIEW_ID]))
+
+    problems = problems_of(root, expected, "preview-after-confirm")
+
+    assert any("不得出现在入库请求里" in p for p in problems), problems
+
+
+@pytest.mark.parametrize(
+    "puts, additions_seen, deliveries",
+    [(2, 1, 1), (0, 1, 1), (1, 0, 1), (1, 2, 1), (1, 1, 0), (1, 1, 2)],
+)
+def test_the_gateway_must_have_seen_one_put_one_addition_and_one_delivery_after_the_confirmation(tree, puts, additions_seen, deliveries):
+    root, expected = tree
+    write(root / "preview-after-confirm", "scenario.json", observed(puts=puts, additions=additions_seen, deliveries=deliveries, destination_ids=[PREVIEW_ID]))
+
+    assert problems_of(root, expected, "preview-after-confirm"), (puts, additions_seen, deliveries)
+
+
+def test_a_scenario_file_without_the_addition_count_is_rejected_the_observation_must_cover_additions(tree):
+    root, expected = tree
+    write(root / "preview-after-confirm", "scenario.json", {"puts": 1, "deliveries": 1, "destination_ids": [PREVIEW_ID]})
+
+    assert any("additions" in p for p in problems_of(root, expected, "preview-after-confirm"))
 
 
 def test_a_missing_scenario_directory_and_an_unregistered_one_are_both_reported(tree):
@@ -202,6 +316,14 @@ def test_an_unknown_expectation_is_reported(tree):
     root, _ = tree
 
     problems = dc.check_scenario(root / "create-auto-send", "create:maybe")
+
+    assert problems and "未知的期望" in problems[0]
+
+
+def test_the_retired_submission_preview_expectation_is_unknown_so_a_stale_scenario_list_fails_loudly(tree):
+    root, _ = tree  # 评审 B2 之前预览确认的场景期望是 submission:preview（确认后才入库）；现在是 addition
+
+    problems = dc.check_scenario(root / "preview-after-confirm", "submission:preview")
 
     assert problems and "未知的期望" in problems[0]
 

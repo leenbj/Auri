@@ -1,7 +1,7 @@
 """Ticket 22：手机实际发给网关的请求满足真实的数据合同。
 
 这里运行真实的 Gradle 单元测试 DestinationContractOutputTest（在 :sync 里，用真实的目的地服务、发送账与同步引擎，只有网关、局域网与本机核验是假的），
-让 Kotlin 把六个场景写成 JSON 文件（创建请求、入库请求、网关侧观察），再用 destination_contract_check（真实 contracts/schemas/ + 语义规则 + 场景断言）逐个校验。
+让 Kotlin 把六个场景写成 JSON 文件（创建请求、入库请求、追加 Delivery 的请求、网关侧观察），再用 destination_contract_check（真实 contracts/schemas/ + 语义规则 + 场景断言）逐个校验。
 
 前置条件见 README.md；缺少 JAVA_HOME 或依赖时测试失败而不是跳过。
 """
@@ -39,12 +39,24 @@ def test_the_user_chose_the_mode_in_each_create_request_and_nothing_defaulted(jv
     assert (auto["send_mode"], preview["send_mode"]) == ("auto_send", "preview_confirm")
 
 
-def test_before_the_user_confirms_nothing_reached_the_gateway(jvm_output):
-    files = {p.name for p in (jvm_output / "preview-held-before-confirm").iterdir()}
-    observed = json.loads((jvm_output / "preview-held-before-confirm" / "scenario.json").read_text(encoding="utf-8"))
+def test_before_the_user_confirms_the_text_is_already_on_the_gateway_but_no_delivery_exists(jvm_output):
+    held = jvm_output / "preview-held-before-confirm"
+    files = {p.name for p in held.iterdir()}
+    observed = json.loads((held / "scenario.json").read_text(encoding="utf-8"))
+    submission = json.loads((held / "submission.json").read_text(encoding="utf-8"))
 
-    assert "submission.json" not in files
-    assert (observed["puts"], observed["deliveries"]) == (0, 0)
+    assert "additions-request.json" not in files
+    assert (observed["puts"], observed["additions"], observed["deliveries"]) == (1, 0, 0)
+    assert submission["publication"]["destination_ids"] == []  # 点名了就会在确认之前建出 Delivery
+
+
+def test_after_the_confirmation_the_delivery_comes_from_one_addition_and_the_revision_is_not_sent_again(jvm_output):
+    confirmed = jvm_output / "preview-after-confirm"
+    observed = json.loads((confirmed / "scenario.json").read_text(encoding="utf-8"))
+    addition = json.loads((confirmed / "additions-request.json").read_text(encoding="utf-8"))
+
+    assert (observed["puts"], observed["additions"], observed["deliveries"]) == (1, 1, 1)
+    assert addition["destination_ids"] == observed["destination_ids"]
 
 
 def test_the_auto_sent_draft_and_the_confirmed_draft_are_both_unreviewed(jvm_output):

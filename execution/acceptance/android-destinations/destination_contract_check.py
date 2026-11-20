@@ -5,16 +5,19 @@ tests/contract/conftest.py 相同、报错不回显来自输出文件的值）�
 用真实的视图模型、服务与同步引擎，把**手机实际发给网关的请求**按场景写成目录，本工具逐个目录检查三层：
 
   1. 每个文件按真实 schema 校验：
-       create-request.json → destination.schema.json#/$defs/create_request   （创建 Destination 的请求体）
-       submission.json     → revision.schema.json#/$defs/submission           （PUT 入库的请求体，含 publication）
+       create-request.json    → destination.schema.json#/$defs/create_request    （创建 Destination 的请求体）
+       submission.json        → revision.schema.json#/$defs/submission            （PUT 入库的请求体，含 publication）
+       additions-request.json → revision.schema.json#/$defs/delivery_additions    （给已入库的 Revision 追加 Delivery，评审 B2）
   2. 合同的语义规则（复用 tests/contract/semantic_rules.py 的参考实现，只读）：submission 的 SR-01/05/06 等。
   3. 场景自己的断言（单个 schema 表达不了）：
-       create:<模式>        创建请求里的 send_mode 恰好是 <模式>（auto_send / preview_confirm）；没有 submission.json。
-       submission:auto      自动发送：content.review_state 是 not_reviewed（未审核的初稿），publication.destination_ids 就是场景记下的目的地。
-       submission:preview   预览确认：用户确认之后才有 submission.json；destination_ids 含用户确认的那个目的地；初稿仍是 not_reviewed。
+       create:<模式>        创建请求里的 send_mode 恰好是 <模式>（auto_send / preview_confirm）；没有 submission.json 与追加请求。
+       submission:auto      自动发送：content.review_state 是 not_reviewed（未审核的初稿），publication.destination_ids 就是场景记下的目的地；没有追加。
        submission:action_request  标成“请求执行”的内容：publication.intent 是 action_request（只是数据上的标签）。
-       held                 预览确认且用户没确认：**没有** submission.json，网关上 PUT 与 Delivery 都是 0。
-     scenario.json（Kotlin 写的网关侧观察：put 次数、delivery 数、涉及的目的地编号）必须与 submission.json 互相一致。
+       held                 预览确认且用户没确认：文字**已经入库**（恰好一次 PUT，初稿 not_reviewed），但入库请求没有点名任何目的地，
+                            网关上追加与 Delivery 都是 0——确认之前 Agent 读不到，等的只是 Delivery，不是文字（评审 B2）。
+       addition             预览确认且用户确认了（含重复确认）：Revision 仍只入库一次、没有点名这个目的地；之后恰好一次追加请求，
+                            追加的目的地就是用户确认的那个，网关上恰好一个 Delivery。
+     scenario.json（Kotlin 写的网关侧观察：put 次数、追加次数、delivery 数、涉及的目的地编号）必须与请求文件互相一致。
 
 命令行：
   python destination_contract_check.py <输出根目录> <场景名>=<期望> [...]
@@ -38,6 +41,7 @@ BASE_URI = "https://contracts.auri.invalid/1.1/"
 FILE_SCHEMAS = {
     "create-request.json": "destination.schema.json#/$defs/create_request",
     "submission.json": "revision.schema.json#/$defs/submission",
+    "additions-request.json": "revision.schema.json#/$defs/delivery_additions",
 }
 SUBMISSION_SCHEMA = FILE_SCHEMAS["submission.json"]
 SEND_MODES = ("auto_send", "preview_confirm")
@@ -48,7 +52,7 @@ EXPECTED_JVM_SCENARIOS = {
     "create-preview-confirm": "create:preview_confirm",
     "auto-send-unreviewed": "submission:auto",
     "preview-held-before-confirm": "held",
-    "preview-after-confirm": "submission:preview",
+    "preview-after-confirm": "addition",
     "action-request-tag": "submission:action_request",
 }
 PRESETS = {"jvm": EXPECTED_JVM_SCENARIOS}
@@ -108,17 +112,18 @@ def _scenario_facts(scenario, problems: list[str]):
         return None
     ok = (
         isinstance(scenario.get("puts"), int)
+        and isinstance(scenario.get("additions"), int)
         and isinstance(scenario.get("deliveries"), int)
         and isinstance(scenario.get("destination_ids"), list)
         and all(isinstance(i, str) for i in scenario["destination_ids"])
     )
     if not ok:
-        problems.append("scenario.json: 必须有整数 puts、deliveries 与字符串数组 destination_ids")
+        problems.append("scenario.json: 必须有整数 puts、additions、deliveries 与字符串数组 destination_ids")
         return None
     return scenario
 
 
-def _expect_create(mode: str, create, submission, problems: list[str]) -> None:
+def _expect_create(mode: str, create, submission, additions, problems: list[str]) -> None:
     if create is None:
         problems.append("create-request.json: 创建场景必须有创建请求")
         return
@@ -126,45 +131,91 @@ def _expect_create(mode: str, create, submission, problems: list[str]) -> None:
         problems.append(f"create-request.json: send_mode 不是用户选的 {mode}（实际值不回显）")
     if submission is not None:
         problems.append("submission.json: 创建 Destination 的场景不应当有入库请求")
+    if additions is not None:
+        problems.append("additions-request.json: 创建 Destination 的场景不应当有追加请求")
 
 
-def _expect_submission(kind: str, submission, scenario, problems: list[str]) -> None:
+def _draft_problems(submission, intent: str, problems: list[str]) -> None:
+    """手机发出的转录初稿：未审核，标签是场景要的那个（没改过标签就是默认的 context）。"""
+    if submission["content"].get("review_state") != "not_reviewed":
+        problems.append("submission.json: 手机发出的转录初稿（自动发送、预览确认、标成请求执行的）必须是 not_reviewed（实际值不回显）")
+    if submission["publication"].get("intent") != intent:
+        if intent == "action_request":
+            problems.append("submission.json: 标成请求执行的内容，publication.intent 必须是 action_request（实际值不回显）")
+        else:
+            problems.append("submission.json: 没有改过标签的内容，publication.intent 必须是默认的 context（实际值不回显）")
+
+
+def _expect_submission(kind: str, submission, additions, scenario, problems: list[str]) -> None:
+    """自动发送、已经确认过再入库的内容：入库请求自己点名目的地，不需要追加。"""
     if submission is None:
         problems.append("submission.json: 这个场景必须有入库请求")
         return
-    content, publication = submission["content"], submission["publication"]
-    if kind in ("auto", "preview") and content.get("review_state") != "not_reviewed":
-        problems.append("submission.json: 自动发送的、以及预览确认后发出的转录初稿必须是 not_reviewed（实际值不回显）")
-    if kind == "action_request" and publication.get("intent") != "action_request":
-        problems.append("submission.json: 标成请求执行的内容，publication.intent 必须是 action_request（实际值不回显）")
-    if kind in ("auto", "preview") and publication.get("intent") != "context":
-        problems.append("submission.json: 没有改过标签的内容，publication.intent 必须是默认的 context（实际值不回显）")
-    ids = publication.get("destination_ids", [])
+    _draft_problems(submission, "action_request" if kind == "action_request" else "context", problems)
+    ids = submission["publication"].get("destination_ids", [])
     if not ids:
         problems.append("submission.json: 这个场景的入库请求必须带着至少一个目的地（publication.destination_ids 为空就没有 Delivery）")
+    if additions is not None:
+        problems.append("additions-request.json: 入库请求已经点名了目的地，不应当还有追加请求")
     if scenario is not None:
         if sorted(ids) != sorted(scenario["destination_ids"]):
             problems.append("submission.json 与 scenario.json: publication.destination_ids 与场景记下的目的地不一致（值不回显）")
         if scenario["puts"] != 1:
             problems.append("scenario.json: 这个场景网关应当恰好收到一次 PUT（重复确认、重试都不会多发）")
+        if scenario["additions"] != 0:
+            problems.append("scenario.json: 入库请求已经点名了目的地，网关上不应当收到追加请求")
         if scenario["deliveries"] != len(ids):
             problems.append("scenario.json: 网关上的 Delivery 数必须等于入库请求里的目的地数")
 
 
-def _expect_held(submission, scenario, problems: list[str]) -> None:
-    if submission is not None:
-        problems.append("submission.json: 预览确认且用户没确认：不得有入库请求（确认之前网关上不能有这条文字）")
+def _expect_held(submission, additions, scenario, problems: list[str]) -> None:
+    """预览确认且用户没确认：文字已入库（Revision 不等人），入库请求没有点名目的地，所以一个 Delivery 也没有。"""
+    if submission is None:
+        problems.append("submission.json: 预览确认且用户没确认：文字也必须已经入库（等用户确认的只有 Delivery，不是文字）")
+    else:
+        _draft_problems(submission, "context", problems)
+        if submission["publication"].get("destination_ids"):
+            problems.append("submission.json: 预览确认且用户没确认：入库请求不得点名任何目的地（点名就会在确认之前建出 Delivery，Agent 就读得到）")
+    if additions is not None:
+        problems.append("additions-request.json: 预览确认且用户没确认：不得有追加请求")
     if scenario is None:
         problems.append("scenario.json: 必须有网关侧观察，才能证明确认之前一个 Delivery 也没有")
-    elif scenario["puts"] != 0 or scenario["deliveries"] != 0:
-        problems.append("scenario.json: 确认之前网关上的 PUT 与 Delivery 都必须是 0")
+    elif scenario["puts"] != 1 or scenario["additions"] != 0 or scenario["deliveries"] != 0 or scenario["destination_ids"]:
+        problems.append("scenario.json: 确认之前网关上必须恰好一次 PUT（文字已入库），追加与 Delivery 都必须是 0、没有涉及任何目的地")
+
+
+def _expect_addition(submission, additions, scenario, problems: list[str]) -> None:
+    """预览确认且用户确认了：Revision 已经先入库（没点名这个目的地），确认之后恰好一次追加请求把它的 Delivery 补上。"""
+    if submission is None:
+        problems.append("submission.json: 这个场景必须有入库请求（Revision 先入库，Delivery 在用户确认之后追加）")
+    else:
+        _draft_problems(submission, "context", problems)
+        if submission["publication"].get("destination_ids"):
+            problems.append("submission.json: 预览确认的目的地在用户确认之前不得出现在入库请求里（点名就会提前建出 Delivery）")
+    if additions is None:
+        problems.append("additions-request.json: 用户确认之后必须有追加 Delivery 的请求")
+    elif additions.get("intent") != "context":
+        problems.append("additions-request.json: 没有改过标签的内容，追加请求的 intent 必须是默认的 context（实际值不回显）")
+    if scenario is not None:
+        if additions is not None and sorted(additions.get("destination_ids", [])) != sorted(scenario["destination_ids"]):
+            problems.append("additions-request.json 与 scenario.json: 追加的目的地与场景记下的目的地不一致（值不回显）")
+        if scenario["puts"] != 1:
+            problems.append("scenario.json: 用户确认只追加 Delivery，不重发 Revision：网关应当恰好收到一次 PUT")
+        if scenario["additions"] != 1:
+            problems.append("scenario.json: 用户确认（含重复确认）之后网关应当恰好收到一次追加请求")
+        if scenario["deliveries"] != len(scenario["destination_ids"]):
+            problems.append("scenario.json: 网关上的 Delivery 数必须等于追加的目的地数")
 
 
 def check_scenario(dir_: pathlib.Path, expectation: str) -> list[str]:
     kind, _, detail = expectation.partition(":")
-    valid = (kind == "create" and detail in SEND_MODES) or (kind == "submission" and detail in ("auto", "preview", "action_request")) or (kind == "held" and detail == "")
+    valid = (
+        (kind == "create" and detail in SEND_MODES)
+        or (kind == "submission" and detail in ("auto", "action_request"))
+        or (kind in ("held", "addition") and detail == "")
+    )
     if not valid:
-        return [f"未知的期望 {expectation!r}（create:<模式>、submission:auto|preview|action_request、held）"]
+        return [f"未知的期望 {expectation!r}（create:<模式>、submission:auto|action_request、held、addition）"]
     problems: list[str] = []
     docs = {name: _load(dir_, name, problems, required=False) for name in FILE_SCHEMAS}
     scenario = _scenario_facts(_load(dir_, "scenario.json", problems, required=kind != "create"), problems)
@@ -175,16 +226,18 @@ def check_scenario(dir_: pathlib.Path, expectation: str) -> list[str]:
     if problems:
         return problems  # 文件缺失/损坏或 schema 没过：语义与场景断言没有意义（也会因字段缺失而崩）
 
-    submission = docs["submission.json"]
+    submission, additions = docs["submission.json"], docs["additions-request.json"]
     if submission is not None:
         problems += [f"submission.json: {rule} 违反" for rule in semantic_rules.violations(SUBMISSION_SCHEMA, submission)]
 
     if kind == "create":
-        _expect_create(detail, docs["create-request.json"], submission, problems)
+        _expect_create(detail, docs["create-request.json"], submission, additions, problems)
     elif kind == "submission":
-        _expect_submission(detail, submission, scenario, problems)
+        _expect_submission(detail, submission, additions, scenario, problems)
+    elif kind == "held":
+        _expect_held(submission, additions, scenario, problems)
     else:
-        _expect_held(submission, scenario, problems)
+        _expect_addition(submission, additions, scenario, problems)
     return problems
 
 
