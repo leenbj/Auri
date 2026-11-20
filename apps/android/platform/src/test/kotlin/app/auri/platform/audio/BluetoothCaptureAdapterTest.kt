@@ -562,11 +562,9 @@ class BluetoothCaptureAdapterTest {
     fun `录音中麦克风权限被撤销：撤销时读到的那一批不递送，通知一次，协调器释放之后读线程安静退出，资源各只放一次`() {
         prepare()
         val recorder = audio.recorders.single()
-        val reasons = mutableListOf<ErrorCode>()
-        adapter.onPermissionRevoked { reason ->
-            reasons += reason
-            adapter.release(request.operationId) // 协调器收到通知之后的反应：关闸、释放采集
-        }
+        val global = mutableListOf<ErrorCode>()
+        adapter.onPermissionRevoked { global += it } // 与会话无关的全局通道：读线程发现的撤销不走这里（评审 H2）
+        sink.onPermissionRevoked = { adapter.release(request.operationId) } // 协调器收到通知之后的反应：关闸、释放采集
         recorder.script += ReadStep(chunk(value = 1), HEADSET)
         recorder.script += ReadStep(chunk(value = 2), HEADSET)
         recorder.script += ReadStep(chunk(value = 3), HEADSET)
@@ -576,7 +574,8 @@ class BluetoothCaptureAdapterTest {
         readers.single().run()
 
         assertEquals("撤销之前的照常递送；撤销时读到的那一批不递送", listOf<Short>(1), sink.frames.flatMap { it.samples.toList() }.distinct())
-        assertEquals(listOf(ErrorCode.PERMISSION_MIC_DENIED), reasons)
+        assertEquals("通知走这次采集自己的通道（协调器据此核对会话与 generation）", listOf(ErrorCode.PERMISSION_MIC_DENIED), sink.permissionRevocations)
+        assertTrue("读线程发现的撤销不走与会话无关的全局回调：它到得晚的话会打断后来的录音", global.isEmpty())
         assertTrue("释放之后读线程退出，不再报告“输入不可用”", sink.unavailable.isEmpty())
         assertEquals(1, recorder.releaseCalls)
         assertEquals(1, recorder.subscriptionCancels)
@@ -589,11 +588,9 @@ class BluetoothCaptureAdapterTest {
     fun `录音中蓝牙连接权限被撤销：同样不递送这一批并通知一次，原因沿用 INPUT_DEVICE_MISSING（合同没有专门的码）`() {
         prepare()
         val recorder = audio.recorders.single()
-        val reasons = mutableListOf<ErrorCode>()
-        adapter.onPermissionRevoked { reason ->
-            reasons += reason
-            adapter.release(request.operationId)
-        }
+        val global = mutableListOf<ErrorCode>()
+        adapter.onPermissionRevoked { global += it }
+        sink.onPermissionRevoked = { adapter.release(request.operationId) }
         recorder.script += ReadStep(chunk(value = 1), HEADSET)
         recorder.script += ReadStep(chunk(value = 2), HEADSET)
         var reads = 0
@@ -602,7 +599,8 @@ class BluetoothCaptureAdapterTest {
         readers.single().run()
 
         assertEquals(listOf<Short>(1), sink.frames.flatMap { it.samples.toList() }.distinct())
-        assertEquals(listOf(ErrorCode.INPUT_DEVICE_MISSING), reasons)
+        assertEquals(listOf(ErrorCode.INPUT_DEVICE_MISSING), sink.permissionRevocations)
+        assertTrue(global.isEmpty())
         assertEquals(1, recorder.releaseCalls)
         assertEquals(1, audio.routeCleared)
     }
@@ -621,19 +619,21 @@ class BluetoothCaptureAdapterTest {
         readers.single().run()
 
         assertEquals("只通知了一次（前台核对那次）", listOf(ErrorCode.PERMISSION_MIC_DENIED), reasons)
+        assertTrue("读线程也没有再通知：一次撤销只有一个“在 → 不在”的那一刻", sink.permissionRevocations.isEmpty())
         assertTrue("权限没了，读到的批次一个也不递送", sink.frames.isEmpty())
     }
 
     @Test
     fun `权限被撤销之后读失败：原因是权限而不是路由，只通知权限撤销，不再另报“输入路由变了”`() {
         prepare()
-        val reasons = mutableListOf<ErrorCode>()
-        adapter.onPermissionRevoked { reasons += it } // 协调器还没来得及处理：采集还开着
+        val global = mutableListOf<ErrorCode>()
+        adapter.onPermissionRevoked { global += it }
         environment.mic = false // 系统撤销了权限，读随之失败（脚本是空的，read 返回 -1）
 
         readers.single().run()
 
-        assertEquals(listOf(ErrorCode.PERMISSION_MIC_DENIED), reasons)
+        assertEquals(listOf(ErrorCode.PERMISSION_MIC_DENIED), sink.permissionRevocations)
+        assertTrue(global.isEmpty())
         assertTrue("读失败的原因是权限：不能再把它记成路由变化（会让这次录音被误标成 route_lost）", sink.unavailable.isEmpty())
     }
 
@@ -645,6 +645,7 @@ class BluetoothCaptureAdapterTest {
         readers.single().run() // 脚本是空的：read 返回 -1
 
         assertEquals(listOf(ErrorCode.INPUT_ROUTE_CHANGED), sink.unavailable)
+        assertTrue("权限没变，这次采集自己的通道也不该有通知", sink.permissionRevocations.isEmpty())
     }
 
     @Test
@@ -664,5 +665,42 @@ class BluetoothCaptureAdapterTest {
 
         assertEquals(2, sink.frames.size)
         assertEquals("只有撤销那一刻通知了一次", 1, revoked)
+        assertTrue("读线程自己没有发现任何撤销", sink.permissionRevocations.isEmpty())
+    }
+
+    /**
+     * 评审 H2 的另一面：读线程认领“撤销”会消耗那个“在 → 不在”的瞬间，而它的通知只对它自己那次采集有效。
+     * 读线程停在“这一批读完、还没核对权限”的时候，这次采集已经被协调器结束、新的一次已经开始、权限随后被撤销：
+     * 已经结束的采集不能认领这次撤销，否则新的一次永远等不到通知（录音卡在“录音中”、每一批都因缺权限被丢掉）。
+     */
+    @Test
+    fun `已经结束的采集的读线程不认领权限撤销：后来开始的那次采集照样收到通知`() {
+        prepare()
+        val first = audio.recorders.single()
+        val secondSink = RecordingSink()
+        val secondRequest = InputRequest(
+            captureSessionId = "0b0b0b0b-0000-4000-8000-000000000002",
+            operationId = "0c0c0c0c-0000-4000-8000-000000000002",
+            generation = 2,
+            format = PcmFormat(16_000),
+        )
+        first.script += ReadStep(chunk(value = 1), HEADSET)
+        first.onRead = {
+            // 读线程读完这一批之后问路由的那一刻，以下都发生在它停住的这段时间里
+            first.onRoutedDevice = {
+                first.onRoutedDevice = null
+                adapter.release(request.operationId) // 协调器结束了第一次录音
+                runBlocking { adapter.prepareBluetoothInput(secondRequest, secondSink) } // 第二次录音开始
+                environment.mic = false // 第二次录音期间权限被撤销
+            }
+        }
+
+        readers[0].run()
+
+        assertTrue("已经结束的采集不通知任何人", sink.permissionRevocations.isEmpty())
+        audio.recorders[1].script += ReadStep(chunk(value = 2), HEADSET)
+        readers[1].run()
+        assertEquals("撤销属于第二次采集，它必须收到", listOf(ErrorCode.PERMISSION_MIC_DENIED), secondSink.permissionRevocations)
+        assertTrue("缺权限的那一批不递送", secondSink.frames.isEmpty())
     }
 }

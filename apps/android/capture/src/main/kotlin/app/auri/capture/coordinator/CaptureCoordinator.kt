@@ -191,6 +191,7 @@ class CaptureCoordinator(
         data object ForegroundServiceFailed : Message
         data object ProcessRestored : Message
         class PermissionRevoked(val reason: ErrorCode) : Message
+        class SessionPermissionRevoked(val tag: Tag, val reason: ErrorCode) : Message
         data object Close : Message
         class Route(val tag: Tag, val event: RouteChangeEvent) : Message
         class Frames(val tag: Tag, val frames: AudioFrames) : Message
@@ -215,6 +216,7 @@ class CaptureCoordinator(
         override fun frames(frames: AudioFrames) = post(Message.Frames(tag, frames))
         override fun inputUnavailable(reason: ErrorCode) = post(Message.InputUnavailable(tag, reason))
         override fun interrupted() = post(Message.Interrupted(tag))
+        override fun permissionRevoked(reason: ErrorCode) = post(Message.SessionPermissionRevoked(tag, reason))
     }
 
     /** 一次 Capture Session 的内部状态。 */
@@ -278,6 +280,7 @@ class CaptureCoordinator(
             }
             Message.ProcessRestored -> dispatch(CaptureEvent.PROCESS_RESTORED)
             is Message.PermissionRevoked -> dispatch(CaptureEvent.PERMISSION_REVOKED, Context(errorCode = message.reason))
+            is Message.SessionPermissionRevoked -> onSessionPermissionRevoked(message)
             Message.Close -> {
                 session?.cancelJobs()
                 mailbox.close()
@@ -400,6 +403,15 @@ class CaptureCoordinator(
         val nominal = if (state == RECORDING) CaptureEvent.ROUTE_LOST else CaptureEvent.ROUTE_UNVERIFIED
         currentSession(message.tag, nominal) ?: return
         dispatch(nominal, Context(errorCode = message.reason))
+    }
+
+    /**
+     * 读线程发现的权限撤销（评审 H2）：发现到递送之间，它所属的会话可能已经结束、新的一次已经开始。
+     * 和别的会话回调一样按标签核对，过期的被拒绝并记一条（没有会话 = STALE_SESSION，generation 不同 = STALE_GENERATION）。
+     */
+    private fun onSessionPermissionRevoked(message: Message.SessionPermissionRevoked) {
+        currentSession(message.tag, CaptureEvent.PERMISSION_REVOKED) ?: return
+        dispatch(CaptureEvent.PERMISSION_REVOKED, Context(errorCode = message.reason))
     }
 
     private fun onInterrupted(message: Message.Interrupted) {

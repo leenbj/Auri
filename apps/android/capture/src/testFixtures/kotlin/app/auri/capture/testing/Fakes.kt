@@ -224,6 +224,13 @@ class FakeCaptureAdapter : CaptureAdapter {
 
     fun interrupt(session: Int = requests.lastIndex) = sinks[session].interrupted()
 
+    /**
+     * 第 [session] 个会话的读线程发现权限被撤销，经那个会话自己的 sink 报告（Ticket 19 评审 H2）。
+     * 和 [revokePermission]（界面核对发现的、与会话无关）不同：它属于发现它的那个会话，旧会话的迟到通知同样可以这样递。
+     */
+    fun revokePermissionObservedBy(session: Int = requests.lastIndex, reason: ErrorCode = ErrorCode.PERMISSION_MIC_DENIED) =
+        sinks[session].permissionRevoked(reason)
+
     companion object {
         const val DEVICE_NAME = "Fixture Headset"
     }

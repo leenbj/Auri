@@ -71,6 +71,14 @@ interface CaptureSink {
 
     /** 来电、音频焦点被抢等系统中断。 */
     fun interrupted()
+
+    /**
+     * 这次采集的读线程发现录音所需的权限被撤销了（Android 没有撤销回调，只能在读的时候核对）。
+     * 事件属于这个 sink 所属的会话：从发现到递送之间会话可能已经结束、新的一次已经开始，所以必须带着会话标签走这条通道，
+     * 协调器核对之后，旧会话的迟到通知会被拒绝并记录，打断不了新的录音（Ticket 19 评审 H2）。
+     * 参数含义同 [CaptureAdapter.onPermissionRevoked]。
+     */
+    fun permissionRevoked(reason: ErrorCode)
 }
 
 interface CaptureAdapter {
@@ -88,7 +96,8 @@ interface CaptureAdapter {
     fun release(operationId: String)
 
     /**
-     * 录音所需的权限（麦克风、蓝牙连接）在运行期被撤销（与会话无关，任何状态下都可能发生）。
+     * 录音所需的权限（麦克风、蓝牙连接）在运行期被撤销（与会话无关，任何状态下都可能发生）：界面回到前台时的核对走这里。
+     * 采集进行中由读线程发现的撤销属于那次采集，走它自己的 [CaptureSink.permissionRevoked]（带会话标签，过期的会被拒绝）。
      * 回调参数是具体缺了哪一项对应的错误码：麦克风 [ErrorCode.PERMISSION_MIC_DENIED]；蓝牙连接合同里没有专门的码，
      * 与资格检查一致按 [ErrorCode.INPUT_DEVICE_MISSING] 报告（待合同补码）。
      */

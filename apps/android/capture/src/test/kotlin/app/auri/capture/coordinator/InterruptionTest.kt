@@ -9,6 +9,7 @@ import app.auri.capture.contract.DiscardedRange
 import app.auri.capture.contract.EndReason
 import app.auri.capture.contract.ErrorCode
 import app.auri.capture.machine.CaptureEvent
+import app.auri.capture.machine.Outcome
 import app.auri.capture.testing.CaptureRig
 import app.auri.capture.testing.StoreEvent
 import kotlinx.coroutines.test.TestScope
@@ -132,6 +133,11 @@ class InterruptionTest {
         Interruption("来电或音频焦点被抢", EndReason.SYSTEM_INTERRUPTION, ErrorCode.AUDIO_INTERRUPTED) { it.capture.interrupt() },
         Interruption("麦克风权限被撤销", EndReason.PERMISSION_REVOKED, ErrorCode.PERMISSION_MIC_DENIED) { it.capture.revokePermission() },
         Interruption("蓝牙权限被撤销", EndReason.PERMISSION_REVOKED, ErrorCode.INPUT_DEVICE_MISSING) { it.capture.revokePermission(ErrorCode.INPUT_DEVICE_MISSING) },
+        // 读线程发现的撤销走会话自己的通道（评审 H2）：当前会话的通知收场方式与界面核对发现的完全一样
+        Interruption("麦克风权限被撤销（读线程发现，带会话标签）", EndReason.PERMISSION_REVOKED, ErrorCode.PERMISSION_MIC_DENIED) { it.capture.revokePermissionObservedBy() },
+        Interruption("蓝牙权限被撤销（读线程发现，带会话标签）", EndReason.PERMISSION_REVOKED, ErrorCode.INPUT_DEVICE_MISSING) {
+            it.capture.revokePermissionObservedBy(reason = ErrorCode.INPUT_DEVICE_MISSING)
+        },
         Interruption("存储写满", EndReason.SYSTEM_INTERRUPTION, ErrorCode.STORAGE_EXHAUSTED) {
             it.store.failAppendAfterSamples = 1600
             it.capture.frames(samples = 1600, epoch = 1)
@@ -207,6 +213,49 @@ class InterruptionTest {
         assertEquals(EndReason.ROUTE_LOST, rig.output.recordings.single().result.endReason)
         assertEquals(1, rig.capture.releases.size)
         assertEquals(1, rig.decisions.count { it.trigger == CaptureEvent.ROUTE_LOST && it.stateAfter == CaptureState.FINALIZING })
+    }
+
+    /**
+     * Ticket 19 评审 H2：第一次录音的读线程发现了权限被撤销，通知却还在路上；这期间第一次录音结束、权限恢复、第二次录音开始，
+     * 通知才到。没有标签的通知会把第二次录音当成被撤销权限打断；现在通知属于发现它的会话，过期的被拒绝并留在日志里。
+     */
+    @Test
+    fun `读线程发现的权限撤销通知迟到：旧会话的通知不能结束新的录音，也不能把待命变成受阻，日志里记成过期`() = runTest {
+        val rig = recording()
+        rig.control.press(BusinessCommand.STOP)
+        rig.settle()
+        assertEquals(CaptureState.ARMED, rig.state)
+
+        rig.capture.revokePermissionObservedBy(session = 0) // 第一次录音结束之后才到：没有任何会话了
+        rig.settle()
+        assertEquals("待命的时候来了一条旧会话的通知：仍然待命", CaptureState.ARMED, rig.state)
+        assertNull(rig.coordinator.snapshot.value.blockedReason)
+
+        rig.control.press(BusinessCommand.START) // 权限恢复了，第二次录音
+        rig.settle()
+        rig.capture.verifiedRoute(epoch = 1)
+        rig.settle()
+        rig.capture.frames(samples = 1600, epoch = 1)
+        rig.settle()
+        assertEquals(CaptureState.RECORDING, rig.state)
+
+        rig.capture.revokePermissionObservedBy(session = 0) // 第二次录音期间，第一次录音的通知才到
+        rig.settle()
+
+        assertEquals("第二次录音没有被旧通知打断", CaptureState.RECORDING, rig.state)
+        assertEquals(1, rig.output.recordings.size)
+        assertEquals(
+            "两条旧通知都记成被拒绝的过期事件：没有会话、generation 更旧",
+            listOf(Cause.STALE_SESSION, Cause.STALE_GENERATION),
+            rig.decisions.filter { it.trigger == CaptureEvent.PERMISSION_REVOKED && it.outcome == Outcome.REJECTED }.map { it.cause },
+        )
+        assertTrue("它们没有引起任何状态变化", rig.decisions.none { it.trigger == CaptureEvent.PERMISSION_REVOKED && it.outcome == Outcome.TRANSITION })
+
+        rig.capture.revokePermissionObservedBy(session = 1) // 第二次录音自己的通知：照常收场
+        rig.settle()
+        assertEquals(CaptureState.ARMED, rig.state)
+        assertEquals(2, rig.output.recordings.size)
+        assertEquals(EndReason.PERMISSION_REVOKED, rig.output.recordings.last().result.endReason)
     }
 
     @Test

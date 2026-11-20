@@ -70,7 +70,13 @@ class FakeRecorder(val input: BluetoothInput, var routed: InputDevice?) : Record
         repeat(pending) { listeners.forEach { it() } }
     }
 
-    override fun routedDevice(): InputDevice? = routed
+    /** 每次被问到当前路由时执行；测试用它在读线程的两个语句之间插入“这段时间里发生的事”。 */
+    var onRoutedDevice: (() -> Unit)? = null
+
+    override fun routedDevice(): InputDevice? {
+        onRoutedDevice?.invoke()
+        return routed
+    }
 
     override fun onRoutingChanged(callback: () -> Unit): Subscription {
         listeners += callback
@@ -163,6 +169,10 @@ class RecordingSink : CaptureSink {
     val routeEvents = CopyOnWriteArrayList<RouteChangeEvent>()
     val frames = CopyOnWriteArrayList<AudioFrames>()
     val unavailable = CopyOnWriteArrayList<ErrorCode>()
+    val permissionRevocations = CopyOnWriteArrayList<ErrorCode>()
+
+    /** 收到权限撤销通知时执行（协调器的反应：关闸、释放采集）。 */
+    var onPermissionRevoked: ((ErrorCode) -> Unit)? = null
     var interrupted = 0
         private set
 
@@ -187,5 +197,11 @@ class RecordingSink : CaptureSink {
     override fun interrupted() {
         interrupted += 1
         order += "interrupted"
+    }
+
+    override fun permissionRevoked(reason: ErrorCode) {
+        permissionRevocations += reason
+        order += "permission:${reason.name}"
+        onPermissionRevoked?.invoke(reason)
     }
 }

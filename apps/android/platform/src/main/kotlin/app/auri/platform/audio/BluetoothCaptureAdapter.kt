@@ -115,8 +115,15 @@ class BluetoothCaptureAdapter(
     /**
      * 核对两项运行时权限，返回现在缺的那一项（都在则 null）；刚从“在”变成“不在”的那一刻通知协调器一次，之后不重复。
      * 麦克风缺失用 PERMISSION_MIC_DENIED；蓝牙连接缺失没有专门的错误码，沿用资格检查的 INPUT_DEVICE_MISSING（待合同补码）。
+     *
+     * 通知送给谁，取决于谁发现的（Ticket 19 评审 H2）：
+     *  - [observer] 为 null（界面回到前台时核对）：与会话无关，走 [onPermissionRevoked] 的全局回调。
+     *  - 读线程发现的：只告诉它所属那次采集自己的 sink。发现到递送之间，那次采集可能已经结束、新的一次已经开始；
+     *    没有标签的全局通知会把新的录音当成被撤销权限打断，带着会话标签协调器才能把过期的拒绝掉。
+     *    已经结束的采集不认领撤销，也不消耗那个“在 → 不在”的瞬间：此刻看到的变化可能发生在它结束之后，
+     *    认领了，后来开始的那次采集就永远等不到通知。
      */
-    private fun checkPermissions(): ErrorCode? {
+    private fun checkPermissions(observer: Capture? = null): ErrorCode? {
         val mic = environment.micPermissionGranted()
         val bluetooth = environment.bluetoothPermissionGranted()
         val missing = when {
@@ -125,12 +132,15 @@ class BluetoothCaptureAdapter(
             else -> null
         }
         val justRevoked = synchronized(permissionLock) {
+            if (observer != null && observer.isClosed()) return@synchronized false
             val lost = (micGranted && !mic) || (bluetoothGranted && !bluetooth)
             micGranted = mic
             bluetoothGranted = bluetooth
             lost
         }
-        if (justRevoked && missing != null) permissionHandlers.forEach { it(missing) }
+        if (justRevoked && missing != null) {
+            if (observer == null) permissionHandlers.forEach { it(missing) } else observer.sink.permissionRevoked(missing)
+        }
         return missing
     }
 
@@ -291,7 +301,7 @@ class BluetoothCaptureAdapter(
             try {
                 // 权限被撤销时读也会失败：原因是权限，不是路由。核对会通知协调器；缺权限就不再另报“输入路由变了”
                 // （否则同一次打断会被当成 route_lost 而不是 permission_revoked）
-                if (checkPermissions() == null) sink.inputUnavailable(ErrorCode.INPUT_ROUTE_CHANGED)
+                if (checkPermissions(this) == null) sink.inputUnavailable(ErrorCode.INPUT_ROUTE_CHANGED)
             } finally {
                 captures.remove(request.operationId, this)
                 close()
@@ -319,7 +329,7 @@ class BluetoothCaptureAdapter(
                 val after = rec.routedDevice()
                 observe(after)
                 // 权限在录音中被撤销：这一批不可信，不递送；通知先于之后的任何帧进邮箱，协调器据此关闸并释放采集
-                if (checkPermissions() != null) continue
+                if (checkPermissions(this) != null) continue
                 // 判断与递送在同一把锁里：通知引起的 epoch 递增要么在判断之前（这批丢弃），要么在递送之后（协调器先收到这批、再收到变化），
                 // 不会出现“判断通过之后通知才到、这批却带着旧 epoch 递送出去”的缝
                 synchronized(this) {
@@ -336,6 +346,6 @@ class BluetoothCaptureAdapter(
         }
 
         @Synchronized
-        private fun isClosed() = closed
+        fun isClosed() = closed
     }
 }
