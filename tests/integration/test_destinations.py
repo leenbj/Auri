@@ -32,7 +32,7 @@ def test_create_destination_requires_explicit_send_mode_and_persists_valid_modes
         assert_valid_contract("destination.schema.json#/$defs/create_request", req)
 
         resp = httpx.post(
-            f"{gateway.base_url}/v1/destinations",
+            f"{gateway.base_url}/v1/destinations", trust_env=False,
             json=req,
             headers=headers,
             timeout=5.0,
@@ -60,7 +60,7 @@ def test_credential_appears_once_is_hashed_at_rest_and_never_echoed_on_query(
         create_req = load_fixture("messages/valid/destination.create_request.auto-send.json")["instance"]
 
         create_resp = httpx.post(
-            f"{gw.base_url}/v1/destinations",
+            f"{gw.base_url}/v1/destinations", trust_env=False,
             json=create_req,
             headers=headers,
             timeout=5.0,
@@ -71,7 +71,7 @@ def test_credential_appears_once_is_hashed_at_rest_and_never_echoed_on_query(
         dest_id = dest["destination_id"]
 
         issue_resp = httpx.post(
-            f"{gw.base_url}/v1/destinations/{dest_id}/credential",
+            f"{gw.base_url}/v1/destinations/{dest_id}/credential", trust_env=False,
             headers=headers,
             timeout=5.0,
         )
@@ -85,7 +85,7 @@ def test_credential_appears_once_is_hashed_at_rest_and_never_echoed_on_query(
 
         # Query single destination and list destinations: neither may echo the credential.
         get_resp = httpx.get(
-            f"{gw.base_url}/v1/destinations/{dest_id}",
+            f"{gw.base_url}/v1/destinations/{dest_id}", trust_env=False,
             headers=headers,
             timeout=5.0,
         )
@@ -96,7 +96,7 @@ def test_credential_appears_once_is_hashed_at_rest_and_never_echoed_on_query(
         assert credential not in get_resp.text
 
         list_resp = httpx.get(
-            f"{gw.base_url}/v1/destinations",
+            f"{gw.base_url}/v1/destinations", trust_env=False,
             headers=headers,
             timeout=5.0,
         )
@@ -137,7 +137,7 @@ def test_rotating_credential_immediately_invalidates_old_and_revoke_blocks_auth(
     ]
 
     dest_resp = httpx.post(
-        f"{gateway.base_url}/v1/destinations",
+        f"{gateway.base_url}/v1/destinations", trust_env=False,
         json=create_req,
         headers=device_headers,
         timeout=5.0,
@@ -146,7 +146,7 @@ def test_rotating_credential_immediately_invalidates_old_and_revoke_blocks_auth(
     dest_id = dest_resp.json()["destination_id"]
 
     cred1_resp = httpx.post(
-        f"{gateway.base_url}/v1/destinations/{dest_id}/credential",
+        f"{gateway.base_url}/v1/destinations/{dest_id}/credential", trust_env=False,
         headers=device_headers,
         timeout=5.0,
     )
@@ -157,7 +157,7 @@ def test_rotating_credential_immediately_invalidates_old_and_revoke_blocks_auth(
     cred1 = cred1_body["credential"]
 
     mcp_v1_ok = httpx.post(
-        f"{gateway.base_url}/mcp",
+        f"{gateway.base_url}/mcp", trust_env=False,
         json={"jsonrpc": "2.0", "id": 1, "method": "initialize"},
         headers={"Authorization": f"Bearer {cred1}"},
         timeout=5.0,
@@ -166,7 +166,7 @@ def test_rotating_credential_immediately_invalidates_old_and_revoke_blocks_auth(
 
     # Rotate credential: v2 replaces v1 immediately.
     cred2_resp = httpx.post(
-        f"{gateway.base_url}/v1/destinations/{dest_id}/credential",
+        f"{gateway.base_url}/v1/destinations/{dest_id}/credential", trust_env=False,
         headers=device_headers,
         timeout=5.0,
     )
@@ -178,7 +178,7 @@ def test_rotating_credential_immediately_invalidates_old_and_revoke_blocks_auth(
     assert cred2 != cred1
 
     mcp_v1_revoked = httpx.post(
-        f"{gateway.base_url}/mcp",
+        f"{gateway.base_url}/mcp", trust_env=False,
         json={"jsonrpc": "2.0", "id": 2, "method": "initialize"},
         headers={"Authorization": f"Bearer {cred1}"},
         timeout=5.0,
@@ -189,7 +189,7 @@ def test_rotating_credential_immediately_invalidates_old_and_revoke_blocks_auth(
     assert v1_err["code"] == "GATEWAY_AUTH_REVOKED"
 
     mcp_v2_ok = httpx.post(
-        f"{gateway.base_url}/mcp",
+        f"{gateway.base_url}/mcp", trust_env=False,
         json={"jsonrpc": "2.0", "id": 3, "method": "initialize"},
         headers={"Authorization": f"Bearer {cred2}"},
         timeout=5.0,
@@ -198,7 +198,7 @@ def test_rotating_credential_immediately_invalidates_old_and_revoke_blocks_auth(
 
     # Revoke the destination: credential v2 immediately fails auth and revoked_at is recorded.
     del_resp = httpx.delete(
-        f"{gateway.base_url}/v1/destinations/{dest_id}",
+        f"{gateway.base_url}/v1/destinations/{dest_id}", trust_env=False,
         headers=device_headers,
         timeout=5.0,
     )
@@ -208,7 +208,7 @@ def test_rotating_credential_immediately_invalidates_old_and_revoke_blocks_auth(
     assert del_body["revoked_at"] is not None
 
     del_again = httpx.delete(
-        f"{gateway.base_url}/v1/destinations/{dest_id}",
+        f"{gateway.base_url}/v1/destinations/{dest_id}", trust_env=False,
         headers=device_headers,
         timeout=5.0,
     )
@@ -216,7 +216,7 @@ def test_rotating_credential_immediately_invalidates_old_and_revoke_blocks_auth(
     assert del_again.json()["revoked_at"] == del_body["revoked_at"]
 
     mcp_v2_after_revoke = httpx.post(
-        f"{gateway.base_url}/mcp",
+        f"{gateway.base_url}/mcp", trust_env=False,
         json={"jsonrpc": "2.0", "id": 4, "method": "initialize"},
         headers={"Authorization": f"Bearer {cred2}"},
         timeout=5.0,
@@ -235,13 +235,13 @@ def test_submit_revision_creates_pending_delivery_per_destination_and_empty_list
     create_req = load_fixture("messages/valid/destination.create_request.auto-send.json")["instance"]
 
     dest_1 = httpx.post(
-        f"{gateway.base_url}/v1/destinations",
+        f"{gateway.base_url}/v1/destinations", trust_env=False,
         json={**create_req, "display_name": "Agent Alpha"},
         headers=headers,
         timeout=5.0,
     ).json()["destination_id"]
     dest_2 = httpx.post(
-        f"{gateway.base_url}/v1/destinations",
+        f"{gateway.base_url}/v1/destinations", trust_env=False,
         json={**create_req, "display_name": "Agent Beta"},
         headers=headers,
         timeout=5.0,
@@ -252,7 +252,7 @@ def test_submit_revision_creates_pending_delivery_per_destination_and_empty_list
     assert_valid_contract("revision.schema.json#/$defs/submission", sub)
 
     resp = httpx.put(
-        f"{gateway.base_url}/v1/records/{rec_id}/revisions/1",
+        f"{gateway.base_url}/v1/records/{rec_id}/revisions/1", trust_env=False,
         json=sub,
         headers=headers,
         timeout=5.0,
@@ -270,7 +270,7 @@ def test_submit_revision_creates_pending_delivery_per_destination_and_empty_list
     empty_rec = str(uuid.uuid4())
     empty_sub = make_submission(record_id=empty_rec, revision=1, destination_ids=[])
     empty_resp = httpx.put(
-        f"{gateway.base_url}/v1/records/{empty_rec}/revisions/1",
+        f"{gateway.base_url}/v1/records/{empty_rec}/revisions/1", trust_env=False,
         json=empty_sub,
         headers=headers,
         timeout=5.0,
@@ -281,7 +281,7 @@ def test_submit_revision_creates_pending_delivery_per_destination_and_empty_list
     assert empty_body["deliveries"] == []
 
     dup_empty = httpx.put(
-        f"{gateway.base_url}/v1/records/{empty_rec}/revisions/1",
+        f"{gateway.base_url}/v1/records/{empty_rec}/revisions/1", trust_env=False,
         json=empty_sub,
         headers=headers,
         timeout=5.0,
@@ -305,13 +305,13 @@ def test_duplicate_submission_does_not_create_duplicate_deliveries(
         ]
 
         dest_1 = httpx.post(
-            f"{gw.base_url}/v1/destinations",
+            f"{gw.base_url}/v1/destinations", trust_env=False,
             json={**preview_req, "display_name": "Writer A"},
             headers=headers,
             timeout=5.0,
         ).json()["destination_id"]
         dest_2 = httpx.post(
-            f"{gw.base_url}/v1/destinations",
+            f"{gw.base_url}/v1/destinations", trust_env=False,
             json={**preview_req, "display_name": "Writer B"},
             headers=headers,
             timeout=5.0,
@@ -323,7 +323,7 @@ def test_duplicate_submission_does_not_create_duplicate_deliveries(
         assert_valid_contract("revision.schema.json#/$defs/submission", sub)
 
         first = httpx.put(
-            f"{gw.base_url}/v1/records/{rec_id}/revisions/1",
+            f"{gw.base_url}/v1/records/{rec_id}/revisions/1", trust_env=False,
             json=sub,
             headers=headers,
             timeout=5.0,
@@ -335,7 +335,7 @@ def test_duplicate_submission_does_not_create_duplicate_deliveries(
         assert len(first_body["deliveries"]) == 2
 
         second = httpx.put(
-            f"{gw.base_url}/v1/records/{rec_id}/revisions/1",
+            f"{gw.base_url}/v1/records/{rec_id}/revisions/1", trust_env=False,
             json=sub,
             headers=headers,
             timeout=5.0,
@@ -357,7 +357,7 @@ def test_duplicate_submission_does_not_create_duplicate_deliveries(
             destination_ids=[dest_1],
         )
         third = httpx.put(
-            f"{gw.base_url}/v1/records/{rec_id}/revisions/1",
+            f"{gw.base_url}/v1/records/{rec_id}/revisions/1", trust_env=False,
             json=alt_sub,
             headers=headers,
             timeout=5.0,
@@ -421,7 +421,7 @@ def test_revoking_destination_cancels_open_deliveries_and_preserves_terminal_one
 
         # Revoke dest_1 over HTTP.
         del_resp = httpx.delete(
-            f"{gw.base_url}/v1/destinations/{dest_1.destination_id}",
+            f"{gw.base_url}/v1/destinations/{dest_1.destination_id}", trust_env=False,
             headers=headers,
             timeout=5.0,
         )
@@ -431,7 +431,7 @@ def test_revoking_destination_cancels_open_deliveries_and_preserves_terminal_one
 
         # Repeating DELETE is idempotent.
         del_again = httpx.delete(
-            f"{gw.base_url}/v1/destinations/{dest_1.destination_id}",
+            f"{gw.base_url}/v1/destinations/{dest_1.destination_id}", trust_env=False,
             headers=headers,
             timeout=5.0,
         )

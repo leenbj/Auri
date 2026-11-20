@@ -115,7 +115,7 @@ def replay(world: World, scenario: dict[str, Any]) -> None:
                 assert delivery_id not in cancelled, where
         elif event == "RECORD_DELETED":
             del_resp = httpx.delete(
-                f"{world.gw.base_url}/v1/records/{record_id}",
+                f"{world.gw.base_url}/v1/records/{record_id}", trust_env=False,
                 headers={"Authorization": f"Bearer {world.device_token}"},
                 timeout=5.0,
             )

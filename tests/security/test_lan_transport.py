@@ -206,7 +206,7 @@ def test_tls_gateway_rejects_plaintext_http_requests_on_loopback_and_lan(
         targets = ["127.0.0.1", *_local_lan_ipv4s()]
         for target_ip in targets:
             with pytest.raises(httpx.HTTPError):
-                httpx.get(f"http://{target_ip}:{port}/health", timeout=2.0)
+                httpx.get(f"http://{target_ip}:{port}/health", trust_env=False, timeout=2.0)
 
             with socket.create_connection((target_ip, port), timeout=2.0) as raw_sock:
                 raw_sock.settimeout(2.0)

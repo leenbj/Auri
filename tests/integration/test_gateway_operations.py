@@ -133,7 +133,7 @@ def test_cli_revoke_device_leaves_credentials_active_and_rejects_device_token(
     # Revoked device token is rejected with GATEWAY_AUTH_REVOKED on the next HTTP request.
     sub = make_submission(destination_ids=[dest_a.destination_id], text="丢失后不能再提交。")
     put_resp = httpx.put(
-        f"{gateway.base_url}/v1/records/{sub['record_id']}/revisions/1",
+        f"{gateway.base_url}/v1/records/{sub['record_id']}/revisions/1", trust_env=False,
         json=sub,
         headers={"Authorization": f"Bearer {phone_a['device_token']}"},
         timeout=5.0,
@@ -213,7 +213,7 @@ def test_cli_revoke_credential_blocks_only_that_credential(
 
     # Revoked credential is rejected on /mcp with GATEWAY_AUTH_REVOKED.
     mcp_resp = httpx.post(
-        f"{gateway.base_url}/mcp",
+        f"{gateway.base_url}/mcp", trust_env=False,
         json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": "delivery_claim", "arguments": {}}},
         headers={
             "Authorization": f"Bearer {dest.credential}",
@@ -228,7 +228,7 @@ def test_cli_revoke_credential_blocks_only_that_credential(
 
     # The device and Destination are NOT revoked: device can issue a replacement credential and claim!
     rotated = httpx.post(
-        f"{gateway.base_url}/v1/destinations/{dest.destination_id}/credential",
+        f"{gateway.base_url}/v1/destinations/{dest.destination_id}/credential", trust_env=False,
         headers={"Authorization": f"Bearer {phone['device_token']}"},
         timeout=5.0,
     )
@@ -722,7 +722,7 @@ def test_upgrade_auto_migrates_older_database_and_preserves_data_on_failed_migra
 
         # 0004 columns work on the upgraded database.
         del_resp = httpx.delete(
-            f"{gw_upgraded.base_url}/v1/records/{record_to_delete}",
+            f"{gw_upgraded.base_url}/v1/records/{record_to_delete}", trust_env=False,
             headers={"Authorization": f"Bearer {token}"},
             timeout=5.0,
         )

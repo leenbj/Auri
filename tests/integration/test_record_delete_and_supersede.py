@@ -36,7 +36,7 @@ def test_deleting_record_creates_persistent_tombstone_and_blocks_resurrection(
         delivery_id = stored["deliveries"][0]["delivery_id"]
 
         del_resp = httpx.delete(
-            f"{gw.base_url}/v1/records/{record_id}",
+            f"{gw.base_url}/v1/records/{record_id}", trust_env=False,
             headers=headers,
             timeout=5.0,
         )
@@ -48,7 +48,7 @@ def test_deleting_record_creates_persistent_tombstone_and_blocks_resurrection(
 
         # Repeating DELETE is idempotent and returns the original tombstone.
         del_again = httpx.delete(
-            f"{gw.base_url}/v1/records/{record_id}",
+            f"{gw.base_url}/v1/records/{record_id}", trust_env=False,
             headers=headers,
             timeout=5.0,
         )
@@ -62,7 +62,7 @@ def test_deleting_record_creates_persistent_tombstone_and_blocks_resurrection(
         for rev, text in ((1, "会被删除的口述。"), (2, "试图复活的第二版。")):
             sub = make_submission(record_id=record_id, revision=rev, text=text, destination_ids=[dest.destination_id])
             resp = httpx.put(
-                f"{gw.base_url}/v1/records/{record_id}/revisions/{rev}",
+                f"{gw.base_url}/v1/records/{record_id}/revisions/{rev}", trust_env=False,
                 json=sub,
                 headers=headers,
                 timeout=5.0,
@@ -76,7 +76,7 @@ def test_deleting_record_creates_persistent_tombstone_and_blocks_resurrection(
         # Deleting a record_id before any revision was uploaded also plants a tombstone.
         unsynced_id = str(uuid.uuid4())
         unsynced_del = httpx.delete(
-            f"{gw.base_url}/v1/records/{unsynced_id}",
+            f"{gw.base_url}/v1/records/{unsynced_id}", trust_env=False,
             headers=headers,
             timeout=5.0,
         )
@@ -87,7 +87,7 @@ def test_deleting_record_creates_persistent_tombstone_and_blocks_resurrection(
 
         late_sub = make_submission(record_id=unsynced_id, revision=1, text="离线删除后的延迟补传。")
         late_resp = httpx.put(
-            f"{gw.base_url}/v1/records/{unsynced_id}/revisions/1",
+            f"{gw.base_url}/v1/records/{unsynced_id}/revisions/1", trust_env=False,
             json=late_sub,
             headers=headers,
             timeout=5.0,
@@ -103,7 +103,7 @@ def test_deleting_record_creates_persistent_tombstone_and_blocks_resurrection(
     try:
         sub_after_restart = make_submission(record_id=record_id, revision=3, text="重启后再补传。")
         resp_after = httpx.put(
-            f"{gw2.base_url}/v1/records/{record_id}/revisions/3",
+            f"{gw2.base_url}/v1/records/{record_id}/revisions/3", trust_env=False,
             json=sub_after_restart,
             headers={"Authorization": f"Bearer {token}"},
             timeout=5.0,
@@ -162,7 +162,7 @@ def test_deleting_record_cancels_open_deliveries_and_preserves_acknowledged_ones
     (leased_claim,) = leased_agent.claim()["deliveries"]
 
     del_resp = httpx.delete(
-        f"{world.gw.base_url}/v1/records/{record_id}",
+        f"{world.gw.base_url}/v1/records/{record_id}", trust_env=False,
         headers={"Authorization": f"Bearer {world.device_token}"},
         timeout=5.0,
     )
@@ -297,7 +297,7 @@ def test_new_revision_cancels_unclaimed_deliveries_and_preserves_leased_or_acked
         source="user_edit",
     )
     dup3_resp = httpx.put(
-        f"{world.gw.base_url}/v1/records/{record_id}/revisions/3",
+        f"{world.gw.base_url}/v1/records/{record_id}/revisions/3", trust_env=False,
         json=dup3_sub,
         headers={"Authorization": f"Bearer {world.device_token}"},
         timeout=5.0,

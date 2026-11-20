@@ -28,7 +28,7 @@ def test_deleted_record_is_hidden_from_agent_reads_but_preserves_acknowledgement
 
     headers = {"Authorization": f"Bearer {world.device_token}"}
     deleted = httpx.delete(
-        f"{world.gw.base_url}/v1/records/{record_id}", headers=headers, timeout=5.0
+        f"{world.gw.base_url}/v1/records/{record_id}", trust_env=False, headers=headers, timeout=5.0
     )
     assert deleted.status_code == 200, deleted.text
     assert_valid_contract("revision.schema.json#/$defs/record_deleted", deleted.json())
@@ -47,7 +47,7 @@ def test_deleted_record_is_hidden_from_agent_reads_but_preserves_acknowledgement
     assert agent.record_search(phrase)["matches"] == []
 
     status = httpx.get(
-        f"{world.gw.base_url}/v1/records/{record_id}/status", headers=headers, timeout=5.0
+        f"{world.gw.base_url}/v1/records/{record_id}/status", trust_env=False, headers=headers, timeout=5.0
     )
     assert status.status_code == 200, status.text
     body = status.json()
@@ -93,7 +93,7 @@ def test_superseded_unclaimed_revision_is_readable_until_record_deletion(
 
     headers = {"Authorization": f"Bearer {world.device_token}"}
     deleted = httpx.delete(
-        f"{world.gw.base_url}/v1/records/{record_id}", headers=headers, timeout=5.0
+        f"{world.gw.base_url}/v1/records/{record_id}", trust_env=False, headers=headers, timeout=5.0
     )
     assert deleted.status_code == 200, deleted.text
     assert_valid_contract("revision.schema.json#/$defs/record_deleted", deleted.json())
