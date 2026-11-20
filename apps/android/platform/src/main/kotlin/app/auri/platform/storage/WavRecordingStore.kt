@@ -36,7 +36,8 @@ private fun ByteArray.hex() = joinToString("") { "%02x".format(it) }
  * 交给 Record 管线像别的录音一样登记。封存之后日志仍然保留，直到下次启动发现这个 Record 已经登记进库才删。
  *
  * 一次 [RecordingWriter.append] 要么整批写下，要么什么都不留：写不下时把写了一半的字节截掉再抛 [IOException]，
- * 协调器的计数与磁盘上的内容永远一致。封存不需要新的磁盘空间（头部原地改写、改名），所以写满的磁盘上也能封存。
+ * 协调器的计数与磁盘上的内容永远一致。封存只在最后一段的日志行落盘之后才完成（头部原地改写与改名本身不要新空间，
+ * 但那一行日志要）：写满到连一行日志都写不下时 [RecordingWriter.seal] 抛 [IOException]，不留 `.wav`，已提交的分段下次启动找回。
  */
 class WavRecordingStore internal constructor(
     private val directory: File,
@@ -162,18 +163,22 @@ class WavRecordingStore internal constructor(
             segmentSamples = 0
         }
 
+        /** 只给 [release] 用：收场时能提交就提交；写不进去也无妨，日志里已有的分段下次启动找回。 */
         private fun commitIfPossible() {
             try {
                 commit()
             } catch (e: IOException) {
-                // 日志写不进去（磁盘满）：封存本身不需要新空间，照常进行；最坏是封存后、登记前进程被杀，恢复时多丢一个提交间隔
+                // 日志写不进去（磁盘满）：没提交的尾巴留在 .part 里，下次启动恢复时按不可信截掉
             }
         }
 
         // 挂起函数不能用 @Synchronized；封存本身是阻塞的文件操作，没有挂起点，用 synchronized 块即可
         override suspend fun seal(): SealedAudio = synchronized(this) {
             check(!finished) { "已经封存或放弃" }
-            commitIfPossible()
+            // 最后一段的日志行必须先落盘：封存好的音频要能在进程被杀之后凭日志验证、找回。写不进去（磁盘满）就不封存，
+            // 直接抛出，.part 与日志原样留着（协调器收场时释放写入器，日志里已有的分段下次启动找回）；
+            // 绝不能留下一个没有任何分段记录的 .wav，登记之前被杀，之后每次恢复都得拒收它（audio_unverified）
+            commit()
             try {
                 data.setLength(HEADER_BYTES + dataBytes) // 回滚没能截掉的残渣
                 data.seek(0)

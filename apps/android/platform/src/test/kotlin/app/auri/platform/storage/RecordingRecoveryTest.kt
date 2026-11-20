@@ -419,10 +419,12 @@ class RecordingRecoveryTest {
     // ---- 写满 ----
 
     @Test
-    fun `磁盘写满（在选定的字节处）：append 抛 IOException，磁盘上只剩已经接受的完整采样；写满的磁盘上封存照样完成`() = runBlocking {
+    fun `磁盘写满（在选定的字节处）：append 抛 IOException，磁盘上只剩已经接受的完整采样；封存要么完成要么抛出（最后一行日志写不下），不留无法验证的 wav`() = runBlocking {
         val total = FaultyDisk().also { disk -> store(disk).begin(recordId, open, format, meta).also { play(it) }.seal() }.written
         var failures = 0
         var journalHits = 0
+        var sealedOk = 0
+        var sealRefused = 0
         for (free in generateSequence(0L) { it + 53 }.takeWhile { it < total }) {
             records.deleteRecursively()
             val disk = FaultyDisk(freeBytes = free)
@@ -447,7 +449,26 @@ class RecordingRecoveryTest {
             val partSize = if (part.exists()) part.length() else -1
             assertEquals("没有半截的采样（空间 $free）：文件正好是头加上已接受的字节", 44L + accepted * 2, partSize)
 
-            val sealed = writer.seal() // 写满的磁盘上，头部原地改、改名不要新空间
+            val sealed = try {
+                writer.seal() // 头部原地改、改名不要新空间，但最后一段的日志行要
+            } catch (e: IOException) {
+                null
+            }
+            if (sealed == null) {
+                // 最后一行日志写不下：封存不能完成，不留看上去已经完成的 wav；已提交的分段在下次启动逐字节找回
+                sealRefused += 1
+                assertFalse("空间 $free：封存没完成就不能有 wav", wav.exists())
+                writer.release()
+                val r = recover(store(FaultyDisk())).recovered.singleOrNull()
+                val audio = r?.audio
+                if (r != null && audio != null) {
+                    assertArrayEquals("空间 $free：找回的是已提交的分段", r.runs.flatMap { expected(it).toList() }.toShortArray(), readPcm(audio.location))
+                    assertTrue("空间 $free：找回的不超过已接受的", audio.sampleCount <= accepted)
+                    for (run in r.runs) assertEquals("空间 $free", sha(bytes(expected(run))), run.sha256)
+                }
+                continue
+            }
+            sealedOk += 1
             assertEquals("空间 $free", accepted, sealed.sampleCount)
             val expectedSamples = acceptedPieces.flatMap { (s, n) -> pcm(s, n).toList() }.toShortArray()
             assertArrayEquals("空间 $free", expectedSamples, readPcm(sealed.location))
@@ -457,6 +478,8 @@ class RecordingRecoveryTest {
         }
         assertTrue("至少在几十个不同的字节处写满过（$failures）", failures >= 30)
         assertTrue("日志一直在", journalHits > 0)
+        assertTrue("封存完成的位置也走到了（$sealedOk）", sealedOk > 0)
+        assertTrue("最后一行日志写不下、封存被拒的位置也走到了（$sealRefused）", sealRefused > 0)
     }
 
     @Test
@@ -532,6 +555,42 @@ class RecordingRecoveryTest {
         assertTrue(part.isFile && journal.isFile && !wav.exists())
         val r = recover().recovered.single()
         assertEquals(4320L, r.audio?.sampleCount)
+    }
+
+    // ---- Ticket 19 评审 B2：封存必须等分段记录落盘 ----
+
+    @Test
+    fun `seal cannot complete while the last segment cannot be journaled, and recovery after a crash before registration is deterministic`() = runBlocking {
+        // 封存好的音频要能在进程被杀之后凭日志验证、找回。最后一段的日志行写不进去时，旧代码吞掉失败照样改名，
+        // 留下一个没有任何分段记录的 .wav：登记之前被杀，之后每次恢复都拒收它（audio_unverified）。
+        val cases = listOf(
+            Triple("一个分段都没提交过（整段语音都在没提交的尾巴里）", script.take(3), null),
+            Triple("提交过一个分段，尾巴没提交", script.take(7), 1920L),
+        )
+        for ((label, pieces, committedSamples) in cases) {
+            records.deleteRecursively()
+            val disk = FaultyDisk()
+            val writer = store(disk).begin(recordId, open, format, meta)
+            play(writer, pieces)
+            disk.freeBytes = 3 // 容不下一行日志；封存的其余步骤（头部原地改写、改名）不要新空间
+
+            assertThrows("$label：日志落不了盘，封存不能算完成", IOException::class.java) { runBlocking { writer.seal() } }
+            assertFalse("$label：不能留下看上去已经完成的 .wav", wav.exists())
+            assertTrue("$label：音频与日志原样留着，等下次启动恢复", part.isFile && journal.isFile)
+            writer.release() // 协调器在封存失败之后释放写入器
+
+            // 进程在登记之前被杀：新的进程只凭磁盘恢复，恢复多少次结果都一样
+            val first = recover(store()).recovered.single()
+            val second = recover(store()).recovered.single()
+
+            assertEquals("$label：恢复可重复", describe(first), describe(second))
+            if (committedSamples == null) {
+                assertTrue("$label：没有任何可信的字节", first.runs.isEmpty() && first.audio == null)
+            } else {
+                assertEquals("$label：已提交的分段原样找回", committedSamples, first.audio?.sampleCount)
+                for (run in first.runs) assertEquals(sha(bytes(expected(run))), run.sha256)
+            }
+        }
     }
 
     // ---- 在任意字节处被杀 ----

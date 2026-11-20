@@ -42,10 +42,10 @@ class InterruptionEndToEndTest {
     private fun bytes(samples: ShortArray): ByteArray =
         ByteBuffer.allocate(samples.size * 2).order(ByteOrder.LITTLE_ENDIAN).apply { samples.forEach { putShort(it) } }.array()
 
-    private fun TestScope.session(disk: FaultyDisk, directory: File): RealStoreRig {
+    private fun TestScope.session(disk: FaultyDisk, directory: File, spoken: Int = batches): RealStoreRig {
         val rig = RealStoreRig(this, directory, disk)
         rig.startRecording()
-        rig.speak(batches)
+        rig.speak(spoken)
         rig.stop()
         return rig
     }
@@ -94,7 +94,7 @@ class InterruptionEndToEndTest {
         val nearEnd = ((totals.growth - 400).coerceAtLeast(0)..totals.growth step 5).toList() // 停止时写最后一批、封存时写日志都在最后这一小段
         val outcomes = mutableSetOf<String>()
 
-        // 同一个写满位置各跑两遍：封存顺利；封存时改名失败（磁盘写满时的 seal 不需要新空间，要让它失败得另想办法）
+        // 同一个写满位置各跑两遍：封存顺利（写满到放不下最后一行日志时它也会失败）；封存时改名失败（注入）
         val cases = (coarse + nearEnd).toSortedSet().flatMap { free -> listOf(free to false, free to true) }
         for ((free, sealFails) in cases) {
             val directory = newDir()
@@ -111,6 +111,7 @@ class InterruptionEndToEndTest {
                 val sealed = rig.output.recordings.toList()
                 val lost = rig.output.lost.toList()
                 val registered = sealed.map { it.result.recordId }.toSet()
+                val filesBeforeRecovery = directory.list().orEmpty().toList()
                 val scan = runBlocking { WavRecordingStore(directory).recoverOrphans { it in registered } }
                 assertTrue("$context：下次启动读盘不出错：${scan.failures}", scan.failures.isEmpty())
 
@@ -154,8 +155,9 @@ class InterruptionEndToEndTest {
                             outcomes += "第一批都没写下就写满：通知丢失，不留 Record 也不留残渣"
                             assertTrue("$context：一个采样都没写下，磁盘上什么都不剩：${scan.recovered}", scan.recovered.isEmpty() && directory.list().orEmpty().isEmpty())
                         } else {
-                            outcomes += "封存没完成但分段留在磁盘上，下次启动找回"
-                            assertTrue("$context：磁盘写满时封存不需要新空间，只有注入的封存失败才会走到这里", sealFails)
+                            // 封存没完成有两个原因：注入的改名失败；或者最后一行分段日志写不下（磁盘写满，评审 B2）
+                            outcomes += if (sealFails) "封存没完成但分段留在磁盘上，下次启动找回" else "封存时日志写不下：不留 wav，下次启动找回已提交的分段"
+                            assertTrue("$context：封存没完成，磁盘上不能有看上去已经完成的 wav：$filesBeforeRecovery", filesBeforeRecovery.none { it.endsWith(".wav") })
                             val recovered = scan.recovered.single()
                             assertEquals(context, lost.single().first, recovered.recordId)
                             val kept = recovered.checkedPcm(context).size.toLong()
@@ -175,9 +177,52 @@ class InterruptionEndToEndTest {
         println("MEASURED storage-sweep positions=${cases.size / 2} cases=${cases.size} recordingGrowthBytes=${totals.growth} outcomes=${outcomes.sorted()}")
         assertEquals(
             "扫描必须真的走到过每一种收场方式，否则这个测试什么也没证明：$outcomes",
-            setOf("开始就写不下", "第一批都没写下就写满：通知丢失，不留 Record 也不留残渣", "写满后封存了已写下的部分", "完整结束", "封存没完成但分段留在磁盘上，下次启动找回"),
+            setOf(
+                "开始就写不下", "第一批都没写下就写满：通知丢失，不留 Record 也不留残渣", "写满后封存了已写下的部分", "完整结束",
+                "封存没完成但分段留在磁盘上，下次启动找回", "封存时日志写不下：不留 wav，下次启动找回已提交的分段",
+            ),
             outcomes,
         )
+    }
+
+    /**
+     * Ticket 19 评审 B2：语音都写下了，磁盘只差最后一行分段日志（少 1 字节）。旧代码吞掉日志失败照样封存并登记一个 .wav；
+     * 登记之前进程被杀，磁盘上就只剩一个没有任何分段记录的 .wav，之后每次恢复都拒收它。现在封存不能完成：
+     * 不登记任何 Record、不留 .wav，只通知“丢失（存储）”；已提交的分段（如果有）下次启动找回，恢复不出错。
+     */
+    @Test
+    fun `audio fits but the last segment journal line does not - the recording is lost loudly, no wav is left, the committed part is recovered`() = runTest {
+        for (spoken in listOf(1, batches)) { // 1 批：一个分段都没提交过；12 批：前面的分段都提交了，只缺最后一行
+            val dry = FaultyDisk(freeBytes = 1_000_000_000L)
+            session(dry, newDir(), spoken).close()
+            val growth = 1_000_000_000L - dry.freeBytes
+            val directory = newDir()
+            val rig = session(FaultyDisk(freeBytes = growth - 1), directory, spoken)
+            val context = "说了 $spoken 批，磁盘少 1 字节"
+            try {
+                assertTrue("$context：不该有没人处理的异常：${rig.deaths}", rig.deaths.isEmpty())
+                assertTrue("$context：不能声称封存成功（没有登记任何 Record）：${rig.output.recordings.size}", rig.output.recordings.isEmpty())
+                assertEquals("$context：必须通知丢失（存储）", listOf(ErrorCode.STORAGE_EXHAUSTED), rig.output.lost.map { it.second })
+                assertEquals("$context：每次打开的采集恰好释放一次", rig.capture.requests.map { it.operationId }, rig.capture.releases.toList())
+                assertTrue("$context：磁盘上不能有看上去已经完成的 .wav：${directory.list().orEmpty().toList()}", directory.list().orEmpty().none { it.endsWith(".wav") })
+
+                // 登记之前进程被杀：新的进程只凭磁盘恢复；恢复不出错，两次的结果一样
+                val first = runBlocking { WavRecordingStore(directory).recoverOrphans { false } }
+                assertTrue("$context：恢复不出错（旧代码在这里报 audio_unverified）：${first.failures}", first.failures.isEmpty())
+                val recovered = first.recovered.single()
+                assertEquals(rig.output.lost.single().first, recovered.recordId)
+                val kept = recovered.checkedPcm(context).size.toLong()
+                val written = rig.snapshot.counters.writtenSamples
+                assertEquals("$context：语音确实全写进了磁盘，只差最后一行日志", spoken.toLong() * RealStoreRig.SAMPLES_PER_BATCH, written)
+                if (spoken == 1) assertEquals("$context：没有已提交的分段，没有可信的音频", 0L, kept)
+                else assertTrue("$context：已提交的分段找回了，只丢最后没提交的一段（写下 $written，找回 $kept）", kept in 1 until written && written - kept <= COMMIT_SAMPLES)
+                val second = runBlocking { WavRecordingStore(directory).recoverOrphans { false } }
+                assertTrue(second.failures.isEmpty())
+                assertEquals("$context：恢复可重复：第二次得到同一条 Record", recovered.recordId, second.recovered.single().recordId)
+            } finally {
+                rig.close()
+            }
+        }
     }
 
     // ---- 进程被杀 ----
