@@ -55,6 +55,7 @@ ENGINE = SYNC_ENGINE + "SyncEngine.kt"
 POLICY = ANDROID + "sync/src/main/kotlin/app/auri/sync/policy/DataFlowPolicy.kt"
 POLICY_SQL = SYNCPLATFORM + "policy/DataFlowPolicySql.kt"
 RESUME_PLANNER = ANDROID + "sync/src/main/kotlin/app/auri/sync/resume/ResumePlanner.kt"
+SYNC_RUNTIME = SYNCPLATFORM + "SyncRuntime.kt"
 SYNC_STATUS = ANDROID + "sync/src/main/kotlin/app/auri/sync/status/SyncStatus.kt"
 SEND_REVIEW_VM = APP_DEST + "SendReviewViewModel.kt"
 CLIPBOARD_GUARD = APP_DEST + "SecretClipboardGuard.kt"
@@ -723,6 +724,38 @@ MUTATIONS: tuple = (
         (Edit(DESCRIPTIONS, "请再点“轮换凭证”生成一个新的，旧的那个会立刻失效。", ""),),
         app_tests("DestinationTextTest"), APP_RESULTS,
         ("凭证已丢掉的说明（评审 B6）",),
+    ),
+    # ---- 评审 H1：叫醒规划器的“欠不欠追加”要和任务表同一刻现算，重启后只凭磁盘上的账也算得出来 ----
+    Mutation(
+        "h1-planner-ignores-owed-additions",
+        "评审 H1：规划器不看欠着的追加：用户确认预览之后（文字已入库）叫醒被取消，进程一被杀就没人再来做",
+        (Edit(RESUME_PLANNER, "needsResume(pairingState, list, dataFlow, additionsOwed())", "needsResume(pairingState, list, dataFlow, false)"),),
+        sync_tests("ResumeRecoveryTest", "ResumePlannerTest"), SYNC_RESULTS,
+        ("预览目标在文字入库之前就被确认", "用户确认提交了、叫醒还没登记进程就被杀", "任务都已入库，但还欠网关追加的 Delivery"),
+    ),
+    Mutation(
+        "h1-planner-owed-one-tick-stale",
+        "评审 H1：“欠不欠追加”读到的是上一拍的值（独立一路流的老毛病）：任务入库的那一刻追加刚到期，叫醒却被取消",
+        (
+            Edit(RESUME_PLANNER, "        combine(pairing, jobs, policy, additionsChanged.onStart { emit(Unit) }) {", "        var owedBefore = false\n        combine(pairing, jobs, policy, additionsChanged.onStart { emit(Unit) }) {"),
+            Edit(RESUME_PLANNER, "needsResume(pairingState, list, dataFlow, additionsOwed()) }", "needsResume(pairingState, list, dataFlow, owedBefore).also { owedBefore = additionsOwed() } }"),
+        ),
+        sync_tests("ResumeRecoveryTest"), SYNC_RESULTS,
+        ("预览目标在文字入库之前就被确认",),
+    ),
+    Mutation(
+        "h1-runtime-does-not-watch-the-ledger",
+        "评审 H1：SyncRuntime 没把发送账的变化接给规划器：用户确认之后账上欠了追加，规划器没有重新评估",
+        (Edit(SYNC_RUNTIME, "        additionsChanged = dispatch.changes(),\n", ""),),
+        app_tests("ResumeWiringGuardTest"), APP_RESULTS,
+        ("叫醒规划器的“欠不欠追加”读的是发送账",),
+    ),
+    Mutation(
+        "h1-runtime-owed-always-false",
+        "评审 H1：SyncRuntime 里“欠不欠追加”写死成不欠：规划器永远只看任务表，预览确认的追加没有叫醒保护",
+        (Edit(SYNC_RUNTIME, "        additionsOwed = { dispatch.due().isNotEmpty() },", "        additionsOwed = { false },"),),
+        app_tests("ResumeWiringGuardTest"), APP_RESULTS,
+        ("叫醒规划器的“欠不欠追加”读的是发送账",),
     ),
 )
 

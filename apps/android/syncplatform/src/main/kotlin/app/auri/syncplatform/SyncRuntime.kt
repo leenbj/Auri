@@ -129,7 +129,8 @@ class SyncRuntime(
         resume,
         clock,
         log = log,
-        additionsDue = dispatch.dueUpdates().map { it.isNotEmpty() }.distinctUntilChanged(),
+        additionsOwed = { dispatch.due().isNotEmpty() },
+        additionsChanged = dispatch.changes(),
     )
     private val resumeRunner = ResumeRunner(
         ready = { started.await() },

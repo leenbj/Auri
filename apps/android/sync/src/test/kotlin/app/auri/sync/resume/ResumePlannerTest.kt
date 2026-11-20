@@ -66,7 +66,7 @@ class ResumePlannerTest {
         val additionsDue = MutableStateFlow(false)
         val log = CollectingLog()
         val clock = FakeClock(scope.testScheduler)
-        val planner = ResumePlanner(this.pairing, this.jobs, policy, scheduler, clock, RetryPolicy(), log, additionsDue)
+        val planner = ResumePlanner(this.pairing, this.jobs, policy, scheduler, clock, RetryPolicy(), log, { additionsDue.value }, additionsDue)
     }
 
     private fun TestScope.rig(pairing: PairingState, jobs: List<SyncJob>) = Rig(this, pairing, jobs).also {
