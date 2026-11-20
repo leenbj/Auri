@@ -9,6 +9,8 @@
     <!-- 扫配对二维码。没有摄像头的设备（和模拟器）也能安装：配对载荷可以在调试版里手动输入。 -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- 生成或轮换 Destination 凭证前的生物识别核验（系统框架的 BiometricPrompt）。普通权限，安装时自动授予，不访问任何生物特征数据。 -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <!-- 进程被系统杀掉之后，有网络时把应用叫醒、接着发没发完的文字（JobScheduler）。跨重启保留这个叫醒（setPersisted）必须声明它。 -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 

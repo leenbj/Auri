@@ -5,6 +5,7 @@ package app.auri.sync.destinations
 import app.auri.sync.gateway.CreateDestinationRequest
 import app.auri.sync.gateway.Destination
 import app.auri.sync.gateway.Intent
+import app.auri.sync.gateway.Publication
 import app.auri.sync.gateway.SendMode
 import app.auri.sync.pairing.NeedsUser
 import app.auri.sync.testing.DispatchRig
@@ -49,6 +50,24 @@ class DestinationServiceTest {
         assertEquals(SendMode.PREVIEW_CONFIRM, preview.sendMode)
         assertEquals(setOf(auto.destinationId, preview.destinationId), rig.dispatch.destinations().map { it.destinationId }.toSet())
         assertEquals(listOf("context"), rig.server.createBodies[0].getValue("allowed_intents").jsonArray.map { it.jsonPrimitive.content })
+    }
+
+    @Test
+    fun `有效的 Destination 已经有 50 个：再创建先说明白，请求没有发出（合同限制一条文字最多投给 50 个）`() = run { rig ->
+        val gatewayId = SyncSamples.pairedGateway().gatewayId
+        val existing = (0 until Publication.MAX_DESTINATIONS).map { index ->
+            Destination("d0000000-0000-4000-8000-%012x".format(index), "目的地$index", SendMode.AUTO_SEND, setOf(Intent.CONTEXT), rig.clock.now(), "ef7b1358-df31-520f-90f3-d98fc5173b46", false, null)
+        }
+        rig.dispatch.applyDestinations(gatewayId, existing, authoritative = false, now = rig.clock.now())
+
+        val result = rig.service.create(CreateDestinationRequest("第 51 个", SendMode.AUTO_SEND, setOf(Intent.CONTEXT)))
+
+        assertEquals(ServiceFailure.LimitReached, result.failure())
+        assertTrue("请求没有发出", rig.server.adminCalls.none { it == "POST destinations" })
+
+        // 撤销了一个（本地缓存里标成已撤销）就又能创建了
+        rig.dispatch.applyDestinations(gatewayId, listOf(existing[0].copy(revokedAt = rig.clock.now())), authoritative = false, now = rig.clock.now())
+        assertEquals(SendMode.AUTO_SEND, rig.service.create(CreateDestinationRequest("第 51 个", SendMode.AUTO_SEND, setOf(Intent.CONTEXT))).ok().sendMode)
     }
 
     @Test

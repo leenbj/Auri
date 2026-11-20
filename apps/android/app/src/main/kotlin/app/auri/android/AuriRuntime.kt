@@ -6,6 +6,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import app.auri.android.control.ControlWiring
 import app.auri.android.control.PROFILE_FILE_NAME
+import app.auri.android.destinations.DestinationDetailViewModel
+import app.auri.android.destinations.DestinationsViewModel
+import app.auri.android.destinations.LibraryItemTexts
+import app.auri.android.destinations.SendReviewViewModel
 import app.auri.android.home.CoordinatorControls
 import app.auri.android.home.HomeViewModel
 import app.auri.android.modelui.ManagerModelControls
@@ -48,6 +52,7 @@ import app.auri.platform.system.SystemClock
 import app.auri.syncplatform.AndroidSyncLog
 import app.auri.syncplatform.SyncRuntime
 import app.auri.syncplatform.SyncStorage
+import app.auri.syncplatform.auth.BiometricLocalAuthenticator
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -143,6 +148,10 @@ class AuriRuntime(
     /** 配对与同步（Ticket 21）。构造时不碰网络与相机；[SyncRuntime.start] 由 AuriApplication 调用。 */
     val sync: SyncRuntime = SyncRuntime.create(application, library, scope)
 
+    /** 目的地管理（Ticket 22）：每次生成或轮换 Destination 凭证前现场做本机核验（生物识别或设备锁屏凭据）。 */
+    val destinations = sync.destinationService(BiometricLocalAuthenticator(application, AndroidSyncLog))
+    private val itemTexts = LibraryItemTexts(library)
+
     init {
         // 前台服务跟着采集状态走；服务起不来就取消这次采集（没有前台服务，录音一进后台就会被系统静音）
         scope.bindForegroundService(coordinator.snapshot, AndroidForegroundServiceController(application)) { coordinator.foregroundServiceFailed() }
@@ -169,6 +178,25 @@ class AuriRuntime(
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
             ModelsViewModel(ManagerModelControls(modelManager), SchedulerControls(scheduler), CoroutineScope(SupervisorJob() + Dispatchers.Default)) as T
+    }
+
+    val destinationsViewModelFactory = object : ViewModelProvider.Factory {
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : ViewModel> create(modelClass: Class<T>): T =
+            DestinationsViewModel(destinations, CoroutineScope(SupervisorJob() + Dispatchers.Default), AndroidSyncLog) as T
+    }
+
+    val sendReviewViewModelFactory = object : ViewModelProvider.Factory {
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : ViewModel> create(modelClass: Class<T>): T =
+            SendReviewViewModel(sync.dispatch, itemTexts, SystemClock, sync::syncNow, CoroutineScope(SupervisorJob() + Dispatchers.Default), AndroidSyncLog) as T
+    }
+
+    /** 每个目的地一个详情视图模型（以编号为键，见 MainActivity）；离开详情页时它自己抹掉凭证。 */
+    fun destinationDetailViewModelFactory(destinationId: String) = object : ViewModelProvider.Factory {
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : ViewModel> create(modelClass: Class<T>): T =
+            DestinationDetailViewModel(destinationId, destinations, itemTexts, CoroutineScope(SupervisorJob() + Dispatchers.Default), AndroidSyncLog) as T
     }
 
     companion object {

@@ -7,9 +7,10 @@ import app.auri.platform.storage.NoBackupStorage
 import app.auri.platform.system.SystemClock
 import app.auri.sync.SyncController
 import app.auri.sync.SyncLog
+import app.auri.sync.destinations.DestinationService
+import app.auri.sync.destinations.LocalAuthenticator
 import app.auri.sync.discovery.GatewayDiscovery
 import app.auri.sync.discovery.GatewayLocator
-import app.auri.sync.engine.JobKey
 import app.auri.sync.engine.RecordLibrarySubmissionSource
 import app.auri.sync.engine.SyncEngine
 import app.auri.sync.gateway.DeviceInfo
@@ -31,6 +32,8 @@ import app.auri.sync.resume.ResumeScheduler
 import app.auri.sync.resume.needsResume
 import app.auri.sync.status.SyncStatus
 import app.auri.syncplatform.discovery.NsdGatewayDiscovery
+import app.auri.syncplatform.dispatch.DispatchSql
+import app.auri.syncplatform.dispatch.SqliteDispatchStore
 import app.auri.syncplatform.jobs.SqliteSyncJobStore
 import app.auri.syncplatform.keystore.KeystoreKeys
 import app.auri.syncplatform.network.AndroidNetworkSignal
@@ -47,15 +50,18 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** 装配：Record 库和待同步任务表在同一个数据库文件里，发布 Revision 的事务里顺手登记任务。 */
+/**
+ * 装配：Record 库、待同步任务表、发送账（Destination 缓存、预览确认的拦截、意图标签）在同一个数据库文件里，
+ * 发布 Revision 的事务里顺手规划目标、决定要不要登记任务（Ticket 22）。
+ */
 object SyncStorage {
-    /** 发布 Revision 时在**同一个事务**里入队一条待同步任务的 Record 库；任务的创建时间取 [clock]。 */
+    /** 发布 Revision 时在**同一个事务**里规划发送、登记待同步任务的 Record 库；时间取 [clock]。 */
     fun library(application: Application, databaseName: String?, clock: Clock = SystemClock): SqliteRecordLibrary =
         SqliteRecordLibrary(
             application,
             databaseName,
-            publicationStep = { db, revision -> SqliteSyncJobStore.enqueueIn(db, JobKey(revision.recordId, revision.number), clock.now()) },
-            extraSchema = SqliteSyncJobStore.SCHEMA,
+            publicationStep = { db, revision -> SqliteDispatchStore.publishIn(db, revision, clock.now()) },
+            extraSchema = DispatchSql.SCHEMA,
         )
 }
 
@@ -72,26 +78,30 @@ class SyncRuntime(
     pairingFile: File,
     box: SecretBox,
     private val scope: CoroutineScope,
-    clock: Clock,
+    private val clock: Clock,
     device: DeviceInfo,
     discovery: GatewayDiscovery,
     network: NetworkSignal,
-    http: HttpExchangeFactory = HttpExchangeFactory { pin -> PinnedHttpsClient(pin) },
+    private val http: HttpExchangeFactory = HttpExchangeFactory { pin -> PinnedHttpsClient(pin) },
     private val log: SyncLog = SyncLog.None,
     resume: ResumeScheduler = ResumeScheduler.None,
 ) : SyncController {
     val jobs = SqliteSyncJobStore(library)
 
+    /** 发送账（Ticket 22）：Destination 缓存、预览确认的决定、意图标签。引擎每次发送前向它要 publication。 */
+    val dispatch = SqliteDispatchStore(library)
+
     /** 配对状态（可观察）。读它之前先 [start]：启动时才读第一次，之前没有任何状态。 */
     val pairing = ObservablePairingStore(FilePairingStore(pairingFile, box))
 
     private val pairingService = PairingService(pairing, http, discovery, clock, device, log)
+    private val locator = GatewayLocator(http, discovery, log)
     private val engine = SyncEngine(
         jobs = jobs,
         pairing = pairing,
-        source = RecordLibrarySubmissionSource(library, SubmissionBuilder(device.appVersion)),
+        source = RecordLibrarySubmissionSource(library, SubmissionBuilder(device.appVersion), dispatch),
         http = http,
-        locator = GatewayLocator(http, discovery, log),
+        locator = locator,
         clock = clock,
         log = log,
     )
@@ -146,6 +156,13 @@ class SyncRuntime(
 
     /** 回到前台、用户点了“现在同步”：立刻跑一轮，并让探测的退避从头开始。 */
     override fun syncNow() = loop.nudge()
+
+    /**
+     * Destination 管理（Ticket 22）：和同步引擎共用配对记录、地址探测与固定公钥的 HTTPS，没有第二套网络栈。
+     * [authenticator] 是界面层给的本机核验（生物识别）：生成或轮换凭证前每次都要过它。
+     */
+    fun destinationService(authenticator: LocalAuthenticator): DestinationService =
+        DestinationService(pairing, http, locator, dispatch, jobs, authenticator, clock, log)
 
     companion object {
         private const val PAIRING_KEY_ALIAS = "auri.sync.pairing.v1"

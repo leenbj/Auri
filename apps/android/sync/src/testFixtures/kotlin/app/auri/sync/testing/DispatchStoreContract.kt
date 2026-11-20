@@ -347,11 +347,42 @@ abstract class DispatchStoreContract {
     }
 
     @Test
+    fun a_later_asr_revision_such_as_a_retranscription_is_only_stored_never_sent_again() = runBlocking {
+        val fixture = newFixture()
+        fixture.know(destination(auto, SendMode.AUTO_SEND), destination(preview, SendMode.PREVIEW_CONFIRM, createdAt = t0.plusSeconds(1)))
+
+        fixture.publish(JobKey(recordA, 2), RevisionSource.ASR, t0)
+
+        assertTrue("自动发送的只是 ASR 初稿（ADR-0009）：重新转录出的新版本只入库，也不拦着", fixture.hasJob(JobKey(recordA, 2)))
+        assertNull(fixture.store.item(JobKey(recordA, 2)))
+        assertEquals(Publication.StoreOnly, fixture.store.publicationFor(JobKey(recordA, 2)))
+    }
+
+    @Test
     fun an_item_that_was_never_planned_such_as_one_from_before_the_upgrade_is_only_stored() = runBlocking {
         val fixture = newFixture()
 
         assertEquals(Publication.StoreOnly, fixture.store.publicationFor(keyA))
         assertNull(fixture.store.item(keyA))
+    }
+
+    // ---- 合同上限 ----
+
+    @Test
+    fun a_text_never_has_more_targets_than_one_submission_may_carry() = runBlocking {
+        val fixture = newFixture()
+        val many = (0..Publication.MAX_DESTINATIONS).map { index ->
+            destination("d0000000-0000-4000-8000-%012x".format(index), SendMode.AUTO_SEND, createdAt = t0.plusSeconds(index.toLong()))
+        }
+        fixture.know(*many.toTypedArray())
+
+        fixture.publish(keyA, RevisionSource.ASR, t0)
+
+        val item = fixture.store.item(keyA)!!
+        assertEquals("合同：一次提交最多 ${Publication.MAX_DESTINATIONS} 个目标；超过的不规划，也不让发送卡死", Publication.MAX_DESTINATIONS, item.targets.size)
+        assertEquals("先创建的先算", many.take(Publication.MAX_DESTINATIONS).map { it.destinationId }, item.targets.map { it.destinationId })
+        assertEquals(Publication.MAX_DESTINATIONS, fixture.store.publicationFor(keyA).destinationIds.size)
+        assertTrue("没有要等的决定：照常放行", fixture.hasJob(keyA))
     }
 
     // ---- 目的地缓存 ----

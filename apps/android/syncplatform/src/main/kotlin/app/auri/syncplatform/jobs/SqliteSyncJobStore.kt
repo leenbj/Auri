@@ -10,6 +10,8 @@ import app.auri.sync.engine.NoSuchJobException
 import app.auri.sync.engine.SyncJob
 import app.auri.sync.engine.SyncJobStore
 import app.auri.sync.machine.SyncState
+import app.auri.syncplatform.dispatch.AndroidSqlDb
+import app.auri.syncplatform.dispatch.SqlDb
 import java.time.Instant
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -58,20 +60,8 @@ class SqliteSyncJobStore(private val library: SqliteRecordLibrary) : SyncJobStor
     override fun observe(): Flow<List<SyncJob>> = combine(ownChanges, library.changeSignal) { _, _ -> }.map { all() }
 
     companion object {
-        /**
-         * 交给 [SqliteRecordLibrary] 的 extraSchema：每次打开数据库时在**一个事务里**按顺序幂等执行——先建表，再回填。
-         *
-         * 回填（评审 F5）：升级一台装过 Ticket 16 的手机时，库里已经有“已发布”的 Revision，却没有任务；只建空表的话这些文字永远不会同步。
-         * 所以凡是库里有 Revision 而任务表里还没有它的，补一条等待发送的任务——与发布事务里入队的那条（[enqueueIn]）一个样子，
-         * 时间取 Revision 自己的发布时间（所以先发布的先同步，并且和“当时就入了队”没有区别）。
-         * 幂等：已有任务（不论进展到哪）一条都不动，重复打开不会重复；进程死在建表与回填之间，下一次打开补齐。
-         *
-         * 条件：本库没有墓碑（删除是后续 Ticket 的事）、也没有来源设备列——库里的 Record 全部由本机采集（ADR-0020，V1 没有导入路径，
-         * 换机迁移与备份已被关掉），所以评审说的“未删除、来源是本机”现在恒成立。**加墓碑的那个 Ticket 必须在这条回填里排除已删除的 Record**，
-         * 否则每次打开都会把它们的任务复活；SyncJobsBackfillTest 把两张表的列固定住了，改了结构那里会变红。
-         */
-        val SCHEMA = listOf(
-            """
+        /** 任务表的建表语句。 */
+        val CREATE_TABLE = """
             CREATE TABLE IF NOT EXISTS sync_jobs (
                 record_id TEXT NOT NULL,
                 revision INTEGER NOT NULL CHECK (revision >= 1),
@@ -87,8 +77,13 @@ class SqliteSyncJobStore(private val library: SqliteRecordLibrary) : SyncJobStor
                 updated_at_nano INTEGER NOT NULL,
                 PRIMARY KEY (record_id, revision)
             )
-            """.trimIndent(),
-            """
+        """.trimIndent()
+
+        /**
+         * 回填语句（见 [SCHEMA]）。[skippingHeldItems] = 同库里有发送账（Ticket 22）：预览确认还没决定的文字（`dispatch_items.released = 0`）
+         * 故意没有任务，回填不能把它们补上——补上就等于绕过“用户确认之前不发送”。
+         */
+        fun backfill(skippingHeldItems: Boolean): String = """
             INSERT INTO sync_jobs (
                 record_id, revision, state, attempts, uncertain, retry_at_s, retry_at_nano, blocked_reason,
                 created_at_s, created_at_nano, updated_at_s, updated_at_nano
@@ -97,31 +92,46 @@ class SqliteSyncJobStore(private val library: SqliteRecordLibrary) : SyncJobStor
                    r.created_at_s, r.created_at_nano, r.created_at_s, r.created_at_nano
             FROM revisions r
             WHERE NOT EXISTS (SELECT 1 FROM sync_jobs j WHERE j.record_id = r.record_id AND j.revision = r.number)
+            ${if (skippingHeldItems) "AND NOT EXISTS (SELECT 1 FROM dispatch_items d WHERE d.record_id = r.record_id AND d.revision = r.number AND d.released = 0)" else ""}
             ORDER BY r.created_at_s, r.created_at_nano, r.record_id, r.number
-            """.trimIndent(),
-        )
+        """.trimIndent()
+
+        /**
+         * 交给 [SqliteRecordLibrary] 的 extraSchema：每次打开数据库时在**一个事务里**按顺序幂等执行——先建表，再回填。
+         *
+         * 回填（评审 F5）：升级一台装过 Ticket 16 的手机时，库里已经有“已发布”的 Revision，却没有任务；只建空表的话这些文字永远不会同步。
+         * 所以凡是库里有 Revision 而任务表里还没有它的，补一条等待发送的任务——与发布事务里入队的那条（[enqueueIn]）一个样子，
+         * 时间取 Revision 自己的发布时间（所以先发布的先同步，并且和“当时就入了队”没有区别）。
+         * 幂等：已有任务（不论进展到哪）一条都不动，重复打开不会重复；进程死在建表与回填之间，下一次打开补齐。
+         *
+         * 条件：本库没有墓碑（删除是后续 Ticket 的事）、也没有来源设备列——库里的 Record 全部由本机采集（ADR-0020，V1 没有导入路径，
+         * 换机迁移与备份已被关掉），所以评审说的“未删除、来源是本机”现在恒成立。**加墓碑的那个 Ticket 必须在这条回填里排除已删除的 Record**，
+         * 否则每次打开都会把它们的任务复活；SyncJobsBackfillTest 把两张表的列固定住了，改了结构那里会变红。
+         */
+        val SCHEMA = listOf(CREATE_TABLE, backfill(skippingHeldItems = false))
 
         /**
          * 在调用方已经打开的事务里入队一条 PENDING 任务（同一个键已存在则什么都不做）。
          * 发布 Revision 的事务通过它登记任务；不自己开关事务，成败跟着外面那个事务走。
          */
-        fun enqueueIn(db: SQLiteDatabase, key: JobKey, now: Instant): Boolean {
-            val values = ContentValues().apply {
-                put("record_id", key.recordId)
-                put("revision", key.revision)
-                put("state", SyncState.PENDING.name)
-                put("attempts", 0)
-                put("uncertain", 0)
-                putNull("retry_at_s")
-                putNull("retry_at_nano")
-                putNull("blocked_reason")
-                put("created_at_s", now.epochSecond)
-                put("created_at_nano", now.nano)
-                put("updated_at_s", now.epochSecond)
-                put("updated_at_nano", now.nano)
-            }
-            return db.insertWithOnConflict("sync_jobs", null, values, SQLiteDatabase.CONFLICT_IGNORE) != -1L
-        }
+        fun enqueueIn(db: SQLiteDatabase, key: JobKey, now: Instant): Boolean = enqueueIn(AndroidSqlDb(db), key, now)
+
+        /** 同上，写在 [SqlDb] 上：发送账（[app.auri.syncplatform.dispatch.DispatchSql]）与 JVM 上的真 SQLite 测试共用这一条语句。 */
+        fun enqueueIn(sql: SqlDb, key: JobKey, now: Instant): Boolean = sql.update(
+            """
+            INSERT OR IGNORE INTO sync_jobs (
+                record_id, revision, state, attempts, uncertain, retry_at_s, retry_at_nano, blocked_reason,
+                created_at_s, created_at_nano, updated_at_s, updated_at_nano
+            ) VALUES (?, ?, ?, 0, 0, NULL, NULL, NULL, ?, ?, ?, ?)
+            """.trimIndent(),
+            key.recordId,
+            key.revision,
+            SyncState.PENDING.name,
+            now.epochSecond,
+            now.nano,
+            now.epochSecond,
+            now.nano,
+        ) > 0
     }
 }
 

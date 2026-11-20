@@ -13,13 +13,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.auri.android.control.ControlViewModel
+import app.auri.android.destinations.DestinationDetailViewModel
+import app.auri.android.destinations.DestinationsViewModel
+import app.auri.android.destinations.SendReviewViewModel
 import app.auri.android.home.HomeViewModel
 import app.auri.android.modelui.ModelsViewModel
 import app.auri.android.sync.SyncViewModel
 import app.auri.android.ui.AppRoot
 import app.auri.android.ui.ControlScreen
+import app.auri.android.ui.DestinationsPage
 import app.auri.android.ui.HomeScreen
 import app.auri.android.ui.ModelsScreen
 import app.auri.android.ui.SyncPage
@@ -31,6 +36,12 @@ class MainActivity : ComponentActivity() {
     private val controlViewModel: ControlViewModel by viewModels { runtime.controlViewModelFactory }
     private val syncViewModel: SyncViewModel by viewModels { runtime.syncViewModelFactory }
     private val modelsViewModel: ModelsViewModel by viewModels { runtime.modelsViewModelFactory }
+    private val destinationsViewModel: DestinationsViewModel by viewModels { runtime.destinationsViewModelFactory }
+    private val sendReviewViewModel: SendReviewViewModel by viewModels { runtime.sendReviewViewModelFactory }
+
+    /** 每个目的地一个详情视图模型，以编号为键（同一个目的地回到详情页拿到的是同一个）。 */
+    private fun destinationDetail(id: String): DestinationDetailViewModel =
+        ViewModelProvider(this, runtime.destinationDetailViewModelFactory(id))["destination-$id", DestinationDetailViewModel::class.java]
 
     // 不管用户给不给权限都继续开始：协调器会按实际情况拒绝并给出原因（PERMISSION_MIC_DENIED 等），界面如实显示
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { viewModel.start() }
@@ -47,7 +58,7 @@ class MainActivity : ComponentActivity() {
                 BackHandler { onSyncPage = false }
                 SyncPage(syncViewModel, onBack = { onSyncPage = false })
             } else {
-                // 录音 / 耳机控制（Ticket 17）/ 模型与转录（Ticket 20）三页；“同步与配对”入口在录音页里
+                // 录音 / 耳机控制（Ticket 17）/ 模型与转录（Ticket 20）/ 发送（Ticket 22）四页；“同步与配对”入口在录音页里
                 AppRoot(
                     home = {
                         HomeScreen(
@@ -72,6 +83,7 @@ class MainActivity : ComponentActivity() {
                             onRecheck = modelsViewModel::recheckResources,
                         )
                     },
+                    destinations = { DestinationsPage(destinationsViewModel, sendReviewViewModel, ::destinationDetail) },
                 )
             }
         }

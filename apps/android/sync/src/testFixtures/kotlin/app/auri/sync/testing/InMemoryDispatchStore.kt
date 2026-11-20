@@ -114,9 +114,9 @@ class InMemoryDispatchStore(private val disk: InMemoryDispatchDisk) : DispatchSt
 
     /** 发布一条 Revision 的那个事务里发生的事（Android：库的 publicationStep）。测试专用入口。 */
     suspend fun publish(key: JobKey, source: RevisionSource, now: Instant) = disk.lock.withLock {
-        if (source == RevisionSource.ASR) {
+        if (source == RevisionSource.ASR && key.revision == 1) { // 自动发送/预览确认只管 ASR 初稿（ADR-0009）；重新转录出的新版本只入库
             val item = InMemoryDispatchDisk.Item(disk.defaultIntent, now, disk.nextOrder++)
-            sortedCache().filter { it.active }.forEach { destination ->
+            sortedCache().filter { it.active }.take(Publication.MAX_DESTINATIONS).forEach { destination ->
                 item.rows[destination.destinationId] = InMemoryDispatchDisk.Row(
                     destination.sendMode,
                     if (destination.sendMode == SendMode.AUTO_SEND) TargetDecision.AUTO else TargetDecision.AWAITING,
@@ -125,7 +125,7 @@ class InMemoryDispatchStore(private val disk: InMemoryDispatchDisk) : DispatchSt
             disk.items[key] = item
             releaseIfReady(key, item, now)
         } else {
-            jobs.enqueue(key, now) // 用户修订：不规划、不等待，照常入库（ADR-0009：新版本不自动重发）
+            jobs.enqueue(key, now) // 用户修订、重新转录的新版本：不规划、不等待，照常入库（ADR-0009：新版本不自动重发）
         }
         bump()
     }

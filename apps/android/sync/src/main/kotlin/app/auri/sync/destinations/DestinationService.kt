@@ -12,6 +12,7 @@ import app.auri.sync.gateway.Destination
 import app.auri.sync.gateway.GatewayClient
 import app.auri.sync.gateway.GatewayResult
 import app.auri.sync.gateway.IssuedCredential
+import app.auri.sync.gateway.Publication
 import app.auri.sync.http.HttpExchangeFactory
 import app.auri.sync.http.TransportFailure
 import app.auri.sync.machine.SyncState
@@ -53,6 +54,9 @@ sealed interface ServiceFailure {
 
     /** 上一次生成/轮换凭证还没结束：不开第二个（否则双击会连着轮换两次，刚拿到的凭证立刻作废）。 */
     data object Busy : ServiceFailure
+
+    /** 有效的 Destination 已经有 [Publication.MAX_DESTINATIONS] 个：合同限制一条文字最多投给这么多个，再多就没法都发了。请先撤销用不到的。请求没有发出。 */
+    data object LimitReached : ServiceFailure
 }
 
 sealed interface ServiceResult<out T> {
@@ -120,7 +124,13 @@ class DestinationService(
         apply = { session, list -> dispatch.applyDestinations(session.gateway.gatewayId, list, authoritative = true, now = clock.now()) },
     )
 
-    override suspend fun create(request: CreateDestinationRequest): ServiceResult<Destination> = gatewayCall(
+    override suspend fun create(request: CreateDestinationRequest): ServiceResult<Destination> {
+        // 一条文字最多投给 50 个 Destination（合同）：再建就有 Destination 永远收不到文字，不如在这里明说。按本机缓存算，请求没有发出
+        if (dispatch.destinations().count { it.active } >= Publication.MAX_DESTINATIONS) return ServiceResult.Failed(ServiceFailure.LimitReached)
+        return createOnGateway(request)
+    }
+
+    private suspend fun createOnGateway(request: CreateDestinationRequest): ServiceResult<Destination> = gatewayCall(
         "create",
         request = { it.client.createDestination(it.address, it.gateway.token, request) },
         apply = { session, created -> dispatch.applyDestinations(session.gateway.gatewayId, listOf(created), authoritative = false, now = clock.now()) },
