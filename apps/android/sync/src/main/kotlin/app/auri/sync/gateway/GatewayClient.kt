@@ -63,11 +63,43 @@ class GatewayClient(private val http: HttpExchange) {
                 duplicate = reply.boolean("duplicate"),
             )
             reply.array("superseded_revisions")
-            reply.array("deliveries")
+            val deliveries = reply.items("deliveries").map(::readDeliveryOnRevision)
             if (stored.recordId != submission.recordId || stored.revision != submission.revision || stored.textSha256 != submission.textSha256) {
                 throw Unreadable("answer is about a different revision")
             }
-            stored
+            stored.copy(deliveries = deliveries)
+        }
+    }
+
+    /**
+     * POST /v1/records/{id}/revisions/{n}/deliveries：给已经入库的 Revision 追加 Delivery（预览确认的用户确认之后；评审 B2）。
+     * 网关上是幂等的：同一个 (Revision, Destination) 至多一份，重复请求回答现有的。回答必须是对我们问的那件事的回答：
+     * 同一个 Record 与 Revision，里面的每一项都是我们请求过的 Destination。
+     */
+    suspend fun addDeliveries(
+        address: GatewayAddress,
+        token: DeviceToken,
+        recordId: String,
+        revision: Int,
+        intent: Intent,
+        destinationIds: List<String>,
+    ): GatewayResult<DeliveriesAdded> {
+        require(Wire.UUID.matches(recordId)) { "record_id 必须是小写 UUID" }
+        require(revision >= 1) { "revision 至少为 1" }
+        require(destinationIds.isNotEmpty() && destinationIds.size <= Publication.MAX_DESTINATIONS) { "一次追加 1..${Publication.MAX_DESTINATIONS} 个 Destination" }
+        require(destinationIds.toSet().size == destinationIds.size && destinationIds.all { Wire.UUID.matches(it) }) { "destination_ids 必须是互不相同的小写 UUID" }
+        val body = buildJsonObject {
+            put("schema_version", Wire.SCHEMA_VERSION)
+            put("intent", intent.wire)
+            putJsonArray("destination_ids") { destinationIds.forEach { add(JsonPrimitive(it)) } }
+        }
+        val path = "/v1/records/$recordId/revisions/$revision/deliveries"
+        return call(address, HttpRequest("POST", path, JSON_BODY + authorization(token), body.toString().toByteArray(Charsets.UTF_8))) { reply ->
+            reply.requireVersion()
+            val added = DeliveriesAdded(reply.uuid("record_id"), reply.int("revision"), reply.items("deliveries").map(::readDeliveryOnRevision))
+            if (added.recordId != recordId || added.revision != revision) throw Unreadable("answer is about a different revision")
+            if (added.deliveries.any { it.destinationId !in destinationIds || it.revision != revision }) throw Unreadable("answer names a destination we did not ask for")
+            added
         }
     }
 
@@ -167,6 +199,9 @@ class GatewayClient(private val http: HttpExchange) {
             revokedAt = reply.timestampOrNull("revoked_at"),
         )
     }
+
+    private fun readDeliveryOnRevision(item: WireObject) =
+        DeliveryOnRevision(item.uuid("delivery_id"), item.uuid("destination_id"), item.int("revision"), item.string("state"))
 
     /** 读不懂（缺字段、类型不对）的投递条目没法归属给任何 Destination，丢掉；状态字符串本身不判断，原样带出。 */
     private fun readDelivery(item: WireObject): DeliveryOnGateway? = try {

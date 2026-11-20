@@ -15,6 +15,8 @@ MESSAGE_SCHEMAS = [
     "revision.schema.json#/$defs/submission",
     "revision.schema.json#/$defs/stored",
     "revision.schema.json#/$defs/record_deleted",
+    "revision.schema.json#/$defs/delivery_additions",
+    "revision.schema.json#/$defs/deliveries_added",
     "pairing.schema.json#/$defs/payload",
     "pairing.schema.json#/$defs/redeem_request",
     "pairing.schema.json#/$defs/redeem_response",

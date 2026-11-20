@@ -60,7 +60,7 @@ fun SendReviewScreen(
 private fun Item(item: ReviewItem, onConfirm: (JobKey, String) -> Unit, onSkip: (JobKey, String) -> Unit, onSetIntent: (JobKey, Intent) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(item.text ?: "（本机已经没有这条文字）")
-        Text("标签：" + describeIntent(item.intent) + " · " + UNREVIEWED_LABEL + if (item.sent) " · 已交给同步，标签不能再改" else "")
+        Text("标签：" + describeIntent(item.intent) + " · " + UNREVIEWED_LABEL + if (item.intentLocked) " · 已开始发送，标签不能再改" else "")
         if (item.canChangeIntent) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Intent.entries.forEach { intent ->

@@ -24,8 +24,10 @@ import kotlinx.serialization.json.putJsonArray
  * 网关服务端逻辑的小模型：健康检查、PUT 入库、查询 Record 状态（Ticket 21），以及 Destination 的创建/列表/撤销/签发凭证与投递（Ticket 22），
  * 响应体的形状照合同样本。
  * 语义取自真网关：同一（Record, Revision）再提交相同正文 = 重复（duplicate=true），不同正文 = 409；没见过的 Record 查询 = 404 REQUEST_INVALID；
- * **投递（Delivery）只在这一版第一次入库时按 publication.destination_ids 创建**，重复提交什么都不补建（G13）；
+ * **投递（Delivery）在这一版第一次入库时按 publication.destination_ids 创建**，重复提交什么都不补建；已入库的 Revision 之后要给更多
+ * Destination 建投递，走追加端点（POST …/revisions/{n}/deliveries，评审 B2）：已有的原样回答、缺的才验证并创建、一个不合格就整个 422；
  * 第一次入库时 publication 里有不存在、已撤销或不接收这种意图的 Destination，整个 PUT 以 422 REQUEST_INVALID 拒绝（重复提交在这之前就返回了，和真网关一样）。
+ * PUT 与追加的响应里的 deliveries 都是这一版上的投递（编号、Destination、版本号、状态）。
  * 它是系统边界上的替身；与真网关的对照由 realgateway 测试负责。
  */
 class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncSamples.DEVICE_ID) {
@@ -77,7 +79,13 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
     val createBodies = CopyOnWriteArrayList<JsonObject>()
     val credentialRequests = CopyOnWriteArrayList<String>()
 
-    /** 到达服务器逻辑的 PUT / 状态查询，按顺序："PUT <record>#<n>"、"GET status <record>"（健康检查不记）。 */
+    /** 收到的追加请求体（解析后），按到达顺序。 */
+    val additionBodies = CopyOnWriteArrayList<JsonObject>()
+
+    /** 追加时网关“答复成功却没有为它建”的 Destination（真网关不会这样；用来验证手机不假设追加一定建成）。 */
+    val dropFromAdditions = HashSet<String>()
+
+    /** 到达服务器逻辑的 PUT / 追加 / 状态查询，按顺序："PUT <record>#<n>"、"POST deliveries <record>#<n>"、"GET status <record>"（健康检查不记）。 */
     val calls = CopyOnWriteArrayList<String>()
 
     /** Destination 管理请求，按顺序："GET destinations"、"POST destinations"、"DELETE destination"、"POST credential"。 */
@@ -85,6 +93,7 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
 
     val putCount: Int get() = calls.count { it.startsWith("PUT ") }
     val statusCount: Int get() = calls.count { it.startsWith("GET status ") }
+    val additionCount: Int get() = calls.count { it.startsWith("POST deliveries ") }
 
     /** 依次用在后面的 PUT / 状态查询上（一个请求用一个）。 */
     val faults = ConcurrentLinkedQueue<Fault>()
@@ -115,6 +124,7 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
     suspend fun handle(request: HttpRequest): HttpReply = when {
         request.method == "GET" && request.path == "/health" -> ScriptedExchange.json(200, """{"status":"ok"}""")
         request.method == "PUT" && PUT_PATH.matches(request.path) -> put(request)
+        request.method == "POST" && ADDITION_PATH.matches(request.path) -> addDeliveries(request)
         request.method == "GET" && STATUS_PATH.matches(request.path) -> status(request)
         request.method == "GET" && request.path == "/v1/destinations" -> listDestinations()
         request.method == "POST" && request.path == "/v1/destinations" -> createDestination(request)
@@ -160,8 +170,60 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
         return ScriptedExchange.json(
             200,
             """{"schema_version":"1.1","operation_id":"${operationId()}","record_id":"$recordId","revision":$revision,"text_sha256":"$sha",""" +
-                """"stored_at":"${iso(now())}","duplicate":${existing != null},"superseded_revisions":[],"deliveries":[]}""",
+                """"stored_at":"${iso(now())}","duplicate":${existing != null},"superseded_revisions":[],"deliveries":${deliveriesOn(key)}}""",
         )
+    }
+
+    private fun deliveriesOn(key: JobKey, only: List<String>? = null): JsonArray = buildJsonArray {
+        deliveries.filter { it.recordId == key.recordId && it.revision == key.revision && (only == null || it.destinationId in only) }
+            .sortedBy { d -> only?.indexOf(d.destinationId) ?: 0 }
+            .forEach { delivery ->
+                add(
+                    buildJsonObject {
+                        put("delivery_id", deliveryId(delivery))
+                        put("destination_id", delivery.destinationId)
+                        put("revision", delivery.revision)
+                        put("state", delivery.state)
+                    },
+                )
+            }
+    }
+
+    /** 追加：已有的原样回答，缺的才验证并创建；一个不合格就整个 422、什么都不建。 */
+    private suspend fun addDeliveries(request: HttpRequest): HttpReply {
+        val (recordId, revision) = ADDITION_PATH.matchEntire(request.path)!!.destructured
+        val key = JobKey(recordId, revision.toInt())
+        calls += "POST deliveries $recordId#$revision"
+        val body = Json.parseToJsonElement(request.body!!.toString(Charsets.UTF_8)).jsonObject
+        additionBodies += body
+        val intent = body.getValue("intent").jsonPrimitive.content
+        val ids = body.getValue("destination_ids").jsonArray.map { it.jsonPrimitive.content }
+        when (val fault = nextFault()) {
+            is Fault.Transport -> throw fault.failure
+            Fault.LoseRequest -> throw TransportFailure.Interrupted()
+            is Fault.Reject -> return error(fault.status, fault.code, fault.retryable)
+            Fault.StoreThenLoseResponse -> {
+                if (key in stored && missing(key, ids).let { publicationAcceptable(it, intent) }) create(key, missing(key, ids))
+                throw TransportFailure.Interrupted()
+            }
+            null -> Unit
+        }
+        if (key !in stored) return error(404, "REQUEST_INVALID", false)
+        val absent = missing(key, ids)
+        if (!publicationAcceptable(absent, intent)) return error(422, "REQUEST_INVALID", false)
+        create(key, absent.filter { it !in dropFromAdditions })
+        operations += 1
+        return ScriptedExchange.json(
+            200,
+            """{"schema_version":"1.1","record_id":"$recordId","revision":$revision,"deliveries":${deliveriesOn(key, ids)}}""",
+        )
+    }
+
+    private fun missing(key: JobKey, ids: List<String>): List<String> =
+        ids.filter { id -> deliveries.none { it.destinationId == id && it.recordId == key.recordId && it.revision == key.revision } }
+
+    private fun create(key: JobKey, ids: List<String>) {
+        ids.forEach { deliveries += FakeDelivery(it, key.recordId, key.revision, "PENDING", now()) }
     }
 
     /** 第一次入库：记下这一版，并按 publication 为每个目标创建投递。已经入库的（重复提交）什么都不动。 */
@@ -290,6 +352,7 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
 
     private companion object {
         val PUT_PATH = Regex("^/v1/records/([0-9a-f-]{36})/revisions/([0-9]+)$")
+        val ADDITION_PATH = Regex("^/v1/records/([0-9a-f-]{36})/revisions/([0-9]+)/deliveries$")
         val STATUS_PATH = Regex("^/v1/records/([0-9a-f-]{36})/status$")
         val DESTINATION_PATH = Regex("^/v1/destinations/([0-9a-f-]{36})$")
         val CREDENTIAL_PATH = Regex("^/v1/destinations/([0-9a-f-]{36})/credential$")

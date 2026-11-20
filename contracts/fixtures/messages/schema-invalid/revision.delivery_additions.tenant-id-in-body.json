@@ -1,0 +1,17 @@
+{
+  "schema": "revision.schema.json#/$defs/delivery_additions",
+  "expect": "schema_invalid",
+  "rejected_because": "身份只来自认证结果：请求体里不得带 tenant_id。",
+  "expect_error": {
+    "path": "",
+    "keyword": "additionalProperties"
+  },
+  "instance": {
+    "schema_version": "1.1",
+    "intent": "context",
+    "destination_ids": [
+      "65ea2953-505c-5c6f-9474-7cd5b8474104"
+    ],
+    "tenant_id": "someone-else"
+  }
+}

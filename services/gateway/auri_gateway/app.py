@@ -21,6 +21,7 @@ from .mcp_endpoint import AgentMcpEndpoint
 from .queries import get_operation, get_record_status
 from .store import (
     MAX_PAIRING_TTL_SECONDS,
+    add_revision_deliveries,
     authenticate_device,
     create_destination,
     delete_record,
@@ -61,6 +62,16 @@ def _validate_uuid_param(value: str, param_name: str) -> str:
             f"Path parameter {param_name} must be a lowercase UUID.",
         )
     return value
+
+
+def _parse_revision_param(value: str) -> int:
+    if not value.isascii() or not value.isdigit() or value.startswith("0"):
+        raise GatewayError(
+            422,
+            REQUEST_INVALID,
+            "Path parameter revision must be a positive integer.",
+        )
+    return int(value)
 
 
 async def _ensure_empty_or_empty_object_body(request: Request) -> None:
@@ -141,25 +152,8 @@ def create_app(data_dir: pathlib.Path) -> Starlette:
     async def put_revision(request: Request) -> JSONResponse:
         auth = authenticate_device(db_path, request.headers.get("authorization"))
 
-        path_record_id = request.path_params["record_id"]
-        path_revision_raw = request.path_params["revision"]
-        if not UUID_RE.match(path_record_id):
-            raise GatewayError(
-                422,
-                REQUEST_INVALID,
-                "Path parameter record_id must be a lowercase UUID.",
-            )
-        if (
-            not path_revision_raw.isascii()
-            or not path_revision_raw.isdigit()
-            or path_revision_raw.startswith("0")
-        ):
-            raise GatewayError(
-                422,
-                REQUEST_INVALID,
-                "Path parameter revision must be a positive integer.",
-            )
-        path_revision = int(path_revision_raw)
+        path_record_id = _validate_uuid_param(request.path_params["record_id"], "record_id")
+        path_revision = _parse_revision_param(request.path_params["revision"])
 
         body = await _parse_json_object(request)
         _validate_contract_or_raise("revision.schema.json#/$defs/submission", body)
@@ -186,6 +180,23 @@ def create_app(data_dir: pathlib.Path) -> Starlette:
             result["record_id"],
             result["revision"],
             result["duplicate"],
+        )
+        return JSONResponse(result)
+
+    async def add_deliveries_endpoint(request: Request) -> JSONResponse:
+        auth = authenticate_device(db_path, request.headers.get("authorization"))
+        record_id = _validate_uuid_param(request.path_params["record_id"], "record_id")
+        revision = _parse_revision_param(request.path_params["revision"])
+        body = await _parse_json_object(request)
+        _validate_contract_or_raise("revision.schema.json#/$defs/delivery_additions", body)
+        result = add_revision_deliveries(
+            db_path, auth, record_id, revision, body["intent"], list(body["destination_ids"])
+        )
+        logger.info(
+            "deliveries_added record_id=%s revision=%s requested=%s",
+            record_id,
+            revision,
+            len(body["destination_ids"]),
         )
         return JSONResponse(result)
 
@@ -309,6 +320,11 @@ def create_app(data_dir: pathlib.Path) -> Starlette:
             "/v1/records/{record_id:str}/revisions/{revision:str}",
             put_revision,
             methods=["PUT"],
+        ),
+        Route(
+            "/v1/records/{record_id:str}/revisions/{revision:str}/deliveries",
+            add_deliveries_endpoint,
+            methods=["POST"],
         ),
         Route(
             "/v1/operations/{operation_id:str}",

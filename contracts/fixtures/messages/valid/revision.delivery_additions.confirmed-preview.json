@@ -1,0 +1,12 @@
+{
+  "schema": "revision.schema.json#/$defs/delivery_additions",
+  "expect": "valid",
+  "description": "用户确认了一个预览确认的 Destination：为已经入库的 Revision 追加它的 Delivery，标签是这批 Delivery 自己的。",
+  "instance": {
+    "schema_version": "1.1",
+    "intent": "context",
+    "destination_ids": [
+      "65ea2953-505c-5c6f-9474-7cd5b8474104"
+    ]
+  }
+}

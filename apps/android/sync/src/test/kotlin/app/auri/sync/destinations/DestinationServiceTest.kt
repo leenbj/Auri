@@ -352,6 +352,20 @@ class DestinationServiceTest {
     }
 
     @Test
+    fun `预览确认之后、追加做成之前：是“正在请网关交给它”，不是已入库；做成之后才是已入库（评审 B2）`() = run { rig ->
+        val preview = rig.createDestination("Claude Code", SendMode.PREVIEW_CONFIRM)
+        val key = rig.transcribed()
+        rig.engine.runOnce() // 文字入库了，但没有给预览目的地的投递
+        assertEquals("文字在网关上，但给它的 Delivery 还没有：只说等你确认", DeliveryView.AwaitingYou, rig.view(preview, key))
+
+        rig.dispatch.decide(key, preview.destinationId, Choice.CONFIRM, rig.clock.now())
+        assertEquals("已确认、还没追加：正在请网关交给它", DeliveryView.Queued(QueuedPhase.REQUESTING_DELIVERY), rig.view(preview, key))
+
+        rig.engine.runOnce()
+        assertEquals(DeliveryView.OnGateway(GatewayStage.STORED), rig.view(preview, key))
+    }
+
+    @Test
     fun `没有网络时排队的内容分开说：等网关、稍后重试、要你处理`() = run { rig ->
         val auto = rig.createDestination("写作助手", SendMode.AUTO_SEND)
         val key = rig.transcribed()

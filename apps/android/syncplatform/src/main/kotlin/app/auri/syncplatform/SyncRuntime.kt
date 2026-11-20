@@ -13,6 +13,7 @@ import app.auri.sync.discovery.GatewayDiscovery
 import app.auri.sync.discovery.GatewayLocator
 import app.auri.sync.engine.RecordLibrarySubmissionSource
 import app.auri.sync.engine.SyncEngine
+import app.auri.sync.engine.dueUpdates
 import app.auri.sync.gateway.DeviceInfo
 import app.auri.sync.gateway.SubmissionBuilder
 import app.auri.sync.http.HttpExchangeFactory
@@ -50,15 +51,16 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * 装配：Record 库、待同步任务表、发送账（Destination 缓存、预览确认的拦截、意图标签）在同一个数据库文件里，
- * 发布 Revision 的事务里顺手规划目标、决定要不要登记任务（Ticket 22）。
+ * 装配：Record 库、待同步任务表、发送账（Destination 缓存、预览确认的决定、意图标签、网关上有没有 Delivery 的账）在同一个数据库文件里，
+ * 发布 Revision 的事务里一定登记任务、顺手规划目标（Ticket 22）。
  */
 object SyncStorage {
-    /** 发布 Revision 时在**同一个事务**里规划发送、登记待同步任务的 Record 库；时间取 [clock]。 */
+    /** 发布 Revision 时在**同一个事务**里登记待同步任务、规划发送的 Record 库；时间取 [clock]。 */
     fun library(application: Application, databaseName: String?, clock: Clock = SystemClock): SqliteRecordLibrary =
         SqliteRecordLibrary(
             application,
@@ -91,7 +93,7 @@ class SyncRuntime(
 ) : SyncController {
     val jobs = SqliteSyncJobStore(library)
 
-    /** 发送账（Ticket 22）：Destination 缓存、预览确认的决定、意图标签。引擎每次发送前向它要 publication。 */
+    /** 发送账（Ticket 22）：Destination 缓存、预览确认的决定、意图标签、网关上有没有 Delivery 的账。引擎每次发送前向它要 publication，每轮最后向它要还欠的 Delivery。 */
     val dispatch = SqliteDispatchStore(library)
 
     /**
@@ -113,17 +115,26 @@ class SyncRuntime(
         locator = locator,
         clock = clock,
         policy = policy,
+        additions = dispatch,
         log = log,
     )
-    private val loop = SyncLoop(engine, jobs, network, clock, log = log)
+    private val loop = SyncLoop(engine, jobs, network, clock, log = log, additions = dispatch)
 
     /** [start] 的启动工作（读配对记录、接回中断的任务）做完了没有：被系统叫醒的那一轮要等它。 */
     private val started = CompletableDeferred<Unit>()
-    private val planner = ResumePlanner(pairing.states, jobs.observe(), policy.states(), resume, clock, log = log)
+    private val planner = ResumePlanner(
+        pairing.states,
+        jobs.observe(),
+        policy.states(),
+        resume,
+        clock,
+        log = log,
+        additionsDue = dispatch.dueUpdates().map { it.isNotEmpty() }.distinctUntilChanged(),
+    )
     private val resumeRunner = ResumeRunner(
         ready = { started.await() },
         runPass = engine::runOnce,
-        stillNeeded = { needsResume(pairing.load(), jobs.all(), policy.current()) },
+        stillNeeded = { needsResume(pairing.load(), jobs.all(), policy.current(), dispatch.due().isNotEmpty()) },
         log = log,
     )
 

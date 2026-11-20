@@ -183,8 +183,10 @@ class DestinationService(
 
     override suspend fun deliveries(destinationId: String, limit: Int): List<ItemDelivery> {
         val items = dispatch.itemsFor(destinationId, limit)
-        // 只有“已入库”的才需要问网关；一条 Record 只问一次
-        val needGateway = items.filter { item -> jobs.get(item.key)?.state == SyncState.STORED }.map { it.key.recordId }.distinct()
+        // 只有“已入库”、而且本机的账说不清的才需要问网关（用户跳过的、还在等用户的、网关拒绝建的，账上就是答案）；一条 Record 只问一次
+        val needGateway = items.filter { item ->
+            jobs.get(item.key)?.state == SyncState.STORED && item.targets.first { it.destinationId == destinationId }.needsGatewayAnswer()
+        }.map { it.key.recordId }.distinct()
         val remote = if (needGateway.isEmpty()) emptyMap() else askGateway(needGateway)
         return items.map { item ->
             val job = jobs.get(item.key)
@@ -217,6 +219,10 @@ class DestinationService(
     }
 
     private fun viewOf(target: DispatchTarget, jobState: SyncState?, remote: Remote?, revision: Int, destinationId: String): DeliveryView {
+        // 账上就说得清的：用户跳过了、还在等用户（文字可能已经在网关，但没有给它的 Delivery）、网关拒绝建
+        if (target.decision == TargetDecision.SKIPPED) return DeliveryView.Skipped
+        if (target.awaitingUser) return DeliveryView.AwaitingYou
+        if (target.delivery == GatewayDelivery.REFUSED) return DeliveryView.Unknown(UnknownReason.DELIVERY_REFUSED)
         if (jobState == SyncState.STORED) {
             // 已经入库：网关怎么说就怎么显示（包括它把已撤销 Destination 上的投递取消了）
             when (remote) {
@@ -228,28 +234,23 @@ class DestinationService(
                         val stage = GatewayStage.fromGateway(delivery.state) ?: return DeliveryView.Unknown(UnknownReason.UNRECOGNIZED_STATE)
                         return DeliveryView.OnGateway(stage)
                     }
-                    // 网关没有投递记录：如果本机也没打算发给它（跳过、撤销、没确认），那是对的；否则是个该说明白的缺口
-                    return localOnly(target) ?: DeliveryView.Unknown(UnknownReason.NO_DELIVERY_RECORD)
+                    // 网关没有投递记录：本机没打算发给它（撤销了、不接收这种意图）是对的；
+                    // 打算发而账上还没记下网关有（刚确认、追加还没做成）是“正在请网关追加”；账上说有而网关没有，是个该说明白的缺口
+                    return when {
+                        !target.willReceive -> DeliveryView.NotTargeted
+                        target.delivery == GatewayDelivery.CREATED -> DeliveryView.Unknown(UnknownReason.NO_DELIVERY_RECORD)
+                        else -> DeliveryView.Queued(QueuedPhase.REQUESTING_DELIVERY)
+                    }
                 }
             }
         }
-        if (jobState != null) {
-            // 有任务但没入库：只有本来就要发给它的才算“排队中”
-            val phase = QueuedPhase.of(jobState)
-            if (target.willReceive && phase != null) return DeliveryView.Queued(phase)
-            return localOnly(target) ?: DeliveryView.Queued(phase ?: QueuedPhase.SENDING)
-        }
-        // 还没交给同步：要么在等用户，要么不会发给它
-        return localOnly(target) ?: DeliveryView.Queued(QueuedPhase.SENDING)
+        // 还没入库（有任务但没入库，或还没有任务）：只有本来就要发给它的才算“排队中”
+        if (!target.willReceive) return DeliveryView.NotTargeted
+        return DeliveryView.Queued(jobState?.let(QueuedPhase::of) ?: QueuedPhase.SENDING)
     }
 
-    /** 只看本机已知的处置；这个目标会收到文字（该有投递）时返回 null。 */
-    private fun localOnly(target: DispatchTarget): DeliveryView? = when {
-        target.decision == TargetDecision.SKIPPED -> DeliveryView.Skipped
-        target.awaitingUser -> DeliveryView.AwaitingYou
-        target.willReceive -> null
-        else -> DeliveryView.NotTargeted
-    }
+    private fun DispatchTarget.needsGatewayAnswer(): Boolean =
+        decision != TargetDecision.SKIPPED && !awaitingUser && delivery != GatewayDelivery.REFUSED
 
     // ---- 连接 ----
 

@@ -4,7 +4,9 @@ import app.auri.capture.contract.RevisionSource
 import app.auri.platform.library.SqliteRecordLibrary
 import app.auri.sync.destinations.Choice
 import app.auri.sync.destinations.DecideResult
+import app.auri.sync.destinations.IntentResult
 import app.auri.sync.engine.JobKey
+import app.auri.sync.engine.Refusal
 import app.auri.sync.gateway.Destination
 import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.SendMode
@@ -22,8 +24,8 @@ import org.junit.Assert.fail
 import org.junit.Test
 
 /**
- * 只有真 SQL 才会出问题的地方：升级一台装过上一版（只有任务表、没有发送账）的手机、发布与规划同进退、
- * 重复打开数据库、含引号与表情的名字原样存取。行为本身（预览确认、幂等、拦截）由 [SqliteDispatchStoreContractTest] 验证。
+ * 只有真 SQL 才会出问题的地方：升级一台装过上一版（只有任务表、没有发送账）的手机、发布与规划同进退、冻结意图与回滚、
+ * 重复打开数据库、含引号与表情的名字原样存取。行为本身（预览确认、幂等、账）由 [SqliteDispatchStoreContractTest] 验证。
  */
 class DispatchSqlTest {
     private val t0 = Instant.parse("2026-11-20T08:00:00.123456789Z")
@@ -57,8 +59,8 @@ class DispatchSqlTest {
                     "destination_id", "display_name", "send_mode", "allowed_intents", "created_at_s", "created_at_nano",
                     "created_by_device_id", "credential_issued", "revoked_at_s", "revoked_at_nano",
                 ),
-                "dispatch_items" to setOf("record_id", "revision", "intent", "created_at_s", "created_at_nano", "released"),
-                "dispatch_targets" to setOf("record_id", "revision", "destination_id", "send_mode", "decision"),
+                "dispatch_items" to setOf("record_id", "revision", "intent", "created_at_s", "created_at_nano", "intent_locked"),
+                "dispatch_targets" to setOf("record_id", "revision", "destination_id", "send_mode", "decision", "delivery", "refusal"),
             ),
             columns,
         )
@@ -80,7 +82,7 @@ class DispatchSqlTest {
 
         val after = listOf("dispatch_meta", "dispatch_destinations", "dispatch_items", "dispatch_targets", "sync_jobs").map { twice.db.count(it) }
         assertEquals("打开几次都一样：不多出行、不丢行", before, after)
-        assertEquals("拦着的文字重启后仍然没有任务", 0, twice.db.count("sync_jobs"))
+        assertEquals("文字发布时就登记了任务（不等预览确认），重启不会多一条也不会少一条", 1, twice.db.count("sync_jobs"))
     }
 
     @Test
@@ -123,18 +125,20 @@ class DispatchSqlTest {
     }
 
     @Test
-    fun the_backfill_leaves_held_texts_alone_and_a_text_published_without_planning_still_gets_its_job() = runBlocking {
+    fun the_backfill_gives_a_job_to_every_revision_without_one_and_leaves_planned_items_with_their_own_job_alone() = runBlocking {
         val fixture = JdbcDispatchFixture()
         fixture.store.applyDestinations(gateway, listOf(destination(preview, SendMode.PREVIEW_CONFIRM)), true, t0)
         fixture.publish(keyA, RevisionSource.ASR, t0)
         // 一条没被规划过的旧文字：直接在库里放一行 Revision（模拟升级前发布的）
         fixture.db.update("INSERT OR IGNORE INTO records (record_id, capture_session_id, started_at_s, started_at_nano, status, end_reason, capture_duration_ms, speech_duration_ms, speech_segments, route_evidence_id, input_route_type, transcription) VALUES (?, 's', 1, 0, 'complete', 'screen_control', 1, 1, '0-1', 'r', 'bluetooth_hfp', 'DONE')", recordB)
         fixture.db.update("INSERT INTO revisions (record_id, number, text, text_sha256, source, language, review_state, execution_location, created_at_s, created_at_nano) VALUES (?, 1, 'x', ?, 'asr', 'zh', 'not_reviewed', 'on_device', 5, 0)", recordB, "00".repeat(32))
+        val before = fixture.jobs.get(keyA)
 
         val reopened = fixture.reopen()
 
-        assertNull("预览确认还没决定的 A：回填不能补任务", reopened.jobs.get(keyA))
+        assertEquals("A 在发布时就有任务（预览确认只拦 Delivery、不拦文字）：回填不动它", before, reopened.jobs.get(keyA))
         assertNotNull("没规划过的旧文字 B：照旧补任务", reopened.jobs.get(keyB))
+        assertEquals(2, reopened.jobs.all().size)
     }
 
     // ---- 发布与规划同进退 ----
@@ -163,21 +167,67 @@ class DispatchSqlTest {
     }
 
     @Test
-    fun a_text_that_waits_for_the_user_and_then_is_confirmed_is_marked_released_in_the_same_transaction_as_its_job() = runBlocking {
+    fun confirming_a_preview_target_records_only_the_decision_the_job_row_is_not_touched() = runBlocking {
         val fixture = JdbcDispatchFixture()
         fixture.store.applyDestinations(gateway, listOf(destination(preview, SendMode.PREVIEW_CONFIRM)), true, t0)
         fixture.publish(keyA, RevisionSource.ASR, t0)
-        assertEquals(listOf(0L), fixture.db.query("SELECT released FROM dispatch_items") { it.long(0) })
-        assertEquals(0, fixture.db.count("sync_jobs"))
+        val jobBefore = fixture.jobs.get(keyA)
+        assertEquals(listOf("NOT_YET"), fixture.db.query("SELECT delivery FROM dispatch_targets") { it.string(0) })
 
         val decided = fixture.store.decide(keyA, preview, Choice.CONFIRM, t0.plusSeconds(9))
 
-        assertEquals(DecideResult.Decided(releasedForSending = true), decided)
-        assertEquals(listOf(1L), fixture.db.query("SELECT released FROM dispatch_items") { it.long(0) })
-        val job = fixture.jobs.get(keyA)!!
-        assertEquals("任务的创建时间是用户确认的那一刻，不是发布的那一刻", t0.plusSeconds(9), job.createdAt)
-        assertEquals(0, job.attempts)
-        assertFalse(job.uncertain)
+        assertEquals(DecideResult.Decided, decided)
+        assertEquals("确认只记决定，不创建、不改动同步任务（文字早在发布时就登记了）", jobBefore, fixture.jobs.get(keyA))
+        assertEquals(listOf("CONFIRMED"), fixture.db.query("SELECT decision FROM dispatch_targets") { it.string(0) })
+        assertEquals("网关上有没有它的 Delivery 是另一本账：确认之后仍然是“还没有”", listOf("NOT_YET"), fixture.db.query("SELECT delivery FROM dispatch_targets") { it.string(0) })
+    }
+
+    // ---- 意图冻结与回滚（评审 M3）----
+
+    @Test
+    fun building_the_submission_freezes_the_intent_in_the_same_transaction_and_a_rolled_back_build_freezes_nothing() = runBlocking {
+        val fixture = JdbcDispatchFixture()
+        fixture.store.applyDestinations(gateway, listOf(destination(auto, SendMode.AUTO_SEND, intents = setOf(Intent.CONTEXT, Intent.ACTION_REQUEST))), true, t0)
+        fixture.publish(keyA, RevisionSource.ASR, t0)
+        fun locked() = fixture.db.query("SELECT intent_locked FROM dispatch_items") { it.long(0) }.single()
+
+        // 构造提交的事务在提交前失败：冻结要跟着回滚，否则用户的标签就在一次没发出去的请求里被锁死了
+        try {
+            fixture.db.transaction<Unit> {
+                DispatchSql(fixture.db).publicationFor(keyA)
+                error("构造提交之后、提交之前出了事")
+            }
+            fail("应当抛出")
+        } catch (expected: IllegalStateException) {
+            // 预期
+        }
+        assertEquals("回滚了：没冻结", 0L, locked())
+        assertEquals(IntentResult.Changed, fixture.store.setIntent(keyA, Intent.ACTION_REQUEST, t0))
+
+        fixture.store.publicationFor(keyA)
+
+        assertEquals("提交的那一刻落盘冻结", 1L, locked())
+        assertEquals(IntentResult.Locked, fixture.store.setIntent(keyA, Intent.CONTEXT, t0))
+        assertEquals("冻结的是改后的值", "action_request", fixture.db.query("SELECT intent FROM dispatch_items") { it.string(0) }.single())
+    }
+
+    // ---- 网关上有没有 Delivery 的账 ----
+
+    @Test
+    fun the_gateway_ledger_columns_round_trip_and_a_refusal_keeps_its_reason_until_the_gateway_says_otherwise() = runBlocking {
+        val fixture = JdbcDispatchFixture()
+        fixture.store.applyDestinations(gateway, listOf(destination(auto, SendMode.AUTO_SEND)), true, t0)
+        fixture.publish(keyA, RevisionSource.ASR, t0)
+        fun ledger() = fixture.db.query("SELECT delivery, refusal FROM dispatch_targets") { it.string(0) to it.stringOrNull(1) }.single()
+
+        fixture.store.refused(keyA, listOf(auto), Refusal.REJECTED)
+        assertEquals("REFUSED" to "REJECTED", ledger())
+
+        fixture.store.gatewayHas(keyA, listOf(auto))
+        assertEquals("网关说有就是有，拒绝的原因一起清掉", "CREATED" to null, ledger())
+
+        fixture.store.refused(keyA, listOf(auto), Refusal.NOT_CREATED)
+        assertEquals("已经记了网关有：迟到的拒绝不改写", "CREATED" to null, ledger())
     }
 
     // ---- 任务行与回填行同一个样子 ----

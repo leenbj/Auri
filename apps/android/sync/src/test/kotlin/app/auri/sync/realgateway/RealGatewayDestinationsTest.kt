@@ -124,6 +124,7 @@ class RealGatewayDestinationsTest {
             locator = locator,
             clock = RealClock,
             policy = policy,
+            additions = fixture.store,
             retry = RetryPolicy(baseMs = 100, maxMs = 400),
             log = log,
         )
@@ -137,7 +138,7 @@ class RealGatewayDestinationsTest {
             check(outcome is PairingOutcome.Paired) { "配对结果不是成功：$outcome" }
         }
 
-        /** 一条新录音转写出了文字：Record 与它的 ASR 初稿 Revision 发布（未审核），发送账规划目标、必要时放行同步（Android：库的 publicationStep）。 */
+        /** 一条新录音转写出了文字：Record 与它的 ASR 初稿 Revision 发布（未审核），同步任务登记、发送账规划目标（Android：库的 publicationStep）。 */
         suspend fun transcribed(text: String): JobKey {
             val entry = Samples.entry(++counter)
             library.addRecord(entry)
@@ -186,6 +187,9 @@ class RealGatewayDestinationsTest {
         fun deliveries(): Int = gateway.count("SELECT COUNT(*) FROM deliveries")
 
         fun puts(): Int = phone.requests().count { it.startsWith("PUT ") }
+
+        /** 给已入库的 Revision 追加 Delivery 的请求（评审 B2）。 */
+        fun additions(): Int = phone.requests().count { it.startsWith("POST ") && it.endsWith("/deliveries") }
     }
 
     private fun Lab.assertSecretNowhere(secret: String) {
@@ -352,10 +356,10 @@ class RealGatewayDestinationsTest {
         Unit
     }
 
-    // ---- 4. 预览确认 ----
+    // ---- 4. 预览确认（评审 B2：文字照常入库，预览确认的 Destination 在用户确认之后才有 Delivery）----
 
     @Test
-    fun `预览确认：用户确认之前，网关上没有这条文字也没有 Delivery，Agent 领不到；重复确认之后恰好一份，Agent 领到恰好一条`() = runBlocking {
+    fun `预览确认：文字照常入库，但用户确认之前网关上没有这个 Destination 的 Delivery、Agent 领不到；重复确认之后恰好一份，Agent 领到恰好一条，已入库的 Revision 没被重发`() = runBlocking {
         val lab = Lab()
         val destination = lab.create("写作助手", SendMode.PREVIEW_CONFIRM)
         val agent = lab.agent(lab.credentialFor(destination))
@@ -363,30 +367,32 @@ class RealGatewayDestinationsTest {
 
         repeat(3) { lab.phone.engine.runOnce() }
 
-        assertEquals("确认前网关上连这条文字都没有", 0, lab.revisions())
-        assertEquals("确认前没有任何 Delivery", 0, lab.deliveries())
-        assertEquals("确认前手机一个 PUT 都没发", 0, lab.puts())
+        assertEquals("文字照常入库，不等预览的决定", 1, lab.revisions())
+        assertEquals("确认前没有任何 Delivery：Agent 看不到它", 0, lab.deliveries())
+        assertEquals("入库只 PUT 一次", 1, lab.puts())
         assertEquals("Agent 领不到", emptyList<Any>(), agent.claim().deliveries)
         assertEquals(DeliveryView.AwaitingYou, lab.viewOf(destination, key))
 
         val first = lab.phone.fixture.store.decide(key, destination.destinationId, Choice.CONFIRM, RealClock.now())
         val second = lab.phone.fixture.store.decide(key, destination.destinationId, Choice.CONFIRM, RealClock.now())
         val third = lab.phone.fixture.store.decide(key, destination.destinationId, Choice.CONFIRM, RealClock.now())
-        assertEquals(DecideResult.Decided(releasedForSending = true), first)
+        assertTrue("第一次确认记下了决定：$first", first is DecideResult.Decided)
         assertTrue("重复确认只是认出已经决定过：$second / $third", second is DecideResult.AlreadyDecided && third is DecideResult.AlreadyDecided)
         repeat(2) { lab.phone.engine.runOnce() }
 
         assertEquals(1, lab.revisions())
         assertEquals("重复确认之后恰好一份 Delivery", listOf("PENDING"), lab.deliveryStates(destination))
-        assertEquals("恰好一个 PUT", 1, lab.puts())
+        assertEquals("入库的 PUT 仍然只有一次：确认是给同一个已入库的 Revision 追加 Delivery，不是重发", 1, lab.puts())
+        assertEquals("追加请求恰好一个：第二轮同步没有再追加", 1, lab.additions())
         val claimed = agent.claim().deliveries.single()
         assertEquals("这一条要先给我看", claimed.getValue("text").jsonPrimitive.content)
         assertEquals("预览确认放行的仍然是未审核的初稿：用户确认发送不等于他审阅并改过它", "not_reviewed", claimed.getValue("review_state").jsonPrimitive.content)
+        assertEquals(1, claimed.getValue("revision").jsonPrimitive.content.toInt())
         Unit
     }
 
     @Test
-    fun `预览确认选了不发送：文字只入库，网关上没有这个 Destination 的 Delivery，Agent 永远领不到`() = runBlocking {
+    fun `预览确认选了不发送：文字照常入库，网关上没有这个 Destination 的 Delivery，Agent 永远领不到，也没有任何追加请求`() = runBlocking {
         val lab = Lab()
         val destination = lab.create("写作助手", SendMode.PREVIEW_CONFIRM)
         val agent = lab.agent(lab.credentialFor(destination))
@@ -395,16 +401,17 @@ class RealGatewayDestinationsTest {
         val skipped = lab.phone.fixture.store.decide(key, destination.destinationId, Choice.SKIP, RealClock.now())
         repeat(2) { lab.phone.engine.runOnce() }
 
-        assertEquals(DecideResult.Decided(releasedForSending = true), skipped)
+        assertTrue("$skipped", skipped is DecideResult.Decided)
         assertEquals("文字照常入库", 1, lab.revisions())
         assertEquals("但没有为它创建 Delivery", 0, lab.deliveries())
+        assertEquals("跳过不需要向网关追加任何东西", 0, lab.additions())
         assertEquals(emptyList<Any>(), agent.claim().deliveries)
         assertEquals(DeliveryView.Skipped, lab.viewOf(destination, key))
         Unit
     }
 
     @Test
-    fun `自动发送与预览确认并存：整条文字等预览的决定，确认后一个请求同时带两个目标，两边各领到一条`() = runBlocking {
+    fun `自动发送与预览确认并存：自动的 Agent 马上领到、不等预览的决定；确认之后同一个已入库的 Revision 给预览的追加 Delivery，两边领到的是同一版文字`() = runBlocking {
         val lab = Lab()
         val auto = lab.create("自动的", SendMode.AUTO_SEND)
         val preview = lab.create("要确认的", SendMode.PREVIEW_CONFIRM)
@@ -413,16 +420,24 @@ class RealGatewayDestinationsTest {
         val key = lab.phone.transcribed("两边都要")
 
         repeat(2) { lab.phone.engine.runOnce() }
-        assertEquals("预览那边还没决定：连自动那边也不发（网关只在第一次入库时建 Delivery，事后补不了）", 0, lab.puts())
-        assertEquals(emptyList<Any>(), autoAgent.claim().deliveries)
+
+        assertEquals(SyncState.STORED, lab.phone.fixture.jobs.get(key)!!.state)
+        assertEquals("入库只 PUT 一次", 1, lab.puts())
+        assertEquals("自动那边的 Delivery 马上就有，预览没决定也不拦着它", 1, lab.deliveries())
+        val autoClaim = autoAgent.claim().deliveries.single()
+        assertEquals("两边都要", autoClaim.getValue("text").jsonPrimitive.content)
+        assertEquals("预览那边还没确认：领不到", emptyList<Any>(), previewAgent.claim().deliveries)
+        assertEquals(DeliveryView.AwaitingYou, lab.viewOf(preview, key))
 
         lab.phone.fixture.store.decide(key, preview.destinationId, Choice.CONFIRM, RealClock.now())
         lab.phone.engine.runOnce()
 
-        assertEquals(1, lab.puts())
+        assertEquals("确认没有重发已入库的 Revision", 1, lab.puts())
+        assertEquals("给预览的追加了一次", 1, lab.additions())
         assertEquals(2, lab.deliveries())
-        assertEquals("两边领到的是同一版文字", "两边都要", autoAgent.claim().deliveries.single().getValue("text").jsonPrimitive.content)
+        assertEquals("两条 Delivery 是同一个 Revision 的", listOf("1", "1"), lab.gateway.query("SELECT revision FROM deliveries ORDER BY created_at").map { it[0] })
         assertEquals("两边领到的是同一版文字", "两边都要", previewAgent.claim().deliveries.single().getValue("text").jsonPrimitive.content)
+        assertEquals("自动那边先前领走的那条没被动过", listOf("LEASED"), lab.deliveryStates(auto))
         Unit
     }
 

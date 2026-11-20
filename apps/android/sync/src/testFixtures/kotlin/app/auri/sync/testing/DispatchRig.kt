@@ -88,6 +88,7 @@ class DispatchRig(
             locator = locator,
             clock = clock,
             policy = policy,
+            additions = dispatch,
             retry = RetryPolicy(),
             log = log,
         )
@@ -106,7 +107,7 @@ class DispatchRig(
         return (result as? ServiceResult.Ok)?.value ?: error("创建 Destination 失败：$result")
     }
 
-    /** 一条新录音转写出了文字：Record 与它的 ASR 初稿 Revision 发布（未审核），发送账规划目标并必要时放行（Android：库的 publicationStep）。 */
+    /** 一条新录音转写出了文字：Record 与它的 ASR 初稿 Revision 发布（未审核），同步任务登记、发送账规划目标（Android：库的 publicationStep）。 */
     suspend fun transcribed(text: String = "明天检查小说记忆模块"): JobKey {
         val entry = Samples.entry(++recordCounter).copy(startedAt = clock.now())
         library.addRecord(entry)

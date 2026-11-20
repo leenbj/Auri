@@ -1,0 +1,22 @@
+{
+  "schema": "revision.schema.json#/$defs/deliveries_added",
+  "expect": "schema_invalid",
+  "rejected_because": "投递状态的写法是 ACKNOWLEDGED，不是 ACKED。",
+  "expect_error": {
+    "path": "/deliveries/0/state",
+    "keyword": "enum"
+  },
+  "instance": {
+    "schema_version": "1.1",
+    "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
+    "revision": 1,
+    "deliveries": [
+      {
+        "delivery_id": "7b8524b6-8c52-571f-98c3-7f62b3764bea",
+        "destination_id": "65ea2953-505c-5c6f-9474-7cd5b8474104",
+        "revision": 1,
+        "state": "ACKED"
+      }
+    ]
+  }
+}

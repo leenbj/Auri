@@ -8,7 +8,9 @@ import app.auri.sync.destinations.DecideResult
 import app.auri.sync.destinations.DispatchItem
 import app.auri.sync.destinations.DispatchStore
 import app.auri.sync.destinations.IntentResult
+import app.auri.sync.engine.DeliveryAddition
 import app.auri.sync.engine.JobKey
+import app.auri.sync.engine.Refusal
 import app.auri.sync.gateway.Destination
 import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.Publication
@@ -21,9 +23,9 @@ import kotlinx.coroutines.flow.combine
  * [DispatchStore] 的 SQLite 实现：发送账和 Record 库、待同步任务表在**同一个数据库文件**里，用库的同一条连接（[SqliteRecordLibrary.withDatabase]）。
  * 全部逻辑在 [DispatchSql]（JVM 上用真 SQLite 引擎跑同一份 DispatchStoreContract）；这里只负责把它放到数据库线程上，并在变化后发信号。
  *
- * 装配（SyncRuntime）：库的 `extraSchema` = [DispatchSql.SCHEMA]（建表、再回填且跳过还拦着的文字）；
- * 库的 `publicationStep` = [publishIn]，在**发布 Revision 的那个事务里**规划目标、决定要不要创建同步任务——
- * 进程死在任何一步，要么整个事务回滚，要么“已发布”与“已规划/已拦住”一起落盘，不会有文字既没有任务也没人拦着。
+ * 装配（SyncRuntime）：库的 `extraSchema` = [DispatchSql.SCHEMA]（建表、再回填）；
+ * 库的 `publicationStep` = [publishIn]，在**发布 Revision 的那个事务里**创建同步任务并规划目标——
+ * 进程死在任何一步，要么整个事务回滚，要么“已发布”“已有任务”“已规划”一起落盘，不会有文字没有任务。
  */
 class SqliteDispatchStore(private val library: SqliteRecordLibrary) : DispatchStore {
     private val ownChanges = MutableStateFlow(0L)
@@ -54,7 +56,14 @@ class SqliteDispatchStore(private val library: SqliteRecordLibrary) : DispatchSt
 
     override suspend fun setIntent(key: JobKey, intent: Intent, now: Instant): IntentResult = write { setIntent(key, intent, now) }
 
-    override suspend fun publicationFor(key: JobKey): Publication = read { publicationFor(key) }
+    /** 构造提交就是冻结意图（界面上的标签随之锁住），所以要发变化信号。 */
+    override suspend fun publicationFor(key: JobKey): Publication = write { publicationFor(key) }
+
+    override suspend fun due(): List<DeliveryAddition> = read { due() }
+
+    override suspend fun gatewayHas(key: JobKey, destinationIds: Collection<String>) = write { gatewayHas(key, destinationIds) }
+
+    override suspend fun refused(key: JobKey, destinationIds: Collection<String>, reason: Refusal) = write { refused(key, destinationIds, reason) }
 
     override suspend fun defaultIntent(): Intent = read { defaultIntent() }
 
@@ -66,7 +75,7 @@ class SqliteDispatchStore(private val library: SqliteRecordLibrary) : DispatchSt
     companion object {
         /**
          * 交给 [SqliteRecordLibrary] 的 publicationStep：在发布 Revision 的事务里调用，不自己开关事务（并入外面那个）。
-         * ASR 初稿：规划目标，没有要等的决定才创建同步任务；其余照常创建同步任务。
+         * 一定创建同步任务（文字不等任何决定）；ASR 初稿另外规划目标。
          */
         fun publishIn(db: SQLiteDatabase, revision: Revision, now: Instant) =
             DispatchSql(AndroidSqlDb(db)).publish(JobKey(revision.recordId, revision.number), revision.source, now)

@@ -79,11 +79,8 @@ class SqliteSyncJobStore(private val library: SqliteRecordLibrary) : SyncJobStor
             )
         """.trimIndent()
 
-        /**
-         * 回填语句（见 [SCHEMA]）。[skippingHeldItems] = 同库里有发送账（Ticket 22）：预览确认还没决定的文字（`dispatch_items.released = 0`）
-         * 故意没有任务，回填不能把它们补上——补上就等于绕过“用户确认之前不发送”。
-         */
-        fun backfill(skippingHeldItems: Boolean): String = """
+        /** 回填语句（见 [SCHEMA]）。 */
+        fun backfill(): String = """
             INSERT INTO sync_jobs (
                 record_id, revision, state, attempts, uncertain, retry_at_s, retry_at_nano, blocked_reason,
                 created_at_s, created_at_nano, updated_at_s, updated_at_nano
@@ -92,7 +89,6 @@ class SqliteSyncJobStore(private val library: SqliteRecordLibrary) : SyncJobStor
                    r.created_at_s, r.created_at_nano, r.created_at_s, r.created_at_nano
             FROM revisions r
             WHERE NOT EXISTS (SELECT 1 FROM sync_jobs j WHERE j.record_id = r.record_id AND j.revision = r.number)
-            ${if (skippingHeldItems) "AND NOT EXISTS (SELECT 1 FROM dispatch_items d WHERE d.record_id = r.record_id AND d.revision = r.number AND d.released = 0)" else ""}
             ORDER BY r.created_at_s, r.created_at_nano, r.record_id, r.number
         """.trimIndent()
 
@@ -108,7 +104,7 @@ class SqliteSyncJobStore(private val library: SqliteRecordLibrary) : SyncJobStor
          * 换机迁移与备份已被关掉），所以评审说的“未删除、来源是本机”现在恒成立。**加墓碑的那个 Ticket 必须在这条回填里排除已删除的 Record**，
          * 否则每次打开都会把它们的任务复活；SyncJobsBackfillTest 把两张表的列固定住了，改了结构那里会变红。
          */
-        val SCHEMA = listOf(CREATE_TABLE, backfill(skippingHeldItems = false))
+        val SCHEMA = listOf(CREATE_TABLE, backfill())
 
         /**
          * 在调用方已经打开的事务里入队一条 PENDING 任务（同一个键已存在则什么都不做）。

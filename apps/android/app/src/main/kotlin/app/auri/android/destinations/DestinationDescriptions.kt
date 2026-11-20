@@ -29,7 +29,7 @@ internal fun describeSendMode(mode: SendMode): String = when (mode) {
 
 internal fun describeSendModeDetail(mode: SendMode): String = when (mode) {
     SendMode.AUTO_SEND -> "自动发送：转录一完成就发给它，不再问你。发出去的是还没有审核过的初稿。"
-    SendMode.PREVIEW_CONFIRM -> "预览确认：每一条先给你看，你点了“确认发送”才发给它；不点就不会发。"
+    SendMode.PREVIEW_CONFIRM -> "预览确认：每一条先给你看，你点了“确认发送”才交给它（它的 Agent 才领得到）；不点就不会发给它。文字本身照常存进你自己的网关。"
 }
 
 internal fun describeIntent(intent: Intent): String = when (intent) {
@@ -97,7 +97,7 @@ internal fun describeDecision(decision: TargetDecision, eligible: Boolean): Stri
 
 /** 一条文字在一个目的地上现在是什么情形。只说网关能证明的。 */
 internal fun describeDelivery(view: DeliveryView): String = when (view) {
-    DeliveryView.AwaitingYou -> "等你确认，还没有发出去"
+    DeliveryView.AwaitingYou -> "等你确认：确认之前这个目的地的 Agent 领不到这条文字"
     DeliveryView.Skipped -> "你选择了不发给它"
     DeliveryView.NotTargeted -> "不会发给它（这个目的地已被撤销，或不接收这种标签）"
     is DeliveryView.Queued -> when (view.phase) {
@@ -105,6 +105,7 @@ internal fun describeDelivery(view: DeliveryView): String = when (view) {
         QueuedPhase.WAITING_FOR_GATEWAY -> "已决定发送，现在连不上网关，连上后自动发"
         QueuedPhase.RETRYING_LATER -> "已决定发送，网关暂时没收下，稍后自动重试"
         QueuedPhase.NEEDS_YOU -> "已决定发送，但卡住了，需要你到“同步与配对”里处理"
+        QueuedPhase.REQUESTING_DELIVERY -> "你已确认，文字已经在网关，正在请网关交给它…"
     }
     is DeliveryView.OnGateway -> describeStage(view.stage)
     is DeliveryView.Unknown -> "状态未知：" + when (view.reason) {
@@ -112,6 +113,7 @@ internal fun describeDelivery(view: DeliveryView): String = when (view) {
         UnknownReason.GATEWAY_ANSWER_UNUSABLE -> "网关的回答读不懂，或这次查询没成功"
         UnknownReason.NO_DELIVERY_RECORD -> "网关上没有这一条在这个目的地的投递记录"
         UnknownReason.UNRECOGNIZED_STATE -> "网关给了这个版本的 App 不认识的状态"
+        UnknownReason.DELIVERY_REFUSED -> "网关没有为它建投递，这条文字没有送给它"
     }
 }
 

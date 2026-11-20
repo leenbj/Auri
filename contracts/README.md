@@ -20,7 +20,7 @@ DEV-002 的产物，当前合同版本 `1.1`（1.0 冻结于 2026-11-15；1.1 �
 
 | 合同 | 文件 |
 |---|---|
-| 提交 Revision、入库结果、删除 Record | `revision.schema.json` |
+| 提交 Revision、入库结果、删除 Record、给已入库的 Revision 追加 Delivery | `revision.schema.json` |
 | 领取、续租、确认、拒收 Delivery（MCP 工具输入输出） | `delivery.schema.json` |
 | 只读查询 Record（`record_list`、`record_get`、`record_search` MCP 工具输入输出） | `record_query.schema.json` |
 | 网关存活、能力、操作与 Record 状态查询（`/health`、`/v1/capabilities`、`/v1/operations/{id}`、`/v1/records/{id}/status`） | `gateway.schema.json` |
@@ -58,6 +58,7 @@ DEV-002 的产物，当前合同版本 `1.1`（1.0 冻结于 2026-11-15；1.1 �
 - 已有删除墓碑的 Record 不接受任何提交。
 - 身份只来自认证结果。请求体里没有 `tenant_id`、`agent_id`，也不接受这些字段。
 - `GET /health` 不要求认证，不返回正文、密钥或内部拓扑；`GET /v1/capabilities`、`GET /v1/operations/{operation_id}`、`GET /v1/records/{record_id}/status` 均要求设备令牌（Bearer）认证（未认证或持 Destination 凭证返回 `GATEWAY_AUTH_INVALID`），且 `/v1/operations/{operation_id}` 仅限来源设备查询、`/v1/records/{record_id}/status` 按认证 Tenant 隔离。
+- 给已入库的 Revision 追加 Delivery：`POST /v1/records/{record_id}/revisions/{revision}/deliveries`，请求 `revision.schema.json#/$defs/delivery_additions`，响应 `#/$defs/deliveries_added`（Ticket 22 评审 B2，关闭缺口 G13；留在 1.1：只新增一个端点和两条消息，没有改任何已有字段、必填项、枚举或状态机，旧的实现不受影响）。要求设备令牌认证，仅限来源设备（ADR-0020：非来源设备 `403 RECORD_NOT_ORIGIN_DEVICE`），Record 已删除 `410 RECORD_DELETED`，Record 或 Revision 不存在 `404 REQUEST_INVALID`。Revision 本身（正文、哈希、`operation_id`、首次入库返回的 `deliveries` 快照）不变；每个 `(Revision, Destination)` 至多一份 Delivery，重复请求回答现有的那份（不论它现在什么状态），不新建、不改状态；整个请求要么全部成功、要么一份也不建（Destination 不存在、已撤销或不接收这个 `intent` 返回 `422 REQUEST_INVALID`；已经有 Delivery 的 Destination 不再校验）。`intent` 是这批新 Delivery 自己的标签，Agent 领到的就是它。较新的版本取代较旧的规则与首次入库一致：同一 Destination 上更旧、尚未被领取的 Delivery 被取消；该 Destination 已有更高版本的 Delivery 时，新建的这份直接是 `CANCELLED`。
 - `record_get` 返回完整正文时（`is_partial = false`），`text_sha256` 必须与正文原始 UTF-8 字节一致；超出分页上限时必须通过 `is_partial = true` 与不透明 `next_cursor` 分段返回，不得静默截断后冒充完整正文。
 
 ## 状态机文件怎么读

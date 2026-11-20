@@ -467,6 +467,40 @@ def _prepare_destination_deliveries(
     return [*cancelled_old, *new_deliveries], new_rows
 
 
+def _insert_delivery_rows(
+    conn: Any,
+    *,
+    tenant_id: str,
+    record_id: str,
+    revision: int,
+    intent: str,
+    rows: list[tuple[dict[str, Any], list[int], str | None]],
+    now_iso: str,
+) -> None:
+    """Insert the Delivery rows prepared by `_prepare_destination_deliveries` (inside the caller's write transaction)."""
+    for item, dest_supersedes, cancelled_at in rows:
+        conn.execute(
+            """
+            INSERT INTO deliveries (
+                delivery_id, tenant_id, record_id, revision, destination_id,
+                state, intent, supersedes_revisions_json, created_at, cancelled_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item["delivery_id"],
+                tenant_id,
+                record_id,
+                revision,
+                item["destination_id"],
+                item["state"],
+                intent,
+                json.dumps(dest_supersedes),
+                now_iso,
+                cancelled_at,
+            ),
+        )
+
+
 def store_revision(
     db_path: pathlib.Path, auth: AuthenticatedDevice, submission: dict[str, Any]
 ) -> dict[str, Any]:
@@ -629,27 +663,15 @@ def store_revision(
                     json.dumps(deliveries),
                 ),
             )
-            for item, dest_supersedes, cancelled_at in new_delivery_rows:
-                conn.execute(
-                    """
-                    INSERT INTO deliveries (
-                        delivery_id, tenant_id, record_id, revision, destination_id,
-                        state, intent, supersedes_revisions_json, created_at, cancelled_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        item["delivery_id"],
-                        tenant_id,
-                        record_id,
-                        revision,
-                        item["destination_id"],
-                        item["state"],
-                        publication["intent"],
-                        json.dumps(dest_supersedes),
-                        now_iso,
-                        cancelled_at,
-                    ),
-                )
+            _insert_delivery_rows(
+                conn,
+                tenant_id=tenant_id,
+                record_id=record_id,
+                revision=revision,
+                intent=publication["intent"],
+                rows=new_delivery_rows,
+                now_iso=now_iso,
+            )
             conn.execute("COMMIT")
             return {
                 "schema_version": "1.1",
@@ -660,6 +682,137 @@ def store_revision(
                 "stored_at": now_iso,
                 "duplicate": False,
                 "superseded_revisions": superseded_revisions,
+                "deliveries": deliveries,
+            }
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+
+
+def add_revision_deliveries(
+    db_path: pathlib.Path,
+    auth: AuthenticatedDevice,
+    record_id: str,
+    revision: int,
+    intent: str,
+    destination_ids: list[str],
+) -> dict[str, Any]:
+    """Add Deliveries to an already stored Revision (Ticket 22 review B2; closes README gap G13).
+
+    The Revision itself (text, hash, operation, first-store snapshot) is never touched. Per
+    (Revision, Destination) there is at most one Delivery: asking again answers the existing one,
+    whatever state it is in. All-or-nothing: one invalid Destination creates no Delivery at all.
+    The `intent` belongs to the Deliveries created here (that is what an Agent reads); every
+    Destination that gets a new Delivery must allow it. Supersession works as at first store.
+    """
+    tenant_id = auth.tenant_id
+    now = utc_now()
+    now_iso = format_utc(now)
+
+    conn = open_connection(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            record_row = conn.execute(
+                """
+                SELECT origin_device_id, deleted_at
+                FROM records
+                WHERE tenant_id = ? AND record_id = ?
+                """,
+                (tenant_id, record_id),
+            ).fetchone()
+            if record_row is None:
+                raise GatewayError(404, REQUEST_INVALID, "Record was not found.")
+            if record_row["deleted_at"] is not None:
+                raise GatewayError(
+                    410,
+                    RECORD_DELETED,
+                    "Record has been deleted and cannot accept new deliveries.",
+                )
+            if record_row["origin_device_id"] != auth.device_id:
+                raise GatewayError(
+                    403,
+                    RECORD_NOT_ORIGIN_DEVICE,
+                    "Only the device that created this record may add deliveries to its revisions.",
+                )
+            stored = conn.execute(
+                """
+                SELECT 1 FROM revisions
+                WHERE tenant_id = ? AND record_id = ? AND revision = ?
+                """,
+                (tenant_id, record_id, revision),
+            ).fetchone()
+            if stored is None:
+                raise GatewayError(404, REQUEST_INVALID, "Revision was not found.")
+
+            for dest_id in destination_ids:
+                expire_due_leases(conn, tenant_id, dest_id, now)
+            placeholders = ", ".join("?" for _ in destination_ids)
+            existing = {
+                row["destination_id"]: row
+                for row in conn.execute(
+                    f"""
+                    SELECT delivery_id, destination_id, state
+                    FROM deliveries
+                    WHERE tenant_id = ? AND record_id = ? AND revision = ?
+                      AND destination_id IN ({placeholders})
+                    """,
+                    (tenant_id, record_id, revision, *destination_ids),
+                ).fetchall()
+            }
+            missing = [dest_id for dest_id in destination_ids if dest_id not in existing]
+            _validate_publication_destinations(conn, tenant_id, missing, intent)
+
+            higher_exists = (
+                conn.execute(
+                    """
+                    SELECT 1 FROM revisions
+                    WHERE tenant_id = ? AND record_id = ? AND revision > ?
+                    LIMIT 1
+                    """,
+                    (tenant_id, record_id, revision),
+                ).fetchone()
+                is not None
+            )
+            _, new_rows = _prepare_destination_deliveries(
+                conn,
+                tenant_id=tenant_id,
+                record_id=record_id,
+                revision=revision,
+                destination_ids=missing,
+                superseded_revisions=[],
+                higher_exists=higher_exists,
+                now=now,
+                now_iso=now_iso,
+            )
+            _insert_delivery_rows(
+                conn,
+                tenant_id=tenant_id,
+                record_id=record_id,
+                revision=revision,
+                intent=intent,
+                rows=new_rows,
+                now_iso=now_iso,
+            )
+            created = {item["destination_id"]: item for item, _, _ in new_rows}
+            deliveries = [
+                created[dest_id]
+                if dest_id in created
+                else {
+                    "delivery_id": existing[dest_id]["delivery_id"],
+                    "destination_id": dest_id,
+                    "revision": revision,
+                    "state": existing[dest_id]["state"],
+                }
+                for dest_id in destination_ids
+            ]
+            conn.execute("COMMIT")
+            return {
+                "schema_version": "1.1",
+                "record_id": record_id,
+                "revision": revision,
                 "deliveries": deliveries,
             }
         except Exception:

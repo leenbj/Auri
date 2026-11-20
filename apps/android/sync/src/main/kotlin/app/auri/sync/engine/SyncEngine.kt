@@ -20,8 +20,11 @@ import app.auri.sync.pairing.PairedGateway
 import app.auri.sync.pairing.PairingState
 import app.auri.sync.pairing.PairingStore
 import app.auri.sync.policy.DataFlowPolicy
+import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -65,6 +68,9 @@ enum class SendResult {
  * - **没放行就一个字节也不发**（评审 B1）：配对只说明手机认得这台网关，不说明用户同意把文字送过去。每个可能联系网关的地方——
  *   一轮同步的开头、探测、一条任务开始发送之前、请求离开手机之前——先问 [DataFlowPolicy]；没授权、开着严格仅本地、读不出来，
  *   一律什么都不做（连探测、连 mDNS 都不去问）。请求离开之前才被收回的，退回等待网关，不留“可能已送到”的标记。
+ * - **文字入库与 Delivery 各管各的**（评审 B2）：同步任务只管把 Revision 送进网关，不等任何人的决定；预览确认的 Destination 在用户确认之后才有 Delivery，
+ *   由每一轮同步的最后一步 [addDeliveries] 向网关给这个**已入库的** Revision 追加（网关上幂等）。追加不改任务的状态：失败只影响它自己，按有界退避重来
+ *   （[additionsRetryAt] 给 SyncLoop 排计时）；永久拒绝的记进发送账、不再重试。网关回答“有了”才记下，进程在任何一步被杀，下一轮都能从账里重新算出还欠哪些。
  * - **结果跟着配对走**：请求发出时是哪份配对，结果就只对那份有效。途中用户重新配对、改配别的网关，晚到的结果（被拒、
  *   公钥不符、甚至“已入库”）全部作废，任务回到排队、对新配对重新来过；一轮同步里缓存的网关地址也只对同一份配对有效。
  *
@@ -78,6 +84,7 @@ class SyncEngine(
     private val locator: GatewayLocator,
     private val clock: Clock,
     private val policy: DataFlowPolicy,
+    private val additions: DeliveryAdditions = DeliveryAdditions.None,
     private val retry: RetryPolicy = RetryPolicy(),
     private val log: SyncLog = SyncLog.None,
     private val onDecision: (SyncDecision) -> Unit = {},
@@ -85,6 +92,15 @@ class SyncEngine(
     private val passLock = Mutex()
     private val jobLocks = ConcurrentHashMap<JobKey, Mutex>()
     private val inFlight: MutableSet<JobKey> = ConcurrentHashMap.newKeySet()
+
+    /** 追加 Delivery 连续失败了几次（只在内存里：进程重启后账还在，第一轮重新来过）。 */
+    @Volatile
+    private var additionsAttempts = 0
+
+    private val additionsRetry = MutableStateFlow<Instant?>(null)
+
+    /** 追加 Delivery 在等重试时，重试的时间（SyncLoop 据此排计时）；没有要重试的为 null。 */
+    val additionsRetryAt: StateFlow<Instant?> get() = additionsRetry
 
     /** 平台最近一次报告的网络状态（[networkLost] 置位、[networkChanged] 清除）。引擎自己不监听网络，只记下被告知的结果。 */
     @Volatile
@@ -111,6 +127,7 @@ class SyncEngine(
                         return
                     }
                 }
+                addDeliveries(location)
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -152,9 +169,16 @@ class SyncEngine(
      */
     suspend fun networkChanged() {
         offline = false
+        resetAdditionsBackoff() // 旧的失败发生在另一个网络上
         for (job in jobs.all()) {
             if (job.state == SyncState.RETRY_SCHEDULED) deliver(job.key, SyncEvent.RETRY_DUE) { it.copy(attempts = 0) }
         }
+    }
+
+    /** 追加 Delivery 的退避从头算（网络变了、用户点了“现在同步”）。 */
+    fun resetAdditionsBackoff() {
+        additionsAttempts = 0
+        additionsRetry.value = null
     }
 
     /** 探测网关；找得到（含“有人应答但公钥不符”）就让等待网关的任务回到排队。 */
@@ -236,8 +260,7 @@ class SyncEngine(
         if (started?.outcome != Outcome.TRANSITION) return SendResult.SKIPPED
         val wasUncertain = before.uncertain
 
-        val submission = source.submissionFor(key) ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)
-        // 请求离开手机之前的最后一问：刚才被收回的，什么都没发出去，退回等待（“不确定”还原成发送之前的样子）
+        // 落盘之后、联系网关之前再问一次放行：刚才被收回的，连网关都不去碰，退回等待（“不确定”还原成发送之前的样子）
         if (!mayTransmit()) return waiting(key, wasUncertain)
         val address = when (val located = location.get(gateway)) {
             is Located.Reachable -> located.address
@@ -246,6 +269,12 @@ class SyncEngine(
         }
         rememberAddress(gateway, address)
 
+        // 网关找到了，请求马上要离开手机：到这一刻才为它构造提交——构造提交就是冻结意图标签（评审 M3）。
+        // 没网、等网关、排队的时候标签都还能改；构造出来的提交带的是冻结的那个值
+        val submission = source.submissionFor(key) ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)
+        // 请求离开手机之前的最后一问：刚才被收回的，什么都没发出去，退回等待（“不确定”还原成发送之前的样子）
+        if (!mayTransmit()) return waiting(key, wasUncertain)
+
         val client = GatewayClient(http.forPin(gateway.pin))
         if (wasUncertain) {
             // 上一次可能已经送到：先问网关。只有网关明确说“已入库”才确认，明确说“没有”才往下重发；问不到就不重发。
@@ -253,7 +282,10 @@ class SyncEngine(
             if (!stillPaired(gateway)) return stale(key)
             when (answer) {
                 is GatewayResult.Success -> when (answer.value.standing(key.revision, submission.textSha256, gateway.deviceId)) {
-                    Standing.SAME_STORED -> return stored(key)
+                    Standing.SAME_STORED -> {
+                        additions.gatewayHas(key, answer.value.destinations.filter { it.revision == key.revision }.map { it.destinationId })
+                        return stored(key)
+                    }
                     Standing.MISSING -> Unit // 网关没有这一版：往下重新提交
                     // 下面三种网关都已经说明白了，再 PUT 只会白白把正文再发一遍、换来同样的拒绝
                     Standing.CONFLICTING -> return blocked(key, BlockedReason.VERSION_CONFLICT)
@@ -267,7 +299,12 @@ class SyncEngine(
         val put = client.putRevision(address, gateway.token, submission)
         if (!stillPaired(gateway)) return stale(key)
         return when (put) {
-            is GatewayResult.Success -> stored(key)
+            is GatewayResult.Success -> {
+                // 先记账再确认入库：进程死在两步之间，下一轮先问网关、同样记账（追加是幂等的，最坏只多一个请求）
+                additions.gatewayHas(key, put.value.deliveries.filter { it.revision == key.revision }.map { it.destinationId })
+                stored(key)
+            }
+
             else -> failed(key, gateway, put, wasUncertain)
         }
     }
@@ -333,11 +370,15 @@ class SyncEngine(
     /** 公钥不符或令牌被拒。先记进配对记录（之后不再发任何带令牌的请求），再把这条任务停下。 */
     private suspend fun connectionBlocked(key: JobKey, gateway: PairedGateway, needs: NeedsUser, reason: BlockedReason, wasUncertain: Boolean): SendResult {
         // 配对记录里的这份已经不是发请求时的那份（途中重新配对了）：这是旧配对的结论，作废。写记录这一步本身就是原子的比对
-        if (!pairing.update { current -> if (current.isSamePairing(gateway)) current.copy(needsUser = needs) else null }) return stale(key)
+        if (!recordConnectionProblem(gateway, needs)) return stale(key)
         val event = if (needs == NeedsUser.KEY_MISMATCH) SyncEvent.KEY_MISMATCH else SyncEvent.AUTH_REVOKED
         deliver(key, event) { it.copy(uncertain = wasUncertain, blockedReason = reason) }
         return SendResult.CONNECTION_BLOCKED
     }
+
+    /** 把连接问题记进配对记录（之后不再发任何带令牌的请求）。配对记录已经不是 [gateway] 那份时什么也不写，返回 false。 */
+    private suspend fun recordConnectionProblem(gateway: PairedGateway, needs: NeedsUser): Boolean =
+        pairing.update { current -> if (current.isSamePairing(gateway)) current.copy(needsUser = needs) else null }
 
     private suspend fun failed(key: JobKey, gateway: PairedGateway, result: GatewayResult<*>, wasUncertain: Boolean): SendResult = when (result) {
         is GatewayResult.Success<*> -> error("failed() 只处理失败的结果")
@@ -358,6 +399,70 @@ class SyncEngine(
             result.retryable -> retryLater(key)
             else -> blocked(key, BlockedReason.REQUEST_REJECTED)
         }
+    }
+
+    // ---- 追加 Delivery（评审 B2）----
+
+    /**
+     * 给已入库的 Revision 追加账上欠着的 Delivery：用户确认过的预览目的地、以及入库时放不下或网关没建的。每个 Destination 一个请求。
+     * 出任何问题都不碰同步任务的状态：连不上或暂时失败按有界退避重来；连接问题记进配对记录；网关明确拒绝的记账、不再重试。
+     */
+    private suspend fun addDeliveries(location: Location) {
+        val due = additions.due()
+        if (due.isEmpty()) {
+            resetAdditionsBackoff()
+            return
+        }
+        if (offline || !mayTransmit()) return // 断网期间不探测：网络回来时 SyncLoop 会再跑一轮
+        val gateway = usableGateway() ?: return
+        val address = when (val located = location.get(gateway)) {
+            is Located.Reachable -> located.address
+            Located.Unreachable -> return additionsRetryLater()
+            Located.KeyMismatch -> {
+                recordConnectionProblem(gateway, NeedsUser.KEY_MISMATCH)
+                return
+            }
+        }
+        rememberAddress(gateway, address)
+        val client = GatewayClient(http.forPin(gateway.pin))
+        for (addition in due) {
+            if (!mayTransmit()) return // 请求离开手机之前再问一次放行
+            val result = client.addDeliveries(address, gateway.token, addition.key.recordId, addition.key.revision, addition.intent, listOf(addition.destinationId))
+            if (!stillPaired(gateway)) return // 途中换了配对：这个结果对新配对没有意义，下一轮对新配对重新算
+            val ids = listOf(addition.destinationId)
+            when (result) {
+                is GatewayResult.Success -> {
+                    if (result.value.deliveries.any { it.destinationId == addition.destinationId }) additions.gatewayHas(addition.key, ids)
+                    else additions.refused(addition.key, ids, Refusal.NOT_CREATED)
+                }
+
+                is GatewayResult.Garbled -> return additionsRetryLater() // 请求到了、回答读不懂：追加是幂等的，再问一次
+                is GatewayResult.TransportFailed -> when (result.failure) {
+                    is TransportFailure.KeyMismatch -> {
+                        recordConnectionProblem(gateway, NeedsUser.KEY_MISMATCH)
+                        return
+                    }
+
+                    else -> return additionsRetryLater()
+                }
+
+                is GatewayResult.Rejected -> when {
+                    result.status == 401 || result.code == ErrorCode.GATEWAY_AUTH_REVOKED || result.code == ErrorCode.GATEWAY_AUTH_INVALID -> {
+                        recordConnectionProblem(gateway, NeedsUser.AUTH_REJECTED)
+                        return
+                    }
+
+                    result.retryable -> return additionsRetryLater()
+                    else -> additions.refused(addition.key, ids, Refusal.REJECTED)
+                }
+            }
+        }
+        resetAdditionsBackoff()
+    }
+
+    private fun additionsRetryLater() {
+        additionsAttempts += 1
+        additionsRetry.value = clock.now().plusMillis(retry.delayMs(additionsAttempts))
     }
 
     // ---- 其余 ----

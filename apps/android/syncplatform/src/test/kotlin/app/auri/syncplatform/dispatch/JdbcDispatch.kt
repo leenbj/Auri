@@ -8,8 +8,10 @@ import app.auri.sync.destinations.DispatchItem
 import app.auri.sync.destinations.DispatchStore
 import app.auri.sync.destinations.IntentResult
 import app.auri.sync.engine.BlockedReason
+import app.auri.sync.engine.DeliveryAddition
 import app.auri.sync.engine.JobKey
 import app.auri.sync.engine.NoSuchJobException
+import app.auri.sync.engine.Refusal
 import app.auri.sync.engine.SyncJob
 import app.auri.sync.engine.SyncJobStore
 import app.auri.sync.gateway.Destination
@@ -51,7 +53,13 @@ class JdbcDispatchStore(private val sql: JdbcSqlDb, private val signal: MutableS
 
     override suspend fun setIntent(key: JobKey, intent: Intent, now: Instant): IntentResult = write { setIntent(key, intent, now) }
 
-    override suspend fun publicationFor(key: JobKey): Publication = logic.publicationFor(key)
+    override suspend fun publicationFor(key: JobKey): Publication = write { publicationFor(key) }
+
+    override suspend fun due(): List<DeliveryAddition> = logic.due()
+
+    override suspend fun gatewayHas(key: JobKey, destinationIds: Collection<String>) = write { gatewayHas(key, destinationIds) }
+
+    override suspend fun refused(key: JobKey, destinationIds: Collection<String>, reason: Refusal) = write { refused(key, destinationIds, reason) }
 
     override suspend fun defaultIntent(): Intent = logic.defaultIntent()
 
@@ -60,7 +68,7 @@ class JdbcDispatchStore(private val sql: JdbcSqlDb, private val signal: MutableS
     override fun changes(): Flow<Long> = signal
 }
 
-/** 任务表的只读视图（再加入队）：契约测试只读任务表里有没有、什么样；写入由引擎的内存实现负责，不在这里测。 */
+/** 任务表的视图（入队、整行替换）：契约测试读任务表里有没有、什么样，并用 [update] 模拟引擎把任务推到 STORED。 */
 class JdbcJobsView(private val sql: SqlDb) : SyncJobStore {
     override suspend fun enqueue(key: JobKey, now: Instant): Boolean = SqliteSyncJobStore.enqueueIn(sql, key, now)
 
@@ -69,7 +77,26 @@ class JdbcJobsView(private val sql: SqlDb) : SyncJobStore {
 
     override suspend fun all(): List<SyncJob> = sql.query("SELECT * FROM sync_jobs ORDER BY created_at_s, created_at_nano, rowid") { it.toJob() }
 
-    override suspend fun update(job: SyncJob) = throw NoSuchJobException(job.key)
+    override suspend fun update(job: SyncJob) {
+        val updated = sql.update(
+            """
+            UPDATE sync_jobs SET state = ?, attempts = ?, uncertain = ?, retry_at_s = ?, retry_at_nano = ?, blocked_reason = ?,
+                updated_at_s = ?, updated_at_nano = ?
+            WHERE record_id = ? AND revision = ?
+            """.trimIndent(),
+            job.state.name,
+            job.attempts,
+            if (job.uncertain) 1 else 0,
+            job.retryAt?.epochSecond,
+            job.retryAt?.nano,
+            job.blockedReason?.name,
+            job.updatedAt.epochSecond,
+            job.updatedAt.nano,
+            job.key.recordId,
+            job.key.revision,
+        )
+        if (updated == 0) throw NoSuchJobException(job.key)
+    }
 
     override fun observe(): Flow<List<SyncJob>> = error("测试里不用")
 

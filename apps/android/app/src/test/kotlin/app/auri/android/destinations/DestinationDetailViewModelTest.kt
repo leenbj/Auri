@@ -379,7 +379,7 @@ class DestinationDetailViewModelTest {
     }
 
     @Test
-    fun `预览确认的目的地：确认前这一条是“等你确认”，网关上一个投递也没有`() = run(SendMode.PREVIEW_CONFIRM) { page ->
+    fun `预览确认的目的地：确认前这一条是“等你确认”，网关上没有给它的投递`() = run(SendMode.PREVIEW_CONFIRM) { page ->
         page.rig.transcribed()
         page.rig.engine.runOnce()
         page.viewModel.refreshStatuses()
@@ -387,7 +387,7 @@ class DestinationDetailViewModelTest {
 
         assertEquals(DeliveryView.AwaitingYou, page.viewModel.state.value.items.single().view)
         assertTrue(page.rig.server.deliveries.isEmpty())
-        assertEquals(0, page.rig.server.putCount)
+        assertEquals("文字照常入库了（评审 B2），只是网关上没有给它的投递", 1, page.rig.server.putCount)
     }
 
     @Test

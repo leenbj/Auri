@@ -36,12 +36,15 @@ enum class GatewayStage {
     }
 }
 
-/** 已决定要发、但还没入库时，卡在哪（与同步页的三种情形一致：不需要用户做什么的两种与需要处理的一种分开）。 */
+/** 已决定要发、但网关上还没有它的 Delivery 时，卡在哪（与同步页的三种情形一致：不需要用户做什么的两种与需要处理的一种分开）。 */
 enum class QueuedPhase {
     SENDING,
     WAITING_FOR_GATEWAY,
     RETRYING_LATER,
     NEEDS_YOU,
+
+    /** 文字已经在网关（任务已入库）、用户也确认了，但网关上还没有给这个 Destination 的 Delivery：正在（或稍后）请网关追加（评审 B2）。 */
+    REQUESTING_DELIVERY,
     ;
 
     companion object {
@@ -69,11 +72,14 @@ enum class UnknownReason {
 
     /** 网关给的状态值这个版本的 App 不认识。 */
     UNRECOGNIZED_STATE,
+
+    /** 网关明确不给它建 Delivery（或这条追加被永久拒绝）：文字没有送给它。 */
+    DELIVERY_REFUSED,
 }
 
 /** 一条文字在一个 Destination 上现在是什么情形。 */
 sealed interface DeliveryView {
-    /** 预览确认：等用户决定，**网关上还没有它**。 */
+    /** 预览确认：等用户决定。文字可能已经在网关里，但**网关上还没有给它的 Delivery**，Agent 看不到这条文字。 */
     data object AwaitingYou : DeliveryView
 
     /** 用户选择不发给这个 Destination。 */
@@ -82,7 +88,7 @@ sealed interface DeliveryView {
     /** 不会发给它：这个 Destination 已被撤销、不再接收这种意图，或这台手机已经不认识它了。 */
     data object NotTargeted : DeliveryView
 
-    /** 已决定要发，还没入库（本机在排队 / 等网关 / 稍后重试 / 需要用户处理）。 */
+    /** 已决定要发，网关上还没有它的 Delivery（本机在排队 / 等网关 / 稍后重试 / 需要用户处理 / 正在请网关追加）。 */
     data class Queued(val phase: QueuedPhase) : DeliveryView
 
     /** 网关上的状态，原样。 */

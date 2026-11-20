@@ -81,7 +81,12 @@ REAL = (":sync:realGatewayTest",)
 
 # 同一处破坏，在不同的测试层再跑一遍（单测 / 真实网关）：用同一份编辑
 SKIP_AUTH = Edit(SERVICE, "            if (auth != AuthResult.Authenticated) {", "            if (false && auth != AuthResult.Authenticated) {")
-PREVIEW_NOT_HELD = Edit(DISPATCH_STORE, "    val awaitingUser: Boolean get() = decision == TargetDecision.AWAITING && eligible", "    val awaitingUser: Boolean get() = false")
+AWAITING_NOT_RECOGNIZED = Edit(DISPATCH_STORE, "    val awaitingUser: Boolean get() = decision == TargetDecision.AWAITING && eligible", "    val awaitingUser: Boolean get() = false")
+AWAITING_WILL_RECEIVE = Edit(
+    DISPATCH_STORE,
+    "    val willReceive: Boolean get() = eligible && (decision == TargetDecision.AUTO || decision == TargetDecision.CONFIRMED)",
+    "    val willReceive: Boolean get() = eligible && decision != TargetDecision.SKIPPED",
+)
 IGNORE_ELIGIBILITY = Edit(
     DISPATCH_STORE,
     "    val willReceive: Boolean get() = eligible && (decision == TargetDecision.AUTO || decision == TargetDecision.CONFIRMED)",
@@ -97,6 +102,9 @@ LOG_CREDENTIAL = Edit(
     '                    log.event("credential.issued replaced=${result.value.replacedPrevious}")',
     '                    log.event("credential.issued replaced=${result.value.replacedPrevious} ${result.value.credential.reveal()}")',
 )
+
+# 评审 B2：引擎里“给已入库的 Revision 追加 Delivery”那一遍——真网关测试与单测各跑一遍，用同一份编辑
+ADDITIONS_NEVER_RUN = Edit(ENGINE, "                addDeliveries(location)\n            }\n", "            }\n")
 
 # 评审 B1：引擎问“文字放行了吗”的那一处——真网关测试与单测各跑一遍，用同一份编辑
 POLICY_GATE_OPEN = Edit(ENGINE, "    private suspend fun mayTransmit(): Boolean = policy.current().textMayEnterGateway", "    private suspend fun mayTransmit(): Boolean = true")
@@ -210,36 +218,106 @@ MUTATIONS: tuple = (
         app_tests("CredentialSurfaceGuardTest"), APP_RESULTS,
         ("没有任何会带走凭证的 API", "界面里唯一保存的状态"),
     ),
-    # ---- 4. 预览确认：确认之前没有 Delivery；确认幂等；意图标签只是数据 ----
-    # 拦住文字的逻辑在存储实现里（Android 上是 SQLite：DispatchSql.releaseIfReady 看 awaitingUser）；:sync 的测试与真网关测试用的是内存实现，
-    # 它们的价值在“网关那一侧看到什么”，所以拦截本身的变异放在 :syncplatform 的 SQLite 合同测试上（JVM 里跑真 SQLite 引擎）。
+    # ---- 4. 预览确认（评审 B2 之后）：文字照常入库、不拦别的目标；预览目标的 Delivery 在用户确认之后才向网关追加，幂等；意图标签只是数据 ----
+    # “第一次提交带哪些目标”“欠网关哪些追加”的判断在发送账里（Android 上是 SQLite：DispatchSql / DispatchTarget.willReceive），
+    # 所以账的变异放在 :syncplatform 的 SQLite 合同测试上（JVM 里跑真 SQLite 引擎）；追加那一遍在引擎里，单测与真网关各跑一遍。
+    # 真网关测试用的是内存发送账（测试替身），它们的价值在“网关那一侧看到什么”，所以不对账动手脚。
     Mutation(
-        "dispatch-preview-not-held",
-        "预览确认的 Destination 在用户确认之前必须拦住这条文字（否则网关马上就为它建 Delivery）：等用户决定的目标必须被认出来",
-        (PREVIEW_NOT_HELD,),
+        "dispatch-awaiting-not-recognized",
+        "等用户决定的目标必须被认出来（待发送页靠它列出要用户确认的内容）：认不出来，用户永远看不到要确认什么",
+        (AWAITING_NOT_RECOGNIZED,),
         platform_tests("SqliteDispatchStoreContractTest", "DispatchSqlTest"), PLATFORM_RESULTS,
-        ("a_preview_confirm_destination_holds_the_item", "a_held_item_stays_held_after_a_restart"),
+        ("a_preview_confirm_destination_does_not_hold_the_text_only_its_delivery_waits_for_the_user", "an_awaiting_preview_target_keeps_waiting_after_a_restart"),
     ),
     Mutation(
-        "dispatch-sql-preview-not-held",
+        "dispatch-awaiting-in-publication",
+        "评审 B2：没确认的预览目标不能进第一次提交的 publication（否则网关马上为它建 Delivery，Agent 在用户确认之前就领得到）",
+        (AWAITING_WILL_RECEIVE,),
+        platform_tests("SqliteDispatchStoreContractTest", "DispatchSqlTest"), PLATFORM_RESULTS,
+        ("a_preview_confirm_destination_does_not_hold_the_text_only_its_delivery_waits_for_the_user",),
+    ),
+    Mutation(
+        "dispatch-due-includes-awaiting",
+        "评审 B2：没确认的预览目标不能算“欠网关的追加”（否则同步几轮就替用户做了决定）",
+        (Edit(DISPATCH_SQL, "t.decision IN ('${TargetDecision.AUTO.name}', '${TargetDecision.CONFIRMED.name}')", "t.decision IN ('${TargetDecision.AUTO.name}', '${TargetDecision.CONFIRMED.name}', '${TargetDecision.AWAITING.name}')"),),
+        platform_tests("SqliteDispatchStoreContractTest", "DispatchSqlTest"), PLATFORM_RESULTS,
+        ("a_preview_confirm_destination_does_not_hold_the_text_only_its_delivery_waits_for_the_user",),
+    ),
+    Mutation(
+        "dispatch-sql-preview-recorded-as-auto",
         "Android 的 SQLite 发送账：预览确认的目标必须记成“等用户”，不能记成自动",
         (Edit(DISPATCH_SQL, "                    (if (destination.sendMode == SendMode.AUTO_SEND) TargetDecision.AUTO else TargetDecision.AWAITING).name,", "                    TargetDecision.AUTO.name,"),),
         platform_tests("SqliteDispatchStoreContractTest", "DispatchSqlTest"), PLATFORM_RESULTS,
-        ("a_preview_confirm_destination_holds_the_item",),
+        ("a_preview_confirm_destination_does_not_hold_the_text_only_its_delivery_waits_for_the_user",),
     ),
     Mutation(
         "dispatch-sql-decide-not-idempotent",
         "重复确认必须被认出来（已经决定过）：不能当成新的决定再处理一遍",
         (Edit(DISPATCH_SQL, "        if (target.decision != TargetDecision.AWAITING) return@transaction DecideResult.AlreadyDecided(target.decision)\n", ""),),
         platform_tests("SqliteDispatchStoreContractTest"), PLATFORM_RESULTS,
-        ("confirming_releases_the_job_exactly_once_and_repeated_confirms_change_nothing",),
+        ("confirming_is_idempotent_and_the_delivery_becomes_due_once_the_text_is_on_the_gateway", "a_decision_is_final_a_later_opposite_choice_changes_nothing"),
+    ),
+    Mutation(
+        "engine-additions-never-run",
+        "评审 B2：用户确认之后，引擎必须向网关为这个已入库的 Revision 追加 Delivery：不做，预览目标永远收不到",
+        (ADDITIONS_NEVER_RUN,),
+        sync_tests("DispatchEngineTest", "DeliveryAdditionsLoopTest"), SYNC_RESULTS,
+        ("预览确认：确认之前文字照常入库、网关上没有给它的投递；确认之后对同一个 Revision 追加恰好一份，不再 PUT", "用户确认之后循环自己醒来做追加"),
+    ),
+    Mutation(
+        "real-gw-engine-additions-never-run",
+        "评审 B2（真网关）：确认之后真网关上必须为同一个 Revision 出现预览目标的 Delivery",
+        (ADDITIONS_NEVER_RUN,),
+        REAL, REAL_RESULTS,
+        ("预览确认：文字照常入库，但用户确认之前网关上没有这个 Destination 的 Delivery", "自动发送与预览确认并存"),
+    ),
+    Mutation(
+        "engine-additions-trusts-success",
+        "评审 B2：追加的答复成功但里面没有这个目标，必须记为没有送达，不能假设追加一定建成（否则界面谎称已送出）",
+        (Edit(
+            ENGINE,
+            "                    if (result.value.deliveries.any { it.destinationId == addition.destinationId }) additions.gatewayHas(addition.key, ids)\n                    else additions.refused(addition.key, ids, Refusal.NOT_CREATED)\n",
+            "                    additions.gatewayHas(addition.key, ids)\n",
+        ),),
+        sync_tests("DispatchEngineTest"), SYNC_RESULTS,
+        ("追加答复成功却没有这个目标：记为没有送达，不假设追加一定建成",),
+    ),
+    # ---- 评审 M3：意图标签在请求真正离开手机之前都能改，构造提交的那一刻才冻结 ----
+    Mutation(
+        "dispatch-sql-publication-does-not-freeze",
+        "评审 M3：构造提交时必须在同一个事务里冻结意图：不冻结，发出去之后用户还能把标签改成与网关上不一样的值",
+        (Edit(DISPATCH_SQL, '        sql.update("UPDATE dispatch_items SET intent_locked = 1 WHERE record_id = ? AND revision = ? AND intent_locked = 0", key.recordId, key.revision)\n', ""),),
+        platform_tests("SqliteDispatchStoreContractTest", "DispatchSqlTest"), PLATFORM_RESULTS,
+        ("building_the_submission_freezes_the_intent_so_a_later_change_is_refused_and_the_frozen_value_stays", "building_the_submission_freezes_the_intent_in_the_same_transaction"),
+    ),
+    Mutation(
+        "dispatch-sql-set-intent-ignores-lock",
+        "评审 M3：冻结之后改标签必须被拒（网关上这一版的意图不可更改）",
+        (Edit(DISPATCH_SQL, "        if (item.intentLocked) return@transaction IntentResult.Locked\n", ""),),
+        platform_tests("SqliteDispatchStoreContractTest"), PLATFORM_RESULTS,
+        ("building_the_submission_freezes_the_intent_so_a_later_change_is_refused_and_the_frozen_value_stays",),
+    ),
+    Mutation(
+        "engine-freezes-intent-before-locating-gateway",
+        "评审 M3：没网、网关找不到的时候标签必须还能改：引擎在找到网关之前就构造提交，等于一排队就锁死了标签",
+        (Edit(
+            ENGINE,
+            "        // 落盘之后、联系网关之前再问一次放行：刚才被收回的，连网关都不去碰，退回等待（“不确定”还原成发送之前的样子）\n"
+            "        if (!mayTransmit()) return waiting(key, wasUncertain)\n"
+            "        val address = when (val located = location.get(gateway)) {",
+            "        source.submissionFor(key)\n"
+            "        if (!mayTransmit()) return waiting(key, wasUncertain)\n"
+            "        val address = when (val located = location.get(gateway)) {",
+        ),),
+        sync_tests("DispatchEngineTest"), SYNC_RESULTS,
+        ("没网时文字排着队，标签还能改，网关收到的是改后的（评审 M3）",),
     ),
     Mutation(
         "dispatch-ignores-eligibility",
         "不接收这种意图标签（或已撤销）的 Destination 不能出现在 publication 里（否则网关把整条 422 永久拒收）",
         (IGNORE_ELIGIBILITY,),
         platform_tests("SqliteDispatchStoreContractTest", "DispatchSqlTest"), PLATFORM_RESULTS,
-        ("a_destination_revoked_after_the_release_but_before_the_send_is_not_in_the_publication", "an_auto_send_destination_that_does_not_accept_the_intent_is_not_in_the_publication"),
+        ("a_destination_revoked_after_the_confirmation_but_before_the_send_is_not_in_the_publication", "an_auto_send_destination_that_does_not_accept_the_intent_is_not_in_the_publication"),
     ),
     Mutation(
         "default-intent-is-action-request",
@@ -254,13 +332,6 @@ MUTATIONS: tuple = (
         (IGNORE_PUBLICATION,),
         sync_tests("SubmissionBuilderTest", "DispatchEngineTest"), SYNC_RESULTS,
         ("发布时的 publication 每次发送都现问发送账", "自动发送：转录完成后一轮同步就送到网关"),
-    ),
-    Mutation(
-        "real-gw-source-ignores-publication",
-        "真网关：自动发送的 Destination 必须在同一次同步里收到待领取的投递",
-        (IGNORE_PUBLICATION,),
-        REAL, REAL_RESULTS,
-        ("自动发送：转录完成后一轮同步",),
     ),
     # ---- 5. 自动发送的初稿标未审核 ----
     Mutation(
@@ -336,11 +407,28 @@ MUTATIONS: tuple = (
         ("配对之后没有任何 Destination、也没授权文字进网关",),
     ),
     Mutation(
-        "policy-second-gate-missing",
-        "评审 B1：取到要发的内容之后、真正发出之前还要再问一次放行（中间用户可能收回了授权）：少这一道，收回之后还会发出一个请求",
-        (Edit(ENGINE, "        if (!mayTransmit()) return waiting(key, wasUncertain)\n", ""),),
+        "policy-before-contact-gate-missing",
+        "评审 B1：落盘之后、联系网关之前还要再问一次放行（中间用户可能收回了授权）：少这一道，收回之后还会去连网关",
+        (Edit(
+            ENGINE,
+            "        // 落盘之后、联系网关之前再问一次放行：刚才被收回的，连网关都不去碰，退回等待（“不确定”还原成发送之前的样子）\n"
+            "        if (!mayTransmit()) return waiting(key, wasUncertain)\n",
+            "",
+        ),),
         sync_tests("DataFlowGateTest"), SYNC_RESULTS,
         ("问过之后、请求发出之前授权被收回",),
+    ),
+    Mutation(
+        "policy-second-gate-missing",
+        "评审 B1：取到要发的内容之后、真正发出之前还要再问一次放行（中间用户可能收回了授权）：少这一道，收回之后还会发出一个请求",
+        (Edit(
+            ENGINE,
+            "        // 请求离开手机之前的最后一问：刚才被收回的，什么都没发出去，退回等待（“不确定”还原成发送之前的样子）\n"
+            "        if (!mayTransmit()) return waiting(key, wasUncertain)\n",
+            "",
+        ),),
+        sync_tests("DataFlowGateTest"), SYNC_RESULTS,
+        ("联系过网关、取到要发的内容之后、请求发出之前授权被收回",),
     ),
     Mutation(
         "policy-strict-local-ignored",

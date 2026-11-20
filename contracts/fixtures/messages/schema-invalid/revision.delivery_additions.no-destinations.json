@@ -1,0 +1,14 @@
+{
+  "schema": "revision.schema.json#/$defs/delivery_additions",
+  "expect": "schema_invalid",
+  "rejected_because": "追加至少要有一个 Destination（空请求没有意义，也不能当成成功）。",
+  "expect_error": {
+    "path": "/destination_ids",
+    "keyword": "minItems"
+  },
+  "instance": {
+    "schema_version": "1.1",
+    "intent": "context",
+    "destination_ids": []
+  }
+}

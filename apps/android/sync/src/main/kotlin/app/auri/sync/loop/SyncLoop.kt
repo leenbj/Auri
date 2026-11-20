@@ -2,11 +2,13 @@ package app.auri.sync.loop
 
 import app.auri.capture.coordinator.Clock
 import app.auri.sync.SyncLog
+import app.auri.sync.engine.DeliveryAdditions
 import app.auri.sync.engine.JobKey
 import app.auri.sync.engine.RetryPolicy
 import app.auri.sync.engine.SyncEngine
 import app.auri.sync.engine.SyncJob
 import app.auri.sync.engine.SyncJobStore
+import app.auri.sync.engine.dueUpdates
 import app.auri.sync.machine.SyncState
 import java.time.Duration
 import kotlinx.coroutines.CancellationException
@@ -40,6 +42,8 @@ interface NetworkSignal {
  * - 网络回来或默认网络换了一个：等待重试的任务立刻回到排队、退避从头算（旧的失败发生在另一个网络上）。
  * - 被永久拒绝（停下等用户处理）的任务不产生任何计时与唤醒：没有“再试几次”的路。
  * - 触发来源（任务表的变化、网络信号）暂时出故障：记一条不含内容的日志，按有界退避重新订阅，不会永远失聪。
+ * - 要给已入库的 Revision 追加 Delivery（预览确认之后；评审 B2）：账上欠的集合一变就跑一轮；追加失败了，引擎排好重试时间
+ *   （[SyncEngine.additionsRetryAt]，有界退避），到点再跑。追加不动任务表，所以任务表的变化叫不醒它，要靠这一路。
  *
  * 几处设计要点：
  * - 所有触发只往一个“合并”的信号里投一票；跑一轮的是唯一的一个协程，一轮永远不会被别的触发或任务表的变化取消或重叠
@@ -57,6 +61,7 @@ class SyncLoop(
     private val clock: Clock,
     private val retry: RetryPolicy = RetryPolicy(),
     private val log: SyncLog = SyncLog.None,
+    private val additions: DeliveryAdditions = DeliveryAdditions.None,
 ) {
     private val wake = Channel<Unit>(Channel.CONFLATED)
     private val rearm = MutableStateFlow(0L)
@@ -74,12 +79,14 @@ class SyncLoop(
         wake.trySend(Unit)
         producer("network") { watchNetwork() }
         producer("jobs") { watchJobs() }
+        producer("additions") { watchAdditions() }
         runPasses()
     }
 
     /** 立刻跑一轮，并让探测的退避从头开始（刚配对完、回到前台、用户点了“现在同步”）。 */
     fun nudge() {
         probeAttempt = 0
+        engine.resetAdditionsBackoff()
         rearm.value += 1
         wake.trySend(Unit)
     }
@@ -112,6 +119,17 @@ class SyncLoop(
                     containNetworkFailure { engine.networkChanged() }
                     wake.trySend(Unit)
                 }
+            }
+        }
+    }
+
+    /** 账上欠的 Delivery 变了就跑一轮；追加在等重试时，到点再跑。 */
+    private suspend fun watchAdditions() = coroutineScope {
+        launch { additions.dueUpdates().collect { due -> if (due.isNotEmpty()) wake.trySend(Unit) } }
+        engine.additionsRetryAt.collectLatest { at ->
+            if (at != null) {
+                delay(Duration.between(clock.now(), at).toMillis().coerceAtLeast(0))
+                wake.trySend(Unit)
             }
         }
     }

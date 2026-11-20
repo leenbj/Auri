@@ -172,6 +172,31 @@ class DataFlowGateTest {
         assertEquals("重新授权后正好发一次", 1, rig.server.putCount)
     }
 
+    @Test
+    fun `联系过网关、取到要发的内容之后、请求发出之前授权被收回：PUT 没发出去，任务退回等待，不确定的标记不变`() = runRig(InMemoryGranted) { rig ->
+        val key = rig.publish()
+        // SEND_STARTED 之后第一次问（联系网关之前）还放行；第二次问（取到要发的内容之后、请求发出之前）看到的是已经收回的授权
+        var readsAfterStarted = 0
+        rig.policy.onRead = {
+            if (rig.decisionsFor(key).any { it.event == SyncEvent.SEND_STARTED } && ++readsAfterStarted == 2) rig.policy.setGatewayTextGranted(false)
+        }
+
+        rig.engine.runOnce()
+
+        assertEquals("联系网关之前那一道放行了，之后这一道才拦的", 2, readsAfterStarted)
+        assertTrue("PUT 不能发出去：${rig.lan.delivered.map { it.second.path }}", rig.lan.delivered.none { it.second.method == "PUT" })
+        assertTrue("网关不该收到任何入库调用：${rig.server.calls}", rig.server.calls.isEmpty())
+        val job: SyncJob = rig.job(key)
+        assertEquals(SyncState.WAITING_GATEWAY, job.state)
+        assertFalse("请求根本没离开手机：不是“可能已送到”", job.uncertain)
+
+        rig.policy.onRead = null
+        rig.policy.setGatewayTextGranted(true)
+        rig.engine.runOnce()
+        assertEquals(SyncState.STORED, rig.job(key).state)
+        assertEquals("重新授权后正好发一次", 1, rig.server.putCount)
+    }
+
     // ---- 被系统叫醒的那一轮 ----
 
     @Test

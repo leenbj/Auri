@@ -50,8 +50,25 @@ class RevisionSubmission(val recordId: String, val revision: Int, val textSha256
     override fun toString() = "RevisionSubmission($recordId#$revision)"
 }
 
-/** PUT 入库成功（revision.schema.json#/$defs/stored）。[duplicate] = 这是重复提交，返回的是首次入库的结果。 */
-data class StoredResponse(val operationId: String, val recordId: String, val revision: Int, val textSha256: String, val storedAt: Instant, val duplicate: Boolean)
+/**
+ * 网关回答里的一份 Delivery（revision.schema.json 里入库结果与追加结果的 deliveries 项）。[state] 是网关的原话，不在这里翻译。
+ * 入库结果里还可能有因这次发布而被取代的旧版本的 Delivery（[revision] 是旧版本号），所以用之前先看 [revision]。
+ */
+data class DeliveryOnRevision(val deliveryId: String, val destinationId: String, val revision: Int, val state: String)
+
+/** PUT 入库成功（revision.schema.json#/$defs/stored）。[duplicate] = 这是重复提交，返回的是首次入库的结果；[deliveries] 是首次入库时创建的那些。 */
+data class StoredResponse(
+    val operationId: String,
+    val recordId: String,
+    val revision: Int,
+    val textSha256: String,
+    val storedAt: Instant,
+    val duplicate: Boolean,
+    val deliveries: List<DeliveryOnRevision> = emptyList(),
+)
+
+/** 追加 Delivery 成功（revision.schema.json#/$defs/deliveries_added）：请求里每个 Destination 一项（新建的与本来就有的）。 */
+data class DeliveriesAdded(val recordId: String, val revision: Int, val deliveries: List<DeliveryOnRevision>)
 
 /** 网关上记着的一条 Revision（gateway.schema.json#/$defs/revision_status_summary）。 */
 data class RevisionOnGateway(val revision: Int, val state: String, val textSha256: String)
