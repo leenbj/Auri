@@ -183,23 +183,23 @@ MUTATIONS: tuple = (
     Mutation(
         "vm-leave-does-not-wipe",
         "离开页面必须抹掉凭证",
-        (Edit(DETAIL_VM, "    fun leave() {\n        generation++\n        wipeCredential()\n    }", "    fun leave() {\n        generation++\n    }"),),
+        (Edit(DETAIL_VM, "    fun leave() {\n        panel.update { Panel(it.generation + 1) }\n    }", "    fun leave() {\n        panel.update { it.copy(generation = it.generation + 1) }\n    }"),),
         app_tests("DestinationDetailViewModelTest"), APP_RESULTS,
         ("凭证只显示一次", "等核验或网关的时候离开了页面"),
     ),
     Mutation(
         "vm-late-credential-after-leave-shown",
         "等核验或网关时页面离开了：之后才到的凭证不能再显示出来（没人看着，也不能留着）",
-        (Edit(DETAIL_VM, "            if (mine != generation) return@launch // 等待期间页面离开了：没人看得到它，不显示，不留", "            // 变异：离开之后才到的凭证照样显示"),),
+        (Edit(DETAIL_VM, "                current.generation == mine -> current.copy(ui = ui)\n", "                true -> current.copy(ui = ui)\n"),),
         app_tests("DestinationDetailViewModelTest"), APP_RESULTS,
         ("等核验或网关的时候离开了页面",),
     ),
     Mutation(
         "vm-backgrounded-keeps-credential",
         "应用退到后台时正在显示的凭证必须抹掉（回来时看到的和进程被杀后一样是空的）",
-        (Edit(DETAIL_VM, "        if (credential.value is CredentialUi.Shown) wipeCredential()", "        Unit"),),
+        (Edit(DETAIL_VM, "        panel.update { if (it.ui is CredentialUi.Shown || it.ui == CredentialUi.Working) Panel(it.generation + 1) else it }", "        Unit"),),
         app_tests("DestinationDetailViewModelTest"), APP_RESULTS,
-        ("应用退到后台：正在显示的凭证抹掉",),
+        ("应用退到后台：正在显示的凭证抹掉", "应用退到后台时凭证还在路上"),
     ),
     Mutation(
         "credential-tostring-leaks",
@@ -584,7 +584,7 @@ MUTATIONS: tuple = (
     Mutation(
         "b3-ui-rotate-confirm-for-suspended",
         "评审 B3：暂停的目的地没有旧凭证可换：重新生成不该弹“确认轮换（旧凭证会失效）”",
-        (Edit(DETAIL_VM, "        if (destination.credentialIssued && !destination.suspended) credential.value = CredentialUi.ConfirmRotate else issue()", "        if (destination.credentialIssued) credential.value = CredentialUi.ConfirmRotate else issue()"),),
+        (Edit(DETAIL_VM, "        if (destination.credentialIssued && !destination.suspended) setUi(CredentialUi.ConfirmRotate) else issue()", "        if (destination.credentialIssued) setUi(CredentialUi.ConfirmRotate) else issue()"),),
         app_tests("DestinationDetailViewModelTest"), APP_RESULTS,
         ("目的地因凭证被撤销而暂停：再点生成凭证不弹",),
     ),
@@ -687,6 +687,42 @@ MUTATIONS: tuple = (
         (Edit(DESCRIPTIONS, '    "复制之后请在 ${SecretClipboardGuard.TIMEOUT_MS / 1_000} 秒内粘贴给 Agent', '    "复制之后请在 30 秒内粘贴给 Agent'),),
         app_tests("DestinationTextTest"), APP_RESULTS,
         ("凭证面板如实说剪贴板里的凭证到点会被清掉",),
+    ),
+    # ---- 评审 B6：退到后台或离开页面就换一代，在途的凭证不显示、不留，只告诉用户已丢掉 ----
+    Mutation(
+        "b6-background-keeps-inflight",
+        "评审 B6：退到后台时只抹掉正在显示的、不让在途的请求作废：回来时页面蹦出一个凭证",
+        (Edit(DETAIL_VM, "        panel.update { if (it.ui is CredentialUi.Shown || it.ui == CredentialUi.Working) Panel(it.generation + 1) else it }", "        panel.update { if (it.ui is CredentialUi.Shown) Panel(it.generation + 1) else it }"),),
+        app_tests("DestinationDetailViewModelTest"), APP_RESULTS,
+        ("应用退到后台时凭证还在路上", "退到后台之后用户回来又点了一次"),
+    ),
+    Mutation(
+        "b6-stale-issued-is-silent",
+        "评审 B6：作废请求的凭证被丢掉了却不告诉用户：网关已经签发，用户既没看到凭证也不知道要轮换",
+        (Edit(DETAIL_VM, "                outcome is CredentialOutcome.Issued && current.ui != CredentialUi.Working && current.ui !is CredentialUi.Shown -> current.copy(ui = CredentialUi.Lost)", "                outcome is CredentialOutcome.Issued && current.ui != CredentialUi.Working && current.ui !is CredentialUi.Shown -> current"),),
+        app_tests("DestinationDetailViewModelTest"), APP_RESULTS,
+        ("应用退到后台时凭证还在路上", "等核验或网关的时候离开了页面", "退到后台之后用户回来又点了一次"),
+    ),
+    Mutation(
+        "b6-lost-overwrites-newer-request",
+        "评审 B6：旧凭证到的时候新一代正在要凭证：不该用“已丢掉”盖掉它的“进行中”",
+        (Edit(DETAIL_VM, " && current.ui != CredentialUi.Working && current.ui !is CredentialUi.Shown -> current.copy(ui = CredentialUi.Lost)", " -> current.copy(ui = CredentialUi.Lost)"),),
+        app_tests("DestinationDetailViewModelTest"), APP_RESULTS,
+        ("旧凭证到的时候新一代正在要凭证",),
+    ),
+    Mutation(
+        "b6-panel-written-without-compare-and-swap",
+        "评审 B6：面板改成直接赋值：比完代数再赋值之间页面离开了，凭证会盖在已抹掉的状态上（真线程之间才有的缝）",
+        (Edit(DETAIL_VM, "        panel.update { it.copy(ui = ui) }", "        panel.value = panel.value.copy(ui = ui)"),),
+        app_tests("CredentialSurfaceGuardTest"), APP_RESULTS,
+        ("凭证面板的状态与“第几代”在同一个值里",),
+    ),
+    Mutation(
+        "b6-text-lost-does-not-say-rotate",
+        "评审 B6：“已丢掉”的说明必须叫用户轮换：不说，用户看到凭证没了却不知道网关那边已经签发了一个",
+        (Edit(DESCRIPTIONS, "请再点“轮换凭证”生成一个新的，旧的那个会立刻失效。", ""),),
+        app_tests("DestinationTextTest"), APP_RESULTS,
+        ("凭证已丢掉的说明（评审 B6）",),
     ),
 )
 

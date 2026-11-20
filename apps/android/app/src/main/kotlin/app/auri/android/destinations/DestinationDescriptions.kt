@@ -83,6 +83,10 @@ internal fun describeNotAuthenticated(result: AuthResult): String = when (result
     }
 }
 
+/** 生成凭证的请求在途时页面离开了画面（评审 B6）：凭证已丢掉没显示，网关那边可能已经签发了，所以让用户轮换一次。 */
+internal fun describeCredentialLost(): String =
+    "生成凭证时这个页面离开了画面（切走或退到后台），凭证没有显示出来，也没有地方能找回它。网关那边可能已经签发了一个新凭证：请再点“轮换凭证”生成一个新的，旧的那个会立刻失效。"
+
 internal fun describeCredentialRules(rotating: Boolean): String =
     if (rotating) "轮换会让旧凭证立刻失效：正在用旧凭证的 Agent 需要换成新的。新凭证只显示这一次。"
     else "凭证只显示这一次，关掉之后找不回来（需要时可以轮换出新的）。拿到凭证的 Agent 可以读取这个目的地的文字，请只交给你信任的 Agent。"

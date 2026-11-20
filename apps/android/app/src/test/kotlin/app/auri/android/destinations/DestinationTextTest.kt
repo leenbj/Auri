@@ -154,6 +154,16 @@ class DestinationTextTest {
     }
 
     @Test
+    fun `凭证已丢掉的说明（评审 B6）：叫用户轮换，说清旧的会立刻失效，不说成功也不说已处理`() {
+        val text = describeCredentialLost()
+
+        assertTrue(text, "轮换凭证" in text)
+        assertTrue(text, "立刻失效" in text)
+        assertTrue(text, "没有显示出来" in text)
+        assertTrue(PROCESSED_WORDS.none { it in text })
+    }
+
+    @Test
     fun `两种发送方式的话不同；“自动发送”说明发出去的是未审核的初稿，“预览确认”说明不点就不发`() {
         val auto = describeSendModeDetail(SendMode.AUTO_SEND)
         val preview = describeSendModeDetail(SendMode.PREVIEW_CONFIRM)

@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /*
@@ -48,9 +49,10 @@ import kotlinx.coroutines.launch
  *   │       Hidden                      没有任何凭证在内存里（初始状态；也是复制、关掉、离开页面、进程重启之后的样子）
  *   │       ConfirmRotate               这个目的地已签发过凭证：等用户确认“轮换会让旧凭证立刻失效”
  *   │       Working                     正在本机核验（生物识别）或向网关要
- *   │       Shown(credential)           **只显示这一次**。复制、关掉、离开页面任何一个动作都会把它从内存里抹掉；不落盘、不进日志、不进任何保存的状态
+ *   │       Shown(credential)           **只显示这一次**。复制、关掉、离开页面、退到后台任何一个动作都会把它从内存里抹掉；不落盘、不进日志、不进任何保存的状态
  *   │       NotAuthenticated(result)    本机核验没通过/没法做：凭证根本没有生成，没有向网关发任何请求
  *   │       Failed(failure)             向网关要的时候出了问题
+ *   │       Lost                        生成凭证的请求在途时页面离开了画面（切走、退到后台）：凭证到了也不显示、不留，网关那边已经签发——告诉用户已丢掉、请轮换
  *   ├─ revoke: RevokeUi                 撤销：Idle → Confirming（等用户确认）→ Working → Idle
  *   └─ problem: ServiceFailure?         刷新状态/撤销没做成的原因；dismissProblem() 关掉。
  *
@@ -58,7 +60,10 @@ import kotlinx.coroutines.launch
  *               leave / requestRevoke / confirmRevoke / cancelRevoke / dismissProblem。
  *
  * 凭证规则：每次生成或轮换前都由 DestinationController 现场做本机核验，核验没过零请求；凭证只在 [CredentialUi.Shown] 里出现，
- *   本类没有任何别的字段、日志、保存状态持有它；[leave]（页面离开）与 onCleared 会抹掉它，并且丢弃之后才到的结果（离开了就没人看得到它）。
+ *   本类没有任何别的字段、日志、保存状态持有它；[leave]（页面离开）、[backgrounded]（退到后台）与 onCleared 会抹掉它，并且让还在路上的请求作废：
+ *   作废的请求之后才到的凭证不显示（换了一代，见 [Panel]），只留一条“已丢掉，请轮换”（[CredentialUi.Lost]）。
+ *   面板的状态与“第几代”是同一个值里的两个字段，所有改动都是对它的一次原子更新（比较并交换）：没有“比完代数、还没赋值，页面离开了”的缝，
+ *   所以不管 [scope] 的调度器是主线程还是线程池，凭证都不会盖在已经抹掉的状态上。
  *   状态类都不是 Parcelable / Serializable，进程被杀后重新建出来的页面一定是 Hidden（测试里用“新建一个视图模型”来模拟）。
  * ===================================================================================================================
  */
@@ -87,6 +92,9 @@ sealed interface CredentialUi {
     data class NotAuthenticated(val result: AuthResult) : CredentialUi
 
     data class Failed(val failure: ServiceFailure) : CredentialUi
+
+    /** 生成凭证时页面离开了画面（切走、退到后台），网关已经签发、但凭证没有显示：它已被丢掉，不会再有地方找回；让用户再生成（轮换）一次。不含任何凭证内容。 */
+    data object Lost : CredentialUi
 }
 
 enum class RevokeUi { IDLE, CONFIRMING, WORKING }
@@ -113,12 +121,15 @@ class DestinationDetailViewModel(
 ) : ViewModel() {
     private val items = MutableStateFlow<List<ItemStatusRow>>(emptyList())
     private val itemsLoading = MutableStateFlow(false)
-    private val credential = MutableStateFlow<CredentialUi>(CredentialUi.Hidden)
+    private val panel = MutableStateFlow(Panel())
     private val revoke = MutableStateFlow(RevokeUi.IDLE)
     private val problem = MutableStateFlow<ServiceFailure?>(null)
 
-    /** 页面离开一次加一：生成凭证的请求在途时页面离开了，之后才到的凭证不能再显示出来。 */
-    @Volatile private var generation = 0
+    /**
+     * 凭证面板的状态加上“第几代”。页面离开或退到后台就换一代：之前还在路上的请求作废，之后才到的凭证不能再显示。
+     * 两个字段放在一个值里：换状态与比代数是同一次原子更新（[MutableStateFlow.update] 是比较并交换），中间没有缝。
+     */
+    private data class Panel(val generation: Int = 0, val ui: CredentialUi = CredentialUi.Hidden)
 
     /** 刷新状态的触发：合并成一次（正在刷新时再来的只记一次），两次之间留一点间隔——缓存每变一下都会触发，不能每次都去敲网关。 */
     private val triggers = Channel<Unit>(Channel.CONFLATED)
@@ -129,7 +140,7 @@ class DestinationDetailViewModel(
         controller.destinations.map { list -> list.firstOrNull { it.destinationId == destinationId }?.toItem() },
         items,
         itemsLoading,
-        combine(credential, revoke, problem) { credential, revoke, problem -> Operations(credential, revoke, problem) },
+        combine(panel.map { it.ui }, revoke, problem) { credential, revoke, problem -> Operations(credential, revoke, problem) },
     ) { destination, items, loading, operations ->
         DestinationDetailUiState(destination, items, loading, operations.credential, operations.revoke, operations.problem, loaded = true)
     }.stateIn(scope, SharingStarted.Eagerly, DestinationDetailUiState())
@@ -155,19 +166,19 @@ class DestinationDetailViewModel(
     fun requestCredential() {
         val destination = state.value.destination ?: return
         if (!destination.active) return
-        when (credential.value) {
+        when (panel.value.ui) {
             CredentialUi.Working, is CredentialUi.Shown, CredentialUi.ConfirmRotate -> return
             else -> Unit
         }
-        if (destination.credentialIssued && !destination.suspended) credential.value = CredentialUi.ConfirmRotate else issue()
+        if (destination.credentialIssued && !destination.suspended) setUi(CredentialUi.ConfirmRotate) else issue()
     }
 
     fun confirmRotate() {
-        if (credential.value == CredentialUi.ConfirmRotate) issue()
+        if (panel.value.ui == CredentialUi.ConfirmRotate) issue()
     }
 
     fun cancelRotate() {
-        if (credential.value == CredentialUi.ConfirmRotate) credential.value = CredentialUi.Hidden
+        panel.update { if (it.ui == CredentialUi.ConfirmRotate) it.copy(ui = CredentialUi.Hidden) else it }
     }
 
     /** 用户把凭证复制走了：抹掉。 */
@@ -176,27 +187,30 @@ class DestinationDetailViewModel(
     /** 用户关掉凭证面板：抹掉。 */
     fun dismissCredential() = wipeCredential()
 
-    /** 页面离开（回到列表、切到别的页、被销毁）：抹掉凭证，丢弃还在路上的。 */
+    /** 页面离开（回到列表、切到别的页、被销毁）：换一代——抹掉凭证，还在路上的请求作废。 */
     fun leave() {
-        generation++
-        wipeCredential()
+        panel.update { Panel(it.generation + 1) }
     }
 
     /**
-     * 应用退到后台（页面还在，但看不见了）：正在显示的凭证抹掉，回来时看到的和进程被杀后一样是空的。
-     * 还在路上的不丢：核验框可能盖住了页面，而网关已经签发（轮换时旧凭证已经失效），丢了就找不回来。
+     * 应用退到后台（页面还在，但看不见了）：换一代，正在显示的凭证抹掉、还在路上的请求作废，回来时看到的和进程被杀后一样是空的。
+     * 还在路上的那个若已经由网关签发，之后到的凭证不显示（[CredentialUi.Lost]）：宁可让用户轮换一次，也不在退到后台之后再把凭证亮出来。
      */
     fun backgrounded() {
-        if (credential.value is CredentialUi.Shown) wipeCredential()
+        panel.update { if (it.ui is CredentialUi.Shown || it.ui == CredentialUi.Working) Panel(it.generation + 1) else it }
     }
 
     private fun wipeCredential() {
-        credential.value = CredentialUi.Hidden
+        setUi(CredentialUi.Hidden)
+    }
+
+    private fun setUi(ui: CredentialUi) {
+        panel.update { it.copy(ui = ui) }
     }
 
     private fun issue() {
-        credential.value = CredentialUi.Working
-        val mine = generation
+        var mine = 0
+        panel.update { mine = it.generation; it.copy(ui = CredentialUi.Working) }
         scope.launch {
             val outcome = try {
                 controller.issueCredential(destinationId)
@@ -204,16 +218,30 @@ class DestinationDetailViewModel(
                 throw cancelled
             } catch (failure: Exception) {
                 log.event("destination.credential.crashed ${failure::class.simpleName}")
-                if (mine == generation) credential.value = CredentialUi.Failed(ServiceFailure.Interrupted)
+                panel.update { if (it.generation == mine) it.copy(ui = CredentialUi.Failed(ServiceFailure.Interrupted)) else it }
                 return@launch
             }
-            if (mine != generation) return@launch // 等待期间页面离开了：没人看得到它，不显示，不留
-            credential.value = when (outcome) {
-                is CredentialOutcome.Issued -> CredentialUi.Shown(outcome.credential.credential)
-                is CredentialOutcome.NotAuthenticated -> CredentialUi.NotAuthenticated(outcome.result)
-                is CredentialOutcome.Failed -> CredentialUi.Failed(outcome.failure)
-            }
+            arrived(mine, outcome)
             triggers.trySend(Unit) // 签发过凭证了：缓存里的“已签发”标志变了，顺带刷新
+        }
+    }
+
+    /**
+     * 请求的结果到了。同一代：显示。换过代（页面离开或退到后台了）：没人该看到它，不显示、不留（这里的局部变量在函数返回后就没有引用了）；
+     * 如果它是已签发的凭证，而面板上没有更要紧的东西（正在要新的、或正显示着新的），就记下“已丢掉”让用户轮换。
+     */
+    private fun arrived(mine: Int, outcome: CredentialOutcome) {
+        val ui = when (outcome) {
+            is CredentialOutcome.Issued -> CredentialUi.Shown(outcome.credential.credential)
+            is CredentialOutcome.NotAuthenticated -> CredentialUi.NotAuthenticated(outcome.result)
+            is CredentialOutcome.Failed -> CredentialUi.Failed(outcome.failure)
+        }
+        panel.update { current ->
+            when {
+                current.generation == mine -> current.copy(ui = ui)
+                outcome is CredentialOutcome.Issued && current.ui != CredentialUi.Working && current.ui !is CredentialUi.Shown -> current.copy(ui = CredentialUi.Lost)
+                else -> current
+            }
         }
     }
 
@@ -252,8 +280,7 @@ class DestinationDetailViewModel(
     }
 
     override fun onCleared() {
-        generation++
-        credential.value = CredentialUi.Hidden
+        panel.update { Panel(it.generation + 1) }
         scope.cancel()
     }
 

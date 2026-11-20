@@ -115,6 +115,18 @@ class CredentialSurfaceGuardTest {
         assertTrue(page.contains("owner.lifecycle.removeObserver(observer)"))
     }
 
+    @Test
+    fun `凭证面板的状态与“第几代”在同一个值里，只经 update 原子地改：没有单独的代数变量，没有对面板的直接赋值`() {
+        val source = SourceText.withoutCommentsAndStrings(
+            File(androidDir, "app/src/main/kotlin/app/auri/android/destinations/DestinationDetailViewModel.kt").readText(),
+        )
+
+        assertTrue("面板是一个带代数的值", source.contains("private data class Panel(val generation: Int"))
+        assertTrue("不许有单独的代数变量：比完代数再赋值，两步之间页面离开了就会让凭证盖在已抹掉的状态上", !Regex("""\bvar generation\b""").containsMatchIn(source))
+        assertTrue("面板只能经 update（比较并交换）改", !Regex("""\bpanel\.value\s*=[^=]""").containsMatchIn(source))
+        assertTrue("写面板的地方都是 update：${Regex("""panel\.update\s*\{""").findAll(source).count()}", Regex("""panel\.update\s*\{""").findAll(source).count() >= 6)
+    }
+
     /** 日志模板里允许的插值：异常/结果的类名、“是不是替换了旧凭证”的布尔、代码里写死的操作名（$what、$name 都来自字面量）。 */
     private val allowedInterpolation = Regex(
         "\\\$\\{[A-Za-z_.]+::class\\.simpleName\\}|\\\$\\{result\\.value\\.replacedPrevious\\}|\\\$what\\b|\\\$name\\b",

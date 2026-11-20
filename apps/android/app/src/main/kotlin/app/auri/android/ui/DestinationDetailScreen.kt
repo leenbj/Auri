@@ -20,6 +20,7 @@ import app.auri.android.destinations.RevokeUi
 import app.auri.android.destinations.SUSPENDED_TAG
 import app.auri.android.destinations.UNREVIEWED_LABEL
 import app.auri.android.destinations.describeClipboardNotice
+import app.auri.android.destinations.describeCredentialLost
 import app.auri.android.destinations.describeCredentialRules
 import app.auri.android.destinations.describeDelivery
 import app.auri.android.destinations.describeFailure
@@ -133,6 +134,10 @@ private fun CredentialPanel(
             }
             is CredentialUi.Failed -> {
                 Text(describeFailure(credential.failure))
+                Button(onClick = onDismiss) { Text("知道了") }
+            }
+            CredentialUi.Lost -> {
+                Text(describeCredentialLost())
                 Button(onClick = onDismiss) { Text("知道了") }
             }
         }

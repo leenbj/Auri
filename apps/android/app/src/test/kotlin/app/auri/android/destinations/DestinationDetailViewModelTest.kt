@@ -133,7 +133,7 @@ class DestinationDetailViewModelTest {
     }
 
     @Test
-    fun `等核验或网关的时候离开了页面：之后才到的凭证不显示，也不留在任何地方`() = run { page ->
+    fun `等核验或网关的时候离开了页面：之后才到的凭证不显示，也不留在任何地方；视图模型被保留，页面回来只看到“已丢掉，请轮换”`() = run { page ->
         val gate = CompletableDeferred<Unit>()
         page.rig.authenticator.gate = { gate.await() }
         page.viewModel.requestCredential()
@@ -143,11 +143,14 @@ class DestinationDetailViewModelTest {
         gate.complete(Unit)
         settle()
 
-        assertEquals("页面都离开了，没人看得到这个凭证，也就不显示", CredentialUi.Hidden, page.credential)
-        // 回到页面：还是空的，没有“上一次的凭证”可以找回
+        val issued = page.rig.server.destinations.getValue(page.destinationId).credential ?: error("网关应当已经签发")
+        assertEquals("页面都离开了，没人看得到这个凭证，也就不显示；只记下它已丢掉", CredentialUi.Lost, page.credential)
+        assertFalse("界面状态里没有它", page.viewModel.state.value.toString().contains(issued))
+        // 回到页面（同一个视图模型）：没有“上一次的凭证”可以找回，用户照提示轮换
         page.viewModel.dismissCredential()
-        runCurrent()
-        assertEquals(CredentialUi.Hidden, page.credential)
+        page.viewModel.requestCredential()
+        settle()
+        assertEquals(CredentialUi.ConfirmRotate, page.credential)
     }
 
     @Test
@@ -163,18 +166,106 @@ class DestinationDetailViewModelTest {
         assertFalse(page.viewModel.state.value.toString().contains(secret))
     }
 
+    // 评审 B6 推翻了原先的规则（“还在路上的不丢，到了照样显示”）：退到后台之后再蹦出凭证，回来的人（或手边的人）就看到了它。
+    // 现在退到后台就是换一代：之后才到的凭证不显示、不留；它已被网关签发，所以告诉用户已丢掉、请轮换。
     @Test
-    fun `应用退到后台时凭证还在路上（核验框盖住了页面）：到了照样显示，不丢——它已经由网关签发，丢了就找不回来`() = run { page ->
+    fun `应用退到后台时凭证还在路上：回来的页面是空的，之后才到的凭证不显示、不留，只告诉用户它已丢掉、请轮换`() = run { page ->
         val gate = CompletableDeferred<Unit>()
         page.rig.authenticator.gate = { gate.await() }
         page.viewModel.requestCredential()
         runCurrent()
+        assertEquals(CredentialUi.Working, page.credential)
 
         page.viewModel.backgrounded()
+        runCurrent()
+        assertEquals("退到后台就不再等：回来的页面不能是转着圈、随后蹦出凭证的", CredentialUi.Hidden, page.credential)
         gate.complete(Unit)
         settle()
 
-        assertEquals("网关里已经只认这个新凭证", page.rig.server.destinations.getValue(page.destinationId).credential, page.credential.revealed())
+        val issued = page.rig.server.destinations.getValue(page.destinationId).credential ?: error("网关应当已经签发")
+        assertEquals("凭证没有显示，只告诉用户它已丢掉", CredentialUi.Lost, page.credential)
+        assertFalse("界面状态里没有它", page.viewModel.state.value.toString().contains(issued))
+
+        // 用户照说的做：轮换出新的，网关里只认新的
+        page.viewModel.dismissCredential()
+        page.viewModel.requestCredential()
+        settle()
+        assertEquals(CredentialUi.ConfirmRotate, page.credential)
+        page.viewModel.confirmRotate()
+        settle()
+        val rotated = page.credential.revealed()
+        assertNotEquals("丢掉的那个已经作废", issued, rotated)
+        assertEquals(page.rig.server.destinations.getValue(page.destinationId).credential, rotated)
+    }
+
+    @Test
+    fun `退到后台之后用户回来又点了一次：新请求撞上还没结束的旧请求（忙），旧凭证随后到了也不显示，“忙”让位给“已丢掉”`() = run { page ->
+        val gate = CompletableDeferred<Unit>()
+        page.rig.authenticator.gate = { gate.await() }
+        page.viewModel.requestCredential()
+        runCurrent()
+        page.viewModel.backgrounded()
+
+        page.viewModel.requestCredential() // 回来又点了一次：服务里一次只签发一个
+        runCurrent()
+        assertEquals(CredentialUi.Failed(ServiceFailure.Busy), page.credential)
+
+        gate.complete(Unit)
+        settle()
+
+        assertEquals("旧请求到了：凭证不显示，用户要知道它已丢掉（网关那边已签发）", CredentialUi.Lost, page.credential)
+        assertEquals("只核验过一次：忙的那次连核验都没弹", 1, page.rig.authenticator.purposes.size)
+    }
+
+    @Test
+    fun `旧凭证到的时候新一代正在要凭证：不打扰它（还是“进行中”），新凭证随后显示，网关里只认新的`() = run { page ->
+        val gates = ArrayDeque<CompletableDeferred<Unit>>()
+        val first = CompletableDeferred<Unit>().also(gates::add)
+        val second = CompletableDeferred<Unit>().also(gates::add)
+        page.rig.authenticator.gate = { gates.removeFirst().await() }
+        page.viewModel.requestCredential()
+        runCurrent()
+        page.viewModel.backgrounded()
+        runCurrent()
+
+        first.complete(Unit) // 旧请求放行：它的续体排在队列里
+        page.viewModel.requestCredential() // 回来又点了一次：排在旧请求的续体后面
+        runCurrent() // 旧请求先跑完（网关已签发，结果到了），然后新请求停在第二次核验上
+        val lost = page.rig.server.destinations.getValue(page.destinationId).credential ?: error("旧请求应当已经让网关签发")
+        assertEquals("旧凭证到了，新一代正在要凭证：不打扰它，也不显示旧的", CredentialUi.Working, page.credential)
+
+        second.complete(Unit)
+        settle()
+        val shown = page.credential.revealed()
+        assertNotEquals("显示的是新的，旧的已被替换", lost, shown)
+        assertEquals(page.rig.server.destinations.getValue(page.destinationId).credential, shown)
+    }
+
+    // 页面离开与结果到达谁先谁后，都由测试手里的调度器决定：两种次序都不许让凭证留在界面上。
+    // （评审 B6 的另一半：原先“比完代数、再赋值”之间页面离开了，凭证会盖在已抹掉的状态上——那是真线程之间才有的缝，协作式的测试调度器摆不出来；
+    //   现在代数与状态在同一个值里一次原子更新，缝不存在，由 CredentialSurfaceGuardTest 钉住写法。）
+    @Test
+    fun `结果已经放行、还没来得及处理时页面离开了：处理时发现换了一代，不显示；反过来，显示之后紧接着离开：立刻抹掉`() = run { page ->
+        val gate = CompletableDeferred<Unit>()
+        page.rig.authenticator.gate = { gate.await() }
+        page.viewModel.requestCredential()
+        runCurrent()
+        gate.complete(Unit) // 放行了，但续体排在队列里还没跑
+        page.viewModel.leave() // 页面就在这个缝里离开
+        settle()
+        assertEquals("先离开、后到手：不显示", CredentialUi.Lost, page.credential)
+
+        page.rig.authenticator.gate = null
+        page.viewModel.dismissCredential()
+        page.viewModel.requestCredential()
+        settle()
+        page.viewModel.confirmRotate()
+        settle()
+        val shown = page.credential.revealed() // 先到手、后离开：此刻显示着
+        page.viewModel.leave()
+        runCurrent()
+        assertEquals("显示之后紧接着离开：立刻抹掉", CredentialUi.Hidden, page.credential)
+        assertFalse(page.viewModel.state.value.toString().contains(shown))
     }
 
     @Test
