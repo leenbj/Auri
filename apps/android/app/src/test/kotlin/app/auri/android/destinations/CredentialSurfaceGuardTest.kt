@@ -84,10 +84,18 @@ class CredentialSurfaceGuardTest {
         )
         val everything = kotlinFiles("app/src/main/kotlin", "sync/src/main/kotlin", "syncplatform/src/main/kotlin", "platform/src/main/kotlin", "capture/src/main/kotlin", "modelmgmt/src/main/kotlin")
 
-        val callers = everything.filter { Regex("""\.reveal\(\)|\bfun reveal\(""").containsMatchIn(SourceText.withoutCommentsAndStrings(it.readText())) }.map { it.rel() }.toSet()
+        val callers = everything.filter { readsPlaintext(it.readText()) }.map { it.rel() }.toSet()
 
         assertEquals("读出凭证明文的文件应当只有登记过的", allowed, callers)
     }
+
+    /**
+     * 读出明文的写法：`.reveal()` 调用或 `fun reveal(` 声明；字符串模板里的 `${...reveal()}` 也算——
+     * SourceText 会把整段字符串连同里面的模板表达式一起抹掉，所以模板要单独在原文里找（注释里写到也报，让人改写，宁严勿松）。
+     */
+    private fun readsPlaintext(source: String): Boolean =
+        Regex("""\.reveal\(\)|\bfun reveal\(""").containsMatchIn(SourceText.withoutCommentsAndStrings(source)) ||
+            Regex("""\$\{[^}\n]*\breveal\(\)""").containsMatchIn(source)
 
     @Test
     fun `界面里唯一保存的状态是“现在在哪一页”，一个字符串`() {
@@ -137,5 +145,12 @@ class CredentialSurfaceGuardTest {
         val bad = SourceText.withoutCommentsAndStrings("""Log.i("x", "y"); File(dir, "c").writeText(secret); val s = SavedStateHandle()""")
         val hits = forbidden.filter { (_, pattern) -> pattern.containsMatchIn(bad) }.map { it.first }
         assertEquals(setOf("android.util.Log", "文件写入", "保存实例状态"), hits.toSet())
+
+        // 读出明文的守卫自己：直接调用、声明、字符串模板里的调用（日志、异常消息）都认得出来；不含这个词的不误报
+        assertTrue(readsPlaintext("Text(credential.credential.reveal())"))
+        assertTrue(readsPlaintext("fun reveal(): String = value"))
+        assertTrue(readsPlaintext("log.event(\"credential.issued \${result.value.credential.reveal()}\")"))
+        assertTrue(readsPlaintext("throw IllegalStateException(\"bad \${c.reveal()}\")"))
+        assertTrue(readsPlaintext("val s = \"redacted\" // 只是一句话，没有调用").not())
     }
 }

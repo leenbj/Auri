@@ -49,6 +49,7 @@ abstract class DispatchStoreContract {
     private val auto = "65ea2953-505c-5c6f-9474-7cd5b8474104"
     private val preview = "9b1a23f8-5241-4e78-9d21-15c4c720c2c9"
     private val preview2 = "d214122a-4c32-4469-a0cc-24df2a128725"
+    private val autoBoth = "3c6e0b8a-9f3d-4c1e-8a54-2f0d6c7e9a11"
     private val recordA = "a4a7c08d-2767-50d6-9238-6fa277033a49"
     private val recordB = "b5b8d19e-3878-5ae7-a349-7fb388144b5a"
     private val keyA = JobKey(recordA, 1)
@@ -287,6 +288,22 @@ abstract class DispatchStoreContract {
         assertFalse(fixture.store.item(keyA)!!.targets.single().eligible)
         assertEquals(DecideResult.NotEligible, fixture.store.decide(keyA, preview, Choice.CONFIRM, t0))
         assertEquals(emptyList<String>(), fixture.store.publicationFor(keyA).destinationIds)
+    }
+
+    @Test
+    fun an_auto_send_destination_that_does_not_accept_the_intent_is_not_in_the_publication_and_does_not_block_the_others() = runBlocking {
+        val fixture = newFixture()
+        fixture.know(
+            destination(auto, SendMode.AUTO_SEND, intents = setOf(Intent.CONTEXT)),
+            destination(autoBoth, SendMode.AUTO_SEND, intents = setOf(Intent.CONTEXT, Intent.ACTION_REQUEST), createdAt = t0.plusSeconds(1)),
+        )
+        fixture.store.setDefaultIntent(Intent.ACTION_REQUEST)
+
+        fixture.publish(keyA, RevisionSource.ASR, t0)
+
+        assertTrue("没有要等用户的目标，同步任务马上就有", fixture.hasJob(keyA))
+        // 授权了自动发送、却不接收这个标签的目的地：放进去网关会把整条 422 永久拒收，文字就丢在手机上了
+        assertEquals(listOf(autoBoth), fixture.store.publicationFor(keyA).destinationIds)
     }
 
     // ---- 意图标签：交给同步之前可以改，之后不可以 ----

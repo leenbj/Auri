@@ -97,9 +97,10 @@ CHECKLIST = {
     ],
     "3 自动发送的初稿标未审核": ["sync-submission-marks-reviewed", "real-gw-submission-marks-reviewed", "ui-unreviewed-label-blank"],
     "4 预览确认在用户确认前不产生 Delivery": [
-        "dispatch-preview-not-held", "real-gw-preview-not-held", "dispatch-sql-preview-not-held", "dispatch-sql-decide-not-idempotent",
+        "dispatch-preview-not-held", "dispatch-sql-preview-not-held", "dispatch-sql-decide-not-idempotent",
+        "real-gw-source-ignores-publication",
     ],
-    "5 每条内容可标备忘/请求执行": ["dispatch-ignores-eligibility", "real-gw-publication-ignores-eligibility", "default-intent-is-action-request"],
+    "5 每条内容可标备忘/请求执行": ["dispatch-ignores-eligibility", "default-intent-is-action-request"],
     "6 详情页状态如实、不说已处理": [
         "status-unknown-state-counts-as-acknowledged", "status-leased-reads-as-acknowledged", "real-gw-leased-reads-as-acknowledged",
         "status-unreachable-shown-as-stored", "status-wording-says-processed",

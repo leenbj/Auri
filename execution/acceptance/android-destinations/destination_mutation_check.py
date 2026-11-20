@@ -202,19 +202,14 @@ MUTATIONS: tuple = (
         ("没有任何会带走凭证的 API", "界面里唯一保存的状态"),
     ),
     # ---- 4. 预览确认：确认之前没有 Delivery；确认幂等；意图标签只是数据 ----
+    # 拦住文字的逻辑在存储实现里（Android 上是 SQLite：DispatchSql.releaseIfReady 看 awaitingUser）；:sync 的测试与真网关测试用的是内存实现，
+    # 它们的价值在“网关那一侧看到什么”，所以拦截本身的变异放在 :syncplatform 的 SQLite 合同测试上（JVM 里跑真 SQLite 引擎）。
     Mutation(
         "dispatch-preview-not-held",
-        "预览确认的 Destination 在用户确认之前必须拦住这条文字（否则网关马上就为它建 Delivery）",
+        "预览确认的 Destination 在用户确认之前必须拦住这条文字（否则网关马上就为它建 Delivery）：等用户决定的目标必须被认出来",
         (PREVIEW_NOT_HELD,),
-        sync_tests("InMemoryDispatchStoreTest", "DispatchEngineTest"), SYNC_RESULTS,
-        ("a_preview_confirm_destination_holds_the_item", "预览确认：确认之前不管同步跑多少轮"),
-    ),
-    Mutation(
-        "real-gw-preview-not-held",
-        "真网关：确认之前网关上不能有这条文字，也不能有 Delivery，Agent 领不到",
-        (PREVIEW_NOT_HELD,),
-        REAL, REAL_RESULTS,
-        ("预览确认：用户确认之前",),
+        platform_tests("SqliteDispatchStoreContractTest", "DispatchSqlTest"), PLATFORM_RESULTS,
+        ("a_preview_confirm_destination_holds_the_item", "a_held_item_stays_held_after_a_restart"),
     ),
     Mutation(
         "dispatch-sql-preview-not-held",
@@ -232,17 +227,10 @@ MUTATIONS: tuple = (
     ),
     Mutation(
         "dispatch-ignores-eligibility",
-        "不接收这种意图标签（或已撤销）的 Destination 不能出现在 publication 里",
+        "不接收这种意图标签（或已撤销）的 Destination 不能出现在 publication 里（否则网关把整条 422 永久拒收）",
         (IGNORE_ELIGIBILITY,),
-        sync_tests("InMemoryDispatchStoreTest", "DispatchEngineTest"), SYNC_RESULTS,
-        ("只收备忘的 Destination 遇到请求执行的文字",),
-    ),
-    Mutation(
-        "real-gw-publication-ignores-eligibility",
-        "真网关：标成请求执行的文字，只收备忘的 Destination 一条也不能领到，整条也不能被网关拒收",
-        (IGNORE_ELIGIBILITY,),
-        REAL, REAL_RESULTS,
-        ("请求执行只是数据上的标签",),
+        platform_tests("SqliteDispatchStoreContractTest", "DispatchSqlTest"), PLATFORM_RESULTS,
+        ("a_destination_revoked_after_the_release_but_before_the_send_is_not_in_the_publication", "an_auto_send_destination_that_does_not_accept_the_intent_is_not_in_the_publication"),
     ),
     Mutation(
         "default-intent-is-action-request",
@@ -311,10 +299,10 @@ MUTATIONS: tuple = (
     ),
     Mutation(
         "status-unreachable-shown-as-stored",
-        "已入库但这会儿问不到网关：必须是未知，不能显示成已入库",
-        (Edit(SERVICE, "                null -> return DeliveryView.Unknown(UnknownReason.GATEWAY_UNREACHABLE)", "                null -> return DeliveryView.OnGateway(GatewayStage.STORED)"),),
+        "已入库但这会儿问不到网关（或网关答非所问）：必须是未知，不能显示成已入库",
+        (Edit(SERVICE, "                is Remote.Unusable -> return DeliveryView.Unknown(remote.reason)", "                is Remote.Unusable -> return DeliveryView.OnGateway(GatewayStage.STORED)"),),
         sync_tests("DestinationServiceTest"), SYNC_RESULTS,
-        ("已入库但这会儿问不到网关",),
+        ("已入库但这会儿问不到网关", "网关答了错误"),
     ),
     Mutation(
         "status-wording-says-processed",
