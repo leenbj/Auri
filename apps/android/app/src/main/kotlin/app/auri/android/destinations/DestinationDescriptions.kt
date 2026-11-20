@@ -67,7 +67,7 @@ internal fun describeNotAuthenticated(result: AuthResult): String = when (result
     AuthResult.Denied -> "没有通过核验（或尝试次数太多被系统暂时锁定），没有生成凭证。请稍后再试。"
     is AuthResult.Unavailable -> when (result.reason) {
         UnavailableReason.NO_HARDWARE -> "这台设备没有可用的生物识别或锁屏方式，没法核验，所以不能生成凭证。"
-        UnavailableReason.NONE_ENROLLED -> "还没有登记指纹或人脸，也没有设置锁屏密码。请先在系统设置里设置，再来生成凭证。"
+        UnavailableReason.NONE_ENROLLED -> "还没有登记指纹或人脸，也没有设置锁屏密码，没法核验，所以没有生成凭证。请先在系统设置里设置，再来生成。"
         UnavailableReason.TEMPORARILY_UNAVAILABLE -> "生物识别暂时用不了，没有生成凭证。请稍后再试。"
     }
 }

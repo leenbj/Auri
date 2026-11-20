@@ -196,7 +196,7 @@ class AuriRuntime(
     fun destinationDetailViewModelFactory(destinationId: String) = object : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
-            DestinationDetailViewModel(destinationId, destinations, itemTexts, CoroutineScope(SupervisorJob() + Dispatchers.Default), AndroidSyncLog) as T
+            DestinationDetailViewModel(destinationId, destinations, itemTexts, CoroutineScope(SupervisorJob() + Dispatchers.Default), AndroidSyncLog, sync.status.map { }) as T
     }
 
     companion object {

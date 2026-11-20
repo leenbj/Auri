@@ -18,10 +18,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -106,6 +108,8 @@ class DestinationDetailViewModel(
     private val texts: ItemTexts,
     private val scope: CoroutineScope,
     private val log: SyncLog = SyncLog.None,
+    /** 本机之外的变化（比如同步把一条文字送到了网关）：每发出一个值就重读一遍状态。 */
+    refreshOn: Flow<Unit> = emptyFlow(),
 ) : ViewModel() {
     private val items = MutableStateFlow<List<ItemStatusRow>>(emptyList())
     private val itemsLoading = MutableStateFlow(false)
@@ -138,6 +142,7 @@ class DestinationDetailViewModel(
             }
         }
         scope.launch { controller.destinations.collect { triggers.trySend(Unit) } } // 缓存变了（新文字、新的决定）：重读一遍
+        scope.launch { refreshOn.collect { triggers.trySend(Unit) } }
     }
 
     fun refreshStatuses() {

@@ -32,6 +32,13 @@ tasks.test {
     // 真实网关测试（要起 Python 网关进程）单独跑：./gradlew :sync:realGatewayTest
     exclude("**/realgateway/**")
     systemProperty("auri.repo.root", repoRoot.path)
+    // 合同输出目录（Ticket 22 的 DestinationContractOutputTest）；Python 验收测试用 -PauriContractOut=<目录> 指定，默认在 build/ 下
+    systemProperty(
+        "auri.contract.out",
+        providers.gradleProperty("auriContractOut")
+            .orElse(layout.buildDirectory.dir("contract-out/jvm").map { it.asFile.path })
+            .get(),
+    )
     // 合同文件是测试的输入：改了 contracts/ 下的 schema 或样本，缓存的测试结果必须作废
     inputs.files(fileTree(repoRoot.resolve("contracts")) { include("schemas/**", "fixtures/**") })
         .withPropertyName("contracts")

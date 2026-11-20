@@ -40,6 +40,32 @@ class DispatchSqlTest {
 
     private fun JdbcSqlDb.count(table: String): Int = query("SELECT COUNT(*) FROM $table") { it.long(0).toInt() }.single()
 
+    // ---- 凭证从不落盘（Ticket 22 第 2 项）----
+
+    @Test
+    fun the_tables_hold_only_public_facts_so_there_is_no_column_where_a_credential_could_be_stored() = runBlocking {
+        val fixture = JdbcDispatchFixture()
+        val columns = listOf("dispatch_meta", "dispatch_destinations", "dispatch_items", "dispatch_targets").associateWith { table ->
+            fixture.db.query("PRAGMA table_info($table)") { it.string(1) }.toSet()
+        }
+
+        // 一列一列列出来：新增任何一列（比如存个 credential）都会让这个测试失败，逼人想清楚它会不会带走凭证
+        assertEquals(
+            mapOf(
+                "dispatch_meta" to setOf("name", "value"),
+                "dispatch_destinations" to setOf(
+                    "destination_id", "display_name", "send_mode", "allowed_intents", "created_at_s", "created_at_nano",
+                    "created_by_device_id", "credential_issued", "revoked_at_s", "revoked_at_nano",
+                ),
+                "dispatch_items" to setOf("record_id", "revision", "intent", "created_at_s", "created_at_nano", "released"),
+                "dispatch_targets" to setOf("record_id", "revision", "destination_id", "send_mode", "decision"),
+            ),
+            columns,
+        )
+        // “是否签发过”是一个 0/1 的标志（轮换前要先确认），不是凭证
+        assertEquals("INTEGER", fixture.db.query("PRAGMA table_info(dispatch_destinations)") { it.string(1) to it.string(2) }.toMap().getValue("credential_issued"))
+    }
+
     // ---- 打开数据库（建表加回填）----
 
     @Test
