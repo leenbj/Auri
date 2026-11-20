@@ -120,6 +120,14 @@ class DestinationTextTest {
     }
 
     @Test
+    fun `到了有效目的地的上限（评审 M4）：说清是网关上有 50 个、没有创建新的、该先撤销用不到的；不再说成“一条文字发不了更多”`() {
+        val text = describeFailure(ServiceFailure.LimitReached)
+
+        assertTrue(text, "50" in text && "没有创建" in text && "撤销" in text)
+        assertFalse("现在多出来的目的地照样发得到，上限是网关管的账：$text", "一条文字最多" in text)
+    }
+
+    @Test
     fun `本机核验没通过的每种情形都说明没有生成凭证，并且说法两两不同`() {
         val texts = notAuthenticated.map { describeNotAuthenticated(it) }
 

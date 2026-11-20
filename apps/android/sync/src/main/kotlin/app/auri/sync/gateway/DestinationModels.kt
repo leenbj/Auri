@@ -80,7 +80,8 @@ class CreateDestinationRequest(val displayName: String, val sendMode: SendMode, 
 
 /**
  * Revision 提交里的 publication 段（revision.schema.json#/$defs/publication）：这条文字的意图，以及要为哪些 Destination 创建 Delivery。
- * [destinationIds] 为空 = 只入库、不投递。网关只在这一版第一次入库时按它创建 Delivery，之后补不了（G13），所以提交前必须定准。
+ * [destinationIds] 为空 = 只入库、不投递。网关在这一版第一次入库时按它创建 Delivery；之后才确定的目标（用户确认的预览目的地）走追加端点（评审 B2）。
+ * 上限 [MAX_DESTINATIONS] 与网关一个 Tenant 至多有效 Destination 的上限相同（评审 M4），所以“发给全部有效的 Destination”一个请求装得下。
  */
 data class Publication(val intent: Intent, val destinationIds: List<String>) {
     init {

@@ -312,9 +312,18 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
         if (name == null || name.codePointCount(0, name.length) !in 1..100) return error(422, "REQUEST_INVALID", false)
         if (mode != "auto_send" && mode != "preview_confirm") return error(422, "REQUEST_INVALID", false)
         if (intents.isNullOrEmpty() || intents.toSet().size != intents.size || !intents.all { it == "context" || it == "action_request" }) return error(422, "REQUEST_INVALID", false)
+        // 与真网关同一条规则（评审 M4）：一个 Tenant 至多 50 个有效（未撤销）的 Destination，第 51 个 409 REQUEST_INVALID、什么也不建；
+        // 数的是网关自己的账，手机缓存里是多少都不作数
+        if (destinations.values.count { it.revokedAt == null } >= MAX_ACTIVE_DESTINATIONS) return error(409, "REQUEST_INVALID", false)
         val destination = FakeDestination("d0000000-0000-4000-8000-%012x".format(++destinationCounter), name, mode, intents, now())
         destinations[destination.id] = destination
         return ScriptedExchange.json(200, resource(destination).toString())
+    }
+
+    /** 模拟另一台手机（或网关机器上的命令行）在这部手机不知情时建了 [count] 个 Destination：不经 HTTP、不记请求，只在网关的账上。 */
+    fun addDestinations(count: Int): List<FakeDestination> = List(count) {
+        FakeDestination("d0000000-0000-4000-8000-%012x".format(++destinationCounter), "别处建的 $destinationCounter", "auto_send", listOf("context"), now())
+            .also { destinations[it.id] = it }
     }
 
     private fun revokeDestination(id: String): HttpReply {
@@ -372,6 +381,8 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
     private fun operationId() = "00000000-0000-4000-8000-%012x".format(operations)
 
     private companion object {
+        /** 网关的规则：一个 Tenant 同时有效的 Destination 的上限（合同：一次提交或追加的 destination_ids 也是这个上限）。 */
+        const val MAX_ACTIVE_DESTINATIONS = 50
         val PUT_PATH = Regex("^/v1/records/([0-9a-f-]{36})/revisions/([0-9]+)$")
         val ADDITION_PATH = Regex("^/v1/records/([0-9a-f-]{36})/revisions/([0-9]+)/deliveries$")
         val STATUS_PATH = Regex("^/v1/records/([0-9a-f-]{36})/status$")

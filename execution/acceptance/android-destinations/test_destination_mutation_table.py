@@ -22,7 +22,8 @@ def test_mutation_edits_apply_exactly_once_and_only_touch_production_code(mutati
         text = (REPO / edit.path).read_text(encoding="utf-8")
         assert text.count(edit.old) == 1, f"{mutation.id}: {edit.path} 里原文出现 {text.count(edit.old)} 次"
         assert edit.old != edit.new
-        assert "/src/main/" in edit.path, "变异只能碰生产代码（src/main），不能碰测试"
+        # 生产代码 = 各模块的 src/main，加上网关自己的包（评审 M4：上限在网关里，真网关变异要改它）；tests/ 与任何测试文件仍然不许碰
+        assert "/src/main/" in edit.path or edit.path.startswith("services/gateway/auri_gateway/"), "变异只能碰生产代码（src/main 或网关包），不能碰测试"
         assert not edit.path.endswith("Test.kt") and "/androidTest/" not in edit.path and "/testFixtures/" not in edit.path
 
 

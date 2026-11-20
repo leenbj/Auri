@@ -11,6 +11,7 @@ import app.auri.sync.destinations.DecideResult
 import app.auri.sync.destinations.DeliveryView
 import app.auri.sync.destinations.DestinationService
 import app.auri.sync.destinations.GatewayStage
+import app.auri.sync.destinations.ServiceFailure
 import app.auri.sync.destinations.ServiceResult
 import app.auri.sync.destinations.UnavailableReason
 import app.auri.sync.discovery.GatewayDiscovery
@@ -236,6 +237,28 @@ class RealGatewayDestinationsTest {
         val refreshed = (lab.phone.service.refresh() as ServiceResult.Ok).value
         assertEquals(refreshed.map { it.destinationId }, lab.phone.fixture.store.destinations().map { it.destinationId })
         assertEquals(setOf(auto.destinationId, preview.destinationId), refreshed.map { it.destinationId }.toSet())
+        Unit
+    }
+
+    // ---- 评审 M4：50 个有效 Destination 的上限由真网关裁决，手机的缓存不是裁判 ----
+
+    @Test
+    fun `网关上有效的 Destination 已满 50 个：另一部手机（缓存是空的）创建第 51 个被真网关拒绝，说的是“到上限了”，网关上没有第 51 个；撤销一个之后它就能建`() = runBlocking {
+        val lab = Lab()
+        val created = (0 until 50).map { lab.create("目的地 $it", SendMode.AUTO_SEND) }
+        val other = Phone().also { it.pairWith(lab.gateway.pairingPayloadJson()) } // 它从没见过这 50 个：缓存是空的，只有网关知道已经满了
+
+        val refused = other.service.create(CreateDestinationRequest("第 51 个", SendMode.AUTO_SEND, setOf(Intent.CONTEXT)))
+
+        assertEquals(ServiceFailure.LimitReached, (refused as ServiceResult.Failed).failure)
+        assertEquals("网关上没有第 51 个", 50, lab.gateway.count("SELECT COUNT(*) FROM destinations"))
+        assertTrue("拒绝之后另一部手机的缓存里什么也没有多出来", other.fixture.store.destinations().isEmpty())
+
+        assertTrue(lab.phone.service.revoke(created[0].destinationId) is ServiceResult.Ok)
+        val accepted = other.service.create(CreateDestinationRequest("第 51 个", SendMode.AUTO_SEND, setOf(Intent.CONTEXT)))
+        assertTrue("撤销一个就空出一个名额：$accepted", accepted is ServiceResult.Ok)
+        assertEquals("撤销的那个还在账上，有效的仍是 50 个", 51, lab.gateway.count("SELECT COUNT(*) FROM destinations"))
+        assertEquals(50, lab.gateway.count("SELECT COUNT(*) FROM destinations WHERE revoked_at IS NULL"))
         Unit
     }
 

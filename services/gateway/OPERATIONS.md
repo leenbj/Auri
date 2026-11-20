@@ -99,6 +99,13 @@ PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway revoke-credential -
 - 想让 Agent 接着收原来的文字：不要撤销凭证，用手机“轮换凭证”（旧凭证立即失效，排着的投递保留给新凭证）。
 - 撤销一条已经被轮换掉的旧凭证什么也不改变（它早已失效，Destination 另有有效凭证）；从没签发过凭证的 Destination 不是“暂停”。
 
+### Destination 数量上限（Ticket 22 评审 M4）
+
+- 一个 Tenant 最多同时有 **50 个有效**（未撤销）的 Destination。再创建第 51 个，网关回答 `409 REQUEST_INVALID`，`required_action` 说明先撤销用不到的；什么也不会创建。手机上看到的是“网关上有效的目的地已经有 50 个……没有创建新的”。
+- 已撤销的 Destination 不占名额：撤销一个，就能再建一个（撤销的那个仍记录在库里，所以库里的总行数可以超过 50）。
+- 这条规则只管创建，不动已有数据：升级前就超过 50 个的网关照常运行，既不删也不拒读，只是在撤销到 50 个以下之前不能再建新的。
+- 数的动作和创建在同一个事务里，几部手机同时创建也不会超过上限。
+
 ### 清理已吊销设备名下的 Record
 
 ```bash

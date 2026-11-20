@@ -13,7 +13,6 @@ import app.auri.sync.gateway.Destination
 import app.auri.sync.gateway.GatewayClient
 import app.auri.sync.gateway.GatewayResult
 import app.auri.sync.gateway.IssuedCredential
-import app.auri.sync.gateway.Publication
 import app.auri.sync.http.HttpExchangeFactory
 import app.auri.sync.http.TransportFailure
 import app.auri.sync.machine.SyncState
@@ -57,7 +56,10 @@ sealed interface ServiceFailure {
     /** 上一次生成/轮换凭证还没结束：不开第二个（否则双击会连着轮换两次，刚拿到的凭证立刻作废）。 */
     data object Busy : ServiceFailure
 
-    /** 有效的 Destination 已经有 [Publication.MAX_DESTINATIONS] 个：合同限制一条文字最多投给这么多个，再多就没法都发了。请先撤销用不到的。请求没有发出。 */
+    /**
+     * 网关拒绝创建：有效（未撤销）的 Destination 已经有 50 个（contracts/README.md 的上限规则，评审 M4）。网关在创建事务里数它自己的账，
+     * 什么也没创建；本机缓存说了不算（它可能是旧的，别的手机也在建）。请先撤销用不到的。
+     */
     data object LimitReached : ServiceFailure
 }
 
@@ -136,10 +138,13 @@ class DestinationService(
     )
 
     override suspend fun create(request: CreateDestinationRequest): ServiceResult<Destination> {
-        // 一条文字最多投给 50 个 Destination（合同）：再建就有 Destination 永远收不到文字，不如在这里明说。按本机缓存算，请求没有发出
-        if (dispatch.destinations().count { it.active } >= Publication.MAX_DESTINATIONS) return ServiceResult.Failed(ServiceFailure.LimitReached)
-        return createOnGateway(request)
+        // 上限由网关数，不用本机缓存挡：缓存可能是旧的（别的手机建了或撤销了），挡错了人或放过了第 51 个（评审 M4）
+        val result = createOnGateway(request)
+        return if (result is ServiceResult.Failed && result.failure.isActiveLimit()) ServiceResult.Failed(ServiceFailure.LimitReached) else result
     }
+
+    /** 创建 Destination 只有一个原因会得到 409：有效的已经满 50 个（contracts/README.md）。别的拒绝照旧是普通的拒绝。 */
+    private fun ServiceFailure.isActiveLimit(): Boolean = this is ServiceFailure.Rejected && status == 409 && code == ErrorCode.REQUEST_INVALID
 
     private suspend fun createOnGateway(request: CreateDestinationRequest): ServiceResult<Destination> = gatewayCall(
         "create",

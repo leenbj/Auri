@@ -2,6 +2,7 @@
 
 package app.auri.sync.destinations
 
+import app.auri.capture.contract.ErrorCode
 import app.auri.sync.gateway.CreateDestinationRequest
 import app.auri.sync.gateway.Destination
 import app.auri.sync.gateway.Intent
@@ -52,22 +53,47 @@ class DestinationServiceTest {
         assertEquals(listOf("context"), rig.server.createBodies[0].getValue("allowed_intents").jsonArray.map { it.jsonPrimitive.content })
     }
 
+    // ---- 评审 M4：50 个有效 Destination 的上限由网关裁决，本机缓存不是裁判 ----
+
     @Test
-    fun `有效的 Destination 已经有 50 个：再创建先说明白，请求没有发出（合同限制一条文字最多投给 50 个）`() = run { rig ->
-        val gatewayId = SyncSamples.pairedGateway().gatewayId
-        val existing = (0 until Publication.MAX_DESTINATIONS).map { index ->
-            Destination("d0000000-0000-4000-8000-%012x".format(index), "目的地$index", SendMode.AUTO_SEND, setOf(Intent.CONTEXT), rig.clock.now(), "ef7b1358-df31-520f-90f3-d98fc5173b46", false, null)
-        }
-        rig.dispatch.applyDestinations(gatewayId, existing, authoritative = false, now = rig.clock.now())
+    fun `网关上有效的 Destination 已满 50 个而本机缓存不知道：请求照发，网关拒绝，界面看到的是“到上限了”；网关与缓存里都没有第 51 个`() = run { rig ->
+        rig.server.addDestinations(Publication.MAX_DESTINATIONS) // 另一台手机建的：这部手机一个都没缓存
 
         val result = rig.service.create(CreateDestinationRequest("第 51 个", SendMode.AUTO_SEND, setOf(Intent.CONTEXT)))
 
         assertEquals(ServiceFailure.LimitReached, result.failure())
-        assertTrue("请求没有发出", rig.server.adminCalls.none { it == "POST destinations" })
+        assertEquals("要不要拒绝由网关说了算：请求发出去了", 1, rig.server.adminCalls.count { it == "POST destinations" })
+        assertEquals("网关上没有多出第 51 个", Publication.MAX_DESTINATIONS, rig.server.destinations.size)
+        assertTrue("本机缓存里也没有多出什么", rig.dispatch.destinations().isEmpty())
+    }
 
-        // 撤销了一个（本地缓存里标成已撤销）就又能创建了
-        rig.dispatch.applyDestinations(gatewayId, listOf(existing[0].copy(revokedAt = rig.clock.now())), authoritative = false, now = rig.clock.now())
-        assertEquals(SendMode.AUTO_SEND, rig.service.create(CreateDestinationRequest("第 51 个", SendMode.AUTO_SEND, setOf(Intent.CONTEXT))).ok().sendMode)
+    @Test
+    fun `本机缓存里记着满 50 个、网关上别处已经撤销了几个：照样能创建——缓存过期不能把用户挡在外面`() = run { rig ->
+        val others = rig.server.addDestinations(Publication.MAX_DESTINATIONS)
+        rig.service.refresh().ok() // 本机缓存也记下了这 50 个有效的
+        assertEquals(Publication.MAX_DESTINATIONS, rig.dispatch.destinations().count { it.active })
+        rig.server.destinations.getValue(others[0].id).revokedAt = rig.clock.now() // 另一台手机撤销了一个，这部手机还不知道
+
+        val created = rig.service.create(CreateDestinationRequest("第 51 个", SendMode.AUTO_SEND, setOf(Intent.CONTEXT))).ok()
+
+        assertEquals(Publication.MAX_DESTINATIONS + 1, rig.server.destinations.size)
+        assertTrue(rig.dispatch.destinations().any { it.destinationId == created.destinationId })
+        assertEquals("网关数下来仍是 50 个有效的", Publication.MAX_DESTINATIONS, rig.server.destinations.values.count { it.revokedAt == null })
+    }
+
+    @Test
+    fun `网关别的拒绝（比如请求不合规的 422）不会被当成上限：界面仍按网关给的状态与错误码如实说`() = run { rig ->
+        rig.lan.hosts.getValue(SyncSamples.LAN_ADDRESS).handler = { request ->
+            if (request.method == "POST") {
+                app.auri.sync.testing.ScriptedExchange.json(422, """{"schema_version":"1.1","code":"REQUEST_INVALID","message":"x","retryable":false,"required_action":null,"operation_id":null}""")
+            } else {
+                rig.server.handle(request)
+            }
+        }
+
+        val result = rig.service.create(CreateDestinationRequest("写作助手", SendMode.AUTO_SEND, setOf(Intent.CONTEXT)))
+
+        assertEquals(ServiceFailure.Rejected(422, ErrorCode.REQUEST_INVALID, retryable = false), result.failure())
     }
 
     @Test

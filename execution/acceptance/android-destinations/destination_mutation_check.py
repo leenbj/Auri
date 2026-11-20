@@ -65,6 +65,7 @@ CONTAINED_READS = APP_DEST + "ContainedReads.kt"
 SEND_REVIEW_SCREEN = APP_UI + "SendReviewScreen.kt"
 DESTINATIONS_SCREEN = APP_UI + "DestinationsScreen.kt"
 DETAIL_SCREEN = APP_UI + "DestinationDetailScreen.kt"
+GATEWAY_STORE = "services/gateway/auri_gateway/store.py"
 
 APP_RESULTS, SYNC_RESULTS, REAL_RESULTS, PLATFORM_RESULTS = (
     "app/build/test-results/testDebugUnitTest",
@@ -125,6 +126,9 @@ CLIENT_IGNORES_CREDENTIAL_ACTIVE = Edit(
     '            credentialActive = reply.booleanOrNull("credential_active") ?: issued,',
     "            credentialActive = issued,",
 )
+
+# 评审 M4：服务把网关“到上限了”的 409 读成普通拒绝（真网关测试与单测各跑一遍，用同一份编辑）
+LIMIT_READ_AS_PLAIN_REJECTION = Edit(SERVICE, "result.failure.isActiveLimit()", "false && result.failure.isActiveLimit()")
 
 MUTATIONS: tuple = (
     # ---- 1. 创建：发送方式必须明确选，没有默认值，请求里就是合同写的那个名字 ----
@@ -1058,6 +1062,63 @@ MUTATIONS: tuple = (
         (Edit(APP_UI + "SyncScreen.kt", "            describeAwaitingYou(status.awaitingYou)?.let { Text(it) }\n", ""),),
         app_tests("SyncStatusWiringTest"), APP_RESULTS,
         ("同步页把等用户确认的那句话摆出来",),
+    ),
+    # ---- 评审 M4：50 个有效 Destination 的上限由网关数（网关那一半另由 tests/integration/test_destination_limit.py 守着；这里是手机的一半，以及用真网关把两半接起来）----
+    Mutation(
+        "m4-service-trusts-the-cache",
+        "评审 M4：创建前先拿本机缓存数一遍就拒绝：缓存是旧的（别的手机建了或撤销了），挡错了人，也不会再去问网关",
+        (Edit(SERVICE, "        val result = createOnGateway(request)\n", "        if (dispatch.destinations().count { it.active } >= 50) return ServiceResult.Failed(ServiceFailure.LimitReached)\n        val result = createOnGateway(request)\n"),),
+        sync_tests("DestinationServiceTest"), SYNC_RESULTS,
+        ("缓存过期不能把用户挡在外面",),  # 缓存是空的那条（网关已满）本来就绕得过缓存预检：它守的是另一个破坏，第一次真跑时把它也列进来是预测错了，不是放宽
+    ),
+    Mutation(
+        "m4-service-reports-the-refusal-as-plain-rejection",
+        "评审 M4：网关说“到上限了”（409）却被当成笼统的拒绝：用户看到“网关拒绝了”，不知道该去撤销用不到的目的地",
+        (LIMIT_READ_AS_PLAIN_REJECTION,),
+        sync_tests("DestinationServiceTest"), SYNC_RESULTS,
+        ("网关上有效的 Destination 已满 50 个而本机缓存不知道",),
+    ),
+    Mutation(
+        "real-gw-m4-service-reports-the-refusal-as-plain-rejection",
+        "评审 M4（真网关）：真网关拒绝第 51 个时，手机说的必须是“到上限了”",
+        (LIMIT_READ_AS_PLAIN_REJECTION,),
+        REAL, REAL_RESULTS,
+        ("创建第 51 个被真网关拒绝",),
+    ),
+    Mutation(
+        "m4-service-maps-every-rejection-to-limit",
+        "评审 M4：创建被拒的任何原因都说成“到上限了”（比如请求不合规的 422）：用户去撤销一堆目的地也没用，真正的原因被盖住",
+        (Edit(SERVICE, "this is ServiceFailure.Rejected && status == 409 && code == ErrorCode.REQUEST_INVALID", "this is ServiceFailure.Rejected"),),
+        sync_tests("DestinationServiceTest"), SYNC_RESULTS,
+        ("网关别的拒绝（比如请求不合规的 422）不会被当成上限",),
+    ),
+    Mutation(
+        "m4-text-says-one-text-cannot-go-to-more",
+        "评审 M4：上限的话又说回“一条文字最多只能发给这么多个”：现在多出来的目的地照样发得到，上限是网关管的账，用户会被说糊涂",
+        (Edit(DESCRIPTIONS, "网关上有效的目的地已经有 50 个，最多只能有这么多，所以没有创建新的。请先撤销用不到的，再试一次。", "有效的目的地已经有 50 个，一条文字最多只能发给这么多个。请先撤销用不到的。"),),
+        app_tests("DestinationTextTest"), APP_RESULTS,
+        ("到了有效目的地的上限（评审 M4）",),
+    ),
+    Mutation(
+        "m4-text-does-not-say-what-to-do",
+        "评审 M4：上限的话只说“满了”，没说该先撤销用不到的：用户不知道怎么才能再建",
+        (Edit(DESCRIPTIONS, "所以没有创建新的。请先撤销用不到的，再试一次。", "所以没有创建新的。"),),
+        app_tests("DestinationTextTest"), APP_RESULTS,
+        ("到了有效目的地的上限（评审 M4）",),
+    ),
+    Mutation(
+        "real-gw-m4-gateway-no-limit",
+        "评审 M4（真网关）：网关不数名额：缓存是空的另一部手机照样建出第 51 个，手机再怎么读 409 也没用",
+        (Edit(GATEWAY_STORE, "            if active >= MAX_ACTIVE_DESTINATIONS:\n", "            if False:\n"),),
+        REAL, REAL_RESULTS,
+        ("创建第 51 个被真网关拒绝",),
+    ),
+    Mutation(
+        "real-gw-m4-gateway-counts-revoked",
+        "评审 M4（真网关）：网关把已撤销的也算进名额：撤销一个并不能空出名额，用户撤销了还是建不了新的",
+        (Edit(GATEWAY_STORE, '"SELECT COUNT(*) FROM destinations WHERE tenant_id = ? AND revoked_at IS NULL", (auth.tenant_id,)', '"SELECT COUNT(*) FROM destinations WHERE tenant_id = ?", (auth.tenant_id,)'),),
+        REAL, REAL_RESULTS,
+        ("创建第 51 个被真网关拒绝",),
     ),
 )
 

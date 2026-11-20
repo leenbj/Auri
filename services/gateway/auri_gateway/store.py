@@ -56,6 +56,11 @@ class AuthenticatedDestination:
 
 MAX_PAIRING_TTL_SECONDS = 3600
 
+# One Tenant may have at most this many active (not revoked) Destinations: it equals the contract's `maxItems` for the
+# Destinations of one publication or addition, so "send to every active Destination" always fits in one request
+# (contracts/README.md, Ticket 22 review M4). Enforced here, in the creating transaction, never by a phone's cached list.
+MAX_ACTIVE_DESTINATIONS = 50
+
 
 def issue_pairing_code(data_dir: pathlib.Path, *, ttl_seconds: int = 300) -> dict[str, Any]:
     """Generate a one-time short-lived pairing code and persist only its SHA-256 hash."""
@@ -925,6 +930,16 @@ def create_destination(
     try:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            active = conn.execute(
+                "SELECT COUNT(*) FROM destinations WHERE tenant_id = ? AND revoked_at IS NULL", (auth.tenant_id,)
+            ).fetchone()[0]
+            if active >= MAX_ACTIVE_DESTINATIONS:
+                raise GatewayError(
+                    409,
+                    REQUEST_INVALID,
+                    f"The Tenant already has {MAX_ACTIVE_DESTINATIONS} active Destinations; no Destination was created.",
+                    required_action="Revoke a Destination you no longer use, then create the new one.",
+                )
             conn.execute(
                 """
                 INSERT INTO destinations (

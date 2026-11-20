@@ -68,7 +68,7 @@ internal fun describeFailure(failure: ServiceFailure): String = when (failure) {
     ServiceFailure.Interrupted -> "请求可能已经发出，但没有拿到完整的回答：结果不确定。请先点“刷新”看看目的地列表，不要直接重试。"
     ServiceFailure.DestinationUnavailable -> "这个目的地已经被撤销，或这台手机已经不认识它了。"
     ServiceFailure.Busy -> "上一次生成凭证还没结束，请稍等。"
-    ServiceFailure.LimitReached -> "有效的目的地已经有 50 个，一条文字最多只能发给这么多个。请先撤销用不到的。"
+    ServiceFailure.LimitReached -> "网关上有效的目的地已经有 50 个，最多只能有这么多，所以没有创建新的。请先撤销用不到的，再试一次。"
 }
 
 /** 生成或轮换凭证前的本机核验没通过时，用户该做什么。没通过时凭证根本没有生成：一个请求都没发给网关。 */
