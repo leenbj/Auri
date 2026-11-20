@@ -31,6 +31,8 @@ import java.util.concurrent.atomic.AtomicLong
  *  - Route Evidence 只来自系统的观测（录音的 routedDevice 与路由变化通知）。“已请求蓝牙”“已配对”“已连接”都不是证据：
  *    请求之后系统还没说清就报 unknown，系统说是手机麦克风就报 mismatch。
  *  - 每批读取前后核对实际路由；读取时有回调或两次观测不一致就丢弃，只有稳定的所选耳机帧才递送。
+ *  - 系统的路由通知本身就使已有证据作废（见 [Capture.observe]）：通知可能被占住的主线程压到耳机已经恢复之后才递送，
+ *    读到的设备看上去没变不代表中间没变过。
  *
  * 移植自 execution/p0-spikes/android-probe 的 CaptureProbe（setCommunicationDevice + 偏好设备 + routedDevice 的做法），
  * 没有照搬的：探针里日志带设备地址尾号（这里不记任何设备标识）、探针把蓝牙权限被拒映射成独立流程（这里统一由资格检查给出原因）。
@@ -154,6 +156,12 @@ class BluetoothCaptureAdapter(
         private var lastObservation: Pair<VerificationState, Int?>? = null
         private val routeChanges = AtomicLong()
 
+        /** 是否已经向协调器递送过帧，即路由证据是否已被“用过”。受 this 保护。 */
+        private var framesDelivered = false
+
+        /** 系统是否已经发过路由通知。受 this 保护。 */
+        private var notified = false
+
         fun requestRoute(): Boolean = synchronized(routeLock) {
             synchronized(this) {
                 if (closed) return false
@@ -188,7 +196,7 @@ class BluetoothCaptureAdapter(
 
         fun routeChanged(device: () -> InputDevice?) {
             routeChanges.incrementAndGet()
-            observe(device())
+            observe(device(), fromNotification = true)
         }
 
         /** 把打开的录音交给这次采集；已经被关闭（取消）就立刻释放它并返回 false。 */
@@ -235,9 +243,16 @@ class BluetoothCaptureAdapter(
             }
         }
 
-        /** 系统观测到 [device]（null 表示系统还没说清）：与上一次不同才报告，epoch 随之递增。 */
+        /**
+         * 系统观测到 [device]（null 表示系统还没说清）：与上一次不同才报告，epoch 随之递增。
+         *
+         * [fromNotification]：这次观测由系统的路由通知触发。通知到达时读到的设备可能已经变回原样（耳机断开又恢复、通知被占住的
+         * 主线程压到现在才递送），所以**通知本身**就是“上次观测之后路由可能变过”的证据：设备看上去没变也照样报告、epoch 递增，
+         * 协调器据此按 route_lost 收场。唯一的例外是录音刚启动、还没递送过任何帧时的第一条通知：平台在启动时会发一条
+         * 初始路由通知，证据还没被用过，只确认；否则每次开始录音都会被这条通知自己打断。
+         */
         @Synchronized
-        fun observe(device: InputDevice?) {
+        fun observe(device: InputDevice?, fromNotification: Boolean = false) {
             if (closed) return
             val verification = when {
                 device == null -> VerificationState.UNKNOWN
@@ -245,7 +260,9 @@ class BluetoothCaptureAdapter(
                 else -> VerificationState.MISMATCH
             }
             val observation = verification to device?.id
-            if (observation == lastObservation) return
+            val invalidates = fromNotification && (framesDelivered || notified)
+            if (fromNotification) notified = true
+            if (observation == lastObservation && !invalidates) return
             lastObservation = observation
             epoch += 1
             sink.routeChanged(
@@ -303,12 +320,17 @@ class BluetoothCaptureAdapter(
                 observe(after)
                 // 权限在录音中被撤销：这一批不可信，不递送；通知先于之后的任何帧进邮箱，协调器据此关闸并释放采集
                 if (checkPermissions() != null) continue
-                if (before == null || before.id != input.device.id || BluetoothInput.from(before) == null || before != after ||
-                    version != routeChanges.get() || readEpoch != currentEpoch()
-                ) {
-                    discardedSamples.addAndGet(read.toLong())
-                } else {
-                    sink.frames(AudioFrames(readEpoch, buffer.copyOf(read)))
+                // 判断与递送在同一把锁里：通知引起的 epoch 递增要么在判断之前（这批丢弃），要么在递送之后（协调器先收到这批、再收到变化），
+                // 不会出现“判断通过之后通知才到、这批却带着旧 epoch 递送出去”的缝
+                synchronized(this) {
+                    if (before == null || before.id != input.device.id || BluetoothInput.from(before) == null || before != after ||
+                        version != routeChanges.get() || readEpoch != currentEpoch()
+                    ) {
+                        discardedSamples.addAndGet(read.toLong())
+                    } else {
+                        framesDelivered = true
+                        sink.frames(AudioFrames(readEpoch, buffer.copyOf(read)))
+                    }
                 }
             }
         }

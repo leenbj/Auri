@@ -35,6 +35,13 @@ class FakeRecorder(val input: BluetoothInput, var routed: InputDevice?) : Record
     var onRead: (() -> Unit)? = null
     private val listeners = CopyOnWriteArrayList<() -> Unit>()
 
+    /**
+     * true 时系统的路由通知先攒着、不递送：模拟占住的主线程（真机上通知经主线程的 Handler 递送）。
+     * 攒下的通知由 [deliverHeldCallbacks] 一起递送；每一条递送时读到的都是**此刻**的路由，和真实系统一样。
+     */
+    var holdCallbacks = false
+    private var heldCallbacks = 0
+
     override fun startRecording() {
         startFailure?.let { throw it }
         started = true
@@ -46,9 +53,21 @@ class FakeRecorder(val input: BluetoothInput, var routed: InputDevice?) : Record
         onRead?.invoke()
         val changed = routed != step.routedAfter
         routed = step.routedAfter
-        if (changed && step.notify) listeners.forEach { it() }
+        if (changed && step.notify) notifyListeners()
         step.chunk.copyInto(buffer)
         return step.chunk.size
+    }
+
+    private fun notifyListeners() {
+        if (holdCallbacks) heldCallbacks += 1 else listeners.forEach { it() }
+    }
+
+    /** 主线程腾出手：把攒下的通知按次数逐条递送，并恢复为即时递送。 */
+    fun deliverHeldCallbacks() {
+        val pending = heldCallbacks
+        heldCallbacks = 0
+        holdCallbacks = false
+        repeat(pending) { listeners.forEach { it() } }
     }
 
     override fun routedDevice(): InputDevice? = routed
@@ -67,7 +86,7 @@ class FakeRecorder(val input: BluetoothInput, var routed: InputDevice?) : Record
     /** 系统自己改了路由（没有读数据的时候也会通知）。 */
     fun systemChangesRoute(to: InputDevice?) {
         routed = to
-        listeners.forEach { it() }
+        notifyListeners()
     }
 }
 

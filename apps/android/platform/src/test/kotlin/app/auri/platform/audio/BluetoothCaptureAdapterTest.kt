@@ -234,6 +234,90 @@ class BluetoothCaptureAdapterTest {
         assertEquals(1600L, adapter.droppedAmbiguousSamples)
     }
 
+    // ---- Ticket 19 评审 B1：路由通知本身就使已有的证据作废 ----
+
+    @Test
+    fun `a route notification after frames were accepted invalidates the route even when the headset looks unchanged`() {
+        prepare()
+        val recorder = audio.recorders.single()
+        var reads = 0
+        recorder.onRead = {
+            reads += 1
+            // 第二批读到一半，系统发来路由通知：此刻读到的还是同一个耳机，但通知本身说明“上次观测之后路由可能变过”
+            if (reads == 2) recorder.systemChangesRoute(HEADSET)
+        }
+        repeat(3) { recorder.script += ReadStep(chunk(value = (it + 1).toShort()), HEADSET) }
+
+        readers.single().run()
+
+        assertEquals(
+            "通知使证据作废：epoch 递增并报告给协调器；通知之后读到的帧带新 epoch，旧 epoch 的闸门收不下",
+            listOf("route:1:VERIFIED", "frames:1", "route:2:VERIFIED", "frames:2"),
+            routeAndFrameOrder(),
+        )
+        assertEquals("跨在通知上的那一批丢弃并计数", 1600L, adapter.droppedAmbiguousSamples)
+    }
+
+    @Test
+    fun `route notifications delayed past a headset away-and-back still invalidate the route when they arrive`() {
+        prepare()
+        val recorder = audio.recorders.single()
+        var reads = 0
+        recorder.onRead = {
+            reads += 1
+            if (reads == 2) {
+                // 第一批之后耳机断开又回来；占住的主线程把两条通知都攒着
+                recorder.holdCallbacks = true
+                recorder.systemChangesRoute(PHONE_MIC)
+                recorder.systemChangesRoute(HEADSET)
+                // 主线程腾出手，两条迟到的通知一起到：每一条读到的都是已经恢复的耳机，设备看上去和之前一样
+                recorder.deliverHeldCallbacks()
+            }
+        }
+        repeat(3) { recorder.script += ReadStep(chunk(value = (it + 1).toShort()), HEADSET, notify = false) }
+
+        readers.single().run()
+
+        assertEquals(
+            "每条通知各使证据作废一次；之后的帧带最新的 epoch，旧会话的闸门收不下",
+            listOf("route:1:VERIFIED", "frames:1", "route:2:VERIFIED", "route:3:VERIFIED", "frames:3"),
+            routeAndFrameOrder(),
+        )
+        assertEquals(1600L, adapter.droppedAmbiguousSamples)
+    }
+
+    @Test
+    fun `the first route notification before any frame is the platform's initial one and only confirms the route`() {
+        prepare()
+        val recorder = audio.recorders.single()
+        recorder.script += ReadStep(chunk(), HEADSET)
+
+        recorder.systemChangesRoute(HEADSET) // 录音刚启动、还没有任何帧被接受时的第一条通知
+        readers.single().run()
+
+        assertEquals(
+            "同一个耳机、还没用过证据：不作废，避免每次开始录音都被自己的初始通知打断",
+            listOf("route:1:VERIFIED", "frames:1"),
+            routeAndFrameOrder(),
+        )
+    }
+
+    @Test
+    fun `a second route notification before any frame is not an initial one and invalidates the route`() {
+        prepare()
+        val recorder = audio.recorders.single()
+        recorder.script += ReadStep(chunk(), HEADSET)
+
+        recorder.systemChangesRoute(HEADSET)
+        recorder.systemChangesRoute(HEADSET)
+        readers.single().run()
+
+        assertEquals(
+            listOf("route:1:VERIFIED", "route:2:VERIFIED", "frames:2"),
+            routeAndFrameOrder(),
+        )
+    }
+
     @Test
     fun `a buffer returned after cancellation is discarded and counted`() {
         prepare()
