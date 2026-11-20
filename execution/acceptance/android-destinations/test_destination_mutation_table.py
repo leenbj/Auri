@@ -1,0 +1,113 @@
+"""Ticket 22 变异表自身的离线检查：表不能悄悄过期（做法同 android-sync/test_mutation_table.py）。
+
+destination_mutation_check.py 里每条变异都要“恰好改一处生产代码”。生产代码一重构，原文找不到了，这条变异就会变成
+“什么都没改、测试当然全绿”的假象。这里逐条核对：原文恰好出现一次、改动确实改了东西、预期变红的测试在源码里真的存在、
+没有任何变异会碰到测试文件，并且“应用 → 还原”之后文件字节级不变（在临时副本上做，绝不碰真实工作树）。
+"""
+import pathlib
+import re
+import shutil
+
+import pytest
+
+import destination_mutation_check as dm
+
+REPO = dm.base.REPO
+ANDROID_SOURCES = REPO / "apps" / "android"
+
+
+@pytest.mark.parametrize("mutation", dm.MUTATIONS, ids=lambda m: m.id)
+def test_mutation_edits_apply_exactly_once_and_only_touch_production_code(mutation):
+    for edit in mutation.edits:
+        text = (REPO / edit.path).read_text(encoding="utf-8")
+        assert text.count(edit.old) == 1, f"{mutation.id}: {edit.path} 里原文出现 {text.count(edit.old)} 次"
+        assert edit.old != edit.new
+        assert "/src/main/" in edit.path, "变异只能碰生产代码（src/main），不能碰测试"
+        assert not edit.path.endswith("Test.kt") and "/androidTest/" not in edit.path and "/testFixtures/" not in edit.path
+
+
+@pytest.mark.parametrize("mutation", dm.MUTATIONS, ids=lambda m: m.id)
+def test_every_expected_failing_test_exists_in_the_sources(mutation):
+    assert mutation.must_fail, "一条变异必须指明哪些测试会因此变红"
+    sources = "\n".join(
+        p.read_text(encoding="utf-8")
+        for p in ANDROID_SOURCES.rglob("*.kt")
+        if "/src/" in str(p) and ("test" in str(p).lower())
+    )
+    for needle in mutation.must_fail:
+        assert re.search(re.escape(needle), sources), f"{mutation.id}: 找不到预期变红的测试 {needle!r}"
+
+
+def test_mutation_ids_are_unique_and_documented():
+    ids = [m.id for m in dm.MUTATIONS]
+    assert len(ids) == len(set(ids))
+    assert all(m.rule.strip() for m in dm.MUTATIONS)
+
+
+def test_real_gateway_mutations_run_the_real_gateway_suite_and_the_others_do_not():
+    for m in dm.MUTATIONS:
+        real = m.gradle == dm.REAL
+        assert real == m.id.startswith("real-gw-"), m.id
+        assert m.results_dir == (dm.REAL_RESULTS if real else m.results_dir)
+        if real:
+            assert m.results_dir.endswith("realGatewayTest")
+
+
+@pytest.mark.parametrize("mutation", dm.MUTATIONS, ids=lambda m: m.id)
+def test_apply_then_restore_leaves_files_byte_identical(mutation, tmp_path, monkeypatch):
+    # 只在临时副本上做：测试进程被杀也不会把故意写坏的代码留在真实工作树里
+    for edit in mutation.edits:
+        target = tmp_path / edit.path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(REPO / edit.path, target)
+    monkeypatch.setattr(dm.base, "REPO", tmp_path)
+    paths = {tmp_path / e.path for e in mutation.edits}
+    before = {p: p.read_bytes() for p in paths}
+
+    originals = dm.base.apply_edits(mutation)
+    try:
+        assert any(p.read_bytes() != before[p] for p in paths), "应用变异后文件没有任何变化"
+    finally:
+        dm.base.restore(originals)
+
+    assert {p: p.read_bytes() for p in paths} == before
+
+
+def test_the_snapshot_directory_is_not_the_one_ticket_21_uses_and_the_script_is_found_inside_it():
+    assert dm.base.SNAPSHOT_DIR.name == "auri-ticket22-mutation-snapshot"
+    assert dm.base.SCRIPT_RELATIVE == pathlib.Path("execution/acceptance/android-destinations/destination_mutation_check.py")
+    assert (REPO / dm.base.SCRIPT_RELATIVE).is_file()
+
+
+def test_listing_shows_this_ticket_s_table_not_ticket_21_s(capsys):
+    assert dm.main(["--list"]) == 0
+
+    listed = [line.split("\t")[0] for line in capsys.readouterr().out.splitlines() if line.strip()]
+
+    assert listed == [m.id for m in dm.MUTATIONS]
+
+
+# 验收清单的每一项，在表里至少有一条对应的变异（README 的“变异”一节引用这些 id）
+CHECKLIST = {
+    "1 创建必须明确选发送方式，没有默认值": ["app-send-mode-defaults-to-auto", "sync-send-mode-wire-renamed", "real-gw-send-mode-wire-renamed"],
+    "2 生成或轮换凭证前要本机核验；凭证只显示一次": [
+        "service-skips-authentication", "real-gw-service-skips-authentication", "biometric-unknown-error-is-authenticated",
+        "vm-copy-does-not-wipe", "vm-leave-does-not-wipe", "vm-late-credential-after-leave-shown", "vm-backgrounded-keeps-credential",
+        "credential-tostring-leaks", "service-logs-credential", "guard-sees-credential-in-log", "guard-sees-saved-state-on-the-page",
+    ],
+    "3 自动发送的初稿标未审核": ["sync-submission-marks-reviewed", "real-gw-submission-marks-reviewed", "ui-unreviewed-label-blank"],
+    "4 预览确认在用户确认前不产生 Delivery": [
+        "dispatch-preview-not-held", "real-gw-preview-not-held", "dispatch-sql-preview-not-held", "dispatch-sql-decide-not-idempotent",
+    ],
+    "5 每条内容可标备忘/请求执行": ["dispatch-ignores-eligibility", "real-gw-publication-ignores-eligibility", "default-intent-is-action-request"],
+    "6 详情页状态如实、不说已处理": [
+        "status-unknown-state-counts-as-acknowledged", "status-leased-reads-as-acknowledged", "real-gw-leased-reads-as-acknowledged",
+        "status-unreachable-shown-as-stored", "status-wording-says-processed",
+    ],
+}
+
+
+@pytest.mark.parametrize("item", list(CHECKLIST))
+def test_every_checklist_item_has_mutations_in_the_table(item):
+    ids = {m.id for m in dm.MUTATIONS}
+    assert set(CHECKLIST[item]) <= ids, set(CHECKLIST[item]) - ids
