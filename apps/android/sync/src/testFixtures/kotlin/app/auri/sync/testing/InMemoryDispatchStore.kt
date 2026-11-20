@@ -50,10 +50,7 @@ class InMemoryDispatchStore(private val disk: InMemoryDispatchDisk) : DispatchSt
     override suspend fun destinations(): List<Destination> = disk.lock.withLock { sortedCache() }
 
     override suspend fun applyDestinations(gatewayId: String, destinations: List<Destination>, authoritative: Boolean, now: Instant) = disk.lock.withLock {
-        if (disk.gatewayId != gatewayId) {
-            disk.cache.clear()
-            disk.gatewayId = gatewayId
-        }
+        if (disk.gatewayId != gatewayId) switchGateway(gatewayId)
         if (authoritative) disk.cache.keys.retainAll(destinations.map { it.destinationId }.toSet())
         destinations.forEach { disk.cache[it.destinationId] = it }
         // 暂停的（凭证被撤销）：还没建 Delivery 的目标记成没送达，之后恢复也不补发（评审 B3）；用户已经跳过的不动
@@ -71,9 +68,15 @@ class InMemoryDispatchStore(private val disk: InMemoryDispatchDisk) : DispatchSt
     }
 
     override suspend fun forgetDestinations(now: Instant) = disk.lock.withLock {
-        disk.cache.clear()
-        disk.gatewayId = null
+        switchGateway(null)
         bump()
+    }
+
+    override suspend fun useGateway(gatewayId: String) = disk.lock.withLock {
+        if (disk.gatewayId != gatewayId) {
+            switchGateway(gatewayId)
+            bump()
+        }
     }
 
     override suspend fun item(key: JobKey): DispatchItem? = disk.lock.withLock { disk.items[key]?.let { view(key, it) } }
@@ -178,6 +181,13 @@ class InMemoryDispatchStore(private val disk: InMemoryDispatchDisk) : DispatchSt
     }
 
     // ---- 内部（都在锁里）----
+
+    /** 缓存与按它规划的、网关上还没有 Delivery 的目标一起作废（评审 H2）：编号只在那个网关上有意义。null = 忘掉缓存、不属于任何网关。 */
+    private fun switchGateway(gatewayId: String?) {
+        disk.cache.clear()
+        disk.gatewayId = gatewayId
+        disk.items.values.forEach { item -> item.rows.values.removeAll { it.delivery == GatewayDelivery.NOT_YET } }
+    }
 
     private fun bump() {
         disk.signal.value += 1

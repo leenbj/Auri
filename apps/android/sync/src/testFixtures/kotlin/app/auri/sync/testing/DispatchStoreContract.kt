@@ -496,6 +496,79 @@ abstract class DispatchStoreContract {
         assertEquals(emptyList<String>(), fixture.store.item(keyA)!!.targets.map { it.destinationId })
     }
 
+    // ---- 换网关：按旧网关的 Destination 规划的目标一起作废（评审 H2）：编号只在那个网关上有意义 ----
+
+    @Test
+    fun using_another_gateway_withdraws_every_target_planned_for_the_old_one_but_keeps_what_already_happened() = runBlocking {
+        val fixture = newFixture()
+        fixture.know(destination(auto, SendMode.AUTO_SEND), destination(autoBoth, SendMode.AUTO_SEND), destination(preview, SendMode.PREVIEW_CONFIRM))
+        fixture.publish(keyA, RevisionSource.ASR, t0)
+        fixture.markStored(keyA)
+        fixture.store.gatewayHas(keyA, listOf(autoBoth)) // 旧网关上已经有它的 Delivery：这是历史
+        fixture.store.decide(keyA, preview, Choice.CONFIRM, t0) // 确认了，追加还欠着
+        assertEquals("前提：旧网关上还欠两个追加", listOf(auto, preview), fixture.store.due().map { it.destinationId })
+
+        fixture.store.useGateway(otherGateway)
+
+        assertEquals("旧网关的 Destination 一个不留", emptyList<Destination>(), fixture.store.destinations())
+        assertEquals("旧网关上已经有的 Delivery 是历史、保留；还欠的（含等用户的、已确认的）全部撤回", listOf(autoBoth), fixture.store.item(keyA)!!.targets.map { it.destinationId })
+        assertEquals(emptyList<DeliveryAddition>(), fixture.store.due())
+        assertEquals("构造提交不带任何旧网关的编号", Publication(Intent.CONTEXT, emptyList()), fixture.store.publicationFor(keyA))
+    }
+
+    @Test
+    fun a_text_still_waiting_to_be_sent_when_the_gateway_changes_is_stored_on_the_new_gateway_without_targets() = runBlocking {
+        val fixture = newFixture()
+        fixture.know(destination(auto, SendMode.AUTO_SEND))
+        fixture.publish(keyA, RevisionSource.ASR, t0) // 同步任务排着，没有入库
+
+        fixture.store.useGateway(otherGateway)
+
+        assertTrue("文字本身照常要进新网关：任务还在", fixture.hasJob(keyA))
+        assertEquals(emptyList<String>(), fixture.store.item(keyA)!!.targets.map { it.destinationId })
+        assertEquals(Publication(Intent.CONTEXT, emptyList()), fixture.store.publicationFor(keyA))
+    }
+
+    @Test
+    fun using_the_same_gateway_again_changes_nothing_and_does_not_move_the_change_signal() = runBlocking {
+        val fixture = newFixture()
+        fixture.know(destination(auto, SendMode.AUTO_SEND), destination(preview, SendMode.PREVIEW_CONFIRM))
+        fixture.publish(keyA, RevisionSource.ASR, t0)
+        fixture.store.decide(keyA, preview, Choice.CONFIRM, t0)
+        val before = fixture.store.item(keyA)
+        val signal = fixture.store.changes().first()
+
+        fixture.store.useGateway(gateway)
+
+        assertEquals(listOf(auto, preview), fixture.store.destinations().map { it.destinationId })
+        assertEquals(before, fixture.store.item(keyA))
+        assertEquals("什么都没变就不发信号（引擎每次发请求前都会调用它）", signal, fixture.store.changes().first())
+    }
+
+    @Test
+    fun hearing_from_another_gateway_withdraws_the_old_targets_just_like_using_it() = runBlocking {
+        val fixture = newFixture()
+        fixture.know(destination(auto, SendMode.AUTO_SEND))
+        fixture.publish(keyA, RevisionSource.ASR, t0)
+
+        fixture.know(destination(preview2, SendMode.PREVIEW_CONFIRM), authoritative = true, gatewayId = otherGateway) // 用户先去发送页，读到了新网关的名单
+        fixture.publish(keyB, RevisionSource.ASR, t0.plusSeconds(1))
+
+        assertEquals("旧文字：旧网关的目标撤回", emptyList<String>(), fixture.store.item(keyA)!!.targets.map { it.destinationId })
+        assertEquals("之后的新文字按新网关的名单规划", listOf(preview2), fixture.store.item(keyB)!!.targets.map { it.destinationId })
+    }
+
+    @Test
+    fun forgetting_the_cache_also_withdraws_the_targets_that_were_planned_from_it() = runBlocking {
+        val fixture = newFixture()
+        fixture.know(destination(auto, SendMode.AUTO_SEND))
+        fixture.publish(keyA, RevisionSource.ASR, t0)
+
+        fixture.store.forgetDestinations(t0)
+
+        assertEquals("缓存没了，凭它规划的目标也不能留着：之后换到哪个网关都不能拿着旧编号去用", emptyList<String>(), fixture.store.item(keyA)!!.targets.map { it.destinationId })
+    }
+
     // ---- 凭证被撤销 = Destination 暂停（评审 B3）：网关不为它建新 Delivery、撤销时排着的取消了、恢复之后也不补发 ----
 
     @Test
@@ -791,5 +864,8 @@ abstract class DispatchStoreContract {
         assertMoved("记下网关拒绝建 Delivery") { fixture.store.refused(keyA, listOf(preview), Refusal.REJECTED) }
         assertMoved("改默认意图") { fixture.store.setDefaultIntent(Intent.ACTION_REQUEST) }
         assertMoved("忘掉缓存") { fixture.store.forgetDestinations(t0) }
+        fixture.know(destination(preview, SendMode.PREVIEW_CONFIRM))
+        last = fixture.store.changes().first()
+        assertMoved("换了网关") { fixture.store.useGateway(otherGateway) }
     }
 }

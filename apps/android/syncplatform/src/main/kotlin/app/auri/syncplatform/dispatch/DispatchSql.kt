@@ -46,10 +46,7 @@ class DispatchSql(private val sql: SqlDb) {
     ) { it.toDestination() }
 
     fun applyDestinations(gatewayId: String, destinations: List<Destination>, authoritative: Boolean, now: Instant) = sql.transaction<Unit> {
-        if (meta(GATEWAY_ID) != gatewayId) {
-            sql.update("DELETE FROM dispatch_destinations")
-            setMeta(GATEWAY_ID, gatewayId)
-        }
+        if (meta(GATEWAY_ID) != gatewayId) switchGateway(gatewayId)
         if (authoritative) {
             val keep = destinations.map { it.destinationId }.toSet()
             sql.query("SELECT destination_id FROM dispatch_destinations") { it.string(0) }
@@ -70,9 +67,23 @@ class DispatchSql(private val sql: SqlDb) {
         }
     }
 
-    fun forgetDestinations(now: Instant) = sql.transaction<Unit> {
+    fun forgetDestinations(now: Instant) = sql.transaction<Unit> { switchGateway(null) }
+
+    /** 向 [gatewayId] 发请求之前对账（评审 H2）：缓存记着的不是这个网关，就一起作废。返回有没有换。 */
+    fun useGateway(gatewayId: String): Boolean = sql.transaction {
+        if (meta(GATEWAY_ID) == gatewayId) return@transaction false
+        switchGateway(gatewayId)
+        true
+    }
+
+    /**
+     * 缓存与按它规划的、网关上还没有 Delivery 的目标一起作废：编号只在那个网关上有意义，拿着它们去别的网关只会被整个拒绝。
+     * 已经发生的（有 Delivery、被拒绝建）是历史，不动。[gatewayId] 为 null = 忘掉缓存、不属于任何网关。调用方已经在事务里。
+     */
+    private fun switchGateway(gatewayId: String?) {
         sql.update("DELETE FROM dispatch_destinations")
-        sql.update("DELETE FROM dispatch_meta WHERE name = ?", GATEWAY_ID)
+        sql.update("DELETE FROM dispatch_targets WHERE delivery = ?", GatewayDelivery.NOT_YET.name)
+        if (gatewayId == null) sql.update("DELETE FROM dispatch_meta WHERE name = ?", GATEWAY_ID) else setMeta(GATEWAY_ID, gatewayId)
     }
 
     // ---- 读 ----

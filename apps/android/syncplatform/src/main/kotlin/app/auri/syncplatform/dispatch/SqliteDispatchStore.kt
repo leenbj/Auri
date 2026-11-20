@@ -45,6 +45,11 @@ class SqliteDispatchStore(private val library: SqliteRecordLibrary) : DispatchSt
 
     override suspend fun forgetDestinations(now: Instant) = write { forgetDestinations(now) }
 
+    /** 引擎每次发请求前都会调用：没换网关时什么都没改，不发变化信号。 */
+    override suspend fun useGateway(gatewayId: String) {
+        if (read { useGateway(gatewayId) }) ownChanges.value += 1
+    }
+
     override suspend fun item(key: JobKey): DispatchItem? = read { item(key) }
 
     override suspend fun items(limit: Int): List<DispatchItem> = read { items(limit) }

@@ -270,7 +270,9 @@ class SyncEngine(
         rememberAddress(gateway, address)
 
         // 网关找到了，请求马上要离开手机：到这一刻才为它构造提交——构造提交就是冻结意图标签（评审 M3）。
-        // 没网、等网关、排队的时候标签都还能改；构造出来的提交带的是冻结的那个值
+        // 没网、等网关、排队的时候标签都还能改；构造出来的提交带的是冻结的那个值。
+        // 换了网关的话，按旧网关规划的目标在这里（构造之前）先作废：旧网关的 Destination 编号不许进新网关的请求（评审 H2）
+        additions.useGateway(gateway.gatewayId)
         val submission = source.submissionFor(key) ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)
         // 请求离开手机之前的最后一问：刚才被收回的，什么都没发出去，退回等待（“不确定”还原成发送之前的样子）
         if (!mayTransmit()) return waiting(key, wasUncertain)
@@ -408,13 +410,16 @@ class SyncEngine(
      * 出任何问题都不碰同步任务的状态：连不上或暂时失败按有界退避重来；连接问题记进配对记录；网关明确拒绝的记账、不再重试。
      */
     private suspend fun addDeliveries(location: Location) {
+        // 这一遍从头到尾对同一个网关说话：先定下它，再对账（换了网关，按旧网关规划的目标作废，评审 H2），再看欠什么
+        val gateway = usableGateway()
+        if (gateway != null) additions.useGateway(gateway.gatewayId)
         val due = additions.due()
         if (due.isEmpty()) {
             resetAdditionsBackoff()
             return
         }
         if (offline || !mayTransmit()) return // 断网期间不探测：网络回来时 SyncLoop 会再跑一轮
-        val gateway = usableGateway() ?: return
+        if (gateway == null) return
         val address = when (val located = location.get(gateway)) {
             is Located.Reachable -> located.address
             Located.Unreachable -> return additionsRetryLater()

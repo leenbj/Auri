@@ -117,11 +117,12 @@ interface DispatchStore : PublicationSource, DeliveryAdditions {
     /**
      * 把网关的回答存进缓存。[authoritative] = 这是网关给的完整列表（缓存里有而它没有的，就当不存在了）；
      * 否则只是新增或更新这几个（创建、撤销的响应）。
-     * [gatewayId] 与缓存记着的网关不同时，旧网关的缓存整个作废。
+     * [gatewayId] 与缓存记着的网关不同时，旧网关的缓存整个作废，按它规划的、网关上还没有 Delivery 的目标一并撤回
+     * （与 [DeliveryAdditions.useGateway] 同一件事，评审 H2）。
      */
     suspend fun applyDestinations(gatewayId: String, destinations: List<Destination>, authoritative: Boolean, now: Instant)
 
-    /** 换了网关或取消配对：缓存作废，在重新读取之前不给新文字规划任何目标。 */
+    /** 取消配对：缓存作废，按它规划的、网关上还没有 Delivery 的目标一并撤回；在重新读取之前不给新文字规划任何目标。 */
     suspend fun forgetDestinations(now: Instant)
 
     suspend fun item(key: JobKey): DispatchItem?

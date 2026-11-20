@@ -757,6 +757,54 @@ MUTATIONS: tuple = (
         app_tests("ResumeWiringGuardTest"), APP_RESULTS,
         ("叫醒规划器的“欠不欠追加”读的是发送账",),
     ),
+    # ---- 评审 H2：换了配对的网关，按旧网关规划的目标在任何请求离开手机之前作废 ----
+    Mutation(
+        "h2-engine-does-not-align-before-submission",
+        "评审 H2：构造提交之前不对账：旧网关的 Destination 编号进了新网关的请求，被 422 拒绝，文字永远卡在 BLOCKED",
+        (Edit(ENGINE, "        additions.useGateway(gateway.gatewayId)\n        val submission = source.submissionFor(key)", "        val submission = source.submissionFor(key)"),),
+        sync_tests("GatewaySwitchTest"), SYNC_RESULTS,
+        ("排着的文字不带旧网关的 Destination 编号去新网关",),
+    ),
+    Mutation(
+        "h2-engine-additions-skip-alignment",
+        "评审 H2：追加之前不对账：账上欠着的、给旧网关 Destination 的追加被发给了新网关",
+        (Edit(ENGINE, "        if (gateway != null) additions.useGateway(gateway.gatewayId)\n", ""),),
+        sync_tests("GatewaySwitchTest"), SYNC_RESULTS,
+        ("旧网关的 Destination 编号不会被追加给新网关",),
+    ),
+    Mutation(
+        "h2-switch-keeps-unsent-targets",
+        "评审 H2：换网关只清了缓存、没撤回按旧网关规划的目标（原来的缺陷）：旧编号还留在账上，随时会被带去新网关",
+        (Edit(DISPATCH_SQL, '        sql.update("DELETE FROM dispatch_targets WHERE delivery = ?", GatewayDelivery.NOT_YET.name)\n        if (gatewayId == null)', "        if (gatewayId == null)"),),
+        platform_tests("SqliteDispatchStoreContractTest"), PLATFORM_RESULTS,
+        (
+            "using_another_gateway_withdraws_every_target_planned_for_the_old_one_but_keeps_what_already_happened",
+            "a_text_still_waiting_to_be_sent_when_the_gateway_changes_is_stored_on_the_new_gateway_without_targets",
+            "forgetting_the_cache_also_withdraws_the_targets_that_were_planned_from_it",
+            "hearing_from_another_gateway_withdraws_the_old_targets_just_like_using_it",
+        ),
+    ),
+    Mutation(
+        "h2-switch-erases-history",
+        "评审 H2：换网关时连“旧网关上已经有 Delivery”的历史也一起删了：用户看不到文字曾经送给过谁",
+        (Edit(DISPATCH_SQL, '        sql.update("DELETE FROM dispatch_targets WHERE delivery = ?", GatewayDelivery.NOT_YET.name)\n        if (gatewayId == null)', '        sql.update("DELETE FROM dispatch_targets")\n        if (gatewayId == null)'),),
+        platform_tests("SqliteDispatchStoreContractTest"), PLATFORM_RESULTS,
+        ("using_another_gateway_withdraws_every_target_planned_for_the_old_one_but_keeps_what_already_happened",),
+    ),
+    Mutation(
+        "h2-use-gateway-switches-every-time",
+        "评审 H2：同一个网关每次对账也清一遍：引擎每次发请求前都会调用，缓存与账被反复抹掉",
+        (Edit(DISPATCH_SQL, "        if (meta(GATEWAY_ID) == gatewayId) return@transaction false\n", "        if (false) return@transaction false\n"),),
+        platform_tests("SqliteDispatchStoreContractTest"), PLATFORM_RESULTS,
+        ("using_the_same_gateway_again_changes_nothing_and_does_not_move_the_change_signal",),
+    ),
+    Mutation(
+        "h2-apply-destinations-keeps-old-targets",
+        "评审 H2：用户先去发送页读到新网关的名单时，只清缓存、不撤回旧目标（原来的缺陷）",
+        (Edit(DISPATCH_SQL, "        if (meta(GATEWAY_ID) != gatewayId) switchGateway(gatewayId)\n        if (authoritative) {", '        if (meta(GATEWAY_ID) != gatewayId) {\n            sql.update("DELETE FROM dispatch_destinations")\n            setMeta(GATEWAY_ID, gatewayId)\n        }\n        if (authoritative) {'),),
+        platform_tests("SqliteDispatchStoreContractTest"), PLATFORM_RESULTS,
+        ("hearing_from_another_gateway_withdraws_the_old_targets_just_like_using_it",),
+    ),
 )
 
 base.MUTATIONS = MUTATIONS

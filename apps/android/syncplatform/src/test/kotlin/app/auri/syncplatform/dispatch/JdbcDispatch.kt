@@ -42,6 +42,10 @@ class JdbcDispatchStore(private val sql: JdbcSqlDb, private val signal: MutableS
 
     override suspend fun forgetDestinations(now: Instant) = write { forgetDestinations(now) }
 
+    override suspend fun useGateway(gatewayId: String) {
+        if (logic.useGateway(gatewayId)) signal.value += 1
+    }
+
     override suspend fun item(key: JobKey): DispatchItem? = logic.item(key)
 
     override suspend fun items(limit: Int): List<DispatchItem> = logic.items(limit)
