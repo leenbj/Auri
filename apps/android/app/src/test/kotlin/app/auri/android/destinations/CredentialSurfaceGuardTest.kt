@@ -98,6 +98,15 @@ class CredentialSurfaceGuardTest {
         assertTrue(page.contains("""private const val LIST = "list""""))
     }
 
+    @Test
+    fun `应用退到后台时详情页抹掉凭证：页面登记了 ON_STOP 观察者，并且离开页面时摘掉`() {
+        val page = File(androidDir, "app/src/main/kotlin/app/auri/android/ui/DestinationsPage.kt").readText()
+
+        assertTrue(page.contains("event == Lifecycle.Event.ON_STOP) viewModel.backgrounded()"))
+        assertTrue(page.contains("owner.lifecycle.addObserver(observer)"))
+        assertTrue(page.contains("owner.lifecycle.removeObserver(observer)"))
+    }
+
     /** 日志模板里允许的插值：异常/结果的类名、“是不是替换了旧凭证”的布尔、代码里写死的操作名（$what、$name 都来自字面量）。 */
     private val allowedInterpolation = Regex(
         "\\\$\\{[A-Za-z_.]+::class\\.simpleName\\}|\\\$\\{result\\.value\\.replacedPrevious\\}|\\\$what\\b|\\\$name\\b",

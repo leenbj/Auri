@@ -182,6 +182,14 @@ class DestinationDetailViewModel(
         wipeCredential()
     }
 
+    /**
+     * 应用退到后台（页面还在，但看不见了）：正在显示的凭证抹掉，回来时看到的和进程被杀后一样是空的。
+     * 还在路上的不丢：核验框可能盖住了页面，而网关已经签发（轮换时旧凭证已经失效），丢了就找不回来。
+     */
+    fun backgrounded() {
+        if (credential.value is CredentialUi.Shown) wipeCredential()
+    }
+
     private fun wipeCredential() {
         credential.value = CredentialUi.Hidden
     }

@@ -151,6 +151,33 @@ class DestinationDetailViewModelTest {
     }
 
     @Test
+    fun `应用退到后台：正在显示的凭证抹掉，回到前台看到的是空的（和进程被杀后一样，不靠运气）`() = run { page ->
+        page.viewModel.requestCredential()
+        settle()
+        val secret = page.credential.revealed()
+
+        page.viewModel.backgrounded()
+        settle()
+
+        assertEquals(CredentialUi.Hidden, page.credential)
+        assertFalse(page.viewModel.state.value.toString().contains(secret))
+    }
+
+    @Test
+    fun `应用退到后台时凭证还在路上（核验框盖住了页面）：到了照样显示，不丢——它已经由网关签发，丢了就找不回来`() = run { page ->
+        val gate = CompletableDeferred<Unit>()
+        page.rig.authenticator.gate = { gate.await() }
+        page.viewModel.requestCredential()
+        runCurrent()
+
+        page.viewModel.backgrounded()
+        gate.complete(Unit)
+        settle()
+
+        assertEquals("网关里已经只认这个新凭证", page.rig.server.destinations.getValue(page.destinationId).credential, page.credential.revealed())
+    }
+
+    @Test
     fun `进程被杀后重新进来：新建出来的页面上没有任何凭证（凭证没有被存在任何地方）`() = runTest {
         val rig = DispatchRig(this)
         val id = rig.createDestination("A", SendMode.AUTO_SEND).destinationId

@@ -10,6 +10,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.auri.android.destinations.DestinationDetailViewModel
 import app.auri.android.destinations.DestinationsViewModel
@@ -22,7 +25,7 @@ private const val DETAIL = "detail:"
 /**
  * “发送”页的接线：列表与创建 / 待发送与标签 / 某个目的地的详情，三个界面之间的切换。
  * 保存的状态只有“现在在哪一页”（一个字符串）——凭证、正文、名字都不进保存的状态，所以进程被杀后重新进来，凭证面板一定是空的。
- * 离开详情页（返回、切走、被销毁）时 [DestinationDetailViewModel.leave] 抹掉凭证。
+ * 离开详情页（返回、切走、被销毁）时 [DestinationDetailViewModel.leave] 抹掉凭证；应用退到后台（ON_STOP）时 [DestinationDetailViewModel.backgrounded] 抹掉正在显示的凭证。
  */
 @Composable
 fun DestinationsPage(
@@ -49,7 +52,15 @@ fun DestinationsPage(
             val id = route.removePrefix(DETAIL)
             val viewModel = remember(id) { detail(id) }
             val context = LocalContext.current
-            DisposableEffect(viewModel) { onDispose { viewModel.leave() } }
+            val owner = LocalLifecycleOwner.current
+            DisposableEffect(viewModel, owner) {
+                val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_STOP) viewModel.backgrounded() }
+                owner.lifecycle.addObserver(observer)
+                onDispose {
+                    owner.lifecycle.removeObserver(observer)
+                    viewModel.leave()
+                }
+            }
             LaunchedEffect(viewModel) { viewModel.refreshStatuses() }
             BackHandler { route = LIST }
             val state by viewModel.state.collectAsStateWithLifecycle()
