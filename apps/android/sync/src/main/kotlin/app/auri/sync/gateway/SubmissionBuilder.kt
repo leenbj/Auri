@@ -6,6 +6,7 @@ import app.auri.capture.contract.RevisionSource
 import app.auri.capture.library.RecordEntry
 import app.auri.capture.library.Revision
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -22,7 +23,8 @@ import kotlinx.serialization.serializer
  * 几处固定值，不是遗漏：
  * - `capture.input_policy = bluetooth_only`、`input_verification = verified`：只有路由已确认的录音才会成为 Record（ADR-0014、FR-REC-001）。
  * - `content.segments = []`：本地 Revision 没有保留转录引擎的逐段时间戳（合同允许为空）。
- * - `publication = {intent: context, destination_ids: []}`：只入库，不创建 Delivery；Destination 与自动发送是 Ticket 22。
+ * - `publication`：由调用方给（Ticket 22）。不给就是 [Publication.StoreOnly]（`{intent: context, destination_ids: []}`：只入库、不创建 Delivery）——
+ *   “忘了传”只会少发，绝不会多发。意图与目标由发送账（DispatchStore）在**发送那一刻**定，不是在这里猜。
  * - `headset_firmware = null`：系统不暴露，合同要求不得猜。
  */
 class SubmissionBuilder(private val appVersion: String) {
@@ -30,7 +32,7 @@ class SubmissionBuilder(private val appVersion: String) {
         require(appVersion.length in 1..64) { "app_version 长度必须在 1..64" }
     }
 
-    fun build(entry: RecordEntry, revision: Revision): RevisionSubmission? {
+    fun build(entry: RecordEntry, revision: Revision, publication: Publication = Publication.StoreOnly): RevisionSubmission? {
         if (!consistent(entry, revision) || !timelineIsValid(entry) || !contentIsValid(revision)) return null
         val body = buildJsonObject {
             put("schema_version", Wire.SCHEMA_VERSION)
@@ -74,8 +76,8 @@ class SubmissionBuilder(private val appVersion: String) {
                 putJsonArray("segments") {}
             }
             putJsonObject("publication") {
-                put("intent", "context")
-                putJsonArray("destination_ids") {}
+                put("intent", publication.intent.wire)
+                putJsonArray("destination_ids") { publication.destinationIds.forEach { add(JsonPrimitive(it)) } }
             }
         }
         return RevisionSubmission(entry.recordId, revision.number, revision.textSha256, body.toString().toByteArray(Charsets.UTF_8))

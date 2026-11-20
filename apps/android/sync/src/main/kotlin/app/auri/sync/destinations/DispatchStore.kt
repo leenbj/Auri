@@ -1,6 +1,7 @@
 package app.auri.sync.destinations
 
 import app.auri.sync.engine.JobKey
+import app.auri.sync.engine.PublicationSource
 import app.auri.sync.gateway.Destination
 import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.Publication
@@ -90,7 +91,7 @@ sealed interface IntentResult {
  * 决定是持久的、幂等的：同一个决定重复多少次，只会放行一次。
  * 实现：内存版（测试）与 :syncplatform 的 SQLite 版，共用 DispatchStoreContract。
  */
-interface DispatchStore {
+interface DispatchStore : PublicationSource {
     /** 当前网关的 Destination 缓存（含已撤销的），最早创建的在前。 */
     suspend fun destinations(): List<Destination>
 
@@ -119,7 +120,7 @@ interface DispatchStore {
     suspend fun setIntent(key: JobKey, intent: Intent, now: Instant): IntentResult
 
     /** 这条文字发送时的 publication：意图加上会收到它的 Destination（空 = 只入库）。没有为它规划过的文字（升级前的旧文字、用户修订）只入库。 */
-    suspend fun publicationFor(key: JobKey): Publication
+    override suspend fun publicationFor(key: JobKey): Publication
 
     /** 新录出来的文字用的意图标签；用户可以在录音前改。默认 [Intent.CONTEXT]（备忘）。 */
     suspend fun defaultIntent(): Intent
