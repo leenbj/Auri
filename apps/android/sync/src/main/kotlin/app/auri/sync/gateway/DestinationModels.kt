@@ -31,7 +31,10 @@ enum class Intent(val wire: String) {
     }
 }
 
-/** 网关上的一个 Destination（destination.schema.json#/$defs/resource）。里面没有任何机密：凭证只在签发时出现一次。 */
+/**
+ * 网关上的一个 Destination（destination.schema.json#/$defs/resource）。里面没有任何机密：凭证只在签发时出现一次。
+ * [credentialActive] = 当前有没有一条有效凭证；旧网关不给这个字段时按 [credentialIssued] 算（签发过就当有效：不会误判成暂停）。
+ */
 data class Destination(
     val destinationId: String,
     val displayName: String,
@@ -41,8 +44,19 @@ data class Destination(
     val createdByDeviceId: String,
     val credentialIssued: Boolean,
     val revokedAt: Instant?,
+    val credentialActive: Boolean = credentialIssued,
 ) {
+    /** 没被撤销。 */
     val active: Boolean get() = revokedAt == null
+
+    /**
+     * 暂停（评审 B3）：签发过凭证、凭证被撤销、还没签发新的，Destination 本身没被撤销。网关不为暂停的 Destination 建新 Delivery，
+     * 撤销那一刻排着的也取消了；签发新凭证才恢复，而且只对之后的文字生效。
+     */
+    val suspended: Boolean get() = active && credentialIssued && !credentialActive
+
+    /** 能接收新文字：没被撤销、也没暂停。规划目标、算“欠网关的追加”、判断目标还在不在都看它。 */
+    val receivesNewText: Boolean get() = active && !suspended
 
     fun allows(intent: Intent): Boolean = intent in allowedIntents
 }

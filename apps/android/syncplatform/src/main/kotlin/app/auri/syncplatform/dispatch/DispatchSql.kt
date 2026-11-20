@@ -39,7 +39,7 @@ class DispatchSql(private val sql: SqlDb) {
     fun destinations(): List<Destination> = sql.query(
         """
         SELECT destination_id, display_name, send_mode, allowed_intents, created_at_s, created_at_nano,
-               created_by_device_id, credential_issued, revoked_at_s, revoked_at_nano
+               created_by_device_id, credential_issued, revoked_at_s, revoked_at_nano, credential_active
         FROM dispatch_destinations
         ORDER BY created_at_s, created_at_nano, destination_id
         """.trimIndent(),
@@ -57,6 +57,17 @@ class DispatchSql(private val sql: SqlDb) {
                 .forEach { sql.update("DELETE FROM dispatch_destinations WHERE destination_id = ?", it) }
         }
         destinations.forEach(::upsert)
+        // 暂停的（凭证被撤销）：还没建 Delivery 的目标记成没送达，之后恢复也不补发（评审 B3）；用户已经跳过的不动
+        destinations.filter { it.suspended }.forEach { suspended ->
+            sql.update(
+                "UPDATE dispatch_targets SET delivery = ?, refusal = ? WHERE destination_id = ? AND delivery = ? AND decision <> ?",
+                GatewayDelivery.REFUSED.name,
+                Refusal.SUSPENDED.name,
+                suspended.destinationId,
+                GatewayDelivery.NOT_YET.name,
+                TargetDecision.SKIPPED.name,
+            )
+        }
     }
 
     fun forgetDestinations(now: Instant) = sql.transaction<Unit> {
@@ -110,7 +121,7 @@ class DispatchSql(private val sql: SqlDb) {
         ) { Triple(it.toKey(), it.string(2), it.string(3)) }.mapNotNull { (key, intentWire, destinationId) ->
             val intent = Intent.fromWire(intentWire) ?: error("发送账里有不认识的意图")
             val destination = known[destinationId]
-            if (destination != null && destination.active && destination.allows(intent)) DeliveryAddition(key, intent, destinationId) else null
+            if (destination != null && destination.receivesNewText && destination.allows(intent)) DeliveryAddition(key, intent, destinationId) else null
         }
     }
 
@@ -152,7 +163,7 @@ class DispatchSql(private val sql: SqlDb) {
         val item = item(key) ?: return@transaction DecideResult.NotFound
         val target = item.targets.firstOrNull { it.destinationId == destinationId } ?: return@transaction DecideResult.NotFound
         if (target.decision != TargetDecision.AWAITING) return@transaction DecideResult.AlreadyDecided(target.decision)
-        if (!target.eligible) return@transaction DecideResult.NotEligible
+        if (!target.eligible || target.delivery == GatewayDelivery.REFUSED) return@transaction DecideResult.NotEligible
         val decision = if (choice == Choice.CONFIRM) TargetDecision.CONFIRMED else TargetDecision.SKIPPED
         sql.update(
             "UPDATE dispatch_targets SET decision = ? WHERE record_id = ? AND revision = ? AND destination_id = ? AND decision = ?",
@@ -190,7 +201,7 @@ class DispatchSql(private val sql: SqlDb) {
             now.nano,
         )
         if (planned > 0) {
-            destinations().filter { it.active }.forEach { destination ->
+            destinations().filter { it.receivesNewText }.forEach { destination ->
                 sql.update(
                     "INSERT INTO dispatch_targets (record_id, revision, destination_id, send_mode, decision) VALUES (?, ?, ?, ?, ?)",
                     key.recordId,
@@ -210,8 +221,8 @@ class DispatchSql(private val sql: SqlDb) {
             """
             INSERT OR REPLACE INTO dispatch_destinations (
                 destination_id, display_name, send_mode, allowed_intents, created_at_s, created_at_nano,
-                created_by_device_id, credential_issued, revoked_at_s, revoked_at_nano
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_by_device_id, credential_issued, revoked_at_s, revoked_at_nano, credential_active
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """.trimIndent(),
             destination.destinationId,
             destination.displayName,
@@ -223,6 +234,7 @@ class DispatchSql(private val sql: SqlDb) {
             if (destination.credentialIssued) 1 else 0,
             destination.revokedAt?.epochSecond,
             destination.revokedAt?.nano,
+            if (destination.credentialActive) 1 else 0,
         )
     }
 
@@ -236,7 +248,7 @@ class DispatchSql(private val sql: SqlDb) {
         ) { listOf(it.string(0), it.long(1), it.long(2), it.long(3)) }.firstOrNull() ?: return null
         val intent = Intent.fromWire(head[0] as String) ?: error("发送账里有不认识的意图")
         val targets = sql.query(
-            "SELECT destination_id, send_mode, decision, delivery FROM dispatch_targets WHERE record_id = ? AND revision = ? ORDER BY rowid",
+            "SELECT destination_id, send_mode, decision, delivery, refusal FROM dispatch_targets WHERE record_id = ? AND revision = ? ORDER BY rowid",
             key.recordId,
             key.revision,
         ) { row ->
@@ -247,8 +259,9 @@ class DispatchSql(private val sql: SqlDb) {
                 destinationName = destination?.displayName,
                 sendMode = SendMode.fromWire(row.string(1)) ?: error("发送账里有不认识的发送方式"),
                 decision = TargetDecision.valueOf(row.string(2)),
-                eligible = destination != null && destination.active && destination.allows(intent),
+                eligible = destination != null && destination.receivesNewText && destination.allows(intent),
                 delivery = GatewayDelivery.valueOf(row.string(3)),
+                refusal = row.stringOrNull(4)?.let(Refusal::valueOf),
             )
         }
         return DispatchItem(key, intent, Instant.ofEpochSecond(head[1] as Long, head[2] as Long), head[3] == 1L, targets)
@@ -271,6 +284,7 @@ class DispatchSql(private val sql: SqlDb) {
         createdByDeviceId = string(6),
         credentialIssued = long(7) == 1L,
         revokedAt = longOrNull(8)?.let { Instant.ofEpochSecond(it, long(9)) },
+        credentialActive = long(10) == 1L,
     )
 
     companion object {
@@ -297,7 +311,8 @@ class DispatchSql(private val sql: SqlDb) {
                 created_by_device_id TEXT NOT NULL,
                 credential_issued INTEGER NOT NULL CHECK (credential_issued IN (0, 1)),
                 revoked_at_s INTEGER,
-                revoked_at_nano INTEGER
+                revoked_at_nano INTEGER,
+                credential_active INTEGER NOT NULL DEFAULT 0 CHECK (credential_active IN (0, 1))
             )
             """.trimIndent(),
             """

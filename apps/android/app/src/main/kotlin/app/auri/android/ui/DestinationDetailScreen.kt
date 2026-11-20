@@ -17,6 +17,7 @@ import app.auri.android.destinations.DestinationDetailUiState
 import app.auri.android.destinations.DestinationItem
 import app.auri.android.destinations.ItemStatusRow
 import app.auri.android.destinations.RevokeUi
+import app.auri.android.destinations.SUSPENDED_TAG
 import app.auri.android.destinations.UNREVIEWED_LABEL
 import app.auri.android.destinations.describeCredentialRules
 import app.auri.android.destinations.describeDelivery
@@ -24,6 +25,7 @@ import app.auri.android.destinations.describeFailure
 import app.auri.android.destinations.describeIntent
 import app.auri.android.destinations.describeNotAuthenticated
 import app.auri.android.destinations.describeSendModeDetail
+import app.auri.android.destinations.describeSuspension
 import app.auri.sync.gateway.DestinationCredential
 
 /**
@@ -78,7 +80,8 @@ fun DestinationDetailScreen(
 @Composable
 private fun Header(destination: DestinationItem) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(destination.name + if (destination.active) "" else "（已撤销）")
+        Text(destination.name + if (!destination.active) "（已撤销）" else if (destination.suspended) SUSPENDED_TAG else "")
+        if (destination.suspended) Text(describeSuspension())
         Text(describeSendModeDetail(destination.sendMode))
         Text("接收：" + destination.allowedIntents.sortedBy { it.wire }.joinToString("、") { describeIntent(it) })
     }
@@ -99,8 +102,9 @@ private fun CredentialPanel(
         when (credential) {
             CredentialUi.Hidden -> {
                 if (destination.active) {
-                    Text(describeCredentialRules(rotating = destination.credentialIssued))
-                    Button(onClick = onRequest) { Text(if (destination.credentialIssued) "轮换凭证" else "生成凭证") }
+                    val rotating = destination.credentialIssued && !destination.suspended
+                    Text(describeCredentialRules(rotating = rotating))
+                    Button(onClick = onRequest) { Text(if (rotating) "轮换凭证" else "生成凭证") }
                 } else {
                     Text("这个目的地已被撤销，它的凭证已经失效。")
                 }

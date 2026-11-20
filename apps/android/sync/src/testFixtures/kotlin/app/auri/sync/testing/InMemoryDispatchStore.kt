@@ -56,6 +56,17 @@ class InMemoryDispatchStore(private val disk: InMemoryDispatchDisk) : DispatchSt
         }
         if (authoritative) disk.cache.keys.retainAll(destinations.map { it.destinationId }.toSet())
         destinations.forEach { disk.cache[it.destinationId] = it }
+        // 暂停的（凭证被撤销）：还没建 Delivery 的目标记成没送达，之后恢复也不补发（评审 B3）；用户已经跳过的不动
+        destinations.filter { it.suspended }.forEach { suspended ->
+            disk.items.values.forEach { item ->
+                item.rows[suspended.destinationId]?.let { row ->
+                    if (row.delivery == GatewayDelivery.NOT_YET && row.decision != TargetDecision.SKIPPED) {
+                        row.delivery = GatewayDelivery.REFUSED
+                        row.refusal = Refusal.SUSPENDED
+                    }
+                }
+            }
+        }
         bump()
     }
 
@@ -79,7 +90,7 @@ class InMemoryDispatchStore(private val disk: InMemoryDispatchDisk) : DispatchSt
         val item = disk.items[key] ?: return@withLock DecideResult.NotFound
         val row = item.rows[destinationId] ?: return@withLock DecideResult.NotFound
         if (row.decision != TargetDecision.AWAITING) return@withLock DecideResult.AlreadyDecided(row.decision)
-        if (!eligible(item, destinationId)) return@withLock DecideResult.NotEligible
+        if (!eligible(item, destinationId) || row.delivery == GatewayDelivery.REFUSED) return@withLock DecideResult.NotEligible
         row.decision = if (choice == Choice.CONFIRM) TargetDecision.CONFIRMED else TargetDecision.SKIPPED
         bump()
         DecideResult.Decided
@@ -101,7 +112,7 @@ class InMemoryDispatchStore(private val disk: InMemoryDispatchDisk) : DispatchSt
             bump()
         }
         val ids = item.rows.entries
-            .filter { (id, row) -> eligible(item, id) && (row.decision == TargetDecision.AUTO || row.decision == TargetDecision.CONFIRMED) }
+            .filter { (id, row) -> eligible(item, id) && row.delivery != GatewayDelivery.REFUSED && (row.decision == TargetDecision.AUTO || row.decision == TargetDecision.CONFIRMED) }
             .map { it.key }
             .take(Publication.MAX_DESTINATIONS)
         Publication(item.intent, ids)
@@ -155,7 +166,7 @@ class InMemoryDispatchStore(private val disk: InMemoryDispatchDisk) : DispatchSt
         jobs.enqueue(key, now)
         if (source == RevisionSource.ASR && key.revision == 1) { // 自动发送/预览确认只管 ASR 初稿（ADR-0009）；重新转录出的新版本只入库
             val item = InMemoryDispatchDisk.Item(disk.defaultIntent, now, disk.nextOrder++)
-            sortedCache().filter { it.active }.forEach { destination ->
+            sortedCache().filter { it.receivesNewText }.forEach { destination ->
                 item.rows[destination.destinationId] = InMemoryDispatchDisk.Row(
                     destination.sendMode,
                     if (destination.sendMode == SendMode.AUTO_SEND) TargetDecision.AUTO else TargetDecision.AWAITING,
@@ -176,7 +187,7 @@ class InMemoryDispatchStore(private val disk: InMemoryDispatchDisk) : DispatchSt
 
     private fun eligible(item: InMemoryDispatchDisk.Item, destinationId: String): Boolean {
         val destination = disk.cache[destinationId] ?: return false
-        return destination.active && destination.allows(item.intent)
+        return destination.receivesNewText && destination.allows(item.intent)
     }
 
     private suspend fun view(key: JobKey, item: InMemoryDispatchDisk.Item): DispatchItem = DispatchItem(
@@ -185,7 +196,7 @@ class InMemoryDispatchStore(private val disk: InMemoryDispatchDisk) : DispatchSt
         createdAt = item.createdAt,
         intentLocked = item.intentLocked,
         targets = item.rows.map { (id, row) ->
-            DispatchTarget(id, disk.cache[id]?.displayName, row.sendMode, row.decision, eligible(item, id), row.delivery)
+            DispatchTarget(id, disk.cache[id]?.displayName, row.sendMode, row.decision, eligible(item, id), row.delivery, row.refusal)
         },
     )
 }

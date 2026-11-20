@@ -49,6 +49,7 @@ import javax.crypto.KeyGenerator
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -190,6 +191,15 @@ class RealGatewayDestinationsTest {
 
         /** 给已入库的 Revision 追加 Delivery 的请求（评审 B2）。 */
         fun additions(): Int = phone.requests().count { it.startsWith("POST ") && it.endsWith("/deliveries") }
+
+        /** 网关管理员在网关机器上撤销这个 Destination 当前有效的凭证（命令行 revoke-credential；手机上没有这个操作，评审 B3）。 */
+        fun revokeActiveCredential(destination: Destination) {
+            val active = gateway.devices().flatMap { it.getValue("credentials").jsonArray }.map { it.jsonObject }.single {
+                it.getValue("destination_id").jsonPrimitive.content == destination.destinationId && it.getValue("state").jsonPrimitive.content == "active"
+            }
+            gateway.cli("revoke-credential", "--data-dir", gateway.dataDir.path, "--credential-id", active.getValue("credential_id").jsonPrimitive.content, "--json")
+                .orFail("revoke-credential")
+        }
     }
 
     private fun Lab.assertSecretNowhere(secret: String) {
@@ -488,6 +498,63 @@ class RealGatewayDestinationsTest {
         assertEquals("GATEWAY_AUTH_REVOKED", door.code)
         assertEquals(DeliveryView.OnGateway(GatewayStage.CANCELLED), lab.viewOf(destination, key))
         lab.assertSecretNowhere(credential)
+        Unit
+    }
+
+    // ---- 7. 凭证被撤销：Destination 暂停（评审 B3）----
+
+    @Test
+    fun `凭证被撤销：排着的投递取消，新文字不再给它建投递；换新凭证只领得到之后的文字；手机刷新后显示已暂停`() = runBlocking {
+        val lab = Lab()
+        val destination = lab.create("Claude Code", SendMode.AUTO_SEND)
+        val oldCredential = lab.credentialFor(destination)
+        val older = lab.phone.transcribed("撤销之前口述的")
+        lab.phone.engine.runOnce()
+        assertEquals(listOf("PENDING"), lab.deliveryStates(destination))
+
+        lab.revokeActiveCredential(destination)
+
+        assertEquals("撤销的那一刻排着的投递取消了（以前它们留着，等下一个凭证来领）", listOf("CANCELLED"), lab.deliveryStates(destination))
+        assertEquals("旧凭证在门口就被挡了", 401, lab.agent(oldCredential).probe().status)
+        val listed = (lab.phone.service.refresh() as ServiceResult.Ok).value.single()
+        assertTrue("手机刷新后知道它暂停了：没被撤销，只是暂停", listed.suspended && listed.active)
+        assertEquals(DeliveryView.OnGateway(GatewayStage.CANCELLED), lab.viewOf(destination, older))
+
+        val during = lab.phone.transcribed("凭证被撤销期间口述的")
+        lab.phone.engine.runOnce()
+        assertEquals("两条文字都进了用户自己的网关", 2, lab.revisions())
+        assertEquals("暂停期间没有给它建新投递", listOf("CANCELLED"), lab.deliveryStates(destination))
+        assertTrue("手机也没有给它规划目标", lab.phone.fixture.store.item(during)!!.targets.isEmpty())
+
+        val newCredential = lab.credentialFor(destination)
+        assertEquals("换了新凭证：撤销之前、撤销期间的文字都领不到", emptyList<Any>(), lab.agent(newCredential).claim().deliveries)
+        val after = lab.phone.transcribed("换了新凭证之后口述的")
+        lab.phone.engine.runOnce()
+        val claimed = lab.agent(newCredential).claim().deliveries.single()
+        assertEquals("只领得到恢复之后的这一条", after.recordId, claimed.getValue("record_id").jsonPrimitive.content)
+        assertEquals(DeliveryView.OnGateway(GatewayStage.CANCELLED), lab.viewOf(destination, older))
+        lab.assertSecretNowhere(newCredential)
+        Unit
+    }
+
+    @Test
+    fun `手机还不知道凭证被撤销（缓存是旧的）：文字照常入库不被拒绝，网关不为暂停的目的地建投递，手机说“没有送给它”而不是已入库`() = runBlocking {
+        val lab = Lab()
+        val suspended = lab.create("暂停的", SendMode.AUTO_SEND)
+        val other = lab.create("另一个", SendMode.AUTO_SEND)
+        lab.credentialFor(suspended)
+        lab.credentialFor(other)
+        lab.revokeActiveCredential(suspended) // 手机没有刷新：缓存里它还是有效的
+        val key = lab.phone.transcribed("手机还不知道的时候口述的")
+
+        lab.phone.engine.runOnce()
+
+        assertEquals("文字入库了（以前这样的 publication 不会被拒，现在也不会）", 1, lab.revisions())
+        assertEquals("只给没暂停的那个建了投递", listOf("PENDING"), lab.deliveryStates(other))
+        assertEquals("暂停的那个没有", emptyList<String>(), lab.deliveryStates(suspended))
+        val view = lab.viewOf(suspended, key)
+        assertTrue("没有送给它：$view", view is DeliveryView.Unknown)
+        assertEquals(DeliveryView.OnGateway(GatewayStage.STORED), lab.viewOf(other, key))
         Unit
     }
 

@@ -221,6 +221,27 @@ class DestinationDetailViewModelTest {
         assertTrue("凭证类自己也不是", !java.io.Serializable::class.java.isAssignableFrom(app.auri.sync.gateway.DestinationCredential::class.java))
     }
 
+    // ---- 凭证被撤销 = 暂停（评审 B3）：旧凭证已经没了，重新生成不是“轮换”，没有什么旧凭证要先确认 ----
+
+    @Test
+    fun `目的地因凭证被撤销而暂停：再点生成凭证不弹“确认轮换”，直接核验并签发，签发后恢复`() = run { page ->
+        page.viewModel.requestCredential()
+        settle()
+        page.credential.revealed()
+        page.viewModel.credentialCopied()
+        page.rig.server.revokeCredential(page.destinationId)
+        page.rig.service.refresh()
+        settle()
+        assertTrue(page.viewModel.state.value.destination!!.suspended)
+
+        page.viewModel.requestCredential()
+        settle()
+
+        page.credential.revealed()
+        assertEquals("两次都是“生成”，不是“轮换”：暂停的目的地没有旧凭证可换", listOf(AuthPurpose.ISSUE_CREDENTIAL, AuthPurpose.ISSUE_CREDENTIAL), page.rig.authenticator.purposes.toList())
+        assertFalse("签发之后就恢复了", page.viewModel.state.value.destination!!.suspended)
+    }
+
     // ---- 轮换 ----
 
     @Test

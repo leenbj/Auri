@@ -84,13 +84,13 @@ SKIP_AUTH = Edit(SERVICE, "            if (auth != AuthResult.Authenticated) {",
 AWAITING_NOT_RECOGNIZED = Edit(DISPATCH_STORE, "    val awaitingUser: Boolean get() = decision == TargetDecision.AWAITING && eligible", "    val awaitingUser: Boolean get() = false")
 AWAITING_WILL_RECEIVE = Edit(
     DISPATCH_STORE,
-    "    val willReceive: Boolean get() = eligible && (decision == TargetDecision.AUTO || decision == TargetDecision.CONFIRMED)",
-    "    val willReceive: Boolean get() = eligible && decision != TargetDecision.SKIPPED",
+    "    val willReceive: Boolean get() = eligible && delivery != GatewayDelivery.REFUSED && (decision == TargetDecision.AUTO || decision == TargetDecision.CONFIRMED)",
+    "    val willReceive: Boolean get() = eligible && delivery != GatewayDelivery.REFUSED && decision != TargetDecision.SKIPPED",
 )
 IGNORE_ELIGIBILITY = Edit(
     DISPATCH_STORE,
-    "    val willReceive: Boolean get() = eligible && (decision == TargetDecision.AUTO || decision == TargetDecision.CONFIRMED)",
-    "    val willReceive: Boolean get() = decision == TargetDecision.AUTO || decision == TargetDecision.CONFIRMED",
+    "    val willReceive: Boolean get() = eligible && delivery != GatewayDelivery.REFUSED && (decision == TargetDecision.AUTO || decision == TargetDecision.CONFIRMED)",
+    "    val willReceive: Boolean get() = delivery != GatewayDelivery.REFUSED && (decision == TargetDecision.AUTO || decision == TargetDecision.CONFIRMED)",
 )
 MARK_REVIEWED = Edit(SUBMISSION, '                put("review_state", wire(revision.reviewState))', '                put("review_state", "reviewed")')
 IGNORE_PUBLICATION = Edit(LIBRARY_SOURCE, "        return builder.build(entry, revision, publications.publicationFor(key))", "        return builder.build(entry, revision)")
@@ -108,6 +108,14 @@ ADDITIONS_NEVER_RUN = Edit(ENGINE, "                addDeliveries(location)\n   
 
 # 评审 B1：引擎问“文字放行了吗”的那一处——真网关测试与单测各跑一遍，用同一份编辑
 POLICY_GATE_OPEN = Edit(ENGINE, "    private suspend fun mayTransmit(): Boolean = policy.current().textMayEnterGateway", "    private suspend fun mayTransmit(): Boolean = true")
+
+# 评审 B3：手机读 Destination 的 credential_active（真网关测试与单测各跑一遍，用同一份编辑）
+GATEWAY_CLIENT = SYNC_GATEWAY + "GatewayClient.kt"
+CLIENT_IGNORES_CREDENTIAL_ACTIVE = Edit(
+    GATEWAY_CLIENT,
+    '            credentialActive = reply.booleanOrNull("credential_active") ?: issued,',
+    "            credentialActive = issued,",
+)
 
 MUTATIONS: tuple = (
     # ---- 1. 创建：发送方式必须明确选，没有默认值，请求里就是合同写的那个名字 ----
@@ -478,6 +486,118 @@ MUTATIONS: tuple = (
         (Edit(SEND_REVIEW_VM, "            dataFlow = dataFlow,\n", "            dataFlow = DataFlowState(gatewayTextGranted = true, strictLocal = false),\n"),),
         app_tests("SendReviewViewModelTest"), APP_RESULTS,
         ("没授权文字进网关时：页面状态如实标着没放行", "还没读到放行状态之前页面按没放行算"),
+    ),
+    # ---- 评审 B3：撤销凭证 = 暂停（网关的那一半由 tests/integration/test_credential_suspension.py 守着；这里是手机的那一半）----
+    Mutation(
+        "b3-client-ignores-credential-active",
+        "评审 B3：手机必须读网关给的 credential_active：不读就永远不知道目的地被暂停，还会继续替它规划、等用户确认",
+        (CLIENT_IGNORES_CREDENTIAL_ACTIVE,),
+        sync_tests("DestinationClientTest"), SYNC_RESULTS,
+        ("凭证被撤销的 Destination（合同样本）读成暂停",),
+    ),
+    Mutation(
+        "real-gw-b3-client-ignores-credential-active",
+        "评审 B3（真网关）：真网关暂停了目的地，手机刷新之后必须知道（不读 credential_active 就不知道）",
+        (CLIENT_IGNORES_CREDENTIAL_ACTIVE,),
+        REAL, REAL_RESULTS,
+        ("凭证被撤销：排着的投递取消，新文字不再给它建投递",),
+    ),
+    Mutation(
+        "b3-client-missing-field-means-suspended",
+        "评审 B3：旧网关没有 credential_active 时必须按“签发过就有效”算：按“无效”算，每个旧网关上的目的地都会被误判成暂停",
+        (Edit(GATEWAY_CLIENT, '            credentialActive = reply.booleanOrNull("credential_active") ?: issued,', '            credentialActive = reply.booleanOrNull("credential_active") ?: false,'),),
+        sync_tests("DestinationClientTest"), SYNC_RESULTS,
+        ("旧网关没有 credential_active 字段时按“签发过就有效”算",),
+    ),
+    Mutation(
+        "b3-sql-suspension-not-refused",
+        "评审 B3：得知目的地暂停时，还没建 Delivery 的目标必须记成没送达（恢复之后也不补发）：不记，恢复后新凭证就会领到暂停前攒的文字",
+        (Edit(
+            DISPATCH_SQL,
+            "        destinations.filter { it.suspended }.forEach { suspended ->\n"
+            "            sql.update(\n"
+            "                \"UPDATE dispatch_targets SET delivery = ?, refusal = ? WHERE destination_id = ? AND delivery = ? AND decision <> ?\",\n"
+            "                GatewayDelivery.REFUSED.name,\n"
+            "                Refusal.SUSPENDED.name,\n"
+            "                suspended.destinationId,\n"
+            "                GatewayDelivery.NOT_YET.name,\n"
+            "                TargetDecision.SKIPPED.name,\n"
+            "            )\n"
+            "        }\n",
+            "",
+        ),),
+        platform_tests("SqliteDispatchStoreContractTest"), PLATFORM_RESULTS,
+        ("learning_that_a_destination_is_suspended_refuses_what_the_gateway_does_not_have_yet",),
+    ),
+    Mutation(
+        "b3-sql-eligible-ignores-suspension",
+        "评审 B3：暂停的目的地不能算“会收到新文字”：算的话，界面还会让用户确认发给它",
+        (Edit(DISPATCH_SQL, "                eligible = destination != null && destination.receivesNewText && destination.allows(intent),", "                eligible = destination != null && destination.active && destination.allows(intent),"),),
+        platform_tests("SqliteDispatchStoreContractTest"), PLATFORM_RESULTS,
+        ("learning_that_a_destination_is_suspended_refuses_what_the_gateway_does_not_have_yet",),
+    ),
+    Mutation(
+        "b3-sql-plan-ignores-suspension",
+        "评审 B3：暂停期间新录的文字不能为暂停的目的地规划目标（网关也不会建 Delivery）",
+        (Edit(DISPATCH_SQL, "            destinations().filter { it.receivesNewText }.forEach { destination ->", "            destinations().filter { it.active }.forEach { destination ->"),),
+        platform_tests("SqliteDispatchStoreContractTest"), PLATFORM_RESULTS,
+        ("a_suspended_destination_is_not_planned_for_new_texts",),
+    ),
+    Mutation(
+        "b3-sql-decide-allows-refused",
+        "评审 B3：目的地暂停过的预览目标，恢复之后也不能再确认（暂停期间的文字不补发）",
+        (Edit(DISPATCH_SQL, "        if (!target.eligible || target.delivery == GatewayDelivery.REFUSED) return@transaction DecideResult.NotEligible", "        if (!target.eligible) return@transaction DecideResult.NotEligible"),),
+        platform_tests("SqliteDispatchStoreContractTest"), PLATFORM_RESULTS,
+        ("a_preview_target_of_a_suspended_destination_stops_asking_the_user_and_stays_closed_after_the_resume",),
+    ),
+    Mutation(
+        "b3-awaiting-ignores-refusal",
+        "评审 B3：被拒绝建 Delivery 的预览目标不能再算“等用户确认”（否则恢复之后待发送页又来问用户）",
+        (Edit(DISPATCH_STORE, "    val awaitingUser: Boolean get() = decision == TargetDecision.AWAITING && eligible && delivery != GatewayDelivery.REFUSED", "    val awaitingUser: Boolean get() = decision == TargetDecision.AWAITING && eligible"),),
+        platform_tests("SqliteDispatchStoreContractTest"), PLATFORM_RESULTS,
+        ("a_preview_target_of_a_suspended_destination_stops_asking_the_user_and_stays_closed_after_the_resume",),
+    ),
+    Mutation(
+        "b3-will-receive-ignores-refusal",
+        "评审 B3：被拒绝建 Delivery 的目标不能再进提交的 publication（目的地恢复之后，网关就会为暂停期间的文字建 Delivery）",
+        (Edit(DISPATCH_STORE, "    val willReceive: Boolean get() = eligible && delivery != GatewayDelivery.REFUSED && (decision == TargetDecision.AUTO || decision == TargetDecision.CONFIRMED)", "    val willReceive: Boolean get() = eligible && (decision == TargetDecision.AUTO || decision == TargetDecision.CONFIRMED)"),),
+        platform_tests("SqliteDispatchStoreContractTest"), PLATFORM_RESULTS,
+        ("learning_that_a_destination_is_suspended_refuses_what_the_gateway_does_not_have_yet",),
+    ),
+    Mutation(
+        "b3-service-resume-keeps-cache-suspended",
+        "评审 B3：签发新凭证之后本机缓存必须立刻知道目的地恢复了：不更新，页面一直说“已暂停”，新文字也不规划它",
+        (Edit(SERVICE, "listOf(known.copy(credentialIssued = true, credentialActive = true)), authoritative = false", "listOf(known.copy(credentialIssued = true)), authoritative = false"),),
+        sync_tests("DestinationServiceTest"), SYNC_RESULTS,
+        ("重新签发凭证：目的地恢复，之后的文字照常规划",),
+    ),
+    Mutation(
+        "b3-service-suspended-shown-as-unknown",
+        "评审 B3：没送给暂停目的地的文字要说“没有送给它（已暂停）”，不能含糊成“状态未知”",
+        (Edit(SERVICE, "            return if (target.refusal == Refusal.SUSPENDED) DeliveryView.Suspended else DeliveryView.Unknown(UnknownReason.DELIVERY_REFUSED)", "            return DeliveryView.Unknown(UnknownReason.DELIVERY_REFUSED)"),),
+        sync_tests("DestinationServiceTest"), SYNC_RESULTS,
+        ("管理员在网关上撤销了凭证：刷新之后本机知道它暂停了",),
+    ),
+    Mutation(
+        "b3-ui-rotate-confirm-for-suspended",
+        "评审 B3：暂停的目的地没有旧凭证可换：重新生成不该弹“确认轮换（旧凭证会失效）”",
+        (Edit(DETAIL_VM, "        if (destination.credentialIssued && !destination.suspended) credential.value = CredentialUi.ConfirmRotate else issue()", "        if (destination.credentialIssued) credential.value = CredentialUi.ConfirmRotate else issue()"),),
+        app_tests("DestinationDetailViewModelTest"), APP_RESULTS,
+        ("目的地因凭证被撤销而暂停：再点生成凭证不弹",),
+    ),
+    Mutation(
+        "b3-app-item-drops-suspended",
+        "评审 B3：列表项必须带着“已暂停”：丢掉就没有任何地方告诉用户它暂停了",
+        (Edit(DESTINATIONS_VM, "DestinationItem(destinationId, displayName, sendMode, allowedIntents, active, credentialIssued, suspended)", "DestinationItem(destinationId, displayName, sendMode, allowedIntents, active, credentialIssued)"),),
+        app_tests("DestinationsViewModelTest"), APP_RESULTS,
+        ("凭证被撤销（暂停）的目的地：列表项标着已暂停",),
+    ),
+    Mutation(
+        "b3-text-suspension-promises-backfill",
+        "评审 B3：说明里必须讲清暂停期间的文字不补发：删掉这句，用户会以为换了新凭证就能领到之前的文字",
+        (Edit(DESCRIPTIONS, "重新生成凭证后恢复，但只对之后的文字生效——暂停期间的文字不会补发。", "重新生成凭证后恢复。"),),
+        app_tests("DestinationTextTest"), APP_RESULTS,
+        ("凭证被撤销的暂停（评审 B3）",),
     ),
 )
 

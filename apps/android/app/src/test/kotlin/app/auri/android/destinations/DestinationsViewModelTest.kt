@@ -10,6 +10,7 @@ import app.auri.sync.testing.ScriptedExchange
 import app.auri.sync.testing.SyncSamples
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -175,6 +176,28 @@ class DestinationsViewModelTest {
         assertEquals(listOf(true, false), list.map { it.active })
         assertEquals(SendMode.PREVIEW_CONFIRM, list[0].sendMode)
         assertEquals(setOf(Intent.CONTEXT, Intent.ACTION_REQUEST), list[0].allowedIntents)
+    }
+
+    @Test
+    fun `凭证被撤销（暂停）的目的地：列表项标着已暂停，仍然排在有效的那一组（它没有被撤销）；换了新凭证就不再暂停（评审 B3）`() = run { rig, vm ->
+        val older = rig.createDestination("暂停的", SendMode.AUTO_SEND)
+        rig.service.issueCredential(older.destinationId)
+        delay(1_000) // 虚拟时间：创建时间不同，排序才不靠并列时的次序
+        val newer = rig.createDestination("正常的", SendMode.AUTO_SEND)
+        rig.server.revokeCredential(older.destinationId)
+        rig.service.refresh()
+        settle()
+
+        val list = vm.state.value.destinations
+        assertEquals(listOf("正常的", "暂停的"), list.map { it.name })
+        assertEquals(listOf(false, true), list.map { it.suspended })
+        assertEquals("暂停的不是撤销的", listOf(true, true), list.map { it.active })
+
+        rig.service.issueCredential(older.destinationId)
+        settle()
+
+        assertEquals(listOf(false, false), vm.state.value.destinations.map { it.suspended })
+        assertEquals(newer.destinationId, vm.state.value.destinations.first().destinationId)
     }
 
     @Test

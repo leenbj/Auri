@@ -46,6 +46,9 @@ internal class WireObject private constructor(private val root: JsonObject) {
 
     fun boolean(key: String): Boolean = primitive(key).takeIf { !it.isString }?.booleanOrNull ?: throw Unreadable(key)
 
+    /** 可选的布尔字段：缺字段是 null；有就必须是真正的布尔（字符串 "false" 不算）。用于合同里后加的可选字段。 */
+    fun booleanOrNull(key: String): Boolean? = if (key in root) boolean(key) else null
+
     fun array(key: String): JsonArray = root[key] as? JsonArray ?: throw Unreadable(key)
 
     /** 字段必须是时间戳或 null（合同里 `revoked_at` 这类“没发生就是 null”的字段）；缺字段不算 null。 */

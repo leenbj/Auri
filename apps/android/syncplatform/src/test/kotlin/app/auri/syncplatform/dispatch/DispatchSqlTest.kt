@@ -57,15 +57,17 @@ class DispatchSqlTest {
                 "dispatch_meta" to setOf("name", "value"),
                 "dispatch_destinations" to setOf(
                     "destination_id", "display_name", "send_mode", "allowed_intents", "created_at_s", "created_at_nano",
-                    "created_by_device_id", "credential_issued", "revoked_at_s", "revoked_at_nano",
+                    "created_by_device_id", "credential_issued", "credential_active", "revoked_at_s", "revoked_at_nano",
                 ),
                 "dispatch_items" to setOf("record_id", "revision", "intent", "created_at_s", "created_at_nano", "intent_locked"),
                 "dispatch_targets" to setOf("record_id", "revision", "destination_id", "send_mode", "decision", "delivery", "refusal"),
             ),
             columns,
         )
-        // “是否签发过”是一个 0/1 的标志（轮换前要先确认），不是凭证
-        assertEquals("INTEGER", fixture.db.query("PRAGMA table_info(dispatch_destinations)") { it.string(1) to it.string(2) }.toMap().getValue("credential_issued"))
+        // “是否签发过”“现在有没有有效凭证”都是 0/1 的标志（轮换前要先确认、暂停要显示），不是凭证
+        val types = fixture.db.query("PRAGMA table_info(dispatch_destinations)") { it.string(1) to it.string(2) }.toMap()
+        assertEquals("INTEGER", types.getValue("credential_issued"))
+        assertEquals("INTEGER", types.getValue("credential_active"))
     }
 
     // ---- 打开数据库（建表加回填）----
@@ -278,6 +280,20 @@ class DispatchSqlTest {
         assertEquals(revoked, read)
         assertTrue(read.credentialIssued)
         assertFalse(read.active)
+    }
+
+    @Test
+    fun a_suspended_destination_round_trips_and_is_still_not_revoked() = runBlocking {
+        val fixture = JdbcDispatchFixture()
+        val suspended = destination(auto, SendMode.AUTO_SEND).copy(credentialIssued = true, credentialActive = false)
+
+        fixture.store.applyDestinations(gateway, listOf(suspended), true, t0)
+
+        val read = fixture.reopen().store.destinations().single()
+        assertEquals("重启之后也还知道它暂停了", suspended, read)
+        assertTrue(read.suspended)
+        assertTrue("暂停不是撤销", read.active)
+        assertFalse(read.receivesNewText)
     }
 
     @Test

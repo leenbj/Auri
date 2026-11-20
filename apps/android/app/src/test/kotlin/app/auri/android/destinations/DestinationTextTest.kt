@@ -31,6 +31,7 @@ class DestinationTextTest {
         add(DeliveryView.AwaitingYou)
         add(DeliveryView.Skipped)
         add(DeliveryView.NotTargeted)
+        add(DeliveryView.Suspended)
         QueuedPhase.entries.forEach { add(DeliveryView.Queued(it)) }
         GatewayStage.entries.forEach { add(DeliveryView.OnGateway(it)) }
         UnknownReason.entries.forEach { add(DeliveryView.Unknown(it)) }
@@ -88,11 +89,21 @@ class DestinationTextTest {
 
     @Test
     fun `还没发出去的几种情形，也不会被读成已入库`() {
-        for (view in listOf(DeliveryView.AwaitingYou, DeliveryView.Skipped, DeliveryView.NotTargeted) + QueuedPhase.entries.map { DeliveryView.Queued(it) }) {
+        for (view in listOf(DeliveryView.AwaitingYou, DeliveryView.Skipped, DeliveryView.NotTargeted, DeliveryView.Suspended) + QueuedPhase.entries.map { DeliveryView.Queued(it) }) {
             val text = describeDelivery(view)
             assertFalse("$view：$text", text.contains("已入库"))
         }
         assertTrue("等你确认" in describeDelivery(DeliveryView.AwaitingYou))
+    }
+
+    @Test
+    fun `凭证被撤销的暂停（评审 B3）：说清它没被撤销、新文字不再送它、换新凭证只对之后的文字生效，暂停期间的不补发`() {
+        val note = describeSuspension()
+        for (needle in listOf("暂停", "凭证被撤销", "不会再送给它", "重新生成凭证", "之后的文字", "不会补发")) assertTrue("缺“$needle”：$note", needle in note)
+        assertTrue(SUSPENDED_TAG.isNotBlank() && "暂停" in SUSPENDED_TAG)
+        val line = describeDelivery(DeliveryView.Suspended)
+        assertTrue(line, "没有送给它" in line && "不会补发" in line)
+        assertTrue("已被撤销的说法不能和暂停混在一起：$note", "已被撤销" !in note)
     }
 
     @Test

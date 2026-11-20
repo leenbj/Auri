@@ -188,6 +188,7 @@ class GatewayClient(private val http: HttpExchange) {
         if (intents.isEmpty()) throw Unreadable("allowed_intents")
         val name = reply.string("display_name")
         if (name.codePointCount(0, name.length) !in 1..CreateDestinationRequest.MAX_NAME) throw Unreadable("display_name")
+        val issued = reply.boolean("credential_issued")
         return Destination(
             destinationId = reply.uuid("destination_id"),
             displayName = name,
@@ -195,8 +196,10 @@ class GatewayClient(private val http: HttpExchange) {
             allowedIntents = intents,
             createdAt = reply.timestamp("created_at"),
             createdByDeviceId = reply.uuid("created_by_device_id"),
-            credentialIssued = reply.boolean("credential_issued"),
+            credentialIssued = issued,
             revokedAt = reply.timestampOrNull("revoked_at"),
+            // 合同 1.1 里后加的可选字段（评审 B3）：旧网关没有它，按“签发过就有效”算，不会把没暂停的目的地误判成暂停
+            credentialActive = reply.booleanOrNull("credential_active") ?: issued,
         )
     }
 

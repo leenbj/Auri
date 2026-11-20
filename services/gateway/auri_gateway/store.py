@@ -333,6 +333,61 @@ def expire_due_leases(
             )
 
 
+def _cancel_open_deliveries(conn: Any, tenant_id: str, destination_id: str, now_iso: str) -> None:
+    """Cancel the Destination's open Deliveries (PENDING and LEASED) with the machine's DESTINATION_REVOKED event.
+
+    The event means "this Destination can no longer receive": used when the Destination is revoked and
+    when its last active credential is revoked (suspension, Ticket 22 review B3). ACKNOWLEDGED, REJECTED
+    and already CANCELLED Deliveries are history and stay as they are (the machine ignores or rejects them).
+    """
+    rows = conn.execute(
+        "SELECT delivery_id, state FROM deliveries WHERE tenant_id = ? AND destination_id = ?",
+        (tenant_id, destination_id),
+    ).fetchall()
+    for row in rows:
+        outcome = step(row["state"], DESTINATION_REVOKED)
+        if outcome.kind != "transition":
+            continue
+        conn.execute(
+            """
+            UPDATE deliveries
+            SET state = ?,
+                cancelled_at = ?,
+                lease_token_hash = NULL,
+                lease_expires_at = NULL
+            WHERE delivery_id = ?
+            """,
+            (outcome.state, now_iso, row["delivery_id"]),
+        )
+
+
+def _suspended_destination_ids(conn: Any, tenant_id: str, destination_ids: list[str]) -> set[str]:
+    """Which of these Destinations are suspended: a credential was issued once, none is active now.
+
+    Only revoking credentials causes it (rotating always leaves one active), and issuing a new one ends it,
+    so it is computed from the credential rows instead of being stored (backup, restore and rotation can
+    never leave a flag behind that disagrees with them). A Destination that never had a credential is not
+    suspended, and neither is a revoked one (that is handled where `revoked_at` is checked).
+    """
+    if not destination_ids:
+        return set()
+    placeholders = ", ".join("?" for _ in destination_ids)
+    rows = conn.execute(
+        f"""
+        SELECT d.destination_id
+        FROM destinations AS d
+        WHERE d.tenant_id = ? AND d.destination_id IN ({placeholders})
+          AND d.credential_issued = 1 AND d.revoked_at IS NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM destination_credentials AS c
+              WHERE c.tenant_id = d.tenant_id AND c.destination_id = d.destination_id AND c.revoked_at IS NULL
+          )
+        """,
+        (tenant_id, *destination_ids),
+    ).fetchall()
+    return {row["destination_id"] for row in rows}
+
+
 def _validate_publication_destinations(
     conn: Any, tenant_id: str, destination_ids: list[str], intent: str
 ) -> None:
@@ -582,6 +637,9 @@ def store_revision(
 
             destination_ids = list(publication["destination_ids"])
             _validate_publication_destinations(conn, tenant_id, destination_ids, publication["intent"])
+            # 暂停的 Destination（凭证被撤销、还没签发新的）不建 Delivery，也不让整条文字被拒：手机可能还不知道
+            suspended = _suspended_destination_ids(conn, tenant_id, destination_ids)
+            destination_ids = [dest_id for dest_id in destination_ids if dest_id not in suspended]
 
             prior_published = conn.execute(
                 """
@@ -764,6 +822,9 @@ def add_revision_deliveries(
             }
             missing = [dest_id for dest_id in destination_ids if dest_id not in existing]
             _validate_publication_destinations(conn, tenant_id, missing, intent)
+            # 暂停的 Destination（凭证被撤销、还没签发新的）不建，也不让整个请求失败：回答里没有它
+            suspended = _suspended_destination_ids(conn, tenant_id, missing)
+            missing = [dest_id for dest_id in missing if dest_id not in suspended]
 
             higher_exists = (
                 conn.execute(
@@ -807,6 +868,7 @@ def add_revision_deliveries(
                     "state": existing[dest_id]["state"],
                 }
                 for dest_id in destination_ids
+                if dest_id in created or dest_id in existing
             ]
             conn.execute("COMMIT")
             return {
@@ -822,6 +884,20 @@ def add_revision_deliveries(
         conn.close()
 
 
+# Destination 资源的全部列。`credential_active` 不存：从凭证表现算，所以撤销、轮换、备份恢复都不会让它与凭证状态不一致
+_DESTINATION_SELECT = """
+    SELECT destination_id, display_name, send_mode, allowed_intents_json,
+           created_at, created_by_device_id, credential_issued, revoked_at,
+           EXISTS (
+               SELECT 1 FROM destination_credentials AS c
+               WHERE c.tenant_id = destinations.tenant_id
+                 AND c.destination_id = destinations.destination_id
+                 AND c.revoked_at IS NULL
+           ) AS credential_active
+    FROM destinations
+"""
+
+
 def _destination_row_to_resource(row: Any) -> dict[str, Any]:
     return {
         "schema_version": "1.1",
@@ -832,6 +908,7 @@ def _destination_row_to_resource(row: Any) -> dict[str, Any]:
         "created_at": row["created_at"],
         "created_by_device_id": row["created_by_device_id"],
         "credential_issued": bool(row["credential_issued"]),
+        "credential_active": bool(row["credential_active"]),
         "revoked_at": row["revoked_at"],
     }
 
@@ -867,12 +944,7 @@ def create_destination(
                 ),
             )
             row = conn.execute(
-                """
-                SELECT destination_id, display_name, send_mode, allowed_intents_json,
-                       created_at, created_by_device_id, credential_issued, revoked_at
-                FROM destinations
-                WHERE tenant_id = ? AND destination_id = ?
-                """,
+                _DESTINATION_SELECT + " WHERE tenant_id = ? AND destination_id = ?",
                 (auth.tenant_id, destination_id),
             ).fetchone()
             assert row is not None
@@ -890,13 +962,7 @@ def list_destinations(db_path: pathlib.Path, auth: AuthenticatedDevice) -> dict[
     conn = open_connection(db_path)
     try:
         rows = conn.execute(
-            """
-            SELECT destination_id, display_name, send_mode, allowed_intents_json,
-                   created_at, created_by_device_id, credential_issued, revoked_at
-            FROM destinations
-            WHERE tenant_id = ?
-            ORDER BY created_at ASC, destination_id ASC
-            """,
+            _DESTINATION_SELECT + " WHERE tenant_id = ? ORDER BY created_at ASC, destination_id ASC",
             (auth.tenant_id,),
         ).fetchall()
     finally:
@@ -914,12 +980,7 @@ def get_destination(
     conn = open_connection(db_path)
     try:
         row = conn.execute(
-            """
-            SELECT destination_id, display_name, send_mode, allowed_intents_json,
-                   created_at, created_by_device_id, credential_issued, revoked_at
-            FROM destinations
-            WHERE tenant_id = ? AND destination_id = ?
-            """,
+            _DESTINATION_SELECT + " WHERE tenant_id = ? AND destination_id = ?",
             (auth.tenant_id, destination_id),
         ).fetchone()
     finally:
@@ -1027,12 +1088,7 @@ def revoke_destination(
         conn.execute("BEGIN IMMEDIATE")
         try:
             row = conn.execute(
-                """
-                SELECT destination_id, display_name, send_mode, allowed_intents_json,
-                       created_at, created_by_device_id, credential_issued, revoked_at
-                FROM destinations
-                WHERE tenant_id = ? AND destination_id = ?
-                """,
+                _DESTINATION_SELECT + " WHERE tenant_id = ? AND destination_id = ?",
                 (auth.tenant_id, destination_id),
             ).fetchone()
             if row is None:
@@ -1061,36 +1117,9 @@ def revoke_destination(
                 """,
                 (now_iso, auth.tenant_id, destination_id),
             )
-            delivery_rows = conn.execute(
-                """
-                SELECT delivery_id, state
-                FROM deliveries
-                WHERE tenant_id = ? AND destination_id = ?
-                """,
-                (auth.tenant_id, destination_id),
-            ).fetchall()
-            for delivery_row in delivery_rows:
-                outcome = step(delivery_row["state"], DESTINATION_REVOKED)
-                if outcome.kind != "transition":
-                    continue
-                conn.execute(
-                    """
-                    UPDATE deliveries
-                    SET state = ?,
-                        cancelled_at = ?,
-                        lease_token_hash = NULL,
-                        lease_expires_at = NULL
-                    WHERE delivery_id = ?
-                    """,
-                    (outcome.state, now_iso, delivery_row["delivery_id"]),
-                )
+            _cancel_open_deliveries(conn, auth.tenant_id, destination_id, now_iso)
             updated = conn.execute(
-                """
-                SELECT destination_id, display_name, send_mode, allowed_intents_json,
-                       created_at, created_by_device_id, credential_issued, revoked_at
-                FROM destinations
-                WHERE tenant_id = ? AND destination_id = ?
-                """,
+                _DESTINATION_SELECT + " WHERE tenant_id = ? AND destination_id = ?",
                 (auth.tenant_id, destination_id),
             ).fetchone()
             assert updated is not None
@@ -1386,6 +1415,7 @@ def revoke_credential(data_dir: pathlib.Path, credential_id: str) -> dict[str, A
             row = conn.execute(
                 """
                 SELECT c.credential_id,
+                       c.tenant_id,
                        c.destination_id,
                        d.display_name AS destination_display_name,
                        c.issued_by_device_id,
@@ -1416,6 +1446,9 @@ def revoke_credential(data_dir: pathlib.Path, credential_id: str) -> dict[str, A
                 "UPDATE destination_credentials SET revoked_at = ? WHERE credential_id = ?",
                 (now_iso, credential_id),
             )
+            # 撤销的是最后一条有效凭证：Destination 暂停，排着的（PENDING/LEASED）取消，之后签发的新凭证领不到它们
+            if row["destination_id"] in _suspended_destination_ids(conn, row["tenant_id"], [row["destination_id"]]):
+                _cancel_open_deliveries(conn, row["tenant_id"], row["destination_id"], now_iso)
             conn.execute("COMMIT")
             return {
                 "credential_id": row["credential_id"],

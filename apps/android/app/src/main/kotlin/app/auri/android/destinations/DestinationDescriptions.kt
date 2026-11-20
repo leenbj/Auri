@@ -88,7 +88,7 @@ internal fun describeCredentialRules(rotating: Boolean): String =
     else "凭证只显示这一次，关掉之后找不回来（需要时可以轮换出新的）。拿到凭证的 Agent 可以读取这个目的地的文字，请只交给你信任的 Agent。"
 
 internal fun describeDecision(decision: TargetDecision, eligible: Boolean): String = when {
-    !eligible -> "不会发给它（这个目的地已被撤销或不接收这种标签）"
+    !eligible -> "不会发给它（这个目的地已被撤销、已暂停，或不接收这种标签）"
     decision == TargetDecision.AUTO -> "自动发送"
     decision == TargetDecision.AWAITING -> "等你确认"
     decision == TargetDecision.CONFIRMED -> "你已确认发送"
@@ -100,6 +100,7 @@ internal fun describeDelivery(view: DeliveryView): String = when (view) {
     DeliveryView.AwaitingYou -> "等你确认：确认之前这个目的地的 Agent 领不到这条文字"
     DeliveryView.Skipped -> "你选择了不发给它"
     DeliveryView.NotTargeted -> "不会发给它（这个目的地已被撤销，或不接收这种标签）"
+    DeliveryView.Suspended -> "没有送给它：它的凭证被撤销、已暂停（之后生成新凭证也不会补发这一条）"
     is DeliveryView.Queued -> when (view.phase) {
         QueuedPhase.SENDING -> "正在发往网关…"
         QueuedPhase.WAITING_FOR_GATEWAY -> "已决定发送，现在连不上网关，连上后自动发"
@@ -123,8 +124,14 @@ internal fun describeStage(stage: GatewayStage): String = when (stage) {
     GatewayStage.CLAIMED -> "Agent 已领取，还没回确认"
     GatewayStage.ACKNOWLEDGED -> "Agent 已确认（网关只知道它回了确认）"
     GatewayStage.REJECTED -> "Agent 拒收了这一条"
-    GatewayStage.CANCELLED -> "已取消（被更新的版本取代，或这个目的地被撤销了）"
+    GatewayStage.CANCELLED -> "已取消（被更新的版本取代，或这个目的地被撤销、它的凭证被撤销而暂停了）"
 }
+
+/** 目的地的凭证被撤销（评审 B3）：网关把它暂停了。列表里的一个短标记，与详情页上的完整说明（[describeSuspension]）。 */
+internal const val SUSPENDED_TAG = "（已暂停）"
+
+internal fun describeSuspension(): String =
+    "已暂停：它的凭证被撤销了。新的文字不会再送给它，撤销时还没被领走的也已取消。重新生成凭证后恢复，但只对之后的文字生效——暂停期间的文字不会补发。"
 
 internal fun describeCreateHint(): String =
     "创建时必须选一种发送方式，没有默认值：这是你对“转录出来的文字可以发给这个 Agent”的授权。"

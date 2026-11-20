@@ -56,9 +56,11 @@ data class DestinationItem(
     val active: Boolean,
     /** 这个目的地已经签发过凭证（再生成就是轮换）。 */
     val credentialIssued: Boolean,
+    /** 凭证被撤销、没有新的：网关暂停了它（评审 B3）——没被撤销，但不再接收新文字；重新生成凭证才恢复。 */
+    val suspended: Boolean = false,
 )
 
-internal fun Destination.toItem() = DestinationItem(destinationId, displayName, sendMode, allowedIntents, active, credentialIssued)
+internal fun Destination.toItem() = DestinationItem(destinationId, displayName, sendMode, allowedIntents, active, credentialIssued, suspended)
 
 data class CreateForm(
     val name: String = "",

@@ -5,6 +5,7 @@ import app.auri.capture.coordinator.Clock
 import app.auri.sync.SyncLog
 import app.auri.sync.discovery.GatewayLocator
 import app.auri.sync.discovery.Located
+import app.auri.sync.engine.Refusal
 import app.auri.sync.engine.SyncJobStore
 import app.auri.sync.gateway.CreateDestinationRequest
 import app.auri.sync.gateway.DeliveryOnGateway
@@ -154,7 +155,8 @@ class DestinationService(
             val known = dispatch.destinations().firstOrNull { it.destinationId == destinationId }
             if (known == null || !known.active) return CredentialOutcome.Failed(ServiceFailure.DestinationUnavailable)
 
-            val purpose = if (known.credentialIssued) AuthPurpose.ROTATE_CREDENTIAL else AuthPurpose.ISSUE_CREDENTIAL
+            // 暂停的（凭证已被撤销）没有旧凭证可换：重新生成不是轮换
+            val purpose = if (known.credentialIssued && !known.suspended) AuthPurpose.ROTATE_CREDENTIAL else AuthPurpose.ISSUE_CREDENTIAL
             val auth = authenticator.authenticate(purpose)
             if (auth != AuthResult.Authenticated) {
                 log.event("credential.auth ${auth::class.simpleName}")
@@ -169,7 +171,7 @@ class DestinationService(
             if (!stillPaired(session.gateway)) return CredentialOutcome.Failed(ServiceFailure.NotPaired)
             return when (result) {
                 is GatewayResult.Success -> {
-                    dispatch.applyDestinations(session.gateway.gatewayId, listOf(known.copy(credentialIssued = true)), authoritative = false, now = clock.now())
+                    dispatch.applyDestinations(session.gateway.gatewayId, listOf(known.copy(credentialIssued = true, credentialActive = true)), authoritative = false, now = clock.now())
                     log.event("credential.issued replaced=${result.value.replacedPrevious}")
                     CredentialOutcome.Issued(result.value)
                 }
@@ -222,7 +224,9 @@ class DestinationService(
         // 账上就说得清的：用户跳过了、还在等用户（文字可能已经在网关，但没有给它的 Delivery）、网关拒绝建
         if (target.decision == TargetDecision.SKIPPED) return DeliveryView.Skipped
         if (target.awaitingUser) return DeliveryView.AwaitingYou
-        if (target.delivery == GatewayDelivery.REFUSED) return DeliveryView.Unknown(UnknownReason.DELIVERY_REFUSED)
+        if (target.delivery == GatewayDelivery.REFUSED) {
+            return if (target.refusal == Refusal.SUSPENDED) DeliveryView.Suspended else DeliveryView.Unknown(UnknownReason.DELIVERY_REFUSED)
+        }
         if (jobState == SyncState.STORED) {
             // 已经入库：网关怎么说就怎么显示（包括它把已撤销 Destination 上的投递取消了）
             when (remote) {

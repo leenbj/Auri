@@ -234,8 +234,12 @@ def test_cli_revoke_credential_blocks_only_that_credential(
     )
     assert rotated.status_code == 200, rotated.text
     new_cred = rotated.json()["credential"]
+    # 评审 B3：撤销凭证的那一刻，排着的文字被取消，新凭证领不到它（这里原来断言 1：新凭证一上来就领走撤销之前攒下的文字）；
+    # 撤销只影响这条凭证背后的接收权，设备与 Destination 都还在：之后入库的文字照常送给新凭证。
+    assert McpAgent(gateway.base_url, new_cred).claim()["deliveries"] == []
+    gateway.publish(phone["device_token"], [dest.destination_id], text="换了新凭证之后才口述的。")
     claims = McpAgent(gateway.base_url, new_cred).claim()["deliveries"]
-    assert len(claims) == 1
+    assert [claim["text"] for claim in claims] == ["换了新凭证之后才口述的。"]
 
     # Unknown credential id fails cleanly.
     bad_res = gateway.run_cli(

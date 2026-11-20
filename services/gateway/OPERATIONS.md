@@ -91,6 +91,14 @@ PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway revoke-credential -
 
 该凭证在下次访问 `/mcp` 时会被拒绝（`GATEWAY_AUTH_REVOKED`）；设备仍可为同一 Destination 重新签发新凭证。
 
+撤销凭证的后果（Ticket 22 评审 B3，保守的决定）：撤销的若是该 Destination **最后一条有效凭证**，它就进入“暂停”：
+
+- 撤销的那一刻，它上面还没被领取（`PENDING`）和租约中（`LEASED`）的投递被**取消**（`CANCELLED`）；已确认、已拒收的历史不动。之后签发的新凭证**领不到**这些文字——撤销前、撤销期间攒下的文字不会补发。
+- 暂停期间新入库的文字照常入库，但**不再为它建投递**（手机提交时点名它也不报错、不拒收）。
+- 在手机上对这个 Destination“生成/轮换凭证”才恢复，且只对恢复**之后**入库的文字生效。手机上它会显示“已暂停”（网关在 Destination 资源里给 `credential_active: false`）。
+- 想让 Agent 接着收原来的文字：不要撤销凭证，用手机“轮换凭证”（旧凭证立即失效，排着的投递保留给新凭证）。
+- 撤销一条已经被轮换掉的旧凭证什么也不改变（它早已失效，Destination 另有有效凭证）；从没签发过凭证的 Destination 不是“暂停”。
+
 ### 清理已吊销设备名下的 Record
 
 ```bash

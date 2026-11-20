@@ -3,6 +3,7 @@ package app.auri.sync.destinations
 import app.auri.sync.engine.DeliveryAdditions
 import app.auri.sync.engine.JobKey
 import app.auri.sync.engine.PublicationSource
+import app.auri.sync.engine.Refusal
 import app.auri.sync.gateway.Destination
 import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.Publication
@@ -52,12 +53,14 @@ data class DispatchTarget(
     val decision: TargetDecision,
     val eligible: Boolean,
     val delivery: GatewayDelivery = GatewayDelivery.NOT_YET,
+    /** [delivery] 是 [GatewayDelivery.REFUSED] 时的原因；否则为 null。 */
+    val refusal: Refusal? = null,
 ) {
-    /** 等着用户做决定，并且这个决定真的会影响发送。 */
-    val awaitingUser: Boolean get() = decision == TargetDecision.AWAITING && eligible
+    /** 等着用户做决定，并且这个决定真的会影响发送（已经被拒绝建 Delivery 的，没有什么可决定的）。 */
+    val awaitingUser: Boolean get() = decision == TargetDecision.AWAITING && eligible && delivery != GatewayDelivery.REFUSED
 
-    /** 会收到这条文字（已授权或已确认，并且目的地还在、接收这种意图）。 */
-    val willReceive: Boolean get() = eligible && (decision == TargetDecision.AUTO || decision == TargetDecision.CONFIRMED)
+    /** 会收到这条文字（已授权或已确认，并且目的地还在、接收这种意图、网关没拒绝为它建 Delivery——暂停后恢复也不补发）。 */
+    val willReceive: Boolean get() = eligible && delivery != GatewayDelivery.REFUSED && (decision == TargetDecision.AUTO || decision == TargetDecision.CONFIRMED)
 }
 
 /**
@@ -80,7 +83,7 @@ sealed interface DecideResult {
     /** 没有这条文字、或这条文字没有这个目标。 */
     data object NotFound : DecideResult
 
-    /** 这个 Destination 已经被撤销或不接收这条文字的意图：没有什么可决定的。 */
+    /** 这个 Destination 已经被撤销、暂停（凭证被撤销）或不接收这条文字的意图：没有什么可决定的。 */
     data object NotEligible : DecideResult
 }
 

@@ -126,6 +126,31 @@ class DestinationClientTest {
     }
 
     @Test
+    fun `凭证被撤销的 Destination（合同样本）读成暂停；旧网关没有 credential_active 字段时按“签发过就有效”算，不会误判成暂停；类型不对就读不懂（评审 B3）`() = runBlocking {
+        val request = CreateDestinationRequest("写作助手", SendMode.AUTO_SEND, setOf(Intent.CONTEXT))
+        val suspendedSample = sample("destination.resource.credential-revoked-suspended.json")
+
+        val suspended = client { reply(200, suspendedSample) }.first.createDestination(address, token, request).success()
+        assertTrue(suspended.credentialIssued)
+        assertFalse(suspended.credentialActive)
+        assertNull(suspended.revokedAt)
+        assertTrue("没被撤销，只是暂停", suspended.active)
+        assertTrue(suspended.suspended)
+        assertFalse("暂停的不接收新文字", suspended.receivesNewText)
+
+        val old = client { reply(200, sample("destination.resource.active.json")) }.first.createDestination(address, token, request).success()
+        assertTrue("合同里这个样本没有 credential_active：按签发过就有效算", old.credentialActive)
+        assertFalse(old.suspended)
+        assertTrue(old.receivesNewText)
+
+        val neverIssued = suspendedSample.with("credential_issued" to JsonPrimitive(false), "credential_active" to JsonPrimitive(false))
+        assertFalse("从没签发过凭证不是暂停", client { reply(200, neverIssued) }.first.createDestination(address, token, request).success().suspended)
+
+        val garbled = client { reply(200, suspendedSample.with("credential_active" to JsonPrimitive("false"))) }.first.createDestination(address, token, request)
+        assertTrue("字符串 \"false\" 不是布尔：读不懂，不能当成真", garbled is GatewayResult.Garbled)
+    }
+
+    @Test
     fun `创建被网关拒绝：保持原样报出状态码与合同错误码，不重试`() = runBlocking {
         val (client, exchange) = client { ScriptedExchange.json(422, errorBody("REQUEST_INVALID")) }
 

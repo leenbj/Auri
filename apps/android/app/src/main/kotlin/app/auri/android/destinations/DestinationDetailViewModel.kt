@@ -151,7 +151,7 @@ class DestinationDetailViewModel(
 
     // ---- 凭证 ----
 
-    /** 点“生成凭证”：从没签发过就直接开始；签发过的是轮换，先让用户确认旧凭证会立刻失效。 */
+    /** 点“生成凭证”：从没签发过、或凭证已被撤销（暂停，没有旧凭证可换）就直接开始；签发过且还有效的是轮换，先让用户确认旧凭证会立刻失效。 */
     fun requestCredential() {
         val destination = state.value.destination ?: return
         if (!destination.active) return
@@ -159,7 +159,7 @@ class DestinationDetailViewModel(
             CredentialUi.Working, is CredentialUi.Shown, CredentialUi.ConfirmRotate -> return
             else -> Unit
         }
-        if (destination.credentialIssued) credential.value = CredentialUi.ConfirmRotate else issue()
+        if (destination.credentialIssued && !destination.suspended) credential.value = CredentialUi.ConfirmRotate else issue()
     }
 
     fun confirmRotate() {

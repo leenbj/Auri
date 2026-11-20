@@ -152,6 +152,82 @@ class DestinationServiceTest {
         assertEquals(first.revokedAt, second.revokedAt)
     }
 
+    // ---- 凭证被撤销 = Destination 暂停（评审 B3） ----
+
+    @Test
+    fun `管理员在网关上撤销了凭证：刷新之后本机知道它暂停了，还没送出的文字不再欠它，之后的文字不规划它`() = run { rig ->
+        val auto = rig.createDestination("写作助手", SendMode.AUTO_SEND)
+        rig.service.issueCredential(auto.destinationId)
+        val before = rig.transcribed("暂停之前录的，还没来得及发出去")
+        rig.server.revokeCredential(auto.destinationId)
+
+        val listed = rig.service.refresh().ok().single()
+
+        assertTrue("暂停不是撤销：它没被撤销", listed.active)
+        assertTrue(listed.suspended)
+        assertEquals("这条还没有送出去：不再欠这个目的地", DeliveryView.Suspended, rig.view(auto, before))
+        val during = rig.transcribed("暂停期间的文字")
+        assertTrue("暂停期间的文字没有给它的目标", rig.dispatch.item(during)!!.targets.isEmpty())
+        rig.engine.runOnce()
+        assertEquals("文字都进了自己的网关", setOf(before.recordId, during.recordId), rig.server.stored.keys.map { it.recordId }.toSet())
+        assertEquals("但网关上没有给它的投递", emptyList<String>(), rig.server.deliveries.map { it.destinationId })
+        assertTrue("点名的目标里没有暂停的那个", rig.server.putBodies.none { it.toString().contains(auto.destinationId) })
+    }
+
+    @Test
+    fun `重新签发凭证：目的地恢复，之后的文字照常规划；暂停期间的文字不补发给新凭证`() = run { rig ->
+        val auto = rig.createDestination("写作助手", SendMode.AUTO_SEND)
+        rig.service.issueCredential(auto.destinationId)
+        rig.server.revokeCredential(auto.destinationId)
+        rig.service.refresh().ok()
+        val during = rig.transcribed("暂停期间")
+        rig.engine.runOnce()
+
+        val issued = rig.service.issueCredential(auto.destinationId)
+
+        assertTrue("核验通过、重新签发", issued is CredentialOutcome.Issued)
+        assertTrue("本机缓存立刻知道它恢复了（不必再刷新）", rig.dispatch.destinations().single().receivesNewText)
+        val after = rig.transcribed("恢复之后")
+        rig.engine.runOnce()
+        assertEquals("网关上只有恢复之后的这一条", listOf(after.recordId), rig.server.deliveries.map { it.recordId })
+        assertTrue("暂停期间的那条没有给它规划目标，恢复之后也没有补上", rig.dispatch.item(during)!!.targets.isEmpty())
+        assertEquals(DeliveryView.OnGateway(GatewayStage.STORED), rig.view(auto, after))
+    }
+
+    @Test
+    fun `手机还不知道暂停（缓存是旧的）：文字照常入库、网关悄悄跳过它，手机不把它说成已入库，也不让它卡住别的目的地`() = run { rig ->
+        val suspendedOne = rig.createDestination("暂停的", SendMode.AUTO_SEND)
+        val other = rig.createDestination("另一个", SendMode.AUTO_SEND)
+        rig.service.issueCredential(suspendedOne.destinationId)
+        rig.server.revokeCredential(suspendedOne.destinationId) // 手机没刷新：缓存里它还是有效的
+        val key = rig.transcribed()
+
+        rig.engine.runOnce()
+
+        assertEquals("文字入库了，没有因为一个暂停的目的地被拒绝", setOf(key.recordId), rig.server.stored.keys.map { it.recordId }.toSet())
+        assertEquals("只给没暂停的那个建了投递", listOf(other.destinationId), rig.server.deliveries.map { it.destinationId })
+        assertEquals(DeliveryView.OnGateway(GatewayStage.STORED), rig.view(other, key))
+        val view = rig.view(suspendedOne, key)
+        assertTrue("网关没给它建投递：说“没有送给它”，不是已入库：$view", view is DeliveryView.Unknown && view.reason == UnknownReason.DELIVERY_REFUSED)
+        rig.engine.runOnce()
+        assertEquals("记下了“网关不给它建”：不会一轮一轮地追加下去", 1, rig.server.additionCount)
+    }
+
+    @Test
+    fun `预览确认的目的地暂停了：不再问用户是否发给它（没有什么可决定的），确认不上了`() = run { rig ->
+        val preview = rig.createDestination("Claude Code", SendMode.PREVIEW_CONFIRM)
+        rig.service.issueCredential(preview.destinationId)
+        val key = rig.transcribed()
+        assertTrue(rig.dispatch.item(key)!!.awaitingUser)
+        rig.server.revokeCredential(preview.destinationId)
+
+        rig.service.refresh().ok()
+
+        assertFalse(rig.dispatch.item(key)!!.awaitingUser)
+        assertEquals(DecideResult.NotEligible, rig.dispatch.decide(key, preview.destinationId, Choice.CONFIRM, rig.clock.now()))
+        assertEquals(DeliveryView.Suspended, rig.view(preview, key))
+    }
+
     // ---- 2. 凭证：先本机核验，通过才联网 ----
 
     @Test

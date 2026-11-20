@@ -18,6 +18,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import app.auri.android.destinations.DestinationItem
 import app.auri.android.destinations.DestinationsUiState
+import app.auri.android.destinations.SUSPENDED_TAG
 import app.auri.android.destinations.describeCreateHint
 import app.auri.android.destinations.describeFailure
 import app.auri.android.destinations.describeIntent
@@ -92,7 +93,7 @@ fun DestinationsScreen(
 @Composable
 private fun DestinationRow(item: DestinationItem, onOpenDetail: (String) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(item.name + if (item.active) "" else "（已撤销）")
+        Text(item.name + if (!item.active) "（已撤销）" else if (item.suspended) SUSPENDED_TAG else "")
         Text(describeSendMode(item.sendMode) + " · 接收：" + item.allowedIntents.sortedBy { it.wire }.joinToString("、") { describeIntent(it) })
         Button(onClick = { onOpenDetail(item.destinationId) }) { Text("查看") }
     }

@@ -66,7 +66,12 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
         var credentialIssued: Boolean = false,
         var revokedAt: Instant? = null,
         var credential: String? = null,
-    )
+        /** 现在有没有一条有效凭证：签发置真，网关管理员撤销凭证（[revokeCredential]）置假。 */
+        var credentialActive: Boolean = false,
+    ) {
+        /** 暂停（评审 B3）：签发过、凭证被撤销、还没有新的，Destination 本身没被撤销。与真网关同一个定义。 */
+        val suspended: Boolean get() = revokedAt == null && credentialIssued && !credentialActive
+    }
 
     /** 网关上的一次投递；[state] 是合同的 delivery_state。 */
     class FakeDelivery(val destinationId: String, val recordId: String, val revision: Int, var state: String, val storedAt: Instant, var acknowledgedAt: Instant? = null)
@@ -107,6 +112,20 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
     private var deliveryCounter = 0
     private var credentialCounter = 0
     private val deliveryIds = HashMap<FakeDelivery, String>()
+
+    /**
+     * 模拟网关管理员在网关机器上撤销这个 Destination 的凭证（命令行 revoke-credential，评审 B3）：
+     * 没有新凭证时 Destination 暂停——排着的投递取消，之后的文字不再为它建投递（不报错、悄悄跳过），签发新凭证才恢复。
+     */
+    fun revokeCredential(destinationId: String) {
+        val destination = destinations.getValue(destinationId)
+        destination.credentialActive = false
+        if (destination.suspended) {
+            deliveries.filter { it.destinationId == destinationId && (it.state == "PENDING" || it.state == "LEASED") }.forEach { it.state = "CANCELLED" }
+        }
+    }
+
+    private fun receiving(ids: List<String>): List<String> = ids.filter { destinations[it]?.suspended != true }
 
     /** 模拟 Agent 经 MCP 领取：这条 Record 在这个 Destination 上的 PENDING 投递变成 LEASED。 */
     fun agentClaims(destinationId: String, recordId: String) {
@@ -223,14 +242,14 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
         ids.filter { id -> deliveries.none { it.destinationId == id && it.recordId == key.recordId && it.revision == key.revision } }
 
     private fun create(key: JobKey, ids: List<String>) {
-        ids.forEach { deliveries += FakeDelivery(it, key.recordId, key.revision, "PENDING", now()) }
+        receiving(ids).forEach { deliveries += FakeDelivery(it, key.recordId, key.revision, "PENDING", now()) }
     }
 
     /** 第一次入库：记下这一版，并按 publication 为每个目标创建投递。已经入库的（重复提交）什么都不动。 */
     private fun firstStore(key: JobKey, sha: String, targets: List<String>, body: JsonObject) {
         if (stored.putIfAbsent(key, sha) != null) return
         putBodies += body
-        targets.forEach { deliveries += FakeDelivery(it, key.recordId, key.revision, "PENDING", now()) }
+        receiving(targets).forEach { deliveries += FakeDelivery(it, key.recordId, key.revision, "PENDING", now()) }
     }
 
     private fun publicationAcceptable(targets: List<String>, intent: String): Boolean = targets.all { id ->
@@ -317,6 +336,7 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
         val replaced = destination.credentialIssued
         destination.credential = "auri_dst_fake_%032x".format(++credentialCounter)
         destination.credentialIssued = true
+        destination.credentialActive = true
         val body = buildJsonObject {
             put("schema_version", "1.1")
             put("destination_id", id)
@@ -336,6 +356,7 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
         put("created_at", iso(destination.createdAt))
         put("created_by_device_id", SyncSamples.DEVICE_ID)
         put("credential_issued", destination.credentialIssued)
+        put("credential_active", destination.credentialActive)
         put("revoked_at", destination.revokedAt?.let(::iso))
     }
 

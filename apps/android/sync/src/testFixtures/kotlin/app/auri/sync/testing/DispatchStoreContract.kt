@@ -60,6 +60,9 @@ abstract class DispatchStoreContract {
     private val keyA = JobKey(recordA, 1)
     private val keyB = JobKey(recordB, 1)
 
+    /** 网关告诉手机的凭证状态：从没签发过 / 有一条有效的 / 签发过但被撤销了、没有新的（= 暂停，评审 B3）。 */
+    private enum class Cred { NEVER, ACTIVE, REVOKED }
+
     private fun destination(
         id: String,
         mode: SendMode,
@@ -67,7 +70,11 @@ abstract class DispatchStoreContract {
         createdAt: Instant = t0,
         revokedAt: Instant? = null,
         name: String = "目的地-${id.take(4)}",
-    ) = Destination(id, name, mode, intents, createdAt, "ef7b1358-df31-520f-90f3-d98fc5173b46", credentialIssued = false, revokedAt = revokedAt)
+        credential: Cred = Cred.NEVER,
+    ) = Destination(
+        id, name, mode, intents, createdAt, "ef7b1358-df31-520f-90f3-d98fc5173b46",
+        credentialIssued = credential != Cred.NEVER, revokedAt = revokedAt, credentialActive = credential == Cred.ACTIVE,
+    )
 
     private suspend fun DispatchFixture.know(vararg destinations: Destination, authoritative: Boolean = true, gatewayId: String = gateway) =
         store.applyDestinations(gatewayId, destinations.toList(), authoritative, t0)
@@ -487,6 +494,110 @@ abstract class DispatchStoreContract {
         assertEquals(emptyList<Destination>(), fixture.store.destinations())
         assertTrue(fixture.hasJob(keyA))
         assertEquals(emptyList<String>(), fixture.store.item(keyA)!!.targets.map { it.destinationId })
+    }
+
+    // ---- 凭证被撤销 = Destination 暂停（评审 B3）：网关不为它建新 Delivery、撤销时排着的取消了、恢复之后也不补发 ----
+
+    @Test
+    fun learning_that_a_destination_is_suspended_refuses_what_the_gateway_does_not_have_yet_and_a_later_resume_does_not_bring_it_back() = runBlocking {
+        val fixture = newFixture()
+        fixture.know(destination(auto, SendMode.AUTO_SEND, credential = Cred.ACTIVE), destination(preview, SendMode.PREVIEW_CONFIRM, credential = Cred.ACTIVE))
+        fixture.publish(keyA, RevisionSource.ASR, t0)
+        fixture.store.decide(keyA, preview, Choice.CONFIRM, t0)
+        fixture.markStored(keyA)
+        assertEquals("暂停之前：两个目标的 Delivery 都欠网关", setOf(auto, preview), fixture.store.due().map { it.destinationId }.toSet())
+
+        fixture.know(destination(auto, SendMode.AUTO_SEND, credential = Cred.REVOKED), destination(preview, SendMode.PREVIEW_CONFIRM, credential = Cred.ACTIVE))
+
+        val suspended = fixture.store.item(keyA)!!.targets.first { it.destinationId == auto }
+        assertEquals(GatewayDelivery.REFUSED, suspended.delivery)
+        assertEquals(Refusal.SUSPENDED, suspended.refusal)
+        assertFalse("暂停的目的地不会收到新文字", suspended.eligible)
+        assertEquals("没暂停的那个照旧欠着", listOf(preview), fixture.store.due().map { it.destinationId })
+
+        fixture.know(destination(auto, SendMode.AUTO_SEND, credential = Cred.ACTIVE), destination(preview, SendMode.PREVIEW_CONFIRM, credential = Cred.ACTIVE))
+
+        val resumed = fixture.store.item(keyA)!!.targets.first { it.destinationId == auto }
+        assertEquals("恢复之后，暂停期间的文字也不补发（与网关的规则一致）", GatewayDelivery.REFUSED, resumed.delivery)
+        assertEquals(Refusal.SUSPENDED, resumed.refusal)
+        assertEquals(listOf(preview), fixture.store.due().map { it.destinationId })
+        assertEquals("这份记忆重启之后还在", Refusal.SUSPENDED, fixture.reopen().store.item(keyA)!!.targets.first { it.destinationId == auto }.refusal)
+        assertEquals("目的地恢复之后，构造提交时也不点名这个被拒绝过的目标", Publication(Intent.CONTEXT, listOf(preview)), fixture.store.publicationFor(keyA))
+    }
+
+    @Test
+    fun a_suspended_destination_is_not_planned_for_new_texts_and_is_planned_again_for_the_texts_after_it_resumes() = runBlocking {
+        val fixture = newFixture()
+        fixture.know(destination(auto, SendMode.AUTO_SEND, credential = Cred.REVOKED), destination(preview, SendMode.PREVIEW_CONFIRM, credential = Cred.ACTIVE))
+
+        fixture.publish(keyA, RevisionSource.ASR, t0)
+        fixture.know(destination(auto, SendMode.AUTO_SEND, credential = Cred.ACTIVE), destination(preview, SendMode.PREVIEW_CONFIRM, credential = Cred.ACTIVE))
+        fixture.publish(keyB, RevisionSource.ASR, t0.plusSeconds(60))
+
+        assertEquals("暂停期间的文字没有给它的目标", listOf(preview), fixture.store.item(keyA)!!.targets.map { it.destinationId })
+        assertEquals("恢复之后的文字有", setOf(auto, preview), fixture.store.item(keyB)!!.targets.map { it.destinationId }.toSet())
+        assertEquals(Publication(Intent.CONTEXT, listOf(auto)), fixture.store.publicationFor(keyB))
+        assertEquals("暂停期间的那条也没有被补上", listOf(preview), fixture.store.item(keyA)!!.targets.map { it.destinationId })
+    }
+
+    @Test
+    fun a_target_of_a_suspended_destination_is_left_out_of_the_publication_even_if_the_decision_was_already_made() = runBlocking {
+        val fixture = newFixture()
+        fixture.know(destination(auto, SendMode.AUTO_SEND, credential = Cred.ACTIVE))
+        fixture.publish(keyA, RevisionSource.ASR, t0)
+
+        fixture.know(destination(auto, SendMode.AUTO_SEND, credential = Cred.REVOKED))
+
+        assertEquals("规划时它还有效；提交时已经暂停：不点名它", Publication(Intent.CONTEXT, emptyList()), fixture.store.publicationFor(keyA))
+    }
+
+    @Test
+    fun a_preview_target_of_a_suspended_destination_stops_asking_the_user_and_stays_closed_after_the_resume() = runBlocking {
+        val fixture = newFixture()
+        fixture.know(destination(preview, SendMode.PREVIEW_CONFIRM, credential = Cred.ACTIVE))
+        fixture.publish(keyA, RevisionSource.ASR, t0)
+        assertTrue(fixture.store.item(keyA)!!.awaitingUser)
+
+        fixture.know(destination(preview, SendMode.PREVIEW_CONFIRM, credential = Cred.REVOKED))
+
+        assertFalse("暂停了：没什么可决定的", fixture.store.item(keyA)!!.awaitingUser)
+        assertEquals(DecideResult.NotEligible, fixture.store.decide(keyA, preview, Choice.CONFIRM, t0))
+
+        fixture.know(destination(preview, SendMode.PREVIEW_CONFIRM, credential = Cred.ACTIVE))
+
+        assertFalse("恢复之后也不再问：暂停期间的文字不补发", fixture.store.item(keyA)!!.awaitingUser)
+        assertEquals(DecideResult.NotEligible, fixture.store.decide(keyA, preview, Choice.CONFIRM, t0))
+        fixture.markStored(keyA)
+        assertEquals(emptyList<DeliveryAddition>(), fixture.store.due())
+    }
+
+    @Test
+    fun a_delivery_the_gateway_already_has_is_not_rewritten_when_the_destination_is_found_suspended() = runBlocking {
+        val fixture = newFixture()
+        fixture.know(destination(auto, SendMode.AUTO_SEND, credential = Cred.ACTIVE))
+        fixture.publish(keyA, RevisionSource.ASR, t0)
+        fixture.markStored(keyA)
+        fixture.store.gatewayHas(keyA, listOf(auto))
+
+        fixture.know(destination(auto, SendMode.AUTO_SEND, credential = Cred.REVOKED))
+
+        val target = fixture.store.item(keyA)!!.targets.single()
+        assertEquals("网关上已经有的 Delivery 以网关的状态为准（撤销时它被取消了，状态查询会如实说）", GatewayDelivery.CREATED, target.delivery)
+        assertNull(target.refusal)
+    }
+
+    @Test
+    fun a_skipped_target_stays_skipped_when_its_destination_is_found_suspended() = runBlocking {
+        val fixture = newFixture()
+        fixture.know(destination(preview, SendMode.PREVIEW_CONFIRM, credential = Cred.ACTIVE))
+        fixture.publish(keyA, RevisionSource.ASR, t0)
+        fixture.store.decide(keyA, preview, Choice.SKIP, t0)
+
+        fixture.know(destination(preview, SendMode.PREVIEW_CONFIRM, credential = Cred.REVOKED))
+
+        val target = fixture.store.item(keyA)!!.targets.single()
+        assertEquals("用户的决定在先：界面说“你选择了不发送”，不改说暂停", TargetDecision.SKIPPED, target.decision)
+        assertEquals(GatewayDelivery.NOT_YET, target.delivery)
     }
 
     @Test

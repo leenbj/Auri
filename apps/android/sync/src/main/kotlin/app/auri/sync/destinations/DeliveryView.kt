@@ -88,6 +88,9 @@ sealed interface DeliveryView {
     /** 不会发给它：这个 Destination 已被撤销、不再接收这种意图，或这台手机已经不认识它了。 */
     data object NotTargeted : DeliveryView
 
+    /** 这个 Destination 的凭证被撤销、暂停了：这条文字没有送给它，之后签发新凭证也不会补发（评审 B3）。 */
+    data object Suspended : DeliveryView
+
     /** 已决定要发，网关上还没有它的 Delivery（本机在排队 / 等网关 / 稍后重试 / 需要用户处理 / 正在请网关追加）。 */
     data class Queued(val phase: QueuedPhase) : DeliveryView
 
