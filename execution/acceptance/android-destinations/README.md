@@ -31,7 +31,7 @@
 | 4 | 预览确认的 Destination 在用户确认前不产生 Delivery | `DispatchEngineTest`、`SendReviewViewModelTest`（确认前同步跑多少轮网关上都没有这条文字；重复确认恰好一份；确认后进程被杀仍一份）；`DispatchStoreContract`（内存版与 **SQLite 版**共用，JVM 上跑真 SQLite 引擎；重启后仍拦着）；合同输出场景 `preview-held-before-confirm`；真网关 `预览确认：用户确认之前…`（0 条文字、0 个 Delivery、0 个 PUT、Agent 领不到；三次确认之后恰好一份） | E2；Android 自带 SQLite 上的同一套合同 `SqliteDispatchStoreOnDeviceTest` = `NOT_RUN` |
 | 5 | 每条内容可标备忘 / 请求执行 | `SendReviewViewModelTest`（发出去之前可改标签；默认是备忘；请求里带的就是最后选的）；`DispatchEngineTest`；`DestinationTextTest`（说明里写明“只是数据上的标记，不会被执行，不授予额外权限”）；真网关 `请求执行只是数据上的标签…`（Agent 领到 `intent=action_request` 与 `content_trust` 标记；只收备忘的 Destination 一条也领不到、整条也没被拒收） | E2 |
 | 6 | 详情页每条内容的状态：已入库 / 已领取 / 已确认，绝不说“已处理” | `DeliveryViewTest`（合同的每个投递状态都有对应阶段；不认识的状态是未知）；`DestinationServiceTest`（排队 → 已入库 → 已领取 → 已确认；问不到网关是未知；缺记录是未知）；`DestinationTextTest`（没有一句话说“已处理”）；`DestinationDetailViewModelTest`；真网关 `自动发送：…领取、确认之后手机上依次显示已领取、已确认` | E2 |
-| 7 | 真机：创建 Destination，Agent 领到自动发送的文字 | 第 4 节的步骤；电脑上的等价证据是第 3 行的真网关测试（真实 MCP 客户端、真实网关，但不是真机、不是真局域网） | `NOT_RUN`（原因：没有设备；本机为省内存禁用模拟器） |
+| 7 | 真机：创建 Destination，Agent 领到自动发送的文字 | 第 4 节的步骤；电脑上的等价证据是第 3 项的真网关测试（真实 MCP 客户端、真实网关，但不是真机、不是真局域网） | `NOT_RUN`（原因：没有设备；本机为省内存禁用模拟器） |
 
 ## 3. 在本机怎么跑
 
@@ -208,5 +208,74 @@ cd apps/android && ./gradlew :syncplatform:connectedDebugAndroidTest -Pandroid.t
 
 ## 12. 本次运行结果
 
-合并集成分支之后的最终验证（各套件逐个跑、各自的内存读数、共享文件改动清单）会在下一次提交里补全这一节。
+合并 `origin/integration/auri-v2`（Ticket 19，`10be78c`；与本票只有 `AuriRuntime.kt` 一个文件两边都改过，git 自动合并没有冲突，合并后全部重新编译、重新跑）之后的最终验证。
+
+### 12.1 环境与方法
+
+- 本机 macOS，交换区常年接近 4 GB，与 Ticket 19 的 worker 共用，所以：每个 Gradle / pytest 都单独取共享锁 `~/.cache/auri/gradle.lock`、一次只跑一个、跑完立刻放锁；Gradle 参数 `--no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2`，每个测试任务加 `--rerun` 保证是新鲜结果（表里的数字是该次运行写出的 JUnit XML 的合计，不是缓存）；没有执行过 `./gradlew --stop`。
+- 每次运行前后各读一次 `memory_pressure` 的空闲百分比与 `sysctl vm.swapusage`（表里“空闲 前 → 后；交换区已用”）；空闲低于 25% 或 60 秒内交换区涨超 500 MB 就等（本次没有一次因此等待：最低的读数是 `asr-android` 结束时的 34%，仍高于 25%）。
+- pytest 一律带 `NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1`，前后各查 `pgrep -fl auri_gateway`：每一次都是 0 个残留。
+- **没有**启动模拟器、AVD、Android Studio、Xcode、DevEco 或任何仿真器，没有运行任何仪器测试（`connectedAndroidTest`）；仪器测试只编译打包（`androidtest-apks`）。
+
+### 12.2 JVM 单测、真网关与构建（`apps/android`，合并 `integration/auri-v2` 之后，每个套件单独取锁、`--no-daemon … --rerun`）
+
+| 套件 | 命令 | 结果 | 起止（本机时间） | 内存空闲（前 → 后）与交换区已用 |
+|---|---|---|---|---|
+| `assemble-debug` | `./gradlew :app:assembleDebug` | exit 0：构建成功 | 23:53:00–23:53:53 | 48% → 47%；交换区 3922 → 4019 MB |
+| `capture` | `./gradlew :capture:test --rerun` | exit 0：369 个，失败 0、出错 0、跳过 0 | 23:53:53–23:54:16 | 47% → 56%；交换区 4019 → 4019 MB |
+| `modelmgmt` | `./gradlew :modelmgmt:testDebugUnitTest --rerun` | exit 0：84 个，失败 0、出错 0、跳过 0 | 23:54:16–23:55:00 | 56% → 50%；交换区 4019 → 3995 MB |
+| `platform` | `./gradlew :platform:testDebugUnitTest --rerun` | exit 0：257 个，失败 0、出错 0、跳过 0 | 23:55:00–23:55:23 | 50% → 53%；交换区 3995 → 3987 MB |
+| `app` | `./gradlew :app:testDebugUnitTest --rerun` | exit 0：249 个，失败 0、出错 0、跳过 0 | 23:55:23–23:56:06 | 53% → 49%；交换区 3987 → 3987 MB |
+| `asr` | `./gradlew :asr:testDebugUnitTest --rerun` | exit 0：112 个，失败 0、出错 0、跳过 0 | 23:56:06–23:56:16 | 49% → 55%；交换区 3987 → 3979 MB |
+| `sync` | `./gradlew :sync:test --rerun` | exit 0：373 个，失败 0、出错 0、跳过 0 | 23:56:16–23:56:38 | 55% → 50%；交换区 3979 → 3979 MB |
+| `syncplatform` | `./gradlew :syncplatform:testDebugUnitTest --rerun` | exit 0：69 个，失败 0、出错 0、跳过 0 | 23:56:38–23:56:49 | 50% → 56%；交换区 3979 → 3979 MB |
+| `realgateway` | `./gradlew :sync:realGatewayTest --rerun` | exit 0：21 个，失败 0、出错 0、跳过 0 | 23:56:49–23:57:25 | 56% → 57%；交换区 3979 → 3971 MB |
+| `androidtest-apks` | `./gradlew :app:assembleDebugAndroidTest :syncplatform:assembleDebugAndroidTest :platform:assembleDebugAndroidTest` | exit 0：构建成功 | 23:57:25–23:57:50 | 57% → 46%；交换区 3971 → 3971 MB |
+
+### 12.3 Python 验收与仓库套件（每个都是单独一次 `NO_PROXY=… pytest`，前后查网关进程）
+
+| 套件 | 命令 | 结果 | 起止 | 内存空闲（前 → 后）与交换区已用 |
+|---|---|---|---|---|
+| `android-capture` | `pytest execution/acceptance/android-capture` | exit 0：59 passed | 23:58:41–23:59:40 | 57% → 59%；交换区 3955 → 3955 MB |
+| `android-control` | `pytest execution/acceptance/android-control` | exit 0：106 passed | 23:59:40–00:00:40 | 59% → 54%；交换区 3955 → 3939 MB |
+| `android-silence` | `pytest execution/acceptance/android-silence` | exit 0：3 passed | 00:00:40–00:00:40 | 54% → 53%；交换区 3939 → 3939 MB |
+| `android-models` | `pytest execution/acceptance/android-models` | exit 0：2 passed | 00:00:40–00:00:40 | 53% → 53%；交换区 3939 → 3939 MB |
+| `android-sync` | `pytest execution/acceptance/android-sync` | exit 0：814 passed | 00:00:40–00:03:40 | 53% → 53%；交换区 3939 → 3923 MB |
+| `android-destinations` | `pytest execution/acceptance/android-destinations` | **第一次 exit 1：2 failed, 125 passed**（见下）；修复后重跑 exit 0：127 passed | 00:03:40–00:03:52；重跑 00:09:03–00:09:42 | 54% → 51%；交换区 3923 → 3923 MB；重跑 41% → 51%；交换区 4025 → 4001 MB |
+| `android-interruptions` | `pytest execution/acceptance/android-interruptions` | exit 5：没有收集到测试（该目录只有 README，没有 Python 测试；Ticket 19 的区域，没动） | 00:03:52–00:03:53 | 51% → 51%；交换区 3923 → 3923 MB |
+| `asr-android` | `pytest execution/acceptance/asr-android` | exit 0：131 passed | 00:03:53–00:04:53 | 51% → 34%；交换区 3923 → 3915 MB |
+| `repo` | `pytest tests/contract tests/integration tests/security` | exit 0：496 passed | 00:04:53–00:08:48 | 34% → 52%；交换区 3915 → 4025 MB |
+
+说明：
+
+- `android-destinations` 第一次跑有 2 个失败，都是同一个原因：我自己的校验器在“预览确认没确认之前网关上有东西”时的报错文字（“必须都是 0”）与它自己的测试要找的文字（“都必须是 0”）对不上。**测试没动**，校验器的报错文字改成与测试一致，重跑 127 个全过。
+- `android-silence`（3 个）、`android-models`（2 个）是纯静态检查，不调用 Gradle，所以只要零点几秒。
+- 仓库套件 `tests/contract tests/integration tests/security` 共 496 个全过（约 3 分 54 秒，租约到期测试必须真实等待）。
+
+### 12.4 没有运行的（`NOT_RUN`，原因：没有设备；本机为省内存禁用模拟器与仪器测试）
+
+| 项 | 要做什么 | 命令 / 步骤 |
+|---|---|---|
+| 设备端 SQLite 发送账合同 `SqliteDispatchStoreOnDeviceTest`（与 Ticket 21 已有的设备端用例） | 在 Android 自带的 SQLite 上跑同一套发送账合同（含预览确认前不放行、重启后仍拦着） | `AURI_ALSO_ASR_ACCEPTANCE=1 execution/acceptance/android-sync/run_emulator_acceptance.sh`（一次性无头模拟器，先取共享锁），或已连设备时 `cd apps/android && ./gradlew :syncplatform:connectedDebugAndroidTest` |
+| 清单第 7 项：真机上创建 Destination、Agent 领到自动发送的文字 | 第 4 节整套步骤 | 第 4 节 |
+| 真实 `BiometricPrompt`、`FLAG_SECURE`、剪贴板敏感标记、`ON_STOP` 抹掉凭证的真实生命周期 | 第 4 节第 2 步的几个小项 | 第 4 节 |
+| 局域网真机（mDNS 发现、自签证书、手机与电脑真实网络） | 同第 4 节 | 第 4 节 |
+| 独立评审 | 合入前由人或评审工具看一遍（尤其发送账事务与凭证只显示一次） | — |
+
+### 12.5 共享文件与既有文件的改动（都是追加式的；不碰 `contracts/`、`tests/contract/`、`services/gateway/`、`.github/`）
+
+| 文件 | 改动（增 / 删行数） | 为什么 |
+|---|---|---|
+| `apps/android/app/.../AuriRuntime.kt` | +28 / −0 | 装配本票的服务、发送账与三个视图模型的工厂（与 Ticket 19 的启动恢复、录音目录迁移并存，自动合并） |
+| `apps/android/app/.../MainActivity.kt` | +13 / −1 | 三个视图模型的接线，第四页“发送” |
+| `apps/android/app/.../ui/AppRoot.kt` | +3 / −1 | `AppRoot` 多一个可选参数 `destinations` 与“发送”标签 |
+| `apps/android/app/build.gradle.kts` | +1 / −0 | `:app` 的单测引用 `:sync` 的测试固件（假网关、内存发送账） |
+| `apps/android/sync/build.gradle.kts` | +7 / −0 | 把 Gradle 属性 `auriContractOut` 转给测试进程（合同输出） |
+| `apps/android/sync/.../engine/RecordLibrarySubmissionSource.kt` | +24 / −3 | 每次发送现问发送账要 `publication` |
+| `apps/android/sync/.../gateway/GatewayClient.kt`、`GatewayModels.kt`、`SubmissionBuilder.kt`、`Wire.kt` | +94/−1、+11/−2、+6/−4、+13/−0 | 目的地的创建/列表/撤销/凭证/状态请求，入库请求带 `publication` 与 `review_state`；没有新增网络栈，走同一个固定公钥客户端 |
+| `apps/android/sync/src/test/.../SubmissionBuilderTest.kt`、`testFixtures/.../FakeGateway.kt` | +85/−0、+171/−7 | 对应的测试与假网关的目的地行为 |
+| `apps/android/syncplatform/.../SyncRuntime.kt`、`jobs/SqliteSyncJobStore.kt` | +26/−9、+45/−35 | 装配发送账与核验；同步任务可在同一个事务里登记（`enqueueIn`） |
+| `apps/android/syncplatform/src/main/AndroidManifest.xml` | +2 / −0 | `USE_BIOMETRIC` 权限 |
+| `execution/acceptance/android-sync/check_sync_instrumentation.py`、`test_check_sync_instrumentation.py` | +13/−10、+26/−0 | 设备端检查器认得“继承发送账合同”的设备端测试类（Ticket 21 的工具，14 个自测全过） |
+| `CLAUDE.md` | 只在“命令”一节追加一段 | 本票的命令 |
 

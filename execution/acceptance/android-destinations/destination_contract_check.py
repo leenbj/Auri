@@ -157,7 +157,7 @@ def _expect_held(submission, scenario, problems: list[str]) -> None:
     if scenario is None:
         problems.append("scenario.json: 必须有网关侧观察，才能证明确认之前一个 Delivery 也没有")
     elif scenario["puts"] != 0 or scenario["deliveries"] != 0:
-        problems.append("scenario.json: 确认之前网关上的 PUT 与 Delivery 必须都是 0")
+        problems.append("scenario.json: 确认之前网关上的 PUT 与 Delivery 都必须是 0")
 
 
 def check_scenario(dir_: pathlib.Path, expectation: str) -> list[str]:

@@ -166,6 +166,18 @@ cd apps/android
 adb logcat -d -s AuriCapture:I                                                                     # 真机：采集状态、最近一次打断的原因（interrupted=… code=…）与启动恢复计数（orphan recovery: recovered=…），没有文字、路径、标识
 ```
 
+Android 目的地管理与发送方式（Ticket 22，同在 `apps/android/`：`:sync` 的 `destinations/` 是纯 Kotlin/JVM（目的地服务、发送账接口 `DispatchStore`、投递状态映射、本机核验接口 `LocalAuthenticator`），`:syncplatform` 的 `dispatch/`（SQLite 发送账，与 Record 库同库、发布 Revision 的同一个事务）与 `auth/`（`BiometricPrompt` 核验）是 Android 实现，`:app` 里是“发送”页（目的地列表与创建、详情、发送审阅、凭证只显示一次且显示时禁截屏）；没有新增网络类与依赖，只多一个 `USE_BIOMETRIC` 权限；预览确认靠手机本地的发送账把整条文字拦到用户决定完（网关只在首次入库时建 Delivery，缺口 G13）；步骤、真机流程（`NOT_RUN`）、合同缺口 G13–G17、变异表（30 条）与结果见 `execution/acceptance/android-destinations/README.md`）：
+
+```bash
+cd apps/android
+./gradlew :sync:test :syncplatform:testDebugUnitTest :app:testDebugUnitTest   # JVM 单测（373 + 69 + 249，含 Ticket 19/21 的），不需要设备；内存紧张时加 --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2，要新鲜结果加 --rerun
+./gradlew :sync:realGatewayTest                                                # 真实 Python 网关 + 官方 MCP 客户端（21 个 = Ticket 21 的 12 + 本票的 9）：两种发送方式创建、凭证只给一次、Agent 经 MCP 领取并确认、预览确认在用户确认前网关上什么也没有
+cd ../..
+AURI_GRADLE_ARGS=--no-daemon .venv/bin/pytest execution/acceptance/android-destinations   # Python 验收工具（127 个；含真实调用 Gradle 的合同输出校验，需要 JAVA_HOME）
+.venv/bin/python execution/acceptance/android-destinations/destination_mutation_check.py --list   # 变异检查（30 条，整表真跑约 1 小时）：机器同 Ticket 21（只改仓库外的快照）；--only <id…> / --match <正则> 选条目，同样读 AURI_GRADLE_ARGS
+AURI_GATEWAY_URL=https://<电脑地址>:8443/mcp AURI_GATEWAY_SPKI_SHA256=<配对时取得的指纹> AURI_DESTINATION_CREDENTIAL=<凭证> .venv/bin/python execution/acceptance/android-destinations/real_gateway_agent.py claim   # 真机验收时在电脑上扮演 Agent（claim | ack <delivery_id> <lease_token> | probe；凭证只经环境变量）
+```
+
 鸿蒙探针（DEV-003，工程位于 `execution/p0-spikes/harmonyos-probe/`）：
 
 ```bash
