@@ -4,6 +4,7 @@ import app.auri.asr.audio.WavReader
 import app.auri.capture.adapter.PcmFormat
 import app.auri.capture.contract.CaptureHandle
 import app.auri.capture.contract.GateState
+import app.auri.capture.testing.Samples
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -29,6 +30,8 @@ class WavRecordingStoreTest {
 
     private fun store() = WavRecordingStore(File(folder.root, "records"))
 
+    private fun meta() = Samples.recordingMeta(sessionId = sessionId)
+
     private fun pcmBytes(vararg chunks: ShortArray): ByteArray {
         val all = chunks.flatMap { it.toList() }
         return ByteBuffer.allocate(all.size * 2).order(ByteOrder.LITTLE_ENDIAN).apply { all.forEach { putShort(it) } }.array()
@@ -37,8 +40,8 @@ class WavRecordingStoreTest {
     @Test
     fun `one second of stereo audio retains all interleaved samples and its duration`() = runBlocking {
         val stereo = PcmFormat(16_000, channels = 2)
-        val writer = store().begin(recordId, open, stereo)
-        writer.append(open, ShortArray(32_000))
+        val writer = store().begin(recordId, open, stereo, meta())
+        writer.append(open, 0, ShortArray(32_000))
 
         val sealed = writer.seal()
 
@@ -51,9 +54,9 @@ class WavRecordingStoreTest {
     fun `写完封存：文件名就是 record_id，WAV 能被读回原样，哈希是 PCM 字节的 SHA-256`() = runBlocking {
         val first = ShortArray(800) { (it - 400).toShort() }
         val second = ShortArray(1600) { (it * 7).toShort() }
-        val writer = store().begin(recordId, open, format)
-        writer.append(open, first)
-        writer.append(open, second)
+        val writer = store().begin(recordId, open, format, meta())
+        writer.append(open, 0, first)
+        writer.append(open, first.size.toLong(), second)
 
         val sealed = writer.seal()
 
@@ -77,8 +80,8 @@ class WavRecordingStoreTest {
 
     @Test
     fun `录音进行中磁盘上只有 part 文件，封存之前不存在看起来已完成的录音`() {
-        val writer = store().begin(recordId, open, format)
-        writer.append(open, ShortArray(100))
+        val writer = store().begin(recordId, open, format, meta())
+        writer.append(open, 0, ShortArray(100))
 
         assertTrue(File(folder.root, "records/$recordId.wav.part").isFile)
         assertFalse(File(folder.root, "records/$recordId.wav").exists())
@@ -86,16 +89,16 @@ class WavRecordingStoreTest {
 
     @Test
     fun `放弃：删除已写的部分；重复放弃没有副作用；封存之后放弃不删已封存的音频`() = runBlocking {
-        val aborted = store().begin(recordId, open, format)
-        aborted.append(open, ShortArray(100))
+        val aborted = store().begin(recordId, open, format, meta())
+        aborted.append(open, 0, ShortArray(100))
         aborted.abort()
         aborted.abort()
         assertFalse(File(folder.root, "records/$recordId.wav.part").exists())
         assertFalse(File(folder.root, "records/$recordId.wav").exists())
 
         val otherId = "0a0a0a0a-0000-4000-8000-000000000002"
-        val kept = store().begin(otherId, open, format)
-        kept.append(open, ShortArray(100))
+        val kept = store().begin(otherId, open, format, meta())
+        kept.append(open, 0, ShortArray(100))
         kept.seal()
         kept.abort()
         assertTrue(File(folder.root, "records/$otherId.wav").isFile)
@@ -103,8 +106,8 @@ class WavRecordingStoreTest {
 
     @Test
     fun `写入句柄必须是 begin 时那个：闸门已关或属于别的会话就拒绝，文件一个字节不增`() {
-        val writer = store().begin(recordId, open, format)
-        writer.append(open, ShortArray(100))
+        val writer = store().begin(recordId, open, format, meta())
+        writer.append(open, 0, ShortArray(100))
         val part = File(folder.root, "records/$recordId.wav.part")
         val before = part.length()
 
@@ -116,7 +119,7 @@ class WavRecordingStoreTest {
         )
         for (handle in wrong) {
             try {
-                writer.append(handle, ShortArray(100))
+                writer.append(handle, 0, ShortArray(100))
                 fail("应当拒绝：$handle")
             } catch (expected: IllegalStateException) {
                 // 预期
@@ -130,7 +133,7 @@ class WavRecordingStoreTest {
         val store = store()
         for (bad in listOf("../escape", "a/b", "", "0A0A0A0A-0000-4000-8000-000000000001", recordId + "x")) {
             try {
-                store.begin(bad, open, format)
+                store.begin(bad, open, format, meta())
                 fail("应当拒绝：$bad")
             } catch (expected: IllegalArgumentException) {
                 // 预期
@@ -141,12 +144,12 @@ class WavRecordingStoreTest {
 
     @Test
     fun `同一个 Record 的音频已经存在就拒绝再开一份，不覆盖`() = runBlocking {
-        val first = store().begin(recordId, open, format)
-        first.append(open, ShortArray(10) { 1 })
+        val first = store().begin(recordId, open, format, meta())
+        first.append(open, 0, ShortArray(10) { 1 })
         first.seal()
 
         try {
-            store().begin(recordId, open, format)
+            store().begin(recordId, open, format, meta())
             fail("应当拒绝")
         } catch (expected: java.io.IOException) {
             // 预期
@@ -156,8 +159,8 @@ class WavRecordingStoreTest {
 
     @Test
     fun `采样按 16 位小端写入`() = runBlocking {
-        val writer = store().begin(recordId, open, format)
-        writer.append(open, shortArrayOf(0x0102, -2))
+        val writer = store().begin(recordId, open, format, meta())
+        writer.append(open, 0, shortArrayOf(0x0102, -2))
         writer.seal()
 
         val bytes = File(folder.root, "records/$recordId.wav").readBytes()

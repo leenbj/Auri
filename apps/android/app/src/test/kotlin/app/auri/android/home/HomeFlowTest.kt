@@ -1,6 +1,8 @@
 package app.auri.android.home
 
 import app.auri.capture.contract.CaptureState
+import app.auri.capture.contract.CaptureStatus
+import app.auri.capture.contract.EndReason
 import app.auri.capture.control.ControlProfile
 import app.auri.capture.control.MediaKind
 import app.auri.capture.control.RawMediaInput
@@ -30,6 +32,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -204,5 +207,79 @@ class HomeFlowTest {
         assertEquals(2, rig.state.records.size)
         assertEquals(2, rig.transcription.requests.size)
         assertEquals("两条是不同的 Record", 2, rig.state.records.map { it.recordId }.toSet().size)
+    }
+
+    // ---- 录音被打断（Ticket 19）：从按钮到列表的整条线，真协调器 + 真管线 + 真视图模型，只有系统边缘是假的 ----
+
+    private class Cut(val name: String, val reason: EndReason, val code: ErrorCode, val trigger: (Rig) -> Unit)
+
+    private val cuts = listOf(
+        Cut("耳机断开或输入被切走", EndReason.ROUTE_LOST, ErrorCode.INPUT_ROUTE_CHANGED) { it.capture.mismatchRoute() },
+        Cut("来电抢走音频", EndReason.SYSTEM_INTERRUPTION, ErrorCode.AUDIO_INTERRUPTED) { it.capture.interrupt() },
+        Cut("麦克风权限被撤销", EndReason.PERMISSION_REVOKED, ErrorCode.PERMISSION_MIC_DENIED) { it.capture.revokePermission() },
+        Cut("蓝牙权限被撤销", EndReason.PERMISSION_REVOKED, ErrorCode.INPUT_DEVICE_MISSING) { it.capture.revokePermission(ErrorCode.INPUT_DEVICE_MISSING) },
+        Cut("存储写满", EndReason.SYSTEM_INTERRUPTION, ErrorCode.STORAGE_EXHAUSTED) {
+            it.store.failAppendAfterSamples = 1600 // 第一批 100 ms 已经写下，第二批写不下
+            it.capture.frames(1600, epoch = 1)
+        },
+    )
+
+    @Test
+    fun `录音被打断：首页说清原因，已确认的部分成为被截断的 Record 并照常转录，按钮回到能开始，一个小时之内也不会自己重新开始`() = runTest {
+        for (case in cuts) {
+            val rig = Rig(this, headsetConnected = true)
+            rig.viewModel.start()
+            settle()
+            rig.capture.verifiedRoute()
+            settle()
+            rig.capture.frames(1600, epoch = 1)
+            settle()
+            assertEquals(case.name, CaptureState.RECORDING, rig.state.capture.state)
+
+            case.trigger(rig)
+            settle()
+
+            assertEquals(case.name, InterruptionFact(case.reason, case.code), rig.state.interruption)
+            assertEquals(case.name, CaptureState.DISARMED, rig.state.capture.state)
+            assertTrue("${case.name}：用户可以重新开始", rig.state.startEnabled)
+            assertFalse("${case.name}：没有什么可停的", rig.state.stopEnabled)
+            val item = rig.state.records.single()
+            assertEquals("${case.name}：列表里的这一条标明被截断以及为什么", case.reason, item.truncatedBy)
+            assertEquals("${case.name}：已保存的部分照常转录", TextState.Done("你好，这是转录出的文字。", "fixture-model", "1.0.0"), item.text)
+            assertEquals("${case.name}：转录只有这一次", 1, rig.transcription.requests.size)
+            assertEquals("${case.name}：采集资源只释放一次", 1, rig.capture.releases.size)
+            assertEquals(CaptureStatus.PARTIAL, rig.library.get(item.recordId)?.status)
+
+            testScheduler.advanceTimeBy(3_600_000)
+            testScheduler.runCurrent()
+
+            assertEquals("${case.name}：一个小时之后仍没有新的录音请求", 1, rig.capture.requests.size)
+            assertEquals(case.name, CaptureState.DISARMED, rig.state.capture.state)
+            assertEquals("${case.name}：提示一直在，直到用户重新开始", InterruptionFact(case.reason, case.code), rig.state.interruption)
+
+            rig.viewModel.start() // 用户重新开始
+            settle()
+
+            assertEquals(case.name, CaptureState.ROUTING, rig.state.capture.state)
+            assertNull("${case.name}：新一次开始时提示清除", rig.state.interruption)
+            assertEquals(case.name, 2, rig.capture.requests.size)
+        }
+    }
+
+    @Test
+    fun `用户自己停的、到时长上限停的录音：没有打断提示，也不标截断`() = runTest {
+        val rig = Rig(this, headsetConnected = true)
+        rig.viewModel.start()
+        settle()
+        rig.capture.verifiedRoute()
+        settle()
+        rig.capture.frames(1600, epoch = 1)
+        settle()
+
+        rig.viewModel.stop()
+        settle()
+
+        assertNull(rig.state.interruption)
+        assertNull(rig.state.records.single().truncatedBy)
     }
 }

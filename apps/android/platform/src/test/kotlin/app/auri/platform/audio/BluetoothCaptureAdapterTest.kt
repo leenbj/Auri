@@ -234,6 +234,90 @@ class BluetoothCaptureAdapterTest {
         assertEquals(1600L, adapter.droppedAmbiguousSamples)
     }
 
+    // ---- Ticket 19 评审 B1：路由通知本身就使已有的证据作废 ----
+
+    @Test
+    fun `a route notification after frames were accepted invalidates the route even when the headset looks unchanged`() {
+        prepare()
+        val recorder = audio.recorders.single()
+        var reads = 0
+        recorder.onRead = {
+            reads += 1
+            // 第二批读到一半，系统发来路由通知：此刻读到的还是同一个耳机，但通知本身说明“上次观测之后路由可能变过”
+            if (reads == 2) recorder.systemChangesRoute(HEADSET)
+        }
+        repeat(3) { recorder.script += ReadStep(chunk(value = (it + 1).toShort()), HEADSET) }
+
+        readers.single().run()
+
+        assertEquals(
+            "通知使证据作废：epoch 递增并报告给协调器；通知之后读到的帧带新 epoch，旧 epoch 的闸门收不下",
+            listOf("route:1:VERIFIED", "frames:1", "route:2:VERIFIED", "frames:2"),
+            routeAndFrameOrder(),
+        )
+        assertEquals("跨在通知上的那一批丢弃并计数", 1600L, adapter.droppedAmbiguousSamples)
+    }
+
+    @Test
+    fun `route notifications delayed past a headset away-and-back still invalidate the route when they arrive`() {
+        prepare()
+        val recorder = audio.recorders.single()
+        var reads = 0
+        recorder.onRead = {
+            reads += 1
+            if (reads == 2) {
+                // 第一批之后耳机断开又回来；占住的主线程把两条通知都攒着
+                recorder.holdCallbacks = true
+                recorder.systemChangesRoute(PHONE_MIC)
+                recorder.systemChangesRoute(HEADSET)
+                // 主线程腾出手，两条迟到的通知一起到：每一条读到的都是已经恢复的耳机，设备看上去和之前一样
+                recorder.deliverHeldCallbacks()
+            }
+        }
+        repeat(3) { recorder.script += ReadStep(chunk(value = (it + 1).toShort()), HEADSET, notify = false) }
+
+        readers.single().run()
+
+        assertEquals(
+            "每条通知各使证据作废一次；之后的帧带最新的 epoch，旧会话的闸门收不下",
+            listOf("route:1:VERIFIED", "frames:1", "route:2:VERIFIED", "route:3:VERIFIED", "frames:3"),
+            routeAndFrameOrder(),
+        )
+        assertEquals(1600L, adapter.droppedAmbiguousSamples)
+    }
+
+    @Test
+    fun `the first route notification before any frame is the platform's initial one and only confirms the route`() {
+        prepare()
+        val recorder = audio.recorders.single()
+        recorder.script += ReadStep(chunk(), HEADSET)
+
+        recorder.systemChangesRoute(HEADSET) // 录音刚启动、还没有任何帧被接受时的第一条通知
+        readers.single().run()
+
+        assertEquals(
+            "同一个耳机、还没用过证据：不作废，避免每次开始录音都被自己的初始通知打断",
+            listOf("route:1:VERIFIED", "frames:1"),
+            routeAndFrameOrder(),
+        )
+    }
+
+    @Test
+    fun `a second route notification before any frame is not an initial one and invalidates the route`() {
+        prepare()
+        val recorder = audio.recorders.single()
+        recorder.script += ReadStep(chunk(), HEADSET)
+
+        recorder.systemChangesRoute(HEADSET)
+        recorder.systemChangesRoute(HEADSET)
+        readers.single().run()
+
+        assertEquals(
+            listOf("route:1:VERIFIED", "route:2:VERIFIED", "frames:2"),
+            routeAndFrameOrder(),
+        )
+    }
+
     @Test
     fun `a buffer returned after cancellation is discarded and counted`() {
         prepare()
@@ -281,6 +365,31 @@ class BluetoothCaptureAdapterTest {
         assertEquals(1, audio.focusAbandoned)
         assertEquals(1, audio.routeCleared)
         assertTrue(audio.recorders.isEmpty())
+    }
+
+    /**
+     * Ticket 19 评审 M3：系统不给音频焦点（别的应用占着）时，旧代码照样开始录音，之后既听不到“焦点被抢走”的回调，
+     * 也没有焦点可放。没有焦点就不开始：受阻并说明是被占用，不打开任何录音，已请求的路由撤销一次。
+     */
+    @Test
+    fun `系统不给音频焦点：不开始录音，说明是被占用，不打开任何录音，路由请求只撤销一次`() {
+        audio.focusDenied = true
+
+        val prepared = prepare()
+
+        assertEquals(RequestStatus.REJECTED_BY_SYSTEM, prepared.requestStatus)
+        assertEquals(listOf(ErrorCode.AUDIO_INTERRUPTED), sink.unavailable)
+        assertEquals("问过一次焦点", 1, audio.focusRequests.size)
+        assertEquals("没拿到焦点，也就没有焦点可放", 0, audio.focusAbandoned)
+        assertTrue("一个录音也没打开", audio.recorders.isEmpty())
+        assertTrue("读线程没有启动", readers.isEmpty())
+        assertTrue("没有路由观测，也没有帧", sink.routeEvents.isEmpty() && sink.frames.isEmpty())
+        assertEquals("路由请求被撤销、音频模式恢复", 1, audio.routeCleared)
+        assertEquals(0, audio.mode)
+
+        adapter.release(request.operationId) // 协调器随后的释放：幂等，什么也不会再放一次
+        assertEquals(1, audio.routeCleared)
+        assertEquals(0, audio.focusAbandoned)
     }
 
     @Test
@@ -470,5 +579,153 @@ class BluetoothCaptureAdapterTest {
         adapter.permissionsMayHaveChanged()
         adapter.permissionsMayHaveChanged()
         assertEquals(1, revoked)
+    }
+
+    // ---- 录音中权限被撤销（Ticket 19 第 5 项）----
+
+    @Test
+    fun `录音中麦克风权限被撤销：撤销时读到的那一批不递送，通知一次，协调器释放之后读线程安静退出，资源各只放一次`() {
+        prepare()
+        val recorder = audio.recorders.single()
+        val global = mutableListOf<ErrorCode>()
+        adapter.onPermissionRevoked { global += it } // 与会话无关的全局通道：读线程发现的撤销不走这里（评审 H2）
+        sink.onPermissionRevoked = { adapter.release(request.operationId) } // 协调器收到通知之后的反应：关闸、释放采集
+        recorder.script += ReadStep(chunk(value = 1), HEADSET)
+        recorder.script += ReadStep(chunk(value = 2), HEADSET)
+        recorder.script += ReadStep(chunk(value = 3), HEADSET)
+        var reads = 0
+        recorder.onRead = { if (++reads == 2) environment.mic = false } // 读第二批的时候权限被撤销
+
+        readers.single().run()
+
+        assertEquals("撤销之前的照常递送；撤销时读到的那一批不递送", listOf<Short>(1), sink.frames.flatMap { it.samples.toList() }.distinct())
+        assertEquals("通知走这次采集自己的通道（协调器据此核对会话与 generation）", listOf(ErrorCode.PERMISSION_MIC_DENIED), sink.permissionRevocations)
+        assertTrue("读线程发现的撤销不走与会话无关的全局回调：它到得晚的话会打断后来的录音", global.isEmpty())
+        assertTrue("释放之后读线程退出，不再报告“输入不可用”", sink.unavailable.isEmpty())
+        assertEquals(1, recorder.releaseCalls)
+        assertEquals(1, recorder.subscriptionCancels)
+        assertEquals(1, audio.focusAbandoned)
+        assertEquals(1, audio.routeCleared)
+        assertEquals("没有任何“改用别的麦克风”的动作：只打开过这一个录音", 1, audio.recorders.size)
+    }
+
+    @Test
+    fun `录音中蓝牙连接权限被撤销：同样不递送这一批并通知一次，原因沿用 INPUT_DEVICE_MISSING（合同没有专门的码）`() {
+        prepare()
+        val recorder = audio.recorders.single()
+        val global = mutableListOf<ErrorCode>()
+        adapter.onPermissionRevoked { global += it }
+        sink.onPermissionRevoked = { adapter.release(request.operationId) }
+        recorder.script += ReadStep(chunk(value = 1), HEADSET)
+        recorder.script += ReadStep(chunk(value = 2), HEADSET)
+        var reads = 0
+        recorder.onRead = { if (++reads == 2) environment.bluetooth = false }
+
+        readers.single().run()
+
+        assertEquals(listOf<Short>(1), sink.frames.flatMap { it.samples.toList() }.distinct())
+        assertEquals(listOf(ErrorCode.INPUT_DEVICE_MISSING), sink.permissionRevocations)
+        assertTrue(global.isEmpty())
+        assertEquals(1, recorder.releaseCalls)
+        assertEquals(1, audio.routeCleared)
+    }
+
+    @Test
+    fun `回到前台时已经发现了撤销：读线程之后每一批都不递送，也不重复通知`() {
+        prepare()
+        val recorder = audio.recorders.single()
+        val reasons = mutableListOf<ErrorCode>()
+        adapter.onPermissionRevoked { reasons += it } // 协调器还没来得及处理：采集还开着
+        recorder.script += ReadStep(chunk(value = 1), HEADSET)
+        recorder.script += ReadStep(chunk(value = 2), HEADSET)
+
+        environment.mic = false
+        adapter.permissionsMayHaveChanged()
+        readers.single().run()
+
+        assertEquals("只通知了一次（前台核对那次）", listOf(ErrorCode.PERMISSION_MIC_DENIED), reasons)
+        assertTrue("读线程也没有再通知：一次撤销只有一个“在 → 不在”的那一刻", sink.permissionRevocations.isEmpty())
+        assertTrue("权限没了，读到的批次一个也不递送", sink.frames.isEmpty())
+    }
+
+    @Test
+    fun `权限被撤销之后读失败：原因是权限而不是路由，只通知权限撤销，不再另报“输入路由变了”`() {
+        prepare()
+        val global = mutableListOf<ErrorCode>()
+        adapter.onPermissionRevoked { global += it }
+        environment.mic = false // 系统撤销了权限，读随之失败（脚本是空的，read 返回 -1）
+
+        readers.single().run()
+
+        assertEquals(listOf(ErrorCode.PERMISSION_MIC_DENIED), sink.permissionRevocations)
+        assertTrue(global.isEmpty())
+        assertTrue("读失败的原因是权限：不能再把它记成路由变化（会让这次录音被误标成 route_lost）", sink.unavailable.isEmpty())
+    }
+
+    @Test
+    fun `没有权限问题时读失败仍然报告输入不可用（路由变了）`() {
+        prepare()
+        adapter.onPermissionRevoked { throw AssertionError("权限没变，不该有通知") }
+
+        readers.single().run() // 脚本是空的：read 返回 -1
+
+        assertEquals(listOf(ErrorCode.INPUT_ROUTE_CHANGED), sink.unavailable)
+        assertTrue("权限没变，这次采集自己的通道也不该有通知", sink.permissionRevocations.isEmpty())
+    }
+
+    @Test
+    fun `权限没有变化时读线程不通知，帧照常递送；撤销后重新授予不算撤销`() {
+        prepare()
+        val recorder = audio.recorders.single()
+        var revoked = 0
+        adapter.onPermissionRevoked { revoked += 1 }
+        recorder.script += ReadStep(chunk(value = 1), HEADSET)
+        recorder.script += ReadStep(chunk(value = 2), HEADSET)
+
+        readers.single().run()
+        environment.mic = false
+        adapter.permissionsMayHaveChanged()
+        environment.mic = true // 重新授予
+        adapter.permissionsMayHaveChanged()
+
+        assertEquals(2, sink.frames.size)
+        assertEquals("只有撤销那一刻通知了一次", 1, revoked)
+        assertTrue("读线程自己没有发现任何撤销", sink.permissionRevocations.isEmpty())
+    }
+
+    /**
+     * 评审 H2 的另一面：读线程认领“撤销”会消耗那个“在 → 不在”的瞬间，而它的通知只对它自己那次采集有效。
+     * 读线程停在“这一批读完、还没核对权限”的时候，这次采集已经被协调器结束、新的一次已经开始、权限随后被撤销：
+     * 已经结束的采集不能认领这次撤销，否则新的一次永远等不到通知（录音卡在“录音中”、每一批都因缺权限被丢掉）。
+     */
+    @Test
+    fun `已经结束的采集的读线程不认领权限撤销：后来开始的那次采集照样收到通知`() {
+        prepare()
+        val first = audio.recorders.single()
+        val secondSink = RecordingSink()
+        val secondRequest = InputRequest(
+            captureSessionId = "0b0b0b0b-0000-4000-8000-000000000002",
+            operationId = "0c0c0c0c-0000-4000-8000-000000000002",
+            generation = 2,
+            format = PcmFormat(16_000),
+        )
+        first.script += ReadStep(chunk(value = 1), HEADSET)
+        first.onRead = {
+            // 读线程读完这一批之后问路由的那一刻，以下都发生在它停住的这段时间里
+            first.onRoutedDevice = {
+                first.onRoutedDevice = null
+                adapter.release(request.operationId) // 协调器结束了第一次录音
+                runBlocking { adapter.prepareBluetoothInput(secondRequest, secondSink) } // 第二次录音开始
+                environment.mic = false // 第二次录音期间权限被撤销
+            }
+        }
+
+        readers[0].run()
+
+        assertTrue("已经结束的采集不通知任何人", sink.permissionRevocations.isEmpty())
+        audio.recorders[1].script += ReadStep(chunk(value = 2), HEADSET)
+        readers[1].run()
+        assertEquals("撤销属于第二次采集，它必须收到", listOf(ErrorCode.PERMISSION_MIC_DENIED), secondSink.permissionRevocations)
+        assertTrue("缺权限的那一批不递送", secondSink.frames.isEmpty())
     }
 }

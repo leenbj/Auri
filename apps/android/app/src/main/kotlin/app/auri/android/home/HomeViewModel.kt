@@ -44,6 +44,10 @@ import kotlinx.coroutines.launch
  *   │                                没有语音 / 等待模型 / 失败）。已转出文字的带模型名与版本。
  *   └─ notice: Notice?               需要告诉用户的一次性消息（录音没能保存等）；界面显示后调用 dismissNotice()。
  *   durationLimit: DurationLimitStop? 最近一次因时长上限自动停止的原因和上限秒数；下一次开始时清除。
+ *   interruption: InterruptionFact?   最近一次录音被打断（耳机断开/输入变了、来电抢走音频、权限被撤销、存储写满、前台服务没了）的结束原因
+ *                                与错误码；下一次开始时清除。打断之后录音**不会自己继续**，要用户重新开始。
+ *   RecordItem.truncatedBy            非 null 表示这条 Record 是被截断的（只含已确认的那部分）以及为什么：
+ *                                耳机断开、系统中断、权限撤销，或应用被中途关闭后从磁盘找回（process_terminated）。
  *
  *   这三个事实互相独立，界面必须分开显示，不能合并成一句“已连接并录音中”：
  *   耳机已连接 ≠ 正在用耳机麦克风（FR-REC-001）。例如：耳机已连接、实际输入却是手机麦克风（路由被系统切走）；
@@ -72,9 +76,13 @@ data class HomeUiState(
     val durationWarning: Boolean = false,
     val durationMinutes: Int = 30,
     val durationSettingError: String? = null,
+    val interruption: InterruptionFact? = null,
 )
 
 data class DurationLimitStop(val reason: EndReason, val limitSeconds: Double)
+
+/** 最近一次录音被打断：[reason] 是合同的结束原因（route_lost / system_interruption / permission_revoked），[code] 是更细的错误码（可能为 null）。 */
+data class InterruptionFact(val reason: EndReason, val code: ErrorCode?)
 
 /** 事实 1：耳机是否连接。 */
 data class HeadsetFact(val connected: Boolean, val name: String?)
@@ -90,6 +98,8 @@ data class RecordItem(
     val startedAt: Instant,
     val durationMs: Long,
     val text: TextState,
+    /** 非 null：这条 Record 是被截断的（只含已确认的那部分），值是合同的结束原因。 */
+    val truncatedBy: EndReason? = null,
 )
 
 /** 一个 Record 的文字处于什么状态。 */
@@ -210,6 +220,7 @@ class HomeViewModel(
         durationWarning = snapshot.durationWarning,
         durationMinutes = duration.minutes,
         durationSettingError = duration.error,
+        interruption = snapshot.interruptionReason?.let { InterruptionFact(it, snapshot.interruption) },
     )
 
     private fun toItem(entry: RecordEntry) = RecordItem(
@@ -226,6 +237,7 @@ class HomeViewModel(
             TranscriptionStatus.WAITING_MODEL -> TextState.WaitingModel(entry.failureCode)
             TranscriptionStatus.FAILED -> TextState.Failed(entry.failureCode)
         },
+        truncatedBy = entry.endReason.takeIf { it.truncated },
     )
 
     private companion object {

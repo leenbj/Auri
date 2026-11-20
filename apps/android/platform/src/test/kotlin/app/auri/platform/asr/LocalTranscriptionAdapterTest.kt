@@ -12,6 +12,7 @@ import app.auri.capture.adapter.TranscriptionRequest
 import app.auri.capture.contract.CaptureHandle
 import app.auri.capture.contract.ErrorCode
 import app.auri.capture.contract.GateState
+import app.auri.capture.testing.Samples
 import app.auri.platform.storage.WavRecordingStore
 import java.io.File
 import kotlinx.coroutines.runBlocking
@@ -86,8 +87,8 @@ class LocalTranscriptionAdapterTest {
 
     /** 经真的 [WavRecordingStore] 封存一段音频，和产品里录音落盘的路径一致。 */
     private fun sealed(samples: ShortArray): SealedAudio = runBlocking {
-        val writer = WavRecordingStore(File(folder.root, "records")).begin(recordId, handle, PcmFormat(16_000))
-        writer.append(handle, samples)
+        val writer = WavRecordingStore(File(folder.root, "records")).begin(recordId, handle, PcmFormat(16_000), Samples.recordingMeta(sessionId = handle.captureSessionId))
+        writer.append(handle, 0, samples)
         writer.seal()
     }
 

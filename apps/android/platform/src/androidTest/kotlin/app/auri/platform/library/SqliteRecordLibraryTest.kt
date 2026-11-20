@@ -209,6 +209,25 @@ class SqliteRecordLibraryTest {
         assertEquals(Instant.parse("2026-11-18T08:01:00.987654321Z"), stored.revisions.single().createdAt)
     }
 
+    /** 评审 H1：升级时录音目录整个挪了家，登记的位置要跟着改（SQL 本身在 JVM 上由 RelocateAudioSqlTest 验证，这里验证设备上的绑定与执行）。 */
+    @Test
+    fun 录音目录挪家之后_登记的音频位置跟着改_其余行与字段不动_重复执行不再改() = runBlocking {
+        val library = open()
+        val from = "/data/user/0/app.auri.android/files/recordings/"
+        val to = "/data/user/0/app.auri.android/no_backup/recordings/"
+        val moved = Samples.entry(1, audio = Samples.audio(Samples.uuid(1)).copy(location = "${from}${Samples.uuid(1)}.wav"))
+        val elsewhere = Samples.entry(2, audio = Samples.audio(Samples.uuid(2)).copy(location = "/sdcard/${Samples.uuid(2)}.wav"))
+        val noAudio = Samples.entry(3, audio = null)
+        listOf(moved, elsewhere, noAudio).forEach { library.addRecord(it) }
+
+        assertEquals(1, library.relocateAudio(from, to))
+
+        assertEquals(moved.audio!!.copy(location = "${to}${Samples.uuid(1)}.wav"), library.get(moved.recordId)!!.audio)
+        assertEquals(elsewhere, library.get(elsewhere.recordId))
+        assertEquals(noAudio, library.get(noAudio.recordId))
+        assertEquals("第二次什么也不再改", 0, library.relocateAudio(from, to))
+    }
+
     @Test
     fun 没有音频的_Record_也能存取_确认了路由却没有采样() = runBlocking {
         val library = open()

@@ -12,6 +12,7 @@ import app.auri.capture.adapter.TranscriptionRequest
 import app.auri.capture.contract.CaptureHandle
 import app.auri.capture.contract.ErrorCode
 import app.auri.capture.contract.GateState
+import app.auri.capture.testing.Samples
 import app.auri.modelmgmt.ActiveModel
 import app.auri.modelmgmt.ActiveModelStatus
 import app.auri.platform.storage.WavRecordingStore
@@ -164,8 +165,8 @@ class ActiveModelTranscriptionAdapterTest {
     /** 每次都封存一个新的 Record 音频（同一个 Record 标识不能封存两次）。 */
     private fun request(): TranscriptionRequest = runBlocking {
         val recordId = "0a0a0a0a-0000-4000-8000-%012d".format(++recordCounter)
-        val writer = WavRecordingStore(File(folder.root, "records")).begin(recordId, handle, PcmFormat(16_000))
-        writer.append(handle, ShortArray(1600) { (it % 50).toShort() })
+        val writer = WavRecordingStore(File(folder.root, "records")).begin(recordId, handle, PcmFormat(16_000), Samples.recordingMeta(sessionId = handle.captureSessionId))
+        writer.append(handle, 0, ShortArray(1600) { (it % 50).toShort() })
         TranscriptionRequest(recordId, writer.seal())
     }
 
