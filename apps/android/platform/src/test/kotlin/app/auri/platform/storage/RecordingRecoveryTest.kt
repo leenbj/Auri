@@ -265,7 +265,7 @@ class RecordingRecoveryTest {
     }
 
     @Test
-    fun `第一个分段就不可信：没有任何音频留下，空的音频文件被清掉，Record 仍然被找回（没有音频）`() = runBlocking {
+    fun `第一个分段就不可信：没有任何音频留下，Record 仍然被找回（没有音频）；不可信的音频壳留到它登记之后才清理`() = runBlocking {
         play(store().begin(recordId, open, format, meta))
         RandomAccessFile(part, "rw").use { f ->
             f.seek(44L + 10)
@@ -276,9 +276,34 @@ class RecordingRecoveryTest {
 
         assertTrue(r.runs.isEmpty())
         assertNull(r.audio)
-        assertFalse(part.exists())
-        assertFalse(wav.exists())
-        assertTrue(journal.isFile)
+        assertFalse("没有可信的音频，不会产出一个 .wav 冒充", wav.exists())
+        // 评审 M2：恢复交出的 Record 还没登记进库。这时删掉音频壳而日志的分段行还在，就是一个再也恢复不了的状态
+        assertTrue("日志与不可信的音频壳都原样留着，直到 Record 登记", journal.isFile && part.isFile)
+    }
+
+    /**
+     * Ticket 19 评审 M2：第一个分段就不可信时，旧恢复把 .part 删了、日志里的分段行还在；恢复交出的 Record 登记之前进程又被杀，
+     * 下次启动日志说“有分段”、音频文件却没了，只能报 audio_missing，这个 Record 永远建不起来。
+     */
+    @Test
+    fun `第一个分段不可信、交出的 Record 登记之前进程又被杀：再恢复得到同一个没有音频的 Record，不是 audio_missing；登记之后清理干净`() = runBlocking {
+        play(store().begin(recordId, open, format, meta))
+        RandomAccessFile(part, "rw").use { f ->
+            f.seek(44L + 10)
+            f.write(0x55)
+        }
+
+        val first = recover().recovered.single() // 第一次恢复；进程在登记之前被杀
+        val afterKill = recover(store()) // 新的进程，只凭第一次恢复之后留在磁盘上的东西
+        val second = afterKill.recovered.single()
+
+        assertTrue("不是 audio_missing：${afterKill.failures}", afterKill.failures.isEmpty())
+        assertEquals("恢复可重复：同一个 Record", describe(first), describe(second))
+        assertEquals("再来一次还是一样", describe(first), describe(recover(store()).recovered.single()))
+
+        val settled = recover(store(), registered = setOf(recordId)) // Record 登记之后的那次启动
+        assertTrue(settled.recovered.isEmpty() && settled.failures.isEmpty())
+        assertEquals("日志与音频壳都清掉了，什么都不剩", emptyList<String>(), records.list()!!.toList())
     }
 
     // ---- Ticket 19 评审 M1：没有任何音频的录音，Record 仍然欠着 ----
@@ -684,7 +709,11 @@ class RecordingRecoveryTest {
             val samples = r.runs.sumOf { it.endSample - it.startSample }
             if (samples == 0L) {
                 assertNull("kill=$k", r.audio)
-                assertFalse("kill=$k：没有可信的音频就不留音频文件", part.exists() || wav.exists())
+                assertFalse("kill=$k：没有可信的音频就不产出 .wav 冒充", wav.exists())
+                // 评审 M2：清理留到 Record 登记之后，而不是恢复的时候；登记之后的那次启动不留任何音频文件
+                val settled = recover(store(FaultyDisk()), registered = setOf(recordId))
+                assertTrue("kill=$k", settled.recovered.isEmpty() && settled.failures.isEmpty())
+                assertFalse("kill=$k：登记之后没有可信的音频就不留音频文件", part.exists() || wav.exists())
             } else {
                 val audio = r.audio.orFail()
                 val want = r.runs.flatMap { expected(it).toList() }.toShortArray()

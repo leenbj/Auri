@@ -35,6 +35,8 @@ private fun ByteArray.hex() = joinToString("") { "%02x".format(it) }
  * （至多一个提交间隔加一次写入）不可信。[recoverOrphans] 在下次启动时逐段验证、把不可信的尾巴截掉、修好头部、改名，
  * 交给 Record 管线像别的录音一样登记。封存之后日志仍然保留，直到下次启动发现这个 Record 已经登记进库才删；
  * 一个采样都没写下、但仍要登记成“没有语音”的录音（[RecordingWriter.finishWithoutAudio]）也一样：不留音频文件，日志留到登记之后。
+ * 恢复在 Record 登记之前不删任何还欠着 Record 的东西：可信的部分只是截齐、改名（可重复），没有可信字节的空壳连同日志原样留着；
+ * 所以恢复交出的 Record 登记之前进程再被杀，下次恢复得到同一个结果。
  *
  * 一次 [RecordingWriter.append] 要么整批写下，要么什么都不留：写不下时把写了一半的字节截掉再抛 [IOException]，
  * 协调器的计数与磁盘上的内容永远一致。封存只在最后一段的日志行落盘之后才完成（头部原地改写与改名本身不要新空间，
@@ -294,7 +296,11 @@ class WavRecordingStore internal constructor(
                 return Outcome.Failed("registry_unavailable")
             }
             if (registered) {
-                journalFile.delete() // 已经交付：只清理恢复记录，音频不动
+                // 已经交付：只清理恢复记录，音频（.wav）不动。唯一的例外是没有任何可信字节的 .part 空壳：它从来不是任何 Record 的音频，
+                // 恢复时特意留着它，免得 Record 登记之前进程再被杀、下次启动日志与音频对不上（评审 M2）；现在 Record 在库里了，一并清掉。
+                // 先删 .part、最后删日志：中途被杀，下次启动还认得出这是个已登记的录音，不会留下一个没有日志的 .part
+                if (!sealed.exists()) part.delete()
+                journalFile.delete()
                 return Outcome.Settled
             }
         }
@@ -321,8 +327,9 @@ class WavRecordingStore internal constructor(
             val dropped = maxOf(0L, file.length() - validLength)
             if (verified.runs.isEmpty()) {
                 if (dataFile == sealed && file.length() > HEADER_BYTES) return Outcome.Failed("audio_unverified") // 封存好的音频不因为日志不全就删
-                closeQuietly(file)
-                dataFile.delete() // 没有任何可信的字节：只剩一个空壳
+                // 没有任何可信的字节：只剩一个空壳。这里不删，也不改日志（评审 M2）：交出去的这个没有音频的 Record 还没登记，
+                // 删了之后进程再被杀，日志里的分段行还在、音频文件却没了，下次启动只能报 audio_missing，这个 Record 永远建不起来。
+                // 原样留着，每次恢复得到同一个结果；Record 登记之后的那次启动才清理（见上面的已登记分支）
                 return Outcome.Recovered(recording(begin, emptyList(), null, dropped))
             }
             if (file.length() != validLength) file.setLength(validLength) // 截回最后一个有效边界
