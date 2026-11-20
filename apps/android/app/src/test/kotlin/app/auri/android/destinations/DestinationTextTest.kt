@@ -129,6 +129,15 @@ class DestinationTextTest {
     }
 
     @Test
+    fun `没登记生物识别时（评审 B4）：明说锁屏密码不能代替、凭证没有生成、该去登记指纹或人脸；没有硬件时也不再提锁屏方式`() {
+        val none = describeNotAuthenticated(AuthResult.Unavailable(UnavailableReason.NONE_ENROLLED))
+        for (needle in listOf("指纹或人脸", "锁屏密码不能代替", "没有生成凭证")) assertTrue("缺“$needle”：$none", needle in none)
+        val noHardware = describeNotAuthenticated(AuthResult.Unavailable(UnavailableReason.NO_HARDWARE))
+        assertFalse("没有硬件：不能说锁屏方式可以顶替：$noHardware", "锁屏方式" in noHardware)
+        assertTrue(noHardware, "生物识别" in noHardware && "不能生成凭证" in noHardware)
+    }
+
+    @Test
     fun `凭证的说明：生成与轮换都说清只显示这一次；轮换还说旧的立刻失效`() {
         assertTrue("只显示这一次" in describeCredentialRules(rotating = false))
         assertTrue("只显示这一次" in describeCredentialRules(rotating = true))

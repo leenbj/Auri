@@ -5,10 +5,10 @@ enum class AuthPurpose { ISSUE_CREDENTIAL, ROTATE_CREDENTIAL }
 
 /** 核验没法进行的原因：每一种用户该做的事不同，所以不合并。 */
 enum class UnavailableReason {
-    /** 这台设备没有生物识别硬件，也没有可用的锁屏方式。 */
+    /** 这台设备没有生物识别硬件（指纹或人脸）。 */
     NO_HARDWARE,
 
-    /** 有硬件但没有登记任何指纹/人脸，也没设锁屏凭证：去系统设置里登记。 */
+    /** 有硬件但没有登记任何指纹/人脸：去系统设置里登记。只设了锁屏密码不行（评审 B4）。 */
     NONE_ENROLLED,
 
     /** 暂时用不了（传感器被占用、被系统临时锁定、需要安全更新）。 */
@@ -29,7 +29,7 @@ sealed interface AuthResult {
 }
 
 /**
- * 本机身份核验：强生物识别或设备锁屏凭证（Ticket 22 第 2 项）。生成与轮换 Agent 凭证之前**每一次**都要现场核验，不缓存上一次的通过。
+ * 本机身份核验：只认强生物识别（指纹、人脸），锁屏 PIN/图案/密码不算（Ticket 22 第 2 项；评审 B4）。生成与轮换 Agent 凭证之前**每一次**都要现场核验，不缓存上一次的通过。
  * Android 实现在 :syncplatform（系统的 BiometricPrompt）；这里只有接口，JVM 测试用假的。
  */
 fun interface LocalAuthenticator {

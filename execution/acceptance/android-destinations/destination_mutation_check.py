@@ -50,6 +50,7 @@ SUBMISSION = SYNC_GATEWAY + "SubmissionBuilder.kt"
 LIBRARY_SOURCE = SYNC_ENGINE + "RecordLibrarySubmissionSource.kt"
 DISPATCH_SQL = SYNCPLATFORM + "dispatch/DispatchSql.kt"
 BIOMETRIC = SYNCPLATFORM + "auth/BiometricResults.kt"
+BIOMETRIC_GATE = SYNCPLATFORM + "auth/BiometricGate.kt"
 ENGINE = SYNC_ENGINE + "SyncEngine.kt"
 POLICY = ANDROID + "sync/src/main/kotlin/app/auri/sync/policy/DataFlowPolicy.kt"
 POLICY_SQL = SYNCPLATFORM + "policy/DataFlowPolicySql.kt"
@@ -598,6 +599,28 @@ MUTATIONS: tuple = (
         (Edit(DESCRIPTIONS, "重新生成凭证后恢复，但只对之后的文字生效——暂停期间的文字不会补发。", "重新生成凭证后恢复。"),),
         app_tests("DestinationTextTest"), APP_RESULTS,
         ("凭证被撤销的暂停（评审 B3）",),
+    ),
+    # ---- 评审 B4：本机核验只认强生物识别，锁屏 PIN 不行 ----
+    Mutation(
+        "b4-device-credential-allowed",
+        "评审 B4：核验只认强生物识别：把设备凭据（PIN/图案/密码）加回来，只设了 PIN 的手机拿到手就能生成凭证",
+        (Edit(BIOMETRIC_GATE, "        const val REQUIRED = BiometricManager.Authenticators.BIOMETRIC_STRONG\n", "        const val REQUIRED = BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL\n"),),
+        platform_tests("BiometricGateTest"), PLATFORM_RESULTS,
+        ("只设了锁屏 PIN、没有登记生物识别", "向系统要的核验方式是纯强生物识别"),
+    ),
+    Mutation(
+        "b4-gate-skips-availability-check",
+        "评审 B4：弹提示之前必须先问系统“这种核验现在能不能做”：不问，没登记生物识别的手机也会弹提示",
+        (Edit(BIOMETRIC_GATE, "        BiometricResults.availability(framework.canAuthenticate(REQUIRED))?.let { return it.also(::record) }\n", ""),),
+        platform_tests("BiometricGateTest"), PLATFORM_RESULTS,
+        ("只设了锁屏 PIN、没有登记生物识别", "没有硬件与暂时不可用也是不可用", "每一次都现场问系统"),
+    ),
+    Mutation(
+        "b4-text-does-not-say-pin-is-not-enough",
+        "评审 B4：没登记生物识别时必须明说锁屏密码不能代替：不说，用户会以为设了密码就行，一直卡在这里",
+        (Edit(DESCRIPTIONS, "锁屏密码不能代替：知道密码的人不一定是你。", ""),),
+        app_tests("DestinationTextTest"), APP_RESULTS,
+        ("没登记生物识别时（评审 B4）",),
     ),
 )
 
