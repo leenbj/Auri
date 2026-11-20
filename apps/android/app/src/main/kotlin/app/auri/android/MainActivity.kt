@@ -83,7 +83,7 @@ class MainActivity : ComponentActivity() {
                             onRecheck = modelsViewModel::recheckResources,
                         )
                     },
-                    destinations = { DestinationsPage(destinationsViewModel, sendReviewViewModel, ::destinationDetail) },
+                    destinations = { DestinationsPage(destinationsViewModel, sendReviewViewModel, ::destinationDetail, runtime.secretClipboard) },
                 )
             }
         }
@@ -98,6 +98,12 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         runtime.captureAdapter.permissionsMayHaveChanged()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // Android 10 起只有拿到焦点的应用读得了剪贴板（onStart / onResume 时窗口还没有焦点，读到的是空）：复制出去的凭证已到期就清掉
+        if (hasFocus) runtime.secretClipboard.onForeground()
     }
 
     private fun onStartPressed() {

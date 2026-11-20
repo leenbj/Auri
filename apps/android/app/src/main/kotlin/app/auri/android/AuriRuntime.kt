@@ -9,6 +9,7 @@ import app.auri.android.control.PROFILE_FILE_NAME
 import app.auri.android.destinations.DestinationDetailViewModel
 import app.auri.android.destinations.DestinationsViewModel
 import app.auri.android.destinations.LibraryItemTexts
+import app.auri.android.destinations.SecretClipboardGuard
 import app.auri.android.destinations.SendReviewViewModel
 import app.auri.android.home.CoordinatorControls
 import app.auri.android.home.HomeViewModel
@@ -16,6 +17,7 @@ import app.auri.android.modelui.ManagerModelControls
 import app.auri.android.modelui.ModelsViewModel
 import app.auri.android.modelui.SchedulerControls
 import app.auri.android.sync.SyncViewModel
+import app.auri.android.ui.AndroidClipboardPort
 import app.auri.asr.engine.SherpaOnnxEngineFactory
 import app.auri.capture.adapter.TranscriptionAdapter
 import app.auri.capture.calibration.ProfileStore
@@ -204,6 +206,14 @@ class AuriRuntime(
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
             ModelsViewModel(ManagerModelControls(modelManager), SchedulerControls(scheduler), CoroutineScope(SupervisorJob() + Dispatchers.Default)) as T
     }
+
+    /** 复制出去的凭证到点从剪贴板清掉（评审 B5）；比任何一页都长寿，定时器挂在主线程上。 */
+    val secretClipboard = SecretClipboardGuard(
+        AndroidClipboardPort(application),
+        CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+        { android.os.SystemClock.elapsedRealtime() },
+        AndroidSyncLog,
+    )
 
     val destinationsViewModelFactory = object : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")

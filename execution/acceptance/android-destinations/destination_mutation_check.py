@@ -57,6 +57,8 @@ POLICY_SQL = SYNCPLATFORM + "policy/DataFlowPolicySql.kt"
 RESUME_PLANNER = ANDROID + "sync/src/main/kotlin/app/auri/sync/resume/ResumePlanner.kt"
 SYNC_STATUS = ANDROID + "sync/src/main/kotlin/app/auri/sync/status/SyncStatus.kt"
 SEND_REVIEW_VM = APP_DEST + "SendReviewViewModel.kt"
+CLIPBOARD_GUARD = APP_DEST + "SecretClipboardGuard.kt"
+MAIN_ACTIVITY = ANDROID + "app/src/main/kotlin/app/auri/android/MainActivity.kt"
 
 APP_RESULTS, SYNC_RESULTS, REAL_RESULTS, PLATFORM_RESULTS = (
     "app/build/test-results/testDebugUnitTest",
@@ -621,6 +623,70 @@ MUTATIONS: tuple = (
         (Edit(DESCRIPTIONS, "锁屏密码不能代替：知道密码的人不一定是你。", ""),),
         app_tests("DestinationTextTest"), APP_RESULTS,
         ("没登记生物识别时（评审 B4）",),
+    ),
+    # ---- 评审 B5：复制出去的凭证到点从剪贴板清掉，只清自己放的那一份 ----
+    Mutation(
+        "b5-timer-never-clears",
+        "评审 B5：复制出去的凭证必须有期限：定时器到点不清，凭证就无限期留在剪贴板里（任何拿到焦点的应用、输入法历史都读得到）",
+        (Edit(CLIPBOARD_GUARD, "            delay(TIMEOUT_MS)\n            expire()\n", "            delay(TIMEOUT_MS)\n"),),
+        app_tests("SecretClipboardGuardTest"), APP_RESULTS,
+        ("复制之后 60 秒，剪贴板里还是我们放的那一份就清空", "再复制一次就重新计时", "日志只有事件名，没有凭证"),
+    ),
+    Mutation(
+        "b5-clears-someone-elses-clip",
+        "评审 B5：读得到时必须认归属：到点把别的应用后来复制的东西也清掉，用户刚复制的会议室门牌就没了",
+        (Edit(CLIPBOARD_GUARD, '            ClipboardPeek.Other -> log.event("clipboard.kept-other")', "            ClipboardPeek.Other -> clear()"),),
+        app_tests("SecretClipboardGuardTest"), APP_RESULTS,
+        ("别的应用后来复制了别的东西（读得到）",),
+    ),
+    Mutation(
+        "b5-unreadable-keeps-credential",
+        "评审 B5：用户退出去粘贴时应用在后台、系统不让读剪贴板：认不出归属就不清，凭证会一直留着",
+        (Edit(CLIPBOARD_GUARD, "            is ClipboardPeek.Ours, ClipboardPeek.Unreadable -> clear()", "            is ClipboardPeek.Ours -> clear()\n            ClipboardPeek.Unreadable -> Unit"),),
+        app_tests("SecretClipboardGuardTest"), APP_RESULTS,
+        ("应用不在前台（系统不让读剪贴板）",),
+    ),
+    Mutation(
+        "b5-old-timer-clears-new-copy",
+        "评审 B5：再复制一次要重新计时：旧定时器不作废，会在第二次复制后 10 秒就把它清掉，用户来不及粘贴",
+        (Edit(CLIPBOARD_GUARD, "        port.put(secret, elapsedMs())\n        timer?.cancel()\n", "        port.put(secret, elapsedMs())\n"),),
+        app_tests("SecretClipboardGuardTest"), APP_RESULTS,
+        ("再复制一次就重新计时",),
+    ),
+    Mutation(
+        "b5-foreground-never-sweeps",
+        "评审 B5：定时器随被杀的进程丢了：回到前台时不补查，凭证就留在剪贴板里，没人再管",
+        (Edit(CLIPBOARD_GUARD, "        if (age < 0 || age >= TIMEOUT_MS) {", "        if (false) {"),),
+        app_tests("SecretClipboardGuardTest"), APP_RESULTS,
+        ("回到前台时发现已经到期", "设备重启过"),
+    ),
+    Mutation(
+        "b5-foreground-clears-before-expiry",
+        "评审 B5：回到前台没到期就清：用户刚回来看一眼、还要去粘贴，凭证就没了，只能再轮换一次",
+        (Edit(CLIPBOARD_GUARD, "        if (age < 0 || age >= TIMEOUT_MS) {", "        if (age < 0 || age >= 0) {"),),
+        app_tests("SecretClipboardGuardTest"), APP_RESULTS,
+        ("回到前台时发现已经到期",),
+    ),
+    Mutation(
+        "b5-activity-skips-foreground-check",
+        "评审 B5：窗口拿到焦点时不调守卫的补查：被杀的进程留下的凭证永远不会被清",
+        (Edit(MAIN_ACTIVITY, "        if (hasFocus) runtime.secretClipboard.onForeground()\n", ""),),
+        app_tests("ClipboardWiringTest"), APP_RESULTS,
+        ("窗口拿到焦点时调守卫",),
+    ),
+    Mutation(
+        "b5-page-does-not-use-guard",
+        "评审 B5：页面的复制不交给守卫：凭证放进了剪贴板（或根本没放）却没人计时清理",
+        (Edit(PAGE, "                    clipboard.copy(credential.reveal())", "                    credential.reveal()"),),
+        app_tests("ClipboardWiringTest"), APP_RESULTS,
+        ("凭证复制只经过守卫",),
+    ),
+    Mutation(
+        "b5-notice-states-wrong-seconds",
+        "评审 B5：界面告诉用户的期限必须是守卫真正用的：写死一个数，用户按它的话去粘贴，实际早已被清掉",
+        (Edit(DESCRIPTIONS, '    "复制之后请在 ${SecretClipboardGuard.TIMEOUT_MS / 1_000} 秒内粘贴给 Agent', '    "复制之后请在 30 秒内粘贴给 Agent'),),
+        app_tests("DestinationTextTest"), APP_RESULTS,
+        ("凭证面板如实说剪贴板里的凭证到点会被清掉",),
     ),
 )
 

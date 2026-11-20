@@ -9,13 +9,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.auri.android.destinations.DestinationDetailViewModel
 import app.auri.android.destinations.DestinationsViewModel
+import app.auri.android.destinations.SecretClipboardGuard
 import app.auri.android.destinations.SendReviewViewModel
 
 private const val LIST = "list"
@@ -26,12 +26,14 @@ private const val DETAIL = "detail:"
  * “发送”页的接线：列表与创建 / 待发送与标签 / 某个目的地的详情，三个界面之间的切换。
  * 保存的状态只有“现在在哪一页”（一个字符串）——凭证、正文、名字都不进保存的状态，所以进程被杀后重新进来，凭证面板一定是空的。
  * 离开详情页（返回、切走、被销毁）时 [DestinationDetailViewModel.leave] 抹掉凭证；应用退到后台（ON_STOP）时 [DestinationDetailViewModel.backgrounded] 抹掉正在显示的凭证。
+ * 复制出去的凭证由 [SecretClipboardGuard] 到点（60 秒）清出剪贴板，只清自己放的那一份。
  */
 @Composable
 fun DestinationsPage(
     destinations: DestinationsViewModel,
     review: SendReviewViewModel,
     detail: (String) -> DestinationDetailViewModel,
+    clipboard: SecretClipboardGuard,
 ) {
     var route by rememberSaveable { mutableStateOf(LIST) }
     when {
@@ -51,7 +53,6 @@ fun DestinationsPage(
         route.startsWith(DETAIL) -> {
             val id = route.removePrefix(DETAIL)
             val viewModel = remember(id) { detail(id) }
-            val context = LocalContext.current
             val owner = LocalLifecycleOwner.current
             DisposableEffect(viewModel, owner) {
                 val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_STOP) viewModel.backgrounded() }
@@ -72,7 +73,7 @@ fun DestinationsPage(
                 onConfirmRotate = viewModel::confirmRotate,
                 onCancelRotate = viewModel::cancelRotate,
                 onCopyCredential = { credential ->
-                    copySecretToClipboard(context, credential.reveal())
+                    clipboard.copy(credential.reveal())
                     viewModel.credentialCopied()
                 },
                 onDismissCredential = viewModel::dismissCredential,

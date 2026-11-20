@@ -145,6 +145,15 @@ class DestinationTextTest {
     }
 
     @Test
+    fun `凭证面板如实说剪贴板里的凭证到点会被清掉：说的秒数就是守卫真正用的那个`() {
+        val notice = describeClipboardNotice()
+
+        assertTrue(notice, "${SecretClipboardGuard.TIMEOUT_MS / 1_000} 秒" in notice)
+        assertTrue(notice, "自动清掉" in notice)
+        assertTrue("清掉之后只能轮换：凭证只显示一次，不要让人以为还能找回", "轮换" in notice)
+    }
+
+    @Test
     fun `两种发送方式的话不同；“自动发送”说明发出去的是未审核的初稿，“预览确认”说明不点就不发`() {
         val auto = describeSendModeDetail(SendMode.AUTO_SEND)
         val preview = describeSendModeDetail(SendMode.PREVIEW_CONFIRM)

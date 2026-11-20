@@ -19,6 +19,7 @@ import app.auri.android.destinations.ItemStatusRow
 import app.auri.android.destinations.RevokeUi
 import app.auri.android.destinations.SUSPENDED_TAG
 import app.auri.android.destinations.UNREVIEWED_LABEL
+import app.auri.android.destinations.describeClipboardNotice
 import app.auri.android.destinations.describeCredentialRules
 import app.auri.android.destinations.describeDelivery
 import app.auri.android.destinations.describeFailure
@@ -120,6 +121,7 @@ private fun CredentialPanel(
             is CredentialUi.Shown -> {
                 Text("凭证只显示这一次，请现在复制：")
                 Text(credential.credential.reveal())
+                Text(describeClipboardNotice())
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { onCopy(credential.credential) }) { Text("复制并关闭") }
                     Button(onClick = onDismiss) { Text("不复制，关闭") }
