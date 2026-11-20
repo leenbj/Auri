@@ -1,14 +1,17 @@
 package app.auri.platform.audio
 
 import app.auri.capture.contract.BusinessCommand
+import app.auri.capture.contract.CaptureState
 import app.auri.capture.contract.CaptureStatus
 import app.auri.capture.contract.EndReason
+import app.auri.capture.contract.ErrorCode
 import app.auri.capture.coordinator.CaptureCoordinator
 import app.auri.capture.coordinator.Clock
 import app.auri.capture.testing.CollectingOutput
 import app.auri.capture.testing.FakeControlAdapter
 import app.auri.capture.testing.FakeRecordingStore
 import app.auri.capture.testing.SequentialIds
+import app.auri.capture.testing.StoreEvent
 import java.time.Instant
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -42,6 +45,38 @@ class RouteBoundaryTest {
 
             assertEquals(List(1600) { 2_000.toShort() }, store.written)
             assertEquals(1600L, adapter.droppedAmbiguousSamples)
+        } finally {
+            scope.cancel()
+        }
+    }
+
+    /** Ticket 19 评审 M3：系统不给音频焦点时，协调器受阻并说明是被占用，什么也没有录、没有写。 */
+    @Test
+    fun `a denied audio focus blocks the start with audio_interrupted and records nothing`() {
+        val clock = object : Clock {
+            override fun monotonicNs() = 123_000_000L
+            override fun now(): Instant = Instant.parse("2026-11-18T08:00:00Z")
+        }
+        val audio = FakeAudioSystem().apply { focusDenied = true }
+        val readers = mutableListOf<Runnable>()
+        val adapter = BluetoothCaptureAdapter(audio, FakeEnvironment(), clock) { readers += it }
+        val control = FakeControlAdapter(clock)
+        val store = FakeRecordingStore()
+        val output = CollectingOutput()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        try {
+            val coordinator = CaptureCoordinator(control, adapter, store, output, clock, SequentialIds(), scope = scope, adapterDispatcher = Dispatchers.Unconfined)
+            coordinator.enableControlMode()
+            control.press(BusinessCommand.START)
+
+            val snapshot = coordinator.snapshot.value
+            assertEquals(CaptureState.BLOCKED, snapshot.state)
+            assertEquals(ErrorCode.AUDIO_INTERRUPTED, snapshot.blockedReason)
+            assertEquals(emptyList<StoreEvent>(), store.events)
+            assertEquals(emptyList<Short>(), store.written)
+            assertEquals(emptyList<Any>(), output.recordings)
+            assertEquals(emptyList<Runnable>(), readers)
+            assertEquals(1, audio.routeCleared)
         } finally {
             scope.cancel()
         }

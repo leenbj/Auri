@@ -79,7 +79,9 @@ class BluetoothCaptureAdapter(
         captures[request.operationId] = capture
         try {
             if (!capture.requestRoute()) return capture.fail(ErrorCode.INPUT_ROUTE_UNVERIFIED)
-            if (!capture.attachFocus(audio.requestAudioFocus { sink.interrupted() })) return capture.fail(ErrorCode.INPUT_ROUTE_UNVERIFIED)
+            // 系统不给焦点（别的应用占着）就不开始：没有焦点听不到“被抢走”的回调，录音会在不知情的情况下与别人的音频冲突（评审 M3）
+            val focus = audio.requestAudioFocus { sink.interrupted() } ?: return capture.fail(ErrorCode.AUDIO_INTERRUPTED)
+            if (!capture.attachFocus(focus)) return capture.fail(ErrorCode.INPUT_ROUTE_UNVERIFIED)
             val opened = audio.openRecorder(input, request.format)
             if (!capture.attach(opened)) return capture.fail(ErrorCode.INPUT_ROUTE_UNVERIFIED)
             capture.observe(opened.routedDevice())
@@ -193,14 +195,14 @@ class BluetoothCaptureAdapter(
             accepted && !isClosed()
         }
 
-        fun attachFocus(acquired: Subscription?): Boolean {
+        fun attachFocus(acquired: Subscription): Boolean {
             synchronized(this) {
                 if (!closed) {
                     focus = acquired
                     return true
                 }
             }
-            acquired?.cancel()
+            acquired.cancel()
             return false
         }
 

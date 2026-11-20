@@ -105,6 +105,9 @@ class FakeAudioSystem : AudioSystem {
     var onOpen: (() -> Unit)? = null
     var onFocus: (() -> Unit)? = null
 
+    /** true 时系统不给音频焦点：requestAudioFocus 返回 null。 */
+    var focusDenied = false
+
     /** 非空时新打开的录音在 startRecording 时抛它。 */
     var recorderStartFailure: RuntimeException? = null
 
@@ -136,6 +139,7 @@ class FakeAudioSystem : AudioSystem {
     override fun requestAudioFocus(onLost: () -> Unit): Subscription? {
         focusRequests += onLost
         onFocus?.invoke()
+        if (focusDenied) return null // 系统不给焦点（别的应用占着）
         return Subscription { focusAbandoned += 1 }
     }
 

@@ -367,6 +367,31 @@ class BluetoothCaptureAdapterTest {
         assertTrue(audio.recorders.isEmpty())
     }
 
+    /**
+     * Ticket 19 评审 M3：系统不给音频焦点（别的应用占着）时，旧代码照样开始录音，之后既听不到“焦点被抢走”的回调，
+     * 也没有焦点可放。没有焦点就不开始：受阻并说明是被占用，不打开任何录音，已请求的路由撤销一次。
+     */
+    @Test
+    fun `系统不给音频焦点：不开始录音，说明是被占用，不打开任何录音，路由请求只撤销一次`() {
+        audio.focusDenied = true
+
+        val prepared = prepare()
+
+        assertEquals(RequestStatus.REJECTED_BY_SYSTEM, prepared.requestStatus)
+        assertEquals(listOf(ErrorCode.AUDIO_INTERRUPTED), sink.unavailable)
+        assertEquals("问过一次焦点", 1, audio.focusRequests.size)
+        assertEquals("没拿到焦点，也就没有焦点可放", 0, audio.focusAbandoned)
+        assertTrue("一个录音也没打开", audio.recorders.isEmpty())
+        assertTrue("读线程没有启动", readers.isEmpty())
+        assertTrue("没有路由观测，也没有帧", sink.routeEvents.isEmpty() && sink.frames.isEmpty())
+        assertEquals("路由请求被撤销、音频模式恢复", 1, audio.routeCleared)
+        assertEquals(0, audio.mode)
+
+        adapter.release(request.operationId) // 协调器随后的释放：幂等，什么也不会再放一次
+        assertEquals(1, audio.routeCleared)
+        assertEquals(0, audio.focusAbandoned)
+    }
+
     @Test
     fun `late cleanup of a cancelled route cannot clear the next session route`() {
         val entered = CountDownLatch(1)
