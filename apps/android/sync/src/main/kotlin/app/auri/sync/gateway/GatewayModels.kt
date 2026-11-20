@@ -56,5 +56,14 @@ data class StoredResponse(val operationId: String, val recordId: String, val rev
 /** 网关上记着的一条 Revision（gateway.schema.json#/$defs/revision_status_summary）。 */
 data class RevisionOnGateway(val revision: Int, val state: String, val textSha256: String)
 
-/** GET /v1/records/{id}/status 里手机关心的部分：这条 Record 还在不在、网关记了哪些 Revision、各自的文字哈希。 */
-data class RecordStatus(val recordId: String, val originDeviceId: String, val deleted: Boolean, val revisions: List<RevisionOnGateway>)
+/**
+ * GET /v1/records/{id}/status 里手机关心的部分：这条 Record 还在不在、网关记了哪些 Revision、各自的文字哈希，
+ * 以及（Ticket 22）每个 Destination 上的投递状态 [destinations]（读不懂的条目被丢掉，字段缺失按没有投递算；同步引擎只看 [revisions]）。
+ */
+data class RecordStatus(
+    val recordId: String,
+    val originDeviceId: String,
+    val deleted: Boolean,
+    val revisions: List<RevisionOnGateway>,
+    val destinations: List<DeliveryOnGateway> = emptyList(),
+)

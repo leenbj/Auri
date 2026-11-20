@@ -5,6 +5,7 @@ import java.time.OffsetDateTime
 import java.time.format.DateTimeParseException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -46,6 +47,18 @@ internal class WireObject private constructor(private val root: JsonObject) {
     fun boolean(key: String): Boolean = primitive(key).takeIf { !it.isString }?.booleanOrNull ?: throw Unreadable(key)
 
     fun array(key: String): JsonArray = root[key] as? JsonArray ?: throw Unreadable(key)
+
+    /** 字段必须是时间戳或 null（合同里 `revoked_at` 这类“没发生就是 null”的字段）；缺字段不算 null。 */
+    fun timestampOrNull(key: String): Instant? = if (root[key] is JsonNull) null else timestamp(key)
+
+    /** 字段必须是字符串数组。 */
+    fun strings(key: String): List<String> = array(key).map { element -> (element as? JsonPrimitive)?.takeIf { it.isString }?.content ?: throw Unreadable(key) }
+
+    /** 字段必须是对象数组；任何一项不是对象就整个读不懂。 */
+    fun items(key: String): List<WireObject> = array(key).map { element -> WireObject(element as? JsonObject ?: throw Unreadable(key)) }
+
+    /** 字段是对象数组就逐项给出（不是对象的项丢掉）；缺字段或类型不对给 null。用于“读不懂也不该让整个响应失败”的部分。 */
+    fun itemsOrNull(key: String): List<WireObject>? = (root[key] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let(::WireObject) }
 
     fun requireVersion() {
         if (string("schema_version") != Wire.SCHEMA_VERSION) throw Unreadable("schema_version")
