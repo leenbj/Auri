@@ -36,6 +36,7 @@ import app.auri.platform.audio.AudioSystem
 import app.auri.platform.audio.BluetoothCaptureAdapter
 import app.auri.platform.control.ScreenControlAdapter
 import app.auri.platform.jobs.SqliteTranscriptionJobStore
+import app.auri.platform.library.relocateRecordedAudio
 import app.auri.platform.service.AndroidForegroundServiceController
 import app.auri.platform.service.bindForegroundService
 import app.auri.platform.storage.DurationLimitSetting
@@ -58,6 +59,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 /** 录音上限独立于转录引擎的单次输入上限。 */
 fun captureConfigFor(durationMinutes: Int): CaptureConfig {
@@ -87,6 +89,20 @@ class AuriRuntime(
     private val lifecycle = AppLifecycleTracker(application)
     val headset = AndroidHeadsetPresence(application)
     val library = SyncStorage.library(application, databaseName) // Record 库与待同步任务表同库：发布 Revision 的事务里顺手登记任务（Ticket 21）
+
+    init {
+        // 升级前登记的录音位置还是老目录（filesDir/recordings）下的路径，而上面的 place 已把目录整个挪走：位置要跟着走（Ticket 19 评审 H1）。
+        // 在调度器与管线出现之前同步做完（一条 UPDATE），它们读到的位置就不会是旧的；幂等，每次启动都做，中途被杀下次接着做。
+        // 失败只记一行日志：这一步不该让应用起不来（登记的位置没改成，只影响升级前录下的那几条）。
+        try {
+            runBlocking(Dispatchers.IO) {
+                relocateRecordedAudio(File(application.filesDir, recordingsDir.name), recordingsDir) { from, to -> library.relocateAudio(from, to) }
+            }
+        } catch (e: Exception) {
+            Log.w(CAPTURE_LOG_TAG, "recordings relocation failed: ${e.javaClass.simpleName}")
+        }
+    }
+
     val screenControl = ScreenControlAdapter(SystemClock, RandomIds)
     private val controlWiring = ControlWiring(application, screenControl, headsetProfileStore)
     val captureAdapter = BluetoothCaptureAdapter(audio, AndroidCaptureEnvironment(application, lifecycle), SystemClock)

@@ -93,6 +93,23 @@ class SqliteRecordLibrary(
     /** 关闭数据库（测试里重开同一个文件时用）。 */
     fun close() = helper.close()
 
+    /**
+     * 把登记的音频位置里以 [fromPrefix] 开头的，改成以 [toPrefix] 开头（目录前缀，写法见 [audioDirPrefix]）：录音目录整个挪了家（评审 H1）。
+     * 一条 UPDATE 语句，要么全改要么都不改；改过的行不再以 [fromPrefix] 开头，所以重复执行不会再改（幂等）。返回改了几行。
+     */
+    suspend fun relocateAudio(fromPrefix: String, toPrefix: String): Int = withContext(io) {
+        val db = helper.writableDatabase
+        val changed = db.compileStatement(RELOCATE_AUDIO_SQL).use { statement ->
+            statement.bindString(1, toPrefix)
+            statement.bindString(2, fromPrefix)
+            statement.bindString(3, fromPrefix)
+            statement.bindString(4, fromPrefix)
+            statement.executeUpdateDelete()
+        }
+        if (changed > 0) changes.value += 1
+        changed
+    }
+
     override suspend fun addRecord(entry: RecordEntry): Boolean = withContext(io) {
         val db = helper.writableDatabase
         db.beginTransaction()
@@ -204,6 +221,14 @@ class SqliteRecordLibrary(
 
     companion object {
         private const val SCHEMA_VERSION = 2
+
+        /**
+         * 改音频位置的目录前缀（参数依次：新前缀、旧前缀、旧前缀、旧前缀）。用 substr 比较而不是 LIKE：路径里的 % 与 _ 在 LIKE 里是通配符。
+         * 公开只为让 JVM 测试在真实的 SQLite 引擎上验证这条语句；运行时只有 [relocateAudio] 用它。
+         */
+        const val RELOCATE_AUDIO_SQL =
+            "UPDATE records SET audio_location = ? || substr(audio_location, length(?) + 1) " +
+                "WHERE audio_location IS NOT NULL AND substr(audio_location, 1, length(?)) = ?"
 
         /** 建库语句（当前结构）。公开只为让别的模块的迁移测试在 JVM 上用真实结构造出一个库；运行时只有 [onCreate] 用它。 */
         val SCHEMA = listOf(
