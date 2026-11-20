@@ -569,6 +569,22 @@ abstract class DispatchStoreContract {
         assertEquals("缓存没了，凭它规划的目标也不能留着：之后换到哪个网关都不能拿着旧编号去用", emptyList<String>(), fixture.store.item(keyA)!!.targets.map { it.destinationId })
     }
 
+    // ---- 撤销只进不退（评审 H3）：较早的回答不能把已撤销的 Destination 写回有效 ----
+
+    @Test
+    fun a_revoked_destination_is_never_restored_by_an_older_snapshot() = runBlocking {
+        val fixture = newFixture()
+        fixture.know(destination(auto, SendMode.AUTO_SEND))
+        fixture.know(destination(auto, SendMode.AUTO_SEND, revokedAt = t0.plusSeconds(5)), authoritative = false) // 撤销的回答先到
+        fixture.know(destination(auto, SendMode.AUTO_SEND)) // 较早算好的完整列表后到：里面它还有效
+
+        val cached = fixture.store.destinations().single()
+        assertFalse("撤销是单向的：较早的回答不能把它改回有效", cached.active)
+        assertEquals(t0.plusSeconds(5), cached.revokedAt)
+        fixture.publish(keyA, RevisionSource.ASR, t0)
+        assertEquals("已撤销的不接收新文字：不为它规划目标", emptyList<String>(), fixture.store.item(keyA)!!.targets.map { it.destinationId })
+    }
+
     // ---- 凭证被撤销 = Destination 暂停（评审 B3）：网关不为它建新 Delivery、撤销时排着的取消了、恢复之后也不补发 ----
 
     @Test

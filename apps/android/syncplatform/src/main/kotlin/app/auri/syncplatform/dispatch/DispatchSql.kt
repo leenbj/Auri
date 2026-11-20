@@ -228,6 +228,11 @@ class DispatchSql(private val sql: SqlDb) {
     // ---- 内部 ----
 
     private fun upsert(destination: Destination) {
+        // 撤销只进不退（评审 H3）：缓存里已经是撤销的，较早算好的回答再说它有效也不算
+        val revokedAt = sql.query(
+            "SELECT revoked_at_s, revoked_at_nano FROM dispatch_destinations WHERE destination_id = ? AND revoked_at_s IS NOT NULL",
+            destination.destinationId,
+        ) { Instant.ofEpochSecond(it.long(0), it.long(1)) }.firstOrNull() ?: destination.revokedAt
         sql.update(
             """
             INSERT OR REPLACE INTO dispatch_destinations (
@@ -243,8 +248,8 @@ class DispatchSql(private val sql: SqlDb) {
             destination.createdAt.nano,
             destination.createdByDeviceId,
             if (destination.credentialIssued) 1 else 0,
-            destination.revokedAt?.epochSecond,
-            destination.revokedAt?.nano,
+            revokedAt?.epochSecond,
+            revokedAt?.nano,
             if (destination.credentialActive) 1 else 0,
         )
     }

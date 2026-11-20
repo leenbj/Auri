@@ -805,6 +805,28 @@ MUTATIONS: tuple = (
         platform_tests("SqliteDispatchStoreContractTest"), PLATFORM_RESULTS,
         ("hearing_from_another_gateway_withdraws_the_old_targets_just_like_using_it",),
     ),
+    # ---- 评审 H3：较早发出的列表回答不能盖掉后面的撤销、创建、签发；撤销只进不退 ----
+    Mutation(
+        "h3-calls-not-serialised",
+        "评审 H3：管理类的网关往返不再串行（每次一把新锁）：较早发出的列表请求的回答可以在后面的创建之后才写进缓存，把新建的当成网关没有而删掉",
+        (Edit(SERVICE, "    ): ServiceResult<T> = exchange.withLock {", "    ): ServiceResult<T> = Mutex().withLock {"),),
+        sync_tests("StaleListResponseTest"), SYNC_RESULTS,
+        ("创建之后才到",),
+    ),
+    Mutation(
+        "h3-issue-not-serialised",
+        "评审 H3：签发凭证的网关往返不再与别的管理操作串行：较早的列表回答在签发之后才到，把缓存退回“还没有凭证”",
+        (Edit(SERVICE, "            return exchange.withLock {", "            return Mutex().withLock {"),),
+        sync_tests("StaleListResponseTest"), SYNC_RESULTS,
+        ("签发凭证之后才到",),
+    ),
+    Mutation(
+        "h3-store-lets-an-old-snapshot-revive",
+        "评审 H3：发送账收到较早算好的名单时不保留已有的撤销：已撤销的 Destination 被改回有效，手机会为它规划目标",
+        (Edit(DISPATCH_SQL, ".firstOrNull() ?: destination.revokedAt", ".firstOrNull().let { destination.revokedAt }"),),
+        platform_tests("SqliteDispatchStoreContractTest"), PLATFORM_RESULTS,
+        ("a_revoked_destination_is_never_restored_by_an_older_snapshot",),
+    ),
 )
 
 base.MUTATIONS = MUTATIONS

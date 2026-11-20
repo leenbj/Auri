@@ -52,7 +52,8 @@ class InMemoryDispatchStore(private val disk: InMemoryDispatchDisk) : DispatchSt
     override suspend fun applyDestinations(gatewayId: String, destinations: List<Destination>, authoritative: Boolean, now: Instant) = disk.lock.withLock {
         if (disk.gatewayId != gatewayId) switchGateway(gatewayId)
         if (authoritative) disk.cache.keys.retainAll(destinations.map { it.destinationId }.toSet())
-        destinations.forEach { disk.cache[it.destinationId] = it }
+        // 撤销只进不退（评审 H3）：缓存里已经是撤销的，较早算好的回答再说它有效也不算
+        destinations.forEach { incoming -> disk.cache[incoming.destinationId] = incoming.copy(revokedAt = incoming.revokedAt ?: disk.cache[incoming.destinationId]?.revokedAt) }
         // 暂停的（凭证被撤销）：还没建 Delivery 的目标记成没送达，之后恢复也不补发（评审 B3）；用户已经跳过的不动
         destinations.filter { it.suspended }.forEach { suspended ->
             disk.items.values.forEach { item ->

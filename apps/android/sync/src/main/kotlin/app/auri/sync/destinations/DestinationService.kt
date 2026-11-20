@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** 管理 Destination 的操作没做成的原因。每一种界面要说不同的话，所以不合并。 */
 sealed interface ServiceFailure {
@@ -117,6 +118,12 @@ class DestinationService(
 ) : DestinationController {
     private val issuing = Mutex()
 
+    /**
+     * 一次只有一个管理类的网关往返（从发请求到把回答写进缓存，评审 H3）：较早发出的请求的回答不可能在较晚的撤销、创建、签发写完之后才落进缓存，
+     * 把已撤销的改回有效、把新建的当成“网关没有”删掉。排队的操作等前一个做完（包括它的超时），界面上显示的就是“进行中”。
+     */
+    private val exchange = Mutex()
+
     override val destinations: Flow<List<Destination>> = dispatch.changes().onStart { emit(0L) }.map { dispatch.destinations() }
 
     override suspend fun refresh(): ServiceResult<List<Destination>> = gatewayCall(
@@ -163,20 +170,23 @@ class DestinationService(
                 return CredentialOutcome.NotAuthenticated(auth)
             }
 
-            val session = when (val connected = connect()) {
-                is Connect.Ready -> connected.session
-                is Connect.Blocked -> return CredentialOutcome.Failed(connected.failure)
-            }
-            val result = session.client.issueCredential(session.address, session.gateway.token, destinationId)
-            if (!stillPaired(session.gateway)) return CredentialOutcome.Failed(ServiceFailure.NotPaired)
-            return when (result) {
-                is GatewayResult.Success -> {
-                    dispatch.applyDestinations(session.gateway.gatewayId, listOf(known.copy(credentialIssued = true, credentialActive = true)), authoritative = false, now = clock.now())
-                    log.event("credential.issued replaced=${result.value.replacedPrevious}")
-                    CredentialOutcome.Issued(result.value)
+            // 核验（用户可能停很久）之后才进入往返：不让一个等指纹的操作挡住别的管理操作
+            return exchange.withLock {
+                val session = when (val connected = connect()) {
+                    is Connect.Ready -> connected.session
+                    is Connect.Blocked -> return@withLock CredentialOutcome.Failed(connected.failure)
                 }
+                val result = session.client.issueCredential(session.address, session.gateway.token, destinationId)
+                if (!stillPaired(session.gateway)) return@withLock CredentialOutcome.Failed(ServiceFailure.NotPaired)
+                when (result) {
+                    is GatewayResult.Success -> {
+                        dispatch.applyDestinations(session.gateway.gatewayId, listOf(known.copy(credentialIssued = true, credentialActive = true)), authoritative = false, now = clock.now())
+                        log.event("credential.issued replaced=${result.value.replacedPrevious}")
+                        CredentialOutcome.Issued(result.value)
+                    }
 
-                else -> CredentialOutcome.Failed(result.failure()).also { log.event("credential.failed ${result::class.simpleName}") }
+                    else -> CredentialOutcome.Failed(result.failure()).also { log.event("credential.failed ${result::class.simpleName}") }
+                }
             }
         } finally {
             issuing.unlock()
@@ -292,14 +302,14 @@ class DestinationService(
         name: String,
         request: suspend (Session) -> GatewayResult<T>,
         apply: suspend (Session, T) -> Unit,
-    ): ServiceResult<T> {
+    ): ServiceResult<T> = exchange.withLock {
         val session = when (val connected = connect()) {
             is Connect.Ready -> connected.session
-            is Connect.Blocked -> return ServiceResult.Failed(connected.failure)
+            is Connect.Blocked -> return@withLock ServiceResult.Failed(connected.failure)
         }
         val result = request(session)
-        if (!stillPaired(session.gateway)) return ServiceResult.Failed(ServiceFailure.NotPaired)
-        return when (result) {
+        if (!stillPaired(session.gateway)) return@withLock ServiceResult.Failed(ServiceFailure.NotPaired)
+        when (result) {
             is GatewayResult.Success -> {
                 apply(session, result.value)
                 log.event("destination.$name ok")
