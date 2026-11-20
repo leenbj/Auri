@@ -9,6 +9,7 @@ import app.auri.sync.pairing.PairedGateway
 import app.auri.sync.pairing.PairingOutcome
 import app.auri.sync.pairing.PairingPayload
 import app.auri.sync.pairing.PayloadParse
+import app.auri.sync.policy.DataFlowState
 import app.auri.sync.status.SyncCounts
 import app.auri.sync.status.SyncHeadline
 import app.auri.sync.status.SyncStatus
@@ -64,6 +65,22 @@ class SyncViewModelTest {
         override fun syncNow() {
             syncNowCalls += 1
         }
+
+        val grants = CopyOnWriteArrayList<Boolean>()
+        val strictLocals = CopyOnWriteArrayList<Boolean>()
+
+        /** 写开关时抛的故障（null = 正常）。 */
+        @Volatile var policyWriteFailure: Throwable? = null
+
+        override suspend fun setGatewayTextGranted(granted: Boolean) {
+            policyWriteFailure?.let { throw it }
+            grants += granted
+        }
+
+        override suspend fun setStrictLocal(on: Boolean) {
+            policyWriteFailure?.let { throw it }
+            strictLocals += on
+        }
     }
 
     private companion object {
@@ -80,7 +97,7 @@ class SyncViewModelTest {
             Instant.parse("2026-11-15T02:05:00Z"), null,
         )
 
-        fun status(headline: SyncHeadline = SyncHeadline.UP_TO_DATE) = SyncStatus(headline, emptyList(), SyncCounts(0, 0, 0, 0, 0, 0), null)
+        fun status(headline: SyncHeadline = SyncHeadline.UP_TO_DATE) = SyncStatus(headline, emptyList(), SyncCounts(0, 0, 0, 0, 0, 0), null, DataFlowState(gatewayTextGranted = true, strictLocal = false))
     }
 
     private fun TestScope.viewModel(controller: FakeController) =
@@ -115,6 +132,10 @@ class SyncViewModelTest {
         override suspend fun pair(payload: PairingPayload): PairingOutcome = error("not used")
 
         override fun syncNow() = Unit
+
+        override suspend fun setGatewayTextGranted(granted: Boolean) = Unit
+
+        override suspend fun setStrictLocal(on: Boolean) = Unit
     }
 
     private class Escapes : CoroutineExceptionHandler {
@@ -314,6 +335,44 @@ class SyncViewModelTest {
         vm.syncNow()
 
         assertEquals(1, controller.syncNowCalls)
+    }
+
+    // ---- 评审 B1：文字能不能进网关的两道开关 ----
+
+    @Test
+    fun `拨开关：授权与严格仅本地原样交给控制器，开关位置来自同步状态里的 dataFlow`() = runTest {
+        val controller = FakeController()
+        val vm = viewModel(controller)
+        controller.statuses.emit(status(SyncHeadline.HELD_BY_POLICY).copy(dataFlow = DataFlowState.Unset))
+        assertEquals(DataFlowState.Unset, vm.state.value.status?.dataFlow)
+
+        vm.setGatewayTextGranted(true)
+        vm.setStrictLocal(true)
+        vm.setGatewayTextGranted(false)
+
+        assertEquals(listOf(true, false), controller.grants.toList())
+        assertEquals(listOf(true), controller.strictLocals.toList())
+        assertFalse(vm.state.value.policyNotSaved)
+    }
+
+    @Test
+    fun `开关写不进去：如实说没保存，不能把进程带崩；下一次拨成功就清掉提示`() = runTest {
+        val controller = FakeController()
+        val escapes = Escapes()
+        val vm = viewModelOf(controller, escapes)
+        controller.policyWriteFailure = IllegalStateException("disk I/O error: secret-looking-detail")
+
+        vm.setGatewayTextGranted(true)
+
+        assertTrue("界面要如实提示没保存", vm.state.value.policyNotSaved)
+        assertTrue("异常不能冲出作用域（这个作用域没有异常处理器，冲出去就是应用崩溃）：${escapes.caught}", escapes.caught.isEmpty())
+        assertTrue("没存下就不能假装存了", controller.grants.isEmpty())
+
+        controller.policyWriteFailure = null
+        vm.setGatewayTextGranted(true)
+
+        assertFalse(vm.state.value.policyNotSaved)
+        assertEquals(listOf(true), controller.grants.toList())
     }
 
     @Test

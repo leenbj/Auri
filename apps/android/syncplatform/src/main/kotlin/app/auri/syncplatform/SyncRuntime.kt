@@ -26,6 +26,7 @@ import app.auri.sync.pairing.PairingOutcome
 import app.auri.sync.pairing.PairingPayload
 import app.auri.sync.pairing.PairingService
 import app.auri.sync.pairing.SecretBox
+import app.auri.sync.policy.DataFlowPolicy
 import app.auri.sync.resume.ResumePlanner
 import app.auri.sync.resume.ResumeRunner
 import app.auri.sync.resume.ResumeScheduler
@@ -37,6 +38,8 @@ import app.auri.syncplatform.dispatch.SqliteDispatchStore
 import app.auri.syncplatform.jobs.SqliteSyncJobStore
 import app.auri.syncplatform.keystore.KeystoreKeys
 import app.auri.syncplatform.network.AndroidNetworkSignal
+import app.auri.syncplatform.policy.DataFlowPolicySql
+import app.auri.syncplatform.policy.SqliteDataFlowPolicy
 import app.auri.syncplatform.resume.JobSchedulerResume
 import java.io.File
 import kotlinx.coroutines.CancellationException
@@ -61,7 +64,7 @@ object SyncStorage {
             application,
             databaseName,
             publicationStep = { db, revision -> SqliteDispatchStore.publishIn(db, revision, clock.now()) },
-            extraSchema = DispatchSql.SCHEMA,
+            extraSchema = DispatchSql.SCHEMA + DataFlowPolicySql.SCHEMA,
         )
 }
 
@@ -91,6 +94,12 @@ class SyncRuntime(
     /** 发送账（Ticket 22）：Destination 缓存、预览确认的决定、意图标签。引擎每次发送前向它要 publication。 */
     val dispatch = SqliteDispatchStore(library)
 
+    /**
+     * “文字能不能进网关”的两道开关（评审 B1）：默认关、读不出来也当关；引擎在每个可能发请求的地方先问它，
+     * 叫醒计划与同步状态也据此判断。界面通过 [setGatewayTextGranted]、[setStrictLocal] 改。
+     */
+    val policy: DataFlowPolicy = SqliteDataFlowPolicy(library, clock)
+
     /** 配对状态（可观察）。读它之前先 [start]：启动时才读第一次，之前没有任何状态。 */
     val pairing = ObservablePairingStore(FilePairingStore(pairingFile, box))
 
@@ -103,22 +112,24 @@ class SyncRuntime(
         http = http,
         locator = locator,
         clock = clock,
+        policy = policy,
         log = log,
     )
     private val loop = SyncLoop(engine, jobs, network, clock, log = log)
 
     /** [start] 的启动工作（读配对记录、接回中断的任务）做完了没有：被系统叫醒的那一轮要等它。 */
     private val started = CompletableDeferred<Unit>()
-    private val planner = ResumePlanner(pairing.states, jobs.observe(), resume, clock, log = log)
+    private val planner = ResumePlanner(pairing.states, jobs.observe(), policy.states(), resume, clock, log = log)
     private val resumeRunner = ResumeRunner(
         ready = { started.await() },
         runPass = engine::runOnce,
-        stillNeeded = { needsResume(pairing.load(), jobs.all()) },
+        stillNeeded = { needsResume(pairing.load(), jobs.all(), policy.current()) },
         log = log,
     )
 
     /** 界面要的同步状态汇总：配对状态与任务表任何一边变了都重新汇总。 */
-    override val status: Flow<SyncStatus> = combine(pairing.states, jobs.observe()) { pairingState, list -> SyncStatus.of(pairingState, list) }.distinctUntilChanged()
+    override val status: Flow<SyncStatus> =
+        combine(pairing.states, jobs.observe(), policy.states()) { pairingState, list, dataFlow -> SyncStatus.of(pairingState, list, dataFlow) }.distinctUntilChanged()
 
     fun start(): Job = scope.launch {
         // 同步出故障不能带倒整个进程（录音在同一个进程里，这个作用域又没有异常处理器，逃出来的异常就是应用崩溃）：
@@ -156,6 +167,18 @@ class SyncRuntime(
 
     /** 回到前台、用户点了“现在同步”：立刻跑一轮，并让探测的退避从头开始。 */
     override fun syncNow() = loop.nudge()
+
+    /** 用户明确打开或收回“文字可以进网关”。打开之后马上跑一轮：之前被留在本机的文字这时才发出去。 */
+    override suspend fun setGatewayTextGranted(granted: Boolean) {
+        policy.setGatewayTextGranted(granted)
+        loop.nudge()
+    }
+
+    /** 用户打开或关闭“严格仅本地”。关掉之后马上跑一轮（授权仍在的话，被留住的文字这时才发）。 */
+    override suspend fun setStrictLocal(on: Boolean) {
+        policy.setStrictLocal(on)
+        loop.nudge()
+    }
 
     /**
      * Destination 管理（Ticket 22）：和同步引擎共用配对记录、地址探测与固定公钥的 HTTPS，没有第二套网络栈。

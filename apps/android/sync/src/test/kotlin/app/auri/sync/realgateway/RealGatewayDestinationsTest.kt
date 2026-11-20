@@ -39,6 +39,7 @@ import app.auri.sync.pairing.PairingPayload
 import app.auri.sync.pairing.PairingService
 import app.auri.sync.pairing.PayloadParse
 import app.auri.sync.testing.CollectingLog
+import app.auri.sync.testing.InMemoryDataFlowPolicy
 import app.auri.sync.testing.InMemoryDispatchFixture
 import app.auri.sync.testing.ScriptedAuthenticator
 import java.io.File
@@ -104,6 +105,9 @@ class RealGatewayDestinationsTest {
         val calls = CopyOnWriteArrayList<String>()
         val log = CollectingLog()
         val authenticator = ScriptedAuthenticator()
+
+        /** 装配时显式授权：文字能进网关是用户的一道独立授权，这个文件的多数测试讲的是别的事。 */
+        val policy = InMemoryDataFlowPolicy()
         val fixture = InMemoryDispatchFixture()
         val library = InMemoryRecordLibrary()
         private val key = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
@@ -119,6 +123,7 @@ class RealGatewayDestinationsTest {
             http = http,
             locator = locator,
             clock = RealClock,
+            policy = policy,
             retry = RetryPolicy(baseMs = 100, maxMs = 400),
             log = log,
         )
@@ -217,6 +222,43 @@ class RealGatewayDestinationsTest {
         val refreshed = (lab.phone.service.refresh() as ServiceResult.Ok).value
         assertEquals(refreshed.map { it.destinationId }, lab.phone.fixture.store.destinations().map { it.destinationId })
         assertEquals(setOf(auto.destinationId, preview.destinationId), refreshed.map { it.destinationId }.toSet())
+        Unit
+    }
+
+    // ---- 评审 B1：配对不等于同意，文字进网关要单独授权 ----
+
+    @Test
+    fun `配对之后没有任何 Destination、也没授权文字进网关：新录的文字一个字节也没进网关；授权之后才进，开着严格仅本地时又不进`() = runBlocking {
+        val lab = Lab()
+        lab.phone.policy.setGatewayTextGranted(false) // 配对已经完成，但用户没有授权“文字可以进网关”（这是默认）
+        val afterPairing = lab.phone.calls.toList() // 配对本身（兑换配对码）已经发过请求，不算在“文字进网关”里
+
+        val held = lab.phone.transcribed("只该留在手机上的第一条")
+        lab.phone.engine.runOnce()
+
+        assertEquals("网关上一个 Revision 都没有", 0, lab.revisions())
+        assertEquals("配对之后手机连网关都没碰：一个请求也没再发（含探测）", afterPairing, lab.phone.calls.toList())
+        assertEquals(SyncState.PENDING, lab.phone.fixture.jobs.get(held)!!.state)
+
+        lab.phone.policy.setGatewayTextGranted(true) // 用户明确授权
+        lab.phone.engine.runOnce()
+
+        assertEquals("授权之后，积压的那一条才进网关", 1, lab.revisions())
+        assertEquals(SyncState.STORED, lab.phone.fixture.jobs.get(held)!!.state)
+        assertEquals("没有任何 Destination：只入库，不产生 Delivery", 0, lab.deliveries())
+
+        lab.phone.policy.setStrictLocal(true) // 严格仅本地：统一门禁，压过授权
+        val strict = lab.phone.transcribed("严格仅本地时录的")
+        val putsBefore = lab.puts()
+        lab.phone.engine.runOnce()
+
+        assertEquals("严格仅本地时不能再有任何提交", putsBefore, lab.puts())
+        assertEquals(1, lab.revisions())
+        assertEquals(SyncState.PENDING, lab.phone.fixture.jobs.get(strict)!!.state)
+
+        lab.phone.policy.setStrictLocal(false)
+        lab.phone.engine.runOnce()
+        assertEquals("关掉严格仅本地、授权仍在：被留住的这一条才进网关", 2, lab.revisions())
         Unit
     }
 

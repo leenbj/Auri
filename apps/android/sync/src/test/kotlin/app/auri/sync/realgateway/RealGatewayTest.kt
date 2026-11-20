@@ -40,6 +40,7 @@ import app.auri.sync.status.SyncStatus
 import app.auri.sync.status.UserCause
 import app.auri.sync.testing.CollectingLog
 import app.auri.sync.testing.FixtureRecords
+import app.auri.sync.testing.InMemoryDataFlowPolicy
 import app.auri.sync.testing.InMemorySyncJobStore
 import app.auri.sync.testing.SyncSamples
 import java.io.File
@@ -148,6 +149,7 @@ class RealGatewayTest {
             http = http,
             locator = GatewayLocator(http, discovery, log),
             clock = RealClock,
+            policy = InMemoryDataFlowPolicy(), // 装配时显式授权：这个文件测的是同步与配对本身
             retry = RetryPolicy(baseMs = 100, maxMs = 400),
             log = log,
         )
@@ -169,7 +171,7 @@ class RealGatewayTest {
             return outcome.gateway
         }
 
-        suspend fun status(): SyncStatus = SyncStatus.of(store.load(), jobs.all())
+        suspend fun status(): SyncStatus = SyncStatus.of(store.load(), jobs.all(), InMemoryDataFlowPolicy.GRANTED)
 
         /** 非健康检查的请求。 */
         fun requests(): List<String> = calls.filterNot { it.startsWith("GET /health") }

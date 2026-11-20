@@ -10,6 +10,7 @@ import app.auri.sync.engine.SyncEngine
 import app.auri.sync.engine.SyncJob
 import app.auri.sync.gateway.RevisionSubmission
 import app.auri.sync.pairing.PairedGateway
+import app.auri.sync.policy.DataFlowState
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.test.TestScope
@@ -27,13 +28,20 @@ class CollectingLog : SyncLog {
  * 同步引擎的整套假适配器：内存任务表与配对记录、虚拟时钟、内存“局域网”（网关 A 坐在 [SyncSamples.LAN_ADDRESS]）、
  * 假 mDNS、假的本地 Record 库（[submissions]）。引擎本身是真的。
  */
-class SyncRig(val scope: TestScope, gateway: PairedGateway? = SyncSamples.pairedGateway(), gatewayOnLan: Boolean = true) {
+class SyncRig(
+    val scope: TestScope,
+    gateway: PairedGateway? = SyncSamples.pairedGateway(),
+    gatewayOnLan: Boolean = true,
+    /** 文字能不能进网关：多数测试关心的是状态机，装配时显式授权；测“没授权/严格仅本地/读不出来”的测试在这里明说。 */
+    policyState: DataFlowState = InMemoryDataFlowPolicy.GRANTED,
+) {
     val clock = FakeClock(scope.testScheduler)
     val lan = FakeLan()
     val discovery = FakeDiscovery()
     val server = FakeGateway(now = clock::now)
     val jobs = InMemorySyncJobStore()
     val pairing = InMemoryPairingStore(gateway)
+    val policy = InMemoryDataFlowPolicy(policyState)
     val log = CollectingLog()
     val decisions = CopyOnWriteArrayList<SyncDecision>()
     val submissions = ConcurrentHashMap<JobKey, RevisionSubmission>()
@@ -50,6 +58,7 @@ class SyncRig(val scope: TestScope, gateway: PairedGateway? = SyncSamples.paired
         http = lan.factory,
         locator = GatewayLocator(lan.factory, discovery, log),
         clock = clock,
+        policy = policy,
         retry = RetryPolicy(),
         log = log,
         onDecision = { decisions += it },

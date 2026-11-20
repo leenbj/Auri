@@ -12,13 +12,15 @@ import app.auri.sync.destinations.TargetDecision
 import app.auri.sync.engine.JobKey
 import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.SendMode
+import app.auri.sync.policy.DataFlowState
 import java.time.Instant
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -39,7 +41,9 @@ import kotlinx.coroutines.launch
  *   │   │                              预览确认的目的地在“你确认”之前**不产生任何投递**（网关上根本没有这条文字）。
  *   │   ├─ awaitingUser               还有等你决定的目标。
  *   │   └─ 所有这些文字都是转录出来的**未审核初稿**（UNREVIEWED_LABEL）：自动发送出去的请求里就是 review_state=not_reviewed。
- *   └─ defaultIntent                  新录出来的文字用的标签（默认备忘）；在录音之前改。
+ *   ├─ defaultIntent                  新录出来的文字用的标签（默认备忘）；在录音之前改。
+ *   └─ dataFlow                       文字能不能进网关（评审 B1：与配对、与各 Destination 的发送方式都是各自独立的授权，默认关；“严格仅本地”压过授权）。
+ *                                     没放行时页面如实说“确认只是记下你的决定，现在不会发出”，不假装发出去了；没读到时按没放行算。
  *
  * 写（都不阻塞）：confirm(key, destinationId) / skip(key, destinationId) / setIntent(key, intent) / setDefaultIntent(intent)。
  *   决定是持久的、幂等的：同一个决定重复多少次（双击、进程被杀后重来）只放行一次，重复的什么也不改。
@@ -77,6 +81,8 @@ data class ReviewItem(
 data class SendReviewUiState(
     val items: List<ReviewItem> = emptyList(),
     val defaultIntent: Intent = Intent.CONTEXT,
+    /** 还没读到之前按“没放行”算（fail-closed）。 */
+    val dataFlow: DataFlowState = DataFlowState.Closed,
 )
 
 class SendReviewViewModel(
@@ -85,11 +91,10 @@ class SendReviewViewModel(
     private val clock: Clock,
     private val onReleased: () -> Unit,
     private val scope: CoroutineScope,
+    dataFlow: Flow<DataFlowState>,
     private val log: SyncLog = SyncLog.None,
 ) : ViewModel() {
-    val state: StateFlow<SendReviewUiState> = dispatch.changes()
-        .onStart { emit(0L) }
-        .map { load() }
+    val state: StateFlow<SendReviewUiState> = combine(dispatch.changes().onStart { emit(0L) }, dataFlow.onStart { emit(DataFlowState.Closed) }) { _, flow -> load(flow) }
         .stateIn(scope, SharingStarted.Eagerly, SendReviewUiState())
 
     fun confirm(key: JobKey, destinationId: String) = decide(key, destinationId, Choice.CONFIRM)
@@ -128,11 +133,12 @@ class SendReviewViewModel(
         null
     }
 
-    private suspend fun load(): SendReviewUiState {
+    private suspend fun load(dataFlow: DataFlowState): SendReviewUiState {
         val items = dispatch.items(ITEM_LIMIT).map { it.toReview() }
         return SendReviewUiState(
             items = items.sortedWith(compareByDescending<ReviewItem> { it.awaitingUser }.thenByDescending { it.createdAt }),
             defaultIntent = dispatch.defaultIntent(),
+            dataFlow = dataFlow,
         )
     }
 

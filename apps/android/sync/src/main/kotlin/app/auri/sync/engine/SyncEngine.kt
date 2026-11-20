@@ -19,6 +19,7 @@ import app.auri.sync.pairing.NeedsUser
 import app.auri.sync.pairing.PairedGateway
 import app.auri.sync.pairing.PairingState
 import app.auri.sync.pairing.PairingStore
+import app.auri.sync.policy.DataFlowPolicy
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -61,6 +62,9 @@ enum class SendResult {
  * - **连接问题挂在配对记录上**：公钥不符、令牌被拒是对所有任务都成立的事实，记进配对记录（needsUser）；
  *   在用户重新配对之前，一个带令牌的请求都不会发出，也没有“忽略并继续”。
  * - **只经 [PairingStore.update] 改配对记录**：用户刚刚重新配对写入的新记录，不会被晚到的旧观察覆盖。
+ * - **没放行就一个字节也不发**（评审 B1）：配对只说明手机认得这台网关，不说明用户同意把文字送过去。每个可能联系网关的地方——
+ *   一轮同步的开头、探测、一条任务开始发送之前、请求离开手机之前——先问 [DataFlowPolicy]；没授权、开着严格仅本地、读不出来，
+ *   一律什么都不做（连探测、连 mDNS 都不去问）。请求离开之前才被收回的，退回等待网关，不留“可能已送到”的标记。
  * - **结果跟着配对走**：请求发出时是哪份配对，结果就只对那份有效。途中用户重新配对、改配别的网关，晚到的结果（被拒、
  *   公钥不符、甚至“已入库”）全部作废，任务回到排队、对新配对重新来过；一轮同步里缓存的网关地址也只对同一份配对有效。
  *
@@ -73,6 +77,7 @@ class SyncEngine(
     private val http: HttpExchangeFactory,
     private val locator: GatewayLocator,
     private val clock: Clock,
+    private val policy: DataFlowPolicy,
     private val retry: RetryPolicy = RetryPolicy(),
     private val log: SyncLog = SyncLog.None,
     private val onDecision: (SyncDecision) -> Unit = {},
@@ -91,6 +96,10 @@ class SyncEngine(
             passLock.withLock {
                 recoverInterrupted()
                 retryDue()
+                if (!mayTransmit()) { // 文字没有放行：这一轮到此为止，任务原样留在手机上（上面两步只改本地状态）
+                    log.event("pass.held-by-policy")
+                    return
+                }
                 if (usableGateway() == null) return // 没配对、记录丢失或连接要用户处理：什么都不能发
                 val location = Location()
                 probe(location)
@@ -215,6 +224,7 @@ class SyncEngine(
             deliver(key, SyncEvent.SEND_STARTED)
             return SendResult.SKIPPED
         }
+        if (!mayTransmit()) return SendResult.SKIPPED // 先问放行：没放行就连“开始发送”都不落盘
         val gateway = usableGateway() ?: return SendResult.SKIPPED
 
         var before = job
@@ -227,6 +237,8 @@ class SyncEngine(
         val wasUncertain = before.uncertain
 
         val submission = source.submissionFor(key) ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)
+        // 请求离开手机之前的最后一问：刚才被收回的，什么都没发出去，退回等待（“不确定”还原成发送之前的样子）
+        if (!mayTransmit()) return waiting(key, wasUncertain)
         val address = when (val located = location.get(gateway)) {
             is Located.Reachable -> located.address
             Located.Unreachable -> return waiting(key, wasUncertain)
@@ -351,6 +363,7 @@ class SyncEngine(
     // ---- 其余 ----
 
     private suspend fun probe(location: Location) {
+        if (!mayTransmit()) return // 探测本身就是一次联系
         val waiting = jobs.all().filter { it.state == SyncState.WAITING_GATEWAY }
         if (waiting.isEmpty()) return
         val gateway = usableGateway() ?: return
@@ -365,6 +378,9 @@ class SyncEngine(
     private suspend fun parkPending() {
         for (job in jobs.all()) if (job.state == SyncState.PENDING) deliver(job.key, SyncEvent.GATEWAY_UNREACHABLE)
     }
+
+    /** 文字可以进网关吗。[DataFlowPolicy.current] 承诺读不出来就回答“不许”；万一它抛了，外层的 catch 收住，同样什么都不发。 */
+    private suspend fun mayTransmit(): Boolean = policy.current().textMayEnterGateway
 
     private suspend fun usableGateway(): PairedGateway? = (pairing.load() as? PairingState.Paired)?.gateway?.takeIf { it.needsUser == null }
 

@@ -8,8 +8,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import app.auri.android.sync.PairingProblem
@@ -37,6 +39,8 @@ fun SyncScreen(
     onStopScan: () -> Unit,
     onDismissProblem: () -> Unit,
     onSyncNow: () -> Unit,
+    onGatewayTextGranted: (Boolean) -> Unit,
+    onStrictLocal: (Boolean) -> Unit,
     cameraUnavailable: Boolean = false,
     scanner: @Composable () -> Unit,
     manualEntry: @Composable () -> Unit = {},
@@ -54,6 +58,9 @@ fun SyncScreen(
             Text(describeHeadline(status))
             status.causes.forEach { Text("· " + describeCause(it)) }
             Text(describeCounts(status.counts))
+            DataFlowSwitch("允许把文字发送到我配对的网关", describeGrantHint(), status.dataFlow.gatewayTextGranted, onGatewayTextGranted)
+            DataFlowSwitch("严格仅本地", describeStrictLocalHint(), status.dataFlow.strictLocal, onStrictLocal)
+            if (state.policyNotSaved) Text(describePolicyNotSaved())
         }
         when (val pairing = state.pairing) {
             PairingProgress.Idle -> Unit
@@ -77,15 +84,35 @@ fun SyncScreen(
     }
 }
 
+@Composable
+private fun DataFlowSwitch(label: String, hint: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Switch(checked = checked, onCheckedChange = onChange)
+        Column {
+            Text(label)
+            Text(hint)
+        }
+    }
+}
+
 /** 一句话说清现在是哪种情形。三种“同步没完成”的句子互不相同，只有需要用户处理的那一种让用户做事。 */
 internal fun describeHeadline(status: SyncStatus): String = when (status.headline) {
     SyncHeadline.NOT_PAIRED -> "还没有配对：录下的文字只保存在这台手机上，不会发出去。请在网关电脑上运行配对命令，再扫描它显示的二维码。"
+    SyncHeadline.HELD_BY_POLICY ->
+        if (status.dataFlow.strictLocal) "已开启严格仅本地：录下的文字只保存在这台手机上，不会发出去。"
+        else "文字还没有发出去：配对只说明手机认得这台网关，并不代表你同意把文字送过去。打开下面的“允许把文字发送到我配对的网关”后才会发送；在此之前录下的文字只保存在这台手机上。"
     SyncHeadline.NEEDS_USER -> "需要你处理：下面的问题解决之前，相关文字不会再自动发送。"
     SyncHeadline.RETRYING_LATER -> "网关暂时没有成功处理，稍后会自动重试，不需要你做什么。" + (status.nextRetryAt?.let { "（下次重试：$it）" } ?: "")
     SyncHeadline.WAITING_FOR_GATEWAY -> "现在连不上网关（可能不在同一个网络，或网关没开机）。连上之后会自动发送，不需要你做什么。"
     SyncHeadline.SENDING -> "正在发送…"
     SyncHeadline.UP_TO_DATE -> "已同步：所有文字都已进入网关。"
 }
+
+internal fun describeGrantHint(): String = "默认关闭。关闭时，即使已经配对，录下的文字也只留在这台手机上；这与“音频上传”“Agent 读取”“自动发送”是各自独立的授权。"
+
+internal fun describeStrictLocalHint(): String = "开启后文字一个字节也不会离开这台手机，优先于上面的开关；也不会改走云端或其它通道。"
+
+internal fun describePolicyNotSaved(): String = "这个开关没能保存（本机存储暂时不可用），仍是原来的位置。请稍后再拨一次。"
 
 /** 读本机的同步记录时出了故障（比如数据库暂时被锁）：和“网关连不上”是两回事，下面显示的状态是最后一次读到的。 */
 internal fun describeStorageProblem(): String = "本机的同步记录暂时读不出来，正在自动重试，不需要你做什么。下面显示的是最后一次读到的状态。"

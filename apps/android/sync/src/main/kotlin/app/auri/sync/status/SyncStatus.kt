@@ -5,6 +5,7 @@ import app.auri.sync.engine.SyncJob
 import app.auri.sync.machine.SyncState
 import app.auri.sync.pairing.NeedsUser
 import app.auri.sync.pairing.PairingState
+import app.auri.sync.policy.DataFlowState
 import java.time.Instant
 
 /**
@@ -14,6 +15,9 @@ import java.time.Instant
 enum class SyncHeadline {
     /** 还没配对：文字只留在本机，不会发出去。 */
     NOT_PAIRED,
+
+    /** 文字被留在本机：用户没有授权“文字可以进网关”，或开着严格仅本地。不是故障，是用户的选择；具体是哪一道看 [SyncStatus.dataFlow]。 */
+    HELD_BY_POLICY,
 
     /** 需要用户处理：公钥不符、令牌被拒、配对记录丢失，或有 Revision 被网关永久拒绝。具体原因见 [SyncStatus.causes]。 */
     NEEDS_USER,
@@ -60,10 +64,12 @@ data class SyncStatus(
     val causes: List<UserCause>,
     val counts: SyncCounts,
     val nextRetryAt: Instant?,
+    /** 文字能不能进网关的两道开关（界面上要显示、要能改）。 */
+    val dataFlow: DataFlowState,
 ) {
     companion object {
         /** 纯函数：同一份配对状态和任务表永远汇总出同一个结果。 */
-        fun of(pairing: PairingState, jobs: List<SyncJob>): SyncStatus {
+        fun of(pairing: PairingState, jobs: List<SyncJob>, dataFlow: DataFlowState): SyncStatus {
             fun count(state: SyncState) = jobs.count { it.state == state }
             val counts = SyncCounts(
                 queued = count(SyncState.PENDING),
@@ -87,6 +93,7 @@ data class SyncStatus(
 
             val headline = when {
                 pairing == PairingState.NotPaired -> SyncHeadline.NOT_PAIRED
+                !dataFlow.textMayEnterGateway -> SyncHeadline.HELD_BY_POLICY // 引擎一个字节也不会发：不能说“正在发送”或“已同步”
                 causes.isNotEmpty() -> SyncHeadline.NEEDS_USER
                 counts.retryingLater > 0 -> SyncHeadline.RETRYING_LATER
                 counts.waitingForGateway > 0 -> SyncHeadline.WAITING_FOR_GATEWAY
@@ -94,7 +101,7 @@ data class SyncStatus(
                 else -> SyncHeadline.UP_TO_DATE
             }
             val nextRetryAt = jobs.filter { it.state == SyncState.RETRY_SCHEDULED }.mapNotNull { it.retryAt }.minOrNull()
-            return SyncStatus(headline, causes.toList(), counts, nextRetryAt)
+            return SyncStatus(headline, causes.toList(), counts, nextRetryAt, dataFlow)
         }
 
         private fun BlockedReason.toCause(): UserCause = when (this) {

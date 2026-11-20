@@ -21,6 +21,7 @@ import app.auri.sync.machine.SyncState
 import app.auri.sync.pairing.GatewayAddress
 import app.auri.sync.testing.FakeDiscovery
 import app.auri.sync.testing.FakeGateway
+import app.auri.sync.testing.InMemoryDataFlowPolicy
 import app.auri.sync.testing.InMemoryPairingStore
 import app.auri.sync.testing.SyncSamples
 import app.auri.sync.tls.SpkiPin
@@ -155,6 +156,7 @@ class ProcessKillSurvivalTest {
             http = http,
             locator = GatewayLocator(http, FakeDiscovery()),
             clock = clock,
+            policy = InMemoryDataFlowPolicy(), // 装配时显式授权：这个测试测的是被杀后的接回
         )
 
         engine.runOnce() // 重启后的第一轮

@@ -6,6 +6,7 @@ import app.auri.sync.destinations.TargetDecision
 import app.auri.sync.engine.JobKey
 import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.SendMode
+import app.auri.sync.policy.DataFlowState
 import app.auri.sync.testing.DispatchRig
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -31,7 +32,7 @@ class SendReviewViewModelTest {
     private fun run(body: suspend TestScope.(Review) -> Unit) = runTest {
         val rig = DispatchRig(this)
         val released = AtomicInteger()
-        val viewModel = SendReviewViewModel(rig.dispatch, LibraryItemTexts(rig.library), rig.clock, { released.incrementAndGet() }, backgroundScope, rig.log)
+        val viewModel = SendReviewViewModel(rig.dispatch, LibraryItemTexts(rig.library), rig.clock, { released.incrementAndGet() }, backgroundScope, rig.policy.states(), rig.log)
         settle()
         body(Review(rig, viewModel, released))
     }
@@ -129,12 +130,12 @@ class SendReviewViewModelTest {
         val preview = rig.createDestination("Claude Code", SendMode.PREVIEW_CONFIRM)
         val key = rig.transcribed()
         val released = AtomicInteger()
-        val before = SendReviewViewModel(rig.dispatch, LibraryItemTexts(rig.library), rig.clock, { released.incrementAndGet() }, backgroundScope, rig.log)
+        val before = SendReviewViewModel(rig.dispatch, LibraryItemTexts(rig.library), rig.clock, { released.incrementAndGet() }, backgroundScope, rig.policy.states(), rig.log)
         before.confirm(key, preview.destinationId)
         settle()
 
         rig.restart() // 进程被杀：内存里的东西全没了，磁盘（发送账、任务表）还在
-        val after = SendReviewViewModel(rig.dispatch, LibraryItemTexts(rig.library), rig.clock, { released.incrementAndGet() }, backgroundScope, rig.log)
+        val after = SendReviewViewModel(rig.dispatch, LibraryItemTexts(rig.library), rig.clock, { released.incrementAndGet() }, backgroundScope, rig.policy.states(), rig.log)
         settle()
         after.confirm(key, preview.destinationId)
         settle()
@@ -285,5 +286,41 @@ class SendReviewViewModelTest {
         assertFalse(everything.contains("这是一段不该出现在日志里的口述"))
         assertFalse(everything.contains("机密项目助手"))
         assertFalse(everything.contains(preview.destinationId))
+    }
+
+    // ---- 评审 B1：文字进网关要单独授权；页面要如实说“现在不会发出”，授权后才发 ----
+
+    @Test
+    fun `没授权文字进网关时：页面状态如实标着没放行，同步一轮什么也没发；授权之后状态翻过来、积压的才发出去`() = runTest {
+        val rig = DispatchRig(this, policyState = DataFlowState.Unset)
+        val viewModel = SendReviewViewModel(rig.dispatch, LibraryItemTexts(rig.library), rig.clock, {}, backgroundScope, rig.policy.states(), rig.log)
+        rig.createDestination("写作助手", SendMode.AUTO_SEND)
+        rig.transcribed("别发出去")
+        settle()
+
+        rig.engine.runOnce()
+        settle()
+        assertFalse("没放行：页面据此说“现在不会发出”", viewModel.state.value.dataFlow.textMayEnterGateway)
+        assertEquals("网关上什么也没有", 0, rig.server.putBodies.size)
+
+        rig.policy.setGatewayTextGranted(true)
+        settle()
+        assertTrue(viewModel.state.value.dataFlow.textMayEnterGateway)
+        rig.engine.runOnce()
+        assertEquals("授权之后，积压的那一条才发出去", 1, rig.server.putBodies.size)
+
+        rig.policy.setStrictLocal(true)
+        settle()
+        assertFalse("严格仅本地压过授权", viewModel.state.value.dataFlow.textMayEnterGateway)
+    }
+
+    @Test
+    fun `还没读到放行状态之前页面按没放行算`() = runTest {
+        val rig = DispatchRig(this)
+        val never = kotlinx.coroutines.flow.emptyFlow<DataFlowState>()
+        val viewModel = SendReviewViewModel(rig.dispatch, LibraryItemTexts(rig.library), rig.clock, {}, backgroundScope, never, rig.log)
+        settle()
+
+        assertFalse(viewModel.state.value.dataFlow.textMayEnterGateway)
     }
 }

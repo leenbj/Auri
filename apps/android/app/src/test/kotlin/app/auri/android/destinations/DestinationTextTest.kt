@@ -11,8 +11,10 @@ import app.auri.sync.destinations.UnknownReason
 import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.SendMode
 import app.auri.sync.pairing.NeedsUser
+import app.auri.sync.policy.DataFlowState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -157,5 +159,19 @@ class DestinationTextTest {
     @Test
     fun `创建时的提示说明没有默认值`() {
         assertTrue("没有默认值" in describeCreateHint())
+    }
+
+    @Test
+    fun `没放行文字时待发送页顶上的提示：没授权与严格仅本地分开说，都讲清点确认只是记下决定；放行时没有提示`() {
+        assertNull(describeDataFlowHold(DataFlowState(gatewayTextGranted = true, strictLocal = false)))
+
+        val notGranted = describeDataFlowHold(DataFlowState.Unset)!!
+        assertTrue(notGranted, "允许把文字发送到我配对的网关" in notGranted && "记下你的决定" in notGranted && "不会发出" in notGranted)
+
+        val strict = describeDataFlowHold(DataFlowState(gatewayTextGranted = true, strictLocal = true))!!
+        assertTrue("授权了也一样：严格仅本地压过它。$strict", "严格仅本地" in strict && "一个字节也不会离开" in strict)
+
+        assertEquals("读不到时按最保守的算：说的是严格仅本地", describeDataFlowHold(DataFlowState.Closed), strict)
+        assertTrue(notGranted != strict)
     }
 }

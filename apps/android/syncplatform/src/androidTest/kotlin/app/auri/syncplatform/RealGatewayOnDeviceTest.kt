@@ -94,10 +94,12 @@ class RealGatewayOnDeviceTest {
         assertTrue("配对结果：$outcome", outcome is PairingOutcome.Paired)
         val paired = (outcome as PairingOutcome.Paired).gateway
 
-        // 3. 发布一条 Revision（同一个事务里登记同步任务），同步循环把它送到网关
+        // 3. 配对完成不等于同意：用户没授权“文字可以进网关”之前，文字只留在手机上（评审 B1）；明确授权之后同步循环才把它送到网关
         library.addRecord(Samples.entry(1).copy(recordId = recordId))
         val revision = library.publishRevision(Samples.draft(recordId, text))
         sync.syncNow()
+        withTimeout(10_000) { sync.status.first { it.headline == SyncHeadline.HELD_BY_POLICY } }
+        sync.setGatewayTextGranted(true)
         val status = withTimeout(60_000) { sync.status.first { it.headline == SyncHeadline.UP_TO_DATE && it.counts.stored == 1 } }
         assertEquals(0, status.counts.needsUser)
 

@@ -50,6 +50,12 @@ SUBMISSION = SYNC_GATEWAY + "SubmissionBuilder.kt"
 LIBRARY_SOURCE = SYNC_ENGINE + "RecordLibrarySubmissionSource.kt"
 DISPATCH_SQL = SYNCPLATFORM + "dispatch/DispatchSql.kt"
 BIOMETRIC = SYNCPLATFORM + "auth/BiometricResults.kt"
+ENGINE = SYNC_ENGINE + "SyncEngine.kt"
+POLICY = ANDROID + "sync/src/main/kotlin/app/auri/sync/policy/DataFlowPolicy.kt"
+POLICY_SQL = SYNCPLATFORM + "policy/DataFlowPolicySql.kt"
+RESUME_PLANNER = ANDROID + "sync/src/main/kotlin/app/auri/sync/resume/ResumePlanner.kt"
+SYNC_STATUS = ANDROID + "sync/src/main/kotlin/app/auri/sync/status/SyncStatus.kt"
+SEND_REVIEW_VM = APP_DEST + "SendReviewViewModel.kt"
 
 APP_RESULTS, SYNC_RESULTS, REAL_RESULTS, PLATFORM_RESULTS = (
     "app/build/test-results/testDebugUnitTest",
@@ -91,6 +97,9 @@ LOG_CREDENTIAL = Edit(
     '                    log.event("credential.issued replaced=${result.value.replacedPrevious}")',
     '                    log.event("credential.issued replaced=${result.value.replacedPrevious} ${result.value.credential.reveal()}")',
 )
+
+# 评审 B1：引擎问“文字放行了吗”的那一处——真网关测试与单测各跑一遍，用同一份编辑
+POLICY_GATE_OPEN = Edit(ENGINE, "    private suspend fun mayTransmit(): Boolean = policy.current().textMayEnterGateway", "    private suspend fun mayTransmit(): Boolean = true")
 
 MUTATIONS: tuple = (
     # ---- 1. 创建：发送方式必须明确选，没有默认值，请求里就是合同写的那个名字 ----
@@ -310,6 +319,77 @@ MUTATIONS: tuple = (
         (Edit(DESCRIPTIONS, '    GatewayStage.ACKNOWLEDGED -> "Agent 已确认（网关只知道它回了确认）"', '    GatewayStage.ACKNOWLEDGED -> "Agent 已处理"'),),
         app_tests("DestinationTextTest"), APP_RESULTS,
         ("没有任何一句话说“已处理”", "网关能证明的三步"),
+    ),
+    # ---- 评审 B1：文字进网关要单独授权（默认关，不确定就是不许）；严格仅本地是统一门禁，压过授权 ----
+    Mutation(
+        "policy-engine-gate-open",
+        "评审 B1：引擎每次联系网关前必须先问“文字放行了吗”：门禁恒放行，配对之后没有任何授权的文字也会进网关",
+        (POLICY_GATE_OPEN,),
+        sync_tests("DataFlowGateTest"), SYNC_RESULTS,
+        ("配了对、没有授权文字进网关", "没有授权时直接调 send", "没有授权时单独探测网关也不行", "被系统叫醒的补发也过同一道门"),
+    ),
+    Mutation(
+        "real-gw-policy-gate-open",
+        "评审 B1（真网关）：配对之后、没授权文字进网关时，真网关上一个 Revision 也不能有",
+        (POLICY_GATE_OPEN,),
+        REAL, REAL_RESULTS,
+        ("配对之后没有任何 Destination、也没授权文字进网关",),
+    ),
+    Mutation(
+        "policy-second-gate-missing",
+        "评审 B1：取到要发的内容之后、真正发出之前还要再问一次放行（中间用户可能收回了授权）：少这一道，收回之后还会发出一个请求",
+        (Edit(ENGINE, "        if (!mayTransmit()) return waiting(key, wasUncertain)\n", ""),),
+        sync_tests("DataFlowGateTest"), SYNC_RESULTS,
+        ("问过之后、请求发出之前授权被收回",),
+    ),
+    Mutation(
+        "policy-strict-local-ignored",
+        "评审 B1：严格仅本地是统一门禁，压过授权：只看授权就等于开着严格仅本地也照发",
+        (Edit(POLICY, "    val textMayEnterGateway: Boolean get() = gatewayTextGranted && !strictLocal", "    val textMayEnterGateway: Boolean get() = gatewayTextGranted"),),
+        sync_tests("DataFlowGateTest"), SYNC_RESULTS,
+        ("授权了文字进网关、但开着严格仅本地", "稍后重试的任务到点了也受门禁管"),
+    ),
+    Mutation(
+        "policy-unset-means-granted",
+        "评审 B1：从没设置过时必须是“没授权”（默认关）：默认成已授权，等于配对就自动同意文字进网关",
+        (Edit(POLICY_SQL, "        gatewayTextGranted = value(TEXT_GRANT)?.let(::isGrant) ?: false,", "        gatewayTextGranted = value(TEXT_GRANT)?.let(::isGrant) ?: true,"),),
+        platform_tests("DataFlowPolicySqlTest"), PLATFORM_RESULTS,
+        ("从没设置过：没有授权",),
+    ),
+    Mutation(
+        "policy-unreadable-opens",
+        "评审 B1：设置读不出来时必须按最保守的算（不授权、严格仅本地）：读不出来就放行是 fail-open",
+        (Edit(POLICY_SQL, "    } catch (_: Exception) {\n        DataFlowState.Closed\n    }", "    } catch (_: Exception) {\n        DataFlowState(gatewayTextGranted = true, strictLocal = false)\n    }"),),
+        platform_tests("DataFlowPolicySqlTest"), PLATFORM_RESULTS,
+        ("读不出来（表不存在、连接坏了）",),
+    ),
+    Mutation(
+        "policy-resume-ignores-gate",
+        "评审 B1：没放行时不该要求系统把应用叫醒去发（醒来也发不出去，只会白白打扰系统）",
+        (Edit(RESUME_PLANNER, "    policy.textMayEnterGateway && pairing is PairingState.Paired", "    pairing is PairingState.Paired"),),
+        sync_tests("DataFlowGateTest", "ResumePlannerTest"), SYNC_RESULTS,
+        ("needsResume：授权并且没开严格仅本地才需要叫醒", "被系统叫醒的补发也过同一道门"),
+    ),
+    Mutation(
+        "policy-status-claims-up-to-date",
+        "评审 B1：没放行时同步状态不能说“已同步/正在发送”：必须是“文字被留在本机”",
+        (Edit(SYNC_STATUS, "                !dataFlow.textMayEnterGateway -> SyncHeadline.HELD_BY_POLICY", "                false -> SyncHeadline.HELD_BY_POLICY"),),
+        sync_tests("DataFlowGateTest", "SyncStatusTest"), SYNC_RESULTS,
+        ("同步状态：配了对但没放行时",),
+    ),
+    Mutation(
+        "ui-send-page-hides-the-hold",
+        "评审 B1：文字没放行时待发送页必须如实说“点确认只是记下决定、现在不会发出”：把提示藏起来就是让用户以为发出去了",
+        (Edit(DESCRIPTIONS, "    state.textMayEnterGateway -> null", "    true -> null"),),
+        app_tests("DestinationTextTest"), APP_RESULTS,
+        ("没放行文字时待发送页顶上的提示",),
+    ),
+    Mutation(
+        "ui-send-page-ignores-policy-state",
+        "评审 B1：待发送页的状态必须带着真实的放行状态（而不是写死放行）",
+        (Edit(SEND_REVIEW_VM, "            dataFlow = dataFlow,\n", "            dataFlow = DataFlowState(gatewayTextGranted = true, strictLocal = false),\n"),),
+        app_tests("SendReviewViewModelTest"), APP_RESULTS,
+        ("没授权文字进网关时：页面状态如实标着没放行", "还没读到放行状态之前页面按没放行算"),
     ),
 )
 

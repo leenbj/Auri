@@ -850,7 +850,7 @@ class SyncEngineTest {
         val failing = object : SyncJobStore by rig.jobs {
             override suspend fun update(job: SyncJob) = throw IOException("disk full")
         }
-        val engine = SyncEngine(failing, rig.pairing, { rig.submissions[it] }, rig.lan.factory, GatewayLocator(rig.lan.factory, rig.discovery), rig.clock)
+        val engine = SyncEngine(failing, rig.pairing, { rig.submissions[it] }, rig.lan.factory, GatewayLocator(rig.lan.factory, rig.discovery), rig.clock, rig.policy)
 
         assertEquals(SendResult.SKIPPED, engine.send(key))
 

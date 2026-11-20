@@ -11,6 +11,7 @@ import app.auri.sync.destinations.UnknownReason
 import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.SendMode
 import app.auri.sync.pairing.NeedsUser
+import app.auri.sync.policy.DataFlowState
 
 /*
  * 这个页面上所有会说“事情到哪一步了”的句子都在这里，界面不自己拼。几条规矩：
@@ -40,6 +41,16 @@ internal fun describeIntent(intent: Intent): String = when (intent) {
 internal fun describeIntentNote(intent: Intent): String = when (intent) {
     Intent.CONTEXT -> "备忘：给 Agent 当背景资料。"
     Intent.ACTION_REQUEST -> "请求执行：只是告诉 Agent 你的本意。它不会被自动执行，Agent 也不会因此多得到任何权限。"
+}
+
+/**
+ * 文字现在不会进网关时，待发送页顶上的一句话（放行时为 null）。严格仅本地压过授权，所以先说它；
+ * 两种情形都讲清：点“确认发送”只是记下决定、现在不会发出，也不会改走别的通道。
+ */
+internal fun describeDataFlowHold(state: DataFlowState): String? = when {
+    state.textMayEnterGateway -> null
+    state.strictLocal -> "“严格仅本地”开着：文字一个字节也不会离开这台手机。点“确认发送”只是记下你的决定，现在不会发出；到“同步与配对”关掉它之后才会发。"
+    else -> "你还没有允许把文字发送到网关：点“确认发送”只是记下你的决定，现在不会发出。到“同步与配对”打开“允许把文字发送到我配对的网关”之后才会发。"
 }
 
 /** 每一条自动发送的初稿都还没有人审核过：发出去的请求里就是这个状态（review_state=not_reviewed）。 */

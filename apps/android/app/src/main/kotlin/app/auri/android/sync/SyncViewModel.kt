@@ -43,12 +43,18 @@ import kotlinx.coroutines.launch
  *   │   ├─ counts                 各状态的任务数（排队 / 发送中 / 等网关 / 稍后重试 / 需处理 / 已入库）。
  *   │   └─ nextRetryAt            等待重试的任务里最早的重试时间（RETRYING_LATER 时可以显示）。
  *   ├─ pairing: PairingProgress   配对这个动作的进展：Idle / Pairing / Failed(problem)。
- *   └─ storageProblem             true = 本机存储暂时读不出同步状态（会自动重试）：界面显示一行提示；status 仍是最后一次读到的值，不要清空。
+ *   ├─ storageProblem             true = 本机存储暂时读不出同步状态（会自动重试）：界面显示一行提示；status 仍是最后一次读到的值，不要清空。
+ *   └─ policyNotSaved             true = 用户刚才拨的“文字进网关”开关没能存下来（存储故障）：开关仍是旧位置，界面提示再试一次；下一次拨成功就清掉。
+ *
+ *   status.dataFlow 是文字能不能进网关的两道开关现在的位置（评审 B1）：gatewayTextGranted（用户明确授权，默认关）、
+ *   strictLocal（严格仅本地，开着压过授权）。headline = HELD_BY_POLICY 时文字被留在本机，不是故障：界面据 dataFlow 说清是哪一道，并给出开关。
  *
  * 写（都不阻塞，可在任何线程调，包括摄像头的分析线程）：
  *   - onQrText(text)             取景读到一段二维码文字（同一帧可以反复来）。只有合规的配对载荷才会开始配对；配对进行中重复的帧被忽略。
  *   - dismissPairingProblem()    关掉配对失败的提示。
  *   - syncNow()                  现在同步一轮（回到前台、用户点“现在同步”）。
+ *   - setGatewayTextGranted(b)   用户拨“允许文字发送到我的网关”开关。默认关；配对本身不等于同意。
+ *   - setStrictLocal(b)          用户拨“严格仅本地”开关：开着时一个字节也不发。
  *
  * 规则：令牌、配对码、公钥指纹不进界面状态、不进日志（这里唯一的日志是“状态流出故障”那一行，只有异常类名）；
  *       转录文字是数据，这里根本不读文字（SEC-004）。
@@ -59,6 +65,7 @@ data class SyncUiState(
     val status: SyncStatus?,
     val pairing: PairingProgress,
     val storageProblem: Boolean = false,
+    val policyNotSaved: Boolean = false,
 )
 
 /** 配对这个动作进行到哪了（与“同步有没有完成”无关）。 */
@@ -116,6 +123,7 @@ class SyncViewModel(
     @Volatile private var lastPairedText: String? = null
 
     private val storageProblem = MutableStateFlow(false)
+    private val policyNotSaved = MutableStateFlow(false)
 
     /** 连续失败的次数（只在收集状态流的那一条协程里读写）：读到一个状态就清零。 */
     private var statusFailures = 0
@@ -140,8 +148,8 @@ class SyncViewModel(
         }
         .onStart { emit(null) }
 
-    val state: StateFlow<SyncUiState> = combine(statuses, progress, storageProblem) { status, pairing, problem ->
-        SyncUiState(status, pairing, problem)
+    val state: StateFlow<SyncUiState> = combine(statuses, progress, storageProblem, policyNotSaved) { status, pairing, problem, notSaved ->
+        SyncUiState(status, pairing, problem, notSaved)
     }.stateIn(scope, SharingStarted.Eagerly, SyncUiState(null, PairingProgress.Idle))
 
     fun onQrText(text: String) {
@@ -170,6 +178,25 @@ class SyncViewModel(
     }
 
     fun syncNow() = controller.syncNow()
+
+    fun setGatewayTextGranted(granted: Boolean) = savePolicy { controller.setGatewayTextGranted(granted) }
+
+    fun setStrictLocal(on: Boolean) = savePolicy { controller.setStrictLocal(on) }
+
+    /** 开关的写入不能把进程带崩（这个作用域没有异常处理器）：写不进去就如实告诉用户，开关仍在旧位置。 */
+    private fun savePolicy(write: suspend () -> Unit) {
+        scope.launch {
+            try {
+                write()
+                policyNotSaved.value = false
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                log.event("sync.policy.save-failed ${failure::class.simpleName}")
+                policyNotSaved.value = true
+            }
+        }
+    }
 
     override fun onCleared() {
         scope.cancel()

@@ -21,6 +21,7 @@ import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.SendMode
 import app.auri.sync.gateway.SubmissionBuilder
 import app.auri.sync.pairing.PairedGateway
+import app.auri.sync.policy.DataFlowState
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.test.TestScope
 
@@ -42,13 +43,20 @@ class ScriptedAuthenticator(@Volatile var next: AuthResult = AuthResult.Authenti
  * Ticket 22 的整套假适配器：同步引擎与 Destination 服务是真的，网关（含 Destination 与投递模型）、局域网、本地 Record 库、发送账、本机身份核验都是假的。
  * 发送账与同步任务表共用一份“磁盘”，[restart] 换掉所有进程内对象、磁盘不动：模拟进程被杀后重启。
  */
-class DispatchRig(val scope: TestScope, gateway: PairedGateway? = SyncSamples.pairedGateway(), gatewayOnLan: Boolean = true) {
+class DispatchRig(
+    val scope: TestScope,
+    gateway: PairedGateway? = SyncSamples.pairedGateway(),
+    gatewayOnLan: Boolean = true,
+    /** 文字能不能进网关：装配时显式授权（见 SyncRig）。 */
+    policyState: DataFlowState = InMemoryDataFlowPolicy.GRANTED,
+) {
     val clock = FakeClock(scope.testScheduler)
     val lan = FakeLan()
     val discovery = FakeDiscovery()
     val server = FakeGateway(now = clock::now)
     val library = InMemoryRecordLibrary()
     val pairing = InMemoryPairingStore(gateway)
+    val policy = InMemoryDataFlowPolicy(policyState)
     val log = CollectingLog()
     val authenticator = ScriptedAuthenticator()
 
@@ -79,6 +87,7 @@ class DispatchRig(val scope: TestScope, gateway: PairedGateway? = SyncSamples.pa
             http = lan.factory,
             locator = locator,
             clock = clock,
+            policy = policy,
             retry = RetryPolicy(),
             log = log,
         )

@@ -2,9 +2,12 @@ package app.auri.android.sync
 
 import app.auri.android.ui.describeCause
 import app.auri.android.ui.describeCounts
+import app.auri.android.ui.describeGrantHint
 import app.auri.android.ui.describeHeadline
 import app.auri.android.ui.describeProblem
 import app.auri.android.ui.describeStorageProblem
+import app.auri.android.ui.describeStrictLocalHint
+import app.auri.sync.policy.DataFlowState
 import app.auri.sync.status.SyncCounts
 import app.auri.sync.status.SyncHeadline
 import app.auri.sync.status.SyncStatus
@@ -12,6 +15,7 @@ import app.auri.sync.status.UserCause
 import java.time.Instant
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -21,7 +25,7 @@ import org.junit.Test
  */
 class SyncScreenTextTest {
     private fun status(headline: SyncHeadline, causes: List<UserCause> = emptyList(), retryAt: Instant? = null) =
-        SyncStatus(headline, causes, SyncCounts(1, 2, 3, 4, 5, 6), retryAt)
+        SyncStatus(headline, causes, SyncCounts(1, 2, 3, 4, 5, 6), retryAt, DataFlowState(gatewayTextGranted = true, strictLocal = false))
 
     @Test
     fun `六种情形的话两两不同`() {
@@ -78,6 +82,22 @@ class SyncScreenTextTest {
 
         assertTrue(storage, "自动重试" in storage && "不需要你做什么" in storage)
         assertFalse(storage, SyncHeadline.entries.any { describeHeadline(status(it)) == storage })
+    }
+
+    @Test
+    fun `文字被留在本机：没授权与严格仅本地是两句不同的话，都明说文字只在手机上，没授权那句告诉用户哪个开关能放行，且不是故障的口气（评审 B1）`() {
+        val notGranted = describeHeadline(status(SyncHeadline.HELD_BY_POLICY).copy(dataFlow = DataFlowState.Unset))
+        val strictLocal = describeHeadline(status(SyncHeadline.HELD_BY_POLICY).copy(dataFlow = DataFlowState(gatewayTextGranted = true, strictLocal = true)))
+
+        assertNotEquals(notGranted, strictLocal)
+        for (text in listOf(notGranted, strictLocal)) {
+            assertTrue(text, "只保存在这台手机上" in text)
+            assertFalse("这不是故障：$text", "失败" in text || "出错" in text)
+        }
+        assertTrue(notGranted, "允许把文字发送到我配对的网关" in notGranted)
+        assertTrue(strictLocal, "严格仅本地" in strictLocal)
+        assertTrue("开关旁的说明要讲清默认关闭、与其它授权互相独立", "默认关闭" in describeGrantHint() && "各自独立" in describeGrantHint())
+        assertTrue(describeStrictLocalHint(), "一个字节也不会离开" in describeStrictLocalHint())
     }
 
     @Test
