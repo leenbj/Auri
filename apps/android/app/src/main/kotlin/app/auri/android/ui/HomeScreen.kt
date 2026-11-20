@@ -33,14 +33,7 @@ import app.auri.capture.contract.ObservedInputRouteType
  * 三个事实分三行：耳机连接、实际输入来源、采集状态——不能合并成一句话（耳机已连接 ≠ 正在用耳机麦克风）。
  */
 @Composable
-fun HomeScreen(
-    state: HomeUiState,
-    onStart: () -> Unit,
-    onStop: () -> Unit,
-    onDismissNotice: () -> Unit,
-    onSetDuration: (String) -> Unit,
-    onOpenSync: (() -> Unit)? = null,
-) {
+fun HomeScreen(state: HomeUiState, onStart: () -> Unit, onStop: () -> Unit, onDismissNotice: () -> Unit, onSetDuration: (String) -> Unit, onOpenSync: (() -> Unit)? = null) {
     var durationText by rememberSaveable { mutableStateOf(state.durationMinutes.toString()) }
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         onOpenSync?.let { Button(onClick = it) { Text("同步与配对") } }

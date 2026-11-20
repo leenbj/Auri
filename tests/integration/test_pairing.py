@@ -28,14 +28,14 @@ def test_pairing_code_redeem_is_one_time_and_plain_cli_works(gateway: GatewayPro
     req = make_redeem_request(code, display_name="My FreeClip Phone")
     assert_valid_contract("pairing.schema.json#/$defs/redeem_request", req)
 
-    resp = httpx.post(f"{gateway.base_url}/v1/pairing/redeem", json=req, timeout=5.0)
+    resp = httpx.post(f"{gateway.base_url}/v1/pairing/redeem", trust_env=False, json=req, timeout=5.0)
     assert resp.status_code == 200
     body = resp.json()
     assert_valid_contract("pairing.schema.json#/$defs/redeem_response", body)
     assert len(body["device_token"]) >= 32
 
     # Second redeem attempt with the same pairing code must fail.
-    reuse_resp = httpx.post(f"{gateway.base_url}/v1/pairing/redeem", json=req, timeout=5.0)
+    reuse_resp = httpx.post(f"{gateway.base_url}/v1/pairing/redeem", trust_env=False, json=req, timeout=5.0)
     assert reuse_resp.status_code == 401
     reuse_body = reuse_resp.json()
     assert_valid_contract("error.schema.json", reuse_body)
@@ -48,7 +48,7 @@ def test_expired_pairing_code_cannot_be_redeemed(gateway: GatewayProcess) -> Non
     req = make_redeem_request(code, display_name="Late Phone")
     assert_valid_contract("pairing.schema.json#/$defs/redeem_request", req)
 
-    resp = httpx.post(f"{gateway.base_url}/v1/pairing/redeem", json=req, timeout=5.0)
+    resp = httpx.post(f"{gateway.base_url}/v1/pairing/redeem", trust_env=False, json=req, timeout=5.0)
     assert resp.status_code == 401
     body = resp.json()
     assert_valid_contract("error.schema.json", body)
@@ -64,7 +64,7 @@ def test_tokens_and_pairing_codes_are_hashed_at_rest_and_never_logged(
     try:
         code = gw.issue_pairing_code(ttl_seconds=60)
         req = make_redeem_request(code, display_name="Security Audit Phone")
-        resp = httpx.post(f"{gw.base_url}/v1/pairing/redeem", json=req, timeout=5.0)
+        resp = httpx.post(f"{gw.base_url}/v1/pairing/redeem", trust_env=False, json=req, timeout=5.0)
         assert resp.status_code == 200
         device_token = resp.json()["device_token"]
         device_id = resp.json()["device_id"]

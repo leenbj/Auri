@@ -22,7 +22,7 @@ def test_health_returns_minimal_ok_with_no_text_secrets_or_topology(
     secret_text = f"隐私口述正文-{uuid.uuid4()}"
     gateway.publish(paired["device_token"], [dest.destination_id], text=secret_text)
 
-    resp = httpx.get(f"{gateway.base_url}/health", timeout=5.0)
+    resp = httpx.get(f"{gateway.base_url}/health", trust_env=False, timeout=5.0)
     assert resp.status_code == 200
     body = resp.json()
     assert_valid_contract("gateway.schema.json#/$defs/health_response", body)
@@ -34,7 +34,7 @@ def test_health_returns_minimal_ok_with_no_text_secrets_or_topology(
 def test_capabilities_requires_device_auth_and_returns_v1_limits(
     gateway: GatewayProcess,
 ) -> None:
-    unauth = httpx.get(f"{gateway.base_url}/v1/capabilities", timeout=5.0)
+    unauth = httpx.get(f"{gateway.base_url}/v1/capabilities", trust_env=False, timeout=5.0)
     assert unauth.status_code == 401
     assert_valid_contract("error.schema.json", unauth.json())
     assert unauth.json()["code"] == "GATEWAY_AUTH_INVALID"
@@ -44,7 +44,7 @@ def test_capabilities_requires_device_auth_and_returns_v1_limits(
 
     # Destination credential cannot access device HTTP endpoints.
     dest_attempt = httpx.get(
-        f"{gateway.base_url}/v1/capabilities",
+        f"{gateway.base_url}/v1/capabilities", trust_env=False,
         headers={"Authorization": f"Bearer {dest.credential}"},
         timeout=5.0,
     )
@@ -53,7 +53,7 @@ def test_capabilities_requires_device_auth_and_returns_v1_limits(
     assert dest_attempt.json()["code"] == "GATEWAY_AUTH_INVALID"
 
     resp = httpx.get(
-        f"{gateway.base_url}/v1/capabilities",
+        f"{gateway.base_url}/v1/capabilities", trust_env=False,
         headers={"Authorization": f"Bearer {paired['device_token']}"},
         timeout=5.0,
     )
@@ -96,7 +96,7 @@ def test_operation_lookup_returns_stored_outcome_and_live_delivery_states(
     agent_1.ack(claimed["delivery_id"], claimed["lease_token"])
 
     op_resp = httpx.get(
-        f"{gateway.base_url}/v1/operations/{op_id}",
+        f"{gateway.base_url}/v1/operations/{op_id}", trust_env=False,
         headers=headers_a,
         timeout=5.0,
     )
@@ -119,7 +119,7 @@ def test_operation_lookup_returns_stored_outcome_and_live_delivery_states(
 
     # Another paired device cannot inspect Phone A's operation.
     other_dev = httpx.get(
-        f"{gateway.base_url}/v1/operations/{op_id}",
+        f"{gateway.base_url}/v1/operations/{op_id}", trust_env=False,
         headers=headers_b,
         timeout=5.0,
     )
@@ -129,7 +129,7 @@ def test_operation_lookup_returns_stored_outcome_and_live_delivery_states(
 
     # Unknown UUID -> 404 REQUEST_INVALID; invalid UUID -> 422 REQUEST_INVALID; no auth -> 401.
     missing = httpx.get(
-        f"{gateway.base_url}/v1/operations/{uuid.uuid4()}",
+        f"{gateway.base_url}/v1/operations/{uuid.uuid4()}", trust_env=False,
         headers=headers_a,
         timeout=5.0,
     )
@@ -138,7 +138,7 @@ def test_operation_lookup_returns_stored_outcome_and_live_delivery_states(
     assert missing.json()["code"] == "REQUEST_INVALID"
 
     bad_id = httpx.get(
-        f"{gateway.base_url}/v1/operations/NOT-A-UUID",
+        f"{gateway.base_url}/v1/operations/NOT-A-UUID", trust_env=False,
         headers=headers_a,
         timeout=5.0,
     )
@@ -146,7 +146,7 @@ def test_operation_lookup_returns_stored_outcome_and_live_delivery_states(
     assert_valid_contract("error.schema.json", bad_id.json())
     assert bad_id.json()["code"] == "REQUEST_INVALID"
 
-    no_auth = httpx.get(f"{gateway.base_url}/v1/operations/{op_id}", timeout=5.0)
+    no_auth = httpx.get(f"{gateway.base_url}/v1/operations/{op_id}", trust_env=False, timeout=5.0)
     assert no_auth.status_code == 401
     assert_valid_contract("error.schema.json", no_auth.json())
     assert no_auth.json()["code"] == "GATEWAY_AUTH_INVALID"
@@ -176,7 +176,7 @@ def test_record_status_shows_stored_leased_and_acknowledged_per_destination(
     acked_agent.ack(acked_dlv["delivery_id"], acked_dlv["lease_token"], note="secret-ack-note")
 
     resp = httpx.get(
-        f"{gateway.base_url}/v1/records/{record_id}/status",
+        f"{gateway.base_url}/v1/records/{record_id}/status", trust_env=False,
         headers=headers,
         timeout=5.0,
     )
@@ -221,7 +221,7 @@ def test_record_status_shows_stored_leased_and_acknowledged_per_destination(
         source="user_edit",
     )
     resp_v2 = httpx.get(
-        f"{gateway.base_url}/v1/records/{record_id}/status",
+        f"{gateway.base_url}/v1/records/{record_id}/status", trust_env=False,
         headers=headers,
         timeout=5.0,
     )
@@ -237,7 +237,7 @@ def test_record_status_shows_stored_leased_and_acknowledged_per_destination(
     # Unknown / invalid / unauthenticated / destination-credential rejections.
     assert (
         httpx.get(
-            f"{gateway.base_url}/v1/records/{uuid.uuid4()}/status",
+            f"{gateway.base_url}/v1/records/{uuid.uuid4()}/status", trust_env=False,
             headers=headers,
             timeout=5.0,
         ).status_code
@@ -245,19 +245,19 @@ def test_record_status_shows_stored_leased_and_acknowledged_per_destination(
     )
     assert (
         httpx.get(
-            f"{gateway.base_url}/v1/records/NOT-A-UUID/status",
+            f"{gateway.base_url}/v1/records/NOT-A-UUID/status", trust_env=False,
             headers=headers,
             timeout=5.0,
         ).status_code
         == 422
     )
     assert (
-        httpx.get(f"{gateway.base_url}/v1/records/{record_id}/status", timeout=5.0).status_code
+        httpx.get(f"{gateway.base_url}/v1/records/{record_id}/status", trust_env=False, timeout=5.0).status_code
         == 401
     )
     assert (
         httpx.get(
-            f"{gateway.base_url}/v1/records/{record_id}/status",
+            f"{gateway.base_url}/v1/records/{record_id}/status", trust_env=False,
             headers={"Authorization": f"Bearer {dest_stored.credential}"},
             timeout=5.0,
         ).status_code

@@ -47,12 +47,13 @@ def claim_with_body_held_back(
         yield payload
 
     return httpx.post(
-        f"{world.gw.base_url}/mcp",
+        f"{world.gw.base_url}/mcp", trust_env=False,
         content=body(),
         headers={
             "Authorization": f"Bearer {destination.credential}",
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
+            "Transfer-Encoding": "chunked",
         },
         timeout=15.0,
     )

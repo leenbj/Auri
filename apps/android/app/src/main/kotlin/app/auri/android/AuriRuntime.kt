@@ -38,8 +38,8 @@ import app.auri.platform.control.ScreenControlAdapter
 import app.auri.platform.jobs.SqliteTranscriptionJobStore
 import app.auri.platform.service.AndroidForegroundServiceController
 import app.auri.platform.service.bindForegroundService
-import app.auri.platform.storage.FileProfileStore
 import app.auri.platform.storage.DurationLimitSetting
+import app.auri.platform.storage.FileProfileStore
 import app.auri.platform.storage.NoBackupStorage
 import app.auri.platform.storage.WavRecordingStore
 import app.auri.platform.system.AndroidCaptureEnvironment

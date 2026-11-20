@@ -71,24 +71,24 @@ def test_the_gateway_output_stays_clean_across_conflicts_rejections_and_delete(
     # Version conflict, non-origin delete, origin delete, and post-delete submit.
     conflict_sub = make_submission(record_id=record_id, revision=1, text=secret_conflict)
     httpx.put(
-        f"{world.gw.base_url}/v1/records/{record_id}/revisions/1",
+        f"{world.gw.base_url}/v1/records/{record_id}/revisions/1", trust_env=False,
         json=conflict_sub,
         headers={"Authorization": f"Bearer {world.device_token}"},
         timeout=5.0,
     )
     httpx.delete(
-        f"{world.gw.base_url}/v1/records/{record_id}",
+        f"{world.gw.base_url}/v1/records/{record_id}", trust_env=False,
         headers={"Authorization": f"Bearer {other['device_token']}"},
         timeout=5.0,
     )
     httpx.delete(
-        f"{world.gw.base_url}/v1/records/{record_id}",
+        f"{world.gw.base_url}/v1/records/{record_id}", trust_env=False,
         headers={"Authorization": f"Bearer {world.device_token}"},
         timeout=5.0,
     )
     rev2_sub = make_submission(record_id=record_id, revision=2, text=secret_v2)
     httpx.put(
-        f"{world.gw.base_url}/v1/records/{record_id}/revisions/2",
+        f"{world.gw.base_url}/v1/records/{record_id}/revisions/2", trust_env=False,
         json=rev2_sub,
         headers={"Authorization": f"Bearer {world.device_token}"},
         timeout=5.0,

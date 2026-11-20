@@ -24,7 +24,7 @@ def test_store_revision_and_idempotent_resubmit(gateway: GatewayProcess) -> None
     rev = fixture_sub["revision"]
 
     first_resp = httpx.put(
-        f"{gateway.base_url}/v1/records/{record_id}/revisions/{rev}",
+        f"{gateway.base_url}/v1/records/{record_id}/revisions/{rev}", trust_env=False,
         json=fixture_sub,
         headers=headers,
         timeout=5.0,
@@ -41,7 +41,7 @@ def test_store_revision_and_idempotent_resubmit(gateway: GatewayProcess) -> None
 
     # Repeat exact same submission: must return original stored snapshot with duplicate=True.
     dup_resp = httpx.put(
-        f"{gateway.base_url}/v1/records/{record_id}/revisions/{rev}",
+        f"{gateway.base_url}/v1/records/{record_id}/revisions/{rev}", trust_env=False,
         json=fixture_sub,
         headers=headers,
         timeout=5.0,
@@ -59,7 +59,7 @@ def test_store_revision_and_idempotent_resubmit(gateway: GatewayProcess) -> None
     # Publishing a subsequent revision supersedes only the single stored revision [1].
     rev2 = make_submission(record_id=record_id, revision=2, text="补充说明。", source="user_edit")
     rev2_resp = httpx.put(
-        f"{gateway.base_url}/v1/records/{record_id}/revisions/2",
+        f"{gateway.base_url}/v1/records/{record_id}/revisions/2", trust_env=False,
         json=rev2,
         headers=headers,
         timeout=5.0,
@@ -77,7 +77,7 @@ def test_non_contiguous_revision_numbers_are_accepted(gateway: GatewayProcess) -
     sub_a3 = make_submission(record_id=rec_a, revision=3, text="跳过了前两版的初次提交。", source="user_edit")
     assert_valid_contract("revision.schema.json#/$defs/submission", sub_a3)
     resp_a3 = httpx.put(
-        f"{gateway.base_url}/v1/records/{rec_a}/revisions/3",
+        f"{gateway.base_url}/v1/records/{rec_a}/revisions/3", trust_env=False,
         json=sub_a3,
         headers=headers,
         timeout=5.0,
@@ -95,13 +95,13 @@ def test_non_contiguous_revision_numbers_are_accepted(gateway: GatewayProcess) -
     sub_b7 = make_submission(record_id=rec_b, revision=7, text="第七版。", source="user_edit")
 
     r1 = httpx.put(
-        f"{gateway.base_url}/v1/records/{rec_b}/revisions/1", json=sub_b1, headers=headers, timeout=5.0
+        f"{gateway.base_url}/v1/records/{rec_b}/revisions/1", trust_env=False, json=sub_b1, headers=headers, timeout=5.0
     )
     assert r1.status_code == 200
     assert r1.json()["superseded_revisions"] == []
 
     r3 = httpx.put(
-        f"{gateway.base_url}/v1/records/{rec_b}/revisions/3", json=sub_b3, headers=headers, timeout=5.0
+        f"{gateway.base_url}/v1/records/{rec_b}/revisions/3", trust_env=False, json=sub_b3, headers=headers, timeout=5.0
     )
     assert r3.status_code == 200
     body_r3 = r3.json()
@@ -109,7 +109,7 @@ def test_non_contiguous_revision_numbers_are_accepted(gateway: GatewayProcess) -
     assert body_r3["superseded_revisions"] == [1]
 
     r7 = httpx.put(
-        f"{gateway.base_url}/v1/records/{rec_b}/revisions/7", json=sub_b7, headers=headers, timeout=5.0
+        f"{gateway.base_url}/v1/records/{rec_b}/revisions/7", trust_env=False, json=sub_b7, headers=headers, timeout=5.0
     )
     assert r7.status_code == 200
     body_r7 = r7.json()
@@ -118,7 +118,7 @@ def test_non_contiguous_revision_numbers_are_accepted(gateway: GatewayProcess) -
 
     # Resubmitting revision 3 returns its original superseded_revisions=[1] and duplicate=True.
     r3_dup = httpx.put(
-        f"{gateway.base_url}/v1/records/{rec_b}/revisions/3", json=sub_b3, headers=headers, timeout=5.0
+        f"{gateway.base_url}/v1/records/{rec_b}/revisions/3", trust_env=False, json=sub_b3, headers=headers, timeout=5.0
     )
     assert r3_dup.status_code == 200
     assert r3_dup.json()["duplicate"] is True
@@ -136,7 +136,7 @@ def test_conflicting_resubmit_preserves_original_and_non_origin_device_is_reject
     record_id = str(uuid.uuid4())
     sub_1 = make_submission(record_id=record_id, revision=1, text="原始内容。")
     resp_1 = httpx.put(
-        f"{gateway.base_url}/v1/records/{record_id}/revisions/1",
+        f"{gateway.base_url}/v1/records/{record_id}/revisions/1", trust_env=False,
         json=sub_1,
         headers=headers_a,
         timeout=5.0,
@@ -147,7 +147,7 @@ def test_conflicting_resubmit_preserves_original_and_non_origin_device_is_reject
     # Same record_id + revision with different text_sha256 -> RECORD_VERSION_CONFLICT.
     sub_conflict = make_submission(record_id=record_id, revision=1, text="篡改后的内容。")
     conflict_resp = httpx.put(
-        f"{gateway.base_url}/v1/records/{record_id}/revisions/1",
+        f"{gateway.base_url}/v1/records/{record_id}/revisions/1", trust_env=False,
         json=sub_conflict,
         headers=headers_a,
         timeout=5.0,
@@ -160,7 +160,7 @@ def test_conflicting_resubmit_preserves_original_and_non_origin_device_is_reject
     # Resubmitting the original text still succeeds idempotently with original operation_id,
     # proving the conflicting submission did not overwrite it.
     verify_resp = httpx.put(
-        f"{gateway.base_url}/v1/records/{record_id}/revisions/1",
+        f"{gateway.base_url}/v1/records/{record_id}/revisions/1", trust_env=False,
         json=sub_1,
         headers=headers_a,
         timeout=5.0,
@@ -172,7 +172,7 @@ def test_conflicting_resubmit_preserves_original_and_non_origin_device_is_reject
     # Different device submitting revision 2 for phone_a's record -> RECORD_NOT_ORIGIN_DEVICE.
     sub_2 = make_submission(record_id=record_id, revision=2, text="另一台设备试图写入。")
     non_origin_resp = httpx.put(
-        f"{gateway.base_url}/v1/records/{record_id}/revisions/2",
+        f"{gateway.base_url}/v1/records/{record_id}/revisions/2", trust_env=False,
         json=sub_2,
         headers=headers_b,
         timeout=5.0,
@@ -195,7 +195,7 @@ def test_max_utf8_boundary_1mib_is_accepted(gateway: GatewayProcess) -> None:
     sub = make_submission(record_id=record_id, revision=1, text=max_text, source="user_edit")
     assert_valid_contract("revision.schema.json#/$defs/submission", sub)
     resp = httpx.put(
-        f"{gateway.base_url}/v1/records/{record_id}/revisions/1",
+        f"{gateway.base_url}/v1/records/{record_id}/revisions/1", trust_env=False,
         json=sub,
         headers=headers,
         timeout=10.0,
