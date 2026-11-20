@@ -427,7 +427,7 @@ cd apps/android && ./gradlew :syncplatform:connectedDebugAndroidTest -Pandroid.t
 | `execution/acceptance/android-destinations/test_destination_mutation_table.py` | 一处放宽 | “变异只能碰生产代码”的范围扩到网关包（见 13.2 第 10 条） |
 | `apps/android/sync/src/test/.../contract/DestinationContractOutputTest.kt`、`execution/acceptance/android-destinations/destination_contract_check.py`、`test_destination_contract_check.py`、`test_destination_contract_output.py` | 最终验证时发现并改（13.7 第 1 条，`3376705`） | 合同输出的场景与校验器原先还按 B2 之前“预览确认的文字确认前不入库”的语义；改成 B2 的语义，并多校验追加请求的 schema |
 | `execution/acceptance/android-sync/mutation_check.py`（Ticket 21 的变异表） | 4 条条目的锚点（13.7 第 2 条，`3376705`） | B2 重构 `SyncEngine.kt` / `SyncLoop.kt` 后这 4 条（连同派生的 `real-gw-gate-not-persisted` 共 5 条）的原文不再恰好出现一次；只换锚点，破坏的含义不变，并重新真跑 |
-| `CLAUDE.md` | 只改“命令”一节里 Ticket 22 那一段的说明与测试数字 | 说明按评审修复轮改正，数字改成 13.5 的最新值 |
+| `CLAUDE.md` | 只改“命令”一节：Ticket 22 那一段的说明与测试数字，以及网关全量 pytest 那一行的个数与耗时（529 个，约 4 分钟） | 说明按评审修复轮改正，数字改成 13.5 的最新值 |
 
 ### 13.7 最终验证里发现并修掉的两处遗漏（提交 `3376705`）
 
