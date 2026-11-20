@@ -65,6 +65,25 @@ class CreateDestinationRequest(val displayName: String, val sendMode: SendMode, 
 }
 
 /**
+ * Revision 提交里的 publication 段（revision.schema.json#/$defs/publication）：这条文字的意图，以及要为哪些 Destination 创建 Delivery。
+ * [destinationIds] 为空 = 只入库、不投递。网关只在这一版第一次入库时按它创建 Delivery，之后补不了（G13），所以提交前必须定准。
+ */
+data class Publication(val intent: Intent, val destinationIds: List<String>) {
+    init {
+        require(destinationIds.size <= MAX_DESTINATIONS) { "一次最多 $MAX_DESTINATIONS 个 Destination" }
+        require(destinationIds.toSet().size == destinationIds.size) { "destination_ids 不许重复" }
+        require(destinationIds.all { Wire.UUID.matches(it) }) { "destination_id 必须是小写 UUID" }
+    }
+
+    companion object {
+        const val MAX_DESTINATIONS = 50
+
+        /** 只入库：Ticket 21 的行为，也是没有任何目标的文字的样子。 */
+        val StoreOnly = Publication(Intent.CONTEXT, emptyList())
+    }
+}
+
+/**
  * 网关发给 Agent 的 Destination 凭证。只有一个出口 [reveal]（交给用户去复制）；toString 永远不含内容，
  * 日志、异常消息、调试输出里即使不小心带上它也不会泄露。**不要持久化它**：它只在签发的那一刻存在于内存。
  */

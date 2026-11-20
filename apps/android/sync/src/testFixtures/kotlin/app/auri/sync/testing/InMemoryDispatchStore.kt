@@ -1,0 +1,177 @@
+package app.auri.sync.testing
+
+import app.auri.capture.contract.RevisionSource
+import app.auri.sync.destinations.Choice
+import app.auri.sync.destinations.DecideResult
+import app.auri.sync.destinations.DispatchItem
+import app.auri.sync.destinations.DispatchStore
+import app.auri.sync.destinations.DispatchTarget
+import app.auri.sync.destinations.IntentResult
+import app.auri.sync.destinations.TargetDecision
+import app.auri.sync.engine.JobKey
+import app.auri.sync.gateway.Destination
+import app.auri.sync.gateway.Intent
+import app.auri.sync.gateway.Publication
+import app.auri.sync.gateway.SendMode
+import java.time.Instant
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+
+/** 内存里的“磁盘”：重启（[InMemoryDispatchFixture.reopen]）后新实例读到的还是它。 */
+class InMemoryDispatchDisk(val jobs: InMemorySyncJobStore = InMemorySyncJobStore()) {
+    class Row(val sendMode: SendMode, var decision: TargetDecision)
+
+    class Item(var intent: Intent, val createdAt: Instant, val order: Long) {
+        val rows = LinkedHashMap<String, Row>()
+    }
+
+    val lock = Mutex()
+    var gatewayId: String? = null
+    val cache = LinkedHashMap<String, Destination>()
+    val items = LinkedHashMap<JobKey, Item>()
+    var defaultIntent: Intent = Intent.CONTEXT
+    var nextOrder = 0L
+    val signal = MutableStateFlow(0L)
+}
+
+/**
+ * [DispatchStore] 的内存实现（引擎与界面测试用）。与 :syncplatform 的 SQLite 实现共用 [DispatchStoreContract]，
+ * 所以这里的“预览确认之前没有同步任务、决定幂等、被撤销的不拦着别人”就是真实实现的语义。
+ */
+class InMemoryDispatchStore(private val disk: InMemoryDispatchDisk) : DispatchStore {
+    private val jobs get() = disk.jobs
+
+    override suspend fun destinations(): List<Destination> = disk.lock.withLock { sortedCache() }
+
+    override suspend fun applyDestinations(gatewayId: String, destinations: List<Destination>, authoritative: Boolean, now: Instant) = disk.lock.withLock {
+        if (disk.gatewayId != gatewayId) {
+            disk.cache.clear()
+            disk.gatewayId = gatewayId
+        }
+        if (authoritative) disk.cache.keys.retainAll(destinations.map { it.destinationId }.toSet())
+        destinations.forEach { disk.cache[it.destinationId] = it }
+        releaseReady(now)
+        bump()
+    }
+
+    override suspend fun forgetDestinations(now: Instant) = disk.lock.withLock {
+        disk.cache.clear()
+        disk.gatewayId = null
+        // 旧网关的目的地不会再有了：还在等它们的文字不能永远拦着，照常入库
+        releaseReady(now)
+        bump()
+    }
+
+    override suspend fun item(key: JobKey): DispatchItem? = disk.lock.withLock { disk.items[key]?.let { view(key, it) } }
+
+    override suspend fun items(limit: Int): List<DispatchItem> = disk.lock.withLock {
+        disk.items.entries.sortedByDescending { it.value.order }.take(limit).map { (key, item) -> view(key, item) }
+    }
+
+    override suspend fun itemsFor(destinationId: String, limit: Int): List<DispatchItem> = disk.lock.withLock {
+        disk.items.entries.filter { destinationId in it.value.rows }.sortedByDescending { it.value.order }.take(limit).map { (key, item) -> view(key, item) }
+    }
+
+    override suspend fun decide(key: JobKey, destinationId: String, choice: Choice, now: Instant): DecideResult = disk.lock.withLock {
+        val item = disk.items[key] ?: return@withLock DecideResult.NotFound
+        val row = item.rows[destinationId] ?: return@withLock DecideResult.NotFound
+        if (row.decision != TargetDecision.AWAITING) return@withLock DecideResult.AlreadyDecided(row.decision)
+        if (!eligible(item, destinationId)) return@withLock DecideResult.NotEligible
+        row.decision = if (choice == Choice.CONFIRM) TargetDecision.CONFIRMED else TargetDecision.SKIPPED
+        val released = releaseIfReady(key, item, now)
+        bump()
+        DecideResult.Decided(released)
+    }
+
+    override suspend fun setIntent(key: JobKey, intent: Intent, now: Instant): IntentResult = disk.lock.withLock {
+        val item = disk.items[key] ?: return@withLock IntentResult.NotFound
+        if (jobs.get(key) != null) return@withLock IntentResult.Locked
+        if (item.intent == intent) return@withLock IntentResult.Unchanged
+        item.intent = intent
+        val released = releaseIfReady(key, item, now)
+        bump()
+        IntentResult.Changed(released)
+    }
+
+    override suspend fun publicationFor(key: JobKey): Publication = disk.lock.withLock {
+        val item = disk.items[key] ?: return@withLock Publication.StoreOnly
+        val ids = item.rows.entries
+            .filter { (id, row) -> eligible(item, id) && (row.decision == TargetDecision.AUTO || row.decision == TargetDecision.CONFIRMED) }
+            .map { it.key }
+        Publication(item.intent, ids)
+    }
+
+    override suspend fun defaultIntent(): Intent = disk.lock.withLock { disk.defaultIntent }
+
+    override suspend fun setDefaultIntent(intent: Intent) = disk.lock.withLock {
+        disk.defaultIntent = intent
+        bump()
+    }
+
+    override fun changes(): Flow<Long> = disk.signal
+
+    /** 发布一条 Revision 的那个事务里发生的事（Android：库的 publicationStep）。测试专用入口。 */
+    suspend fun publish(key: JobKey, source: RevisionSource, now: Instant) = disk.lock.withLock {
+        if (source == RevisionSource.ASR) {
+            val item = InMemoryDispatchDisk.Item(disk.defaultIntent, now, disk.nextOrder++)
+            sortedCache().filter { it.active }.forEach { destination ->
+                item.rows[destination.destinationId] = InMemoryDispatchDisk.Row(
+                    destination.sendMode,
+                    if (destination.sendMode == SendMode.AUTO_SEND) TargetDecision.AUTO else TargetDecision.AWAITING,
+                )
+            }
+            disk.items[key] = item
+            releaseIfReady(key, item, now)
+        } else {
+            jobs.enqueue(key, now) // 用户修订：不规划、不等待，照常入库（ADR-0009：新版本不自动重发）
+        }
+        bump()
+    }
+
+    // ---- 内部（都在锁里）----
+
+    private fun bump() {
+        disk.signal.value += 1
+    }
+
+    private fun sortedCache(): List<Destination> = disk.cache.values.sortedWith(compareBy({ it.createdAt }, { it.destinationId }))
+
+    private fun eligible(item: InMemoryDispatchDisk.Item, destinationId: String): Boolean {
+        val destination = disk.cache[destinationId] ?: return false
+        return destination.active && destination.allows(item.intent)
+    }
+
+    private fun awaiting(item: InMemoryDispatchDisk.Item): Boolean = item.rows.any { (id, row) -> row.decision == TargetDecision.AWAITING && eligible(item, id) }
+
+    private suspend fun releaseIfReady(key: JobKey, item: InMemoryDispatchDisk.Item, now: Instant): Boolean {
+        if (awaiting(item)) return false
+        return jobs.enqueue(key, now)
+    }
+
+    private suspend fun releaseReady(now: Instant) {
+        for ((key, item) in disk.items) if (jobs.get(key) == null) releaseIfReady(key, item, now)
+    }
+
+    private suspend fun view(key: JobKey, item: InMemoryDispatchDisk.Item): DispatchItem = DispatchItem(
+        key = key,
+        intent = item.intent,
+        createdAt = item.createdAt,
+        sent = jobs.get(key) != null,
+        targets = item.rows.map { (id, row) ->
+            DispatchTarget(id, disk.cache[id]?.displayName, row.sendMode, row.decision, eligible(item, id))
+        },
+    )
+}
+
+/** 内存版的发送账加它所在的磁盘，给 [DispatchStoreContract] 用。 */
+class InMemoryDispatchFixture(private val disk: InMemoryDispatchDisk = InMemoryDispatchDisk()) : DispatchFixture {
+    private val memory = InMemoryDispatchStore(disk)
+    override val store: DispatchStore get() = memory
+    override val jobs get() = disk.jobs
+
+    override suspend fun publish(key: JobKey, source: RevisionSource, now: Instant) = memory.publish(key, source, now)
+
+    override fun reopen(): DispatchFixture = InMemoryDispatchFixture(disk)
+}
