@@ -111,6 +111,7 @@ cd apps/android && ./gradlew :syncplatform:connectedDebugAndroidTest -Pandroid.t
 9. **本机缓存可能比网关旧**（别的设备撤销了某个目的地）：见第 7 节 G16 与第 10 节。
 10. **TDD 的接缝没能先问人**：被派发的 worker 没有人可问，接缝定在“`DestinationController` / `DispatchStore` / `LocalAuthenticator` 接口、三个视图模型的 `state`、网关请求 / 响应”，测试都写在这些接口上。
 11. **没有经过独立评审**：这次实现由单个 worker 完成，没有另一个评审者（或评审工具）看过。替代证据只有第 8 节的变异验证与真网关测试；合入前仍应有人评审，尤其是第 5 节的发送账事务与凭证只显示一次的几处。
+12. **前四个提交不是这一轮写的**：`6971bee`、`34a3a9b`、`6fc8331` 与不能编译的在制品 `62c0f8c` 是被 Orca 重启打断的前几轮留下的。我接手后让它们编译、补齐测试，没法证明那几处当初是先红后绿写成的，所以用第 8 节的 30 条变异证明这些测试在规则被改坏时真的会变红；这一轮新写的部分按检查项先写测试再写实现。
 
 ## 7. 合同与网关的缺口及建议（没有改 `contracts/` 与 `services/gateway/`，只记录）
 
@@ -216,6 +217,8 @@ cd apps/android && ./gradlew :syncplatform:connectedDebugAndroidTest -Pandroid.t
 - 每次运行前后各读一次 `memory_pressure` 的空闲百分比与 `sysctl vm.swapusage`（表里“空闲 前 → 后；交换区已用”）；空闲低于 25% 或 60 秒内交换区涨超 500 MB 就等（本次没有一次因此等待：最低的读数是 `asr-android` 结束时的 34%，仍高于 25%）。
 - pytest 一律带 `NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1`，前后各查 `pgrep -fl auri_gateway`：每一次都是 0 个残留。
 - **没有**启动模拟器、AVD、Android Studio、Xcode、DevEco 或任何仿真器，没有运行任何仪器测试（`connectedAndroidTest`）；仪器测试只编译打包（`androidtest-apks`）。
+- **技能与代码索引的核对（如实）**：`tdd`、`implement-spec` 技能在 `~/.claude/plugins/cache/claude-plugins-official/mattpocock-skills/1.3.1/skills/engineering/` 与 `~/.agents/skills/`；我前面的搜索漏了 `implement-spec`，收尾时才找到并读了它：它写的是协调者的流程，对 implementer 的三条要求（工作树基于集成分支、用 `tdd` 做票、报告前合入集成分支最新提交）都满足（合并提交 `e19d2f6`）；`tdd` 里“测试前先与用户确认接缝”无人可问，见第 6 节第 10 条；它的 `code-review` 步骤属于协调者，我没做，也没有 Codex 评审（单一 agent、禁止子 agent）。
+- **GitNexus**：查过主检出 `/Users/ethan/Desktop/CODE/auri` 的索引（`Auri`，`main` @ `eedf123`，171 个文件），对 `PinnedHttpsClient`、`GatewayClient`、`AuriRuntime`、`DestinationService` 都没有 Kotlin 命中，帮不上本票的调用者与影响分析；没有给本工作树建索引（占内存，派发说明要求用主检出的索引），所以没跑 `impact` / `detect_changes`。替代证据：`rg` 与源码、`git diff --stat` 对集成分支（`contracts/`、`tests/`、`services/`、`.github/`、`apps/android/gradle/`（含 `libs.versions.toml`）、`settings.gradle.kts` 与根 `build.gradle.kts` 都没有改动；也没有删除任何文件，没有新增被跳过 / 禁用的测试）、合并后全部套件重跑、第 8 节的变异检查。**AOCI**：本分支、`origin/main`、`origin/integration/auri-v2` 都没有 `aoci.txt`（只有主检出的本地 `main` 有），没读也没维护，也没自动启用。
 
 ### 12.2 JVM 单测、真网关与构建（`apps/android`，合并 `integration/auri-v2` 之后，每个套件单独取锁、`--no-daemon … --rerun`）
 
