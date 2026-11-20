@@ -33,7 +33,8 @@ private fun ByteArray.hex() = joinToString("") { "%02x".format(it) }
  * **分段提交（Ticket 19）**：音频按“分段”落盘。写满一个提交间隔（默认 1 秒的语音）或遇到时间线上的空隙，就先 fsync 数据，
  * 再追加一行日志（这一段的位置、累计字节数、SHA-256）并 fsync。所以进程被杀之后，日志里有的分段数据一定在，没有写进日志的尾巴
  * （至多一个提交间隔加一次写入）不可信。[recoverOrphans] 在下次启动时逐段验证、把不可信的尾巴截掉、修好头部、改名，
- * 交给 Record 管线像别的录音一样登记。封存之后日志仍然保留，直到下次启动发现这个 Record 已经登记进库才删。
+ * 交给 Record 管线像别的录音一样登记。封存之后日志仍然保留，直到下次启动发现这个 Record 已经登记进库才删；
+ * 一个采样都没写下、但仍要登记成“没有语音”的录音（[RecordingWriter.finishWithoutAudio]）也一样：不留音频文件，日志留到登记之后。
  *
  * 一次 [RecordingWriter.append] 要么整批写下，要么什么都不留：写不下时把写了一半的字节截掉再抛 [IOException]，
  * 协调器的计数与磁盘上的内容永远一致。封存只在最后一段的日志行落盘之后才完成（头部原地改写与改名本身不要新空间，
@@ -207,6 +208,21 @@ class WavRecordingStore internal constructor(
             part.delete()
             File(directory, "$recordId.journal").delete()
             synchronized(writing) { writing -= recordId }
+        }
+
+        @Synchronized
+        override fun finishWithoutAudio() {
+            if (finished) return
+            // 写过采样的录音不能当“没有音频”：那会删掉用户的语音。不改任何状态就抛出，协调器收场时释放写入器，已写的留给恢复流程
+            check(dataBytes == 0L) { "写过采样的录音不能当作没有音频" }
+            finished = true
+            closeQuietly(data)
+            journal.close()
+            part.delete() // 空的音频壳里什么都没有；恢复记录（日志）才是这个 Record 存在过的凭据，留到登记之后的那次启动（评审 M1）
+            synchronized(writing) {
+                writing -= recordId
+                handedOver += recordId // 和封存好的录音一样：这个进程里的扫描不把它当孤儿
+            }
         }
 
         @Synchronized

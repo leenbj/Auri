@@ -281,6 +281,57 @@ class RecordingRecoveryTest {
         assertTrue(journal.isFile)
     }
 
+    // ---- Ticket 19 评审 M1：没有任何音频的录音，Record 仍然欠着 ----
+
+    @Test
+    fun `一个采样都没写下就收场：不留音频文件，日志留到登记；登记之前被杀，下次启动找回一个没有音频的 Record，登记之后清理干净`() = runBlocking {
+        val thisProcess = store()
+        thisProcess.begin(recordId, open, format, meta).finishWithoutAudio()
+
+        assertEquals("没有音频文件，只有恢复记录", listOf("$recordId.journal"), records.list()!!.toList())
+        assertTrue("本进程的恢复扫描不把它当孤儿（它正在被交付）", thisProcess.recoverOrphans { false }.recovered.isEmpty())
+
+        // 进程在 Record 登记之前被杀（或登记时库写失败）：下一个进程只凭磁盘
+        val scan = recover(store())
+        val r = scan.recovered.single()
+        assertTrue(scan.failures.isEmpty())
+        assertEquals(recordId, r.recordId)
+        assertEquals(sessionId, r.captureSessionId)
+        assertEquals(meta.startedAt, r.startedAt)
+        assertTrue(r.runs.isEmpty())
+        assertNull(r.audio)
+        assertEquals("恢复可重复", describe(r), describe(recover(store()).recovered.single()))
+
+        val settled = recover(store(), registered = setOf(recordId))
+        assertTrue(settled.recovered.isEmpty() && settled.failures.isEmpty())
+        assertEquals("登记之后清理干净", emptyList<String>(), records.list()!!.toList())
+    }
+
+    @Test
+    fun `写过采样的录音不能当作没有音频：抛出，一个字节都不删，之后照常封存`() = runBlocking {
+        val writer = store().begin(recordId, open, format, meta)
+        play(writer, contiguous(4))
+
+        assertThrows(IllegalStateException::class.java) { writer.finishWithoutAudio() }
+
+        assertTrue("音频与日志都还在", part.isFile && journal.isFile)
+        assertEquals("写下的采样一个都没丢，仍然可以封存", 4L * 480, writer.seal().sampleCount)
+    }
+
+    @Test
+    fun `没有音频的收场是幂等的；放弃之后再调无效，不会让已经删掉的东西重新出现`() {
+        val a = store().begin(recordId, open, format, meta)
+        a.finishWithoutAudio()
+        a.finishWithoutAudio()
+        assertEquals(listOf("$recordId.journal"), records.list()!!.toList())
+
+        val other = Samples.uuid(4)
+        val b = store().begin(other, open, format, meta)
+        b.abort()
+        b.finishWithoutAudio()
+        assertFalse(File(records, "$other.journal").exists() || File(records, "$other.wav.part").exists())
+    }
+
     // ---- 幂等、可重入 ----
 
     @Test

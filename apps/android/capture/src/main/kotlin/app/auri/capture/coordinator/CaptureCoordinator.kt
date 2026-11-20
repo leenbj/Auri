@@ -779,11 +779,14 @@ class CaptureCoordinator(
         scope.launch(adapterDispatcher) {
             val outcome = try {
                 if (written == 0L) {
-                    // 确认了路由却没收到任何采样：没有音频可留，不留空文件；若是存储写入失败，按丢失处理而不是无语音
-                    writer.abort()
+                    // 确认了路由却没收到任何采样：没有音频可留，不留空文件；若是存储写入失败，按丢失处理而不是无语音。
+                    // 没有语音的 Record 仍然欠着，登记又是异步的：恢复记录要留到登记之后，不能 abort（评审 M1）；
+                    // 丢失的那一路没有 Record 欠着，连恢复记录一起清掉
                     if (storageFailed) {
+                        writer.abort()
                         SealOutcome.Failed(recordId, Cause.STORAGE_FAILURE)
                     } else {
+                        writer.finishWithoutAudio()
                         SealOutcome.Done(
                             SealedRecording(resultFor(recordId, sessionId, reason, captureMs, observedSamples, chunks, unverifiedTail), evidence, evidenceId, startedAt, null),
                         )

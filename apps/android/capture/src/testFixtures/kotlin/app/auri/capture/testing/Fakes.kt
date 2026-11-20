@@ -243,6 +243,9 @@ sealed interface StoreEvent {
     data class Seal(val recordId: String) : StoreEvent
     data class Abort(val recordId: String) : StoreEvent
 
+    /** 一个采样都没写、但仍要登记成“没有语音”的 Record：不留音频文件，恢复记录留到登记（评审 M1）。 */
+    data class FinishWithoutAudio(val recordId: String) : StoreEvent
+
     /** 不再写、也不删：封存没能完成，已落盘的部分留给下次启动的恢复流程。 */
     data class Release(val recordId: String) : StoreEvent
 }
@@ -310,6 +313,10 @@ class FakeRecordingStore : RecordingStore {
 
             override fun abort() {
                 events += StoreEvent.Abort(recordId)
+            }
+
+            override fun finishWithoutAudio() {
+                events += StoreEvent.FinishWithoutAudio(recordId)
             }
 
             override fun release() {
