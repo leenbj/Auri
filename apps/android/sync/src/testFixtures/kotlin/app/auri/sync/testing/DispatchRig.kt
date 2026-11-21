@@ -15,6 +15,7 @@ import app.auri.sync.engine.JobKey
 import app.auri.sync.engine.RecordLibrarySubmissionSource
 import app.auri.sync.engine.RetryPolicy
 import app.auri.sync.engine.SyncEngine
+import app.auri.sync.engine.SyncJobStore
 import app.auri.sync.gateway.ContractGuard
 import app.auri.sync.gateway.CreateDestinationRequest
 import app.auri.sync.gateway.Destination
@@ -53,6 +54,8 @@ class DispatchRig(
     policyState: DataFlowState = InMemoryDataFlowPolicy.GRANTED,
     /** 引擎、服务与来源看到的发送账可以包一层（复评 R5 的测试在写账的瞬间停住，看这时重新配对能不能插进来）；rig.dispatch 仍是没包的那份。 */
     private val wrapLedger: (DispatchStore) -> DispatchStore = { it },
+    /** 引擎看到的同步任务表也可以包一层（再评 S2 的测试在任务转移那一次写的瞬间让用户改配）；rig.jobs 仍是没包的那份。 */
+    private val wrapJobs: (SyncJobStore) -> SyncJobStore = { it },
 ) {
     val clock = FakeClock(scope.testScheduler)
     val lan = FakeLan()
@@ -87,7 +90,7 @@ class DispatchRig(
         val contract = ContractGuard() // 和线上一样：引擎与管理页共用一个，重启（assemble）才换新
         val ledger = wrapLedger(dispatch)
         engine = SyncEngine(
-            jobs = jobs,
+            jobs = wrapJobs(jobs),
             pairing = pairing,
             source = RecordLibrarySubmissionSource(library, SubmissionBuilder("0.1.0-test"), ledger),
             http = lan.factory,

@@ -11,6 +11,7 @@ import app.auri.sync.gateway.ContractGuard
 import app.auri.sync.gateway.GatewayClient
 import app.auri.sync.gateway.GatewayResult
 import app.auri.sync.gateway.RecordStatus
+import app.auri.sync.gateway.RevisionSubmission
 import app.auri.sync.http.HttpExchangeFactory
 import app.auri.sync.http.TransportFailure
 import app.auri.sync.machine.SyncEvent
@@ -81,6 +82,7 @@ enum class SendResult {
  *   没问成（连不上、网关出错、读不懂）同样什么都不发，也不冤枉网关“太旧”。
  * - **结果跟着配对走**：请求发出时是哪份配对，结果就只对那份有效。途中用户重新配对、改配别的网关，晚到的结果（被拒、
  *   公钥不符、甚至“已入库”）全部作废，任务回到排队、对新配对重新来过；一轮同步里缓存的网关地址也只对同一份配对有效。
+ *   “是不是那份配对”与“结果落账”是同一把锁里的同一件事（[settle]，再评 S2），不是先看一眼再写。
  *
  * 引擎自己不计时、不监听网络：什么时候调用 [runOnce]、[networkLost]、[networkChanged] 由 SyncLoop 决定。
  */
@@ -271,14 +273,14 @@ class SyncEngine(
         val wasUncertain = before.uncertain
 
         // 落盘之后、联系网关之前再问一次放行：刚才被收回的，连网关都不去碰，退回等待（“不确定”还原成发送之前的样子）
-        if (!mayTransmit(gateway)) return waiting(key, wasUncertain)
+        if (!mayTransmit(gateway)) return waiting(gateway, key, wasUncertain)
         val address = when (val located = location.get(gateway)) {
             is Located.Reachable -> located.address
-            Located.Unreachable -> return waiting(key, wasUncertain)
+            Located.Unreachable -> return waiting(gateway, key, wasUncertain)
             Located.KeyMismatch -> return connectionBlocked(key, gateway, NeedsUser.KEY_MISMATCH, BlockedReason.KEY_MISMATCH, wasUncertain)
         }
         // 定位网关是一次网络往返，用户可能在这期间收回了授权：每个回答回来之后、下一步之前都重新问一次，收回了就不再发任何请求（复评 R4）
-        if (!mayTransmit(gateway)) return waiting(key, wasUncertain)
+        if (!mayTransmit(gateway)) return waiting(gateway, key, wasUncertain)
         rememberAddress(gateway, address)
 
         // 请求要离开手机了：先确认这台网关说的是手机说的合同版本（评审 R7）。放在构造提交之前——旧网关不该冻结意图标签（评审 M3）
@@ -286,36 +288,33 @@ class SyncEngine(
         when (contract.check(gateway, address, client)) {
             ContractAnswer.COMPATIBLE -> Unit
             ContractAnswer.TOO_OLD -> return tooOld(key, gateway, wasUncertain)
-            ContractAnswer.UNCONFIRMED -> return waiting(key, wasUncertain)
+            ContractAnswer.UNCONFIRMED -> return waiting(gateway, key, wasUncertain)
             ContractAnswer.AUTH_REJECTED -> return connectionBlocked(key, gateway, NeedsUser.AUTH_REJECTED, BlockedReason.AUTH_REJECTED, wasUncertain)
             ContractAnswer.KEY_MISMATCH -> return connectionBlocked(key, gateway, NeedsUser.KEY_MISMATCH, BlockedReason.KEY_MISMATCH, wasUncertain)
         }
         // 合同版本探测也是一次网络往返：回来再问一次放行（复评 R4）；下面的状态查询与 PUT 之前只有本地计算
-        if (!mayTransmit(gateway)) return waiting(key, wasUncertain)
+        if (!mayTransmit(gateway)) return waiting(gateway, key, wasUncertain)
 
         // 换了网关的话，按旧网关规划的目标在这里（构造提交之前）先作废：旧网关的 Destination 编号不许进新网关的请求（评审 H2）。
         // 改账要先确认配对着的仍是这一份（复评 R5）：这一轮在网络上等的时候用户若换了网关，它是旧配对的残余，对新配对的账一个字也不许碰
         if (!fenced(gateway) { additions.useGateway(gateway.gatewayId) }) return stale(key)
         // 请求会不会发还没定：这里只看这条文字在不在、哈希是什么。**不构造提交**——构造提交就是冻结意图标签（评审 M3），
         // 而下面任何一步（问网关、最后一道放行、配对被换）都可能让这次尝试什么也没发就结束，那时用户还想改标签（复评 R13）
-        val textSha256 = source.textSha256For(key) ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)
+        val textSha256 = source.textSha256For(key) ?: return blocked(gateway, key, BlockedReason.LOCAL_DATA_MISSING)
 
         if (wasUncertain) {
             // 上一次可能已经送到：先问网关。只有网关明确说“已入库”才确认，明确说“没有”才往下重发；问不到就不重发。
+            // 回答不在这里单独判断“还是不是这份配对”：下面每一种结论都经 settle，判断与落账在配对存储的同一把锁里（再评 S2）；
+            // 往下发 PUT 的那一路则在冻结意图的围栏里判断
             val answer = client.recordStatus(address, gateway.token, key.recordId)
-            if (!stillPaired(gateway)) return stale(key)
             when (answer) {
                 is GatewayResult.Success -> when (answer.value.standing(key.revision, textSha256, gateway.deviceId)) {
-                    Standing.SAME_STORED -> {
-                        val seen = answer.value.destinations.filter { it.revision == key.revision }.map { it.destinationId }
-                        if (!fenced(gateway) { additions.gatewayHas(key, seen) }) return stale(key)
-                        return stored(key)
-                    }
+                    Standing.SAME_STORED -> return stored(gateway, key, answer.value.destinations.filter { it.revision == key.revision }.map { it.destinationId })
                     Standing.MISSING -> Unit // 网关没有这一版：往下重新提交
                     // 下面三种网关都已经说明白了，再 PUT 只会白白把正文再发一遍、换来同样的拒绝
-                    Standing.CONFLICTING -> return blocked(key, BlockedReason.VERSION_CONFLICT)
-                    Standing.DELETED -> return blocked(key, BlockedReason.RECORD_DELETED)
-                    Standing.FOREIGN -> return blocked(key, BlockedReason.NOT_ORIGIN_DEVICE)
+                    Standing.CONFLICTING -> return blocked(gateway, key, BlockedReason.VERSION_CONFLICT)
+                    Standing.DELETED -> return blocked(gateway, key, BlockedReason.RECORD_DELETED)
+                    Standing.FOREIGN -> return blocked(gateway, key, BlockedReason.NOT_ORIGIN_DEVICE)
                 }
                 is GatewayResult.Rejected -> if (!(answer.status == 404 && answer.code == ErrorCode.REQUEST_INVALID)) return failed(key, gateway, answer, wasUncertain)
                 else -> return failed(key, gateway, answer, wasUncertain)
@@ -323,19 +322,15 @@ class SyncEngine(
         }
         // 请求离开手机之前的最后一问（复评 R4）：状态查询的回答在路上时授权可能收回了。这一问紧挨着 PUT，中间只有本地计算；
         // 刚才被收回的，什么都没发出去，退回等待（“不确定”还原成发送之前的样子）
-        if (!mayTransmit(gateway)) return waiting(key, wasUncertain)
+        if (!mayTransmit(gateway)) return waiting(gateway, key, wasUncertain)
         // 请求马上要离开手机：到这一刻才为它构造提交，构造提交就是冻结意图标签（评审 M3、复评 R13）。
-        // 没网、等网关、排队、被最后一道放行拦下、问网关的路上被作废——这些尝试都没走到这里，标签都还能改；构造出来的提交带的是冻结的那个值
-        val submission = source.submissionFor(key) ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)
+        // 没网、等网关、排队、被最后一道放行拦下、问网关的路上被作废——这些尝试都没走到这里，标签都还能改；构造出来的提交带的是冻结的那个值。
+        // 冻结是写账，和别的写账一样在围栏里（再评 S2）：判断“还是这一份配对”与冻结在配对存储的同一把锁里，旧配对的残余尝试不会在改配之后去冻结
+        val built = pairing.whileCurrent(gateway) { Built(source.submissionFor(key)) } ?: return stale(key)
+        val submission = built.submission ?: return blocked(gateway, key, BlockedReason.LOCAL_DATA_MISSING)
         val put = client.putRevision(address, gateway.token, submission)
-        if (!stillPaired(gateway)) return stale(key)
         return when (put) {
-            is GatewayResult.Success -> {
-                // 先记账再确认入库：进程死在两步之间，下一轮先问网关、同样记账（追加是幂等的，最坏只多一个请求）。记账同样要确认还是这一份配对（复评 R5）
-                val created = put.value.deliveries.filter { it.revision == key.revision }.map { it.destinationId }
-                if (fenced(gateway) { additions.gatewayHas(key, created) }) stored(key) else stale(key)
-            }
-
+            is GatewayResult.Success -> stored(gateway, key, put.value.deliveries.filter { it.revision == key.revision }.map { it.destinationId })
             else -> failed(key, gateway, put, wasUncertain)
         }
     }
@@ -354,12 +349,24 @@ class SyncEngine(
 
     // ---- 结局 ----
 
-    private suspend fun stored(key: JobKey): SendResult {
+    /**
+     * 请求发出时是哪份配对，结果就只对那份有效（复评 R5），而且“是不是那份”与“把结果记下来”是同一件事、不是两步（再评 S2）：
+     * 判断、任务的转移、发送账的改动都在配对存储的同一把锁里，用户的重新配对排在它们之后（[PairingStore.whileCurrent]）。
+     * 以前是“先 stillPaired 看一眼、再转移”：刚看完、还没写，用户改配了，旧网关的“已入库/被拒绝”照样记到新配对的任务上，
+     * 文字就永远到不了新网关。不是这一份了就整个丢掉（[stale]）：任务回到排队，对新配对重新来过。
+     * [outcome] 在锁里执行，应当很短（本地写）；里面不许再调用配对存储。
+     */
+    private suspend fun settle(gateway: PairedGateway, key: JobKey, outcome: suspend () -> SendResult): SendResult =
+        pairing.whileCurrent(gateway, outcome) ?: stale(key)
+
+    /** 网关说这一版已经入库：先记账（网关上有哪些 Delivery）再确认入库，两步在同一个围栏里；进程死在两步之间，下一轮先问网关、同样记账（追加是幂等的，最坏只多一个请求）。 */
+    private suspend fun stored(gateway: PairedGateway, key: JobKey, deliveredTo: Collection<String>): SendResult = settle(gateway, key) {
+        additions.gatewayHas(key, deliveredTo)
         deliver(key, SyncEvent.STORED_CONFIRMED) { it.copy(uncertain = false) }
-        return SendResult.STORED
+        SendResult.STORED
     }
 
-    /** 发请求时的那份配对，现在还是当前的配对吗？用户重新配对、改配另一个网关、取消配对之后就不是了。 */
+    /** 发请求时的那份配对，现在还是当前的配对吗？用户重新配对、改配另一个网关、取消配对之后就不是了。只用来省掉对旧配对的无谓处理；写账、转移任务一律走 [settle] 或 [fenced]。 */
     private suspend fun stillPaired(gateway: PairedGateway): Boolean = (pairing.load() as? PairingState.Paired)?.gateway?.isSamePairing(gateway) == true
 
     /**
@@ -373,9 +380,9 @@ class SyncEngine(
     }
 
     /** 请求没有离开手机（连不上）：“不确定”回到发送之前的样子。 */
-    private suspend fun waiting(key: JobKey, wasUncertain: Boolean): SendResult {
+    private suspend fun waiting(gateway: PairedGateway, key: JobKey, wasUncertain: Boolean): SendResult = settle(gateway, key) {
         deliver(key, SyncEvent.GATEWAY_UNREACHABLE) { it.copy(uncertain = wasUncertain) }
-        return SendResult.WAITING_GATEWAY
+        SendResult.WAITING_GATEWAY
     }
 
     /**
@@ -383,28 +390,35 @@ class SyncEngine(
      * 平台已经报告没网时，这次失败多半就是断网造成的：排重试倒计时没有意义（网络回来时才是该再试的时候），
      * 按“等网关”处理，仍然记着结果不确定。
      */
-    private suspend fun retryLater(key: JobKey): SendResult {
+    private suspend fun retryLater(gateway: PairedGateway, key: JobKey): SendResult = settle(gateway, key) {
         if (offline) {
             deliver(key, SyncEvent.GATEWAY_UNREACHABLE)
-            return SendResult.WAITING_GATEWAY
+            SendResult.WAITING_GATEWAY
+        } else {
+            deliver(key, SyncEvent.RETRYABLE_FAILURE) { it.copy(retryAt = clock.now().plusMillis(retry.delayMs(it.attempts))) }
+            SendResult.RETRY_LATER
         }
-        deliver(key, SyncEvent.RETRYABLE_FAILURE) { it.copy(retryAt = clock.now().plusMillis(retry.delayMs(it.attempts))) }
-        return SendResult.RETRY_LATER
     }
 
     /** 永久拒绝（网关已经处理并拒绝，没有“可能入库”的悬念）。事件借用 VERSION_CONFLICT，原因记在任务上。 */
-    private suspend fun blocked(key: JobKey, reason: BlockedReason): SendResult {
+    private suspend fun blocked(gateway: PairedGateway, key: JobKey, reason: BlockedReason): SendResult = settle(gateway, key) {
         deliver(key, SyncEvent.VERSION_CONFLICT) { it.copy(uncertain = false, blockedReason = reason) }
-        return SendResult.BLOCKED
+        SendResult.BLOCKED
     }
 
-    /** 公钥不符或令牌被拒。先记进配对记录（之后不再发任何带令牌的请求），再把这条任务停下。 */
+    /**
+     * 公钥不符或令牌被拒。先记进配对记录（之后不再发任何带令牌的请求），再把这条任务停下。
+     * 两步的顺序不能反（进程死在中间时，配对记录上有标记、任务只是回到排队，比“任务停了、记录上没标记、没人会去解除”好）；
+     * 第二步仍在围栏里：两步之间用户改配了，任务不能被旧配对的结论停下（再评 S2）。
+     */
     private suspend fun connectionBlocked(key: JobKey, gateway: PairedGateway, needs: NeedsUser, reason: BlockedReason, wasUncertain: Boolean): SendResult {
         // 配对记录里的这份已经不是发请求时的那份（途中重新配对了）：这是旧配对的结论，作废。写记录这一步本身就是原子的比对
         if (!recordConnectionProblem(gateway, needs)) return stale(key)
         val event = if (needs == NeedsUser.KEY_MISMATCH) SyncEvent.KEY_MISMATCH else SyncEvent.AUTH_REVOKED
-        deliver(key, event) { it.copy(uncertain = wasUncertain, blockedReason = reason) }
-        return SendResult.CONNECTION_BLOCKED
+        return settle(gateway, key) {
+            deliver(key, event) { it.copy(uncertain = wasUncertain, blockedReason = reason) }
+            SendResult.CONNECTION_BLOCKED
+        }
     }
 
     /**
@@ -414,7 +428,7 @@ class SyncEngine(
     private suspend fun tooOld(key: JobKey, gateway: PairedGateway, wasUncertain: Boolean): SendResult {
         log.event("contract.gateway-too-old")
         if (!pairing.markGatewayTooOld(gateway)) return stale(key) // 途中重新配对了：这是旧配对的结论，作废
-        return waiting(key, wasUncertain)
+        return waiting(gateway, key, wasUncertain)
     }
 
     /** 把连接问题记进配对记录（之后不再发任何带令牌的请求）。配对记录已经不是 [gateway] 那份时什么也不写，返回 false。 */
@@ -423,22 +437,22 @@ class SyncEngine(
 
     private suspend fun failed(key: JobKey, gateway: PairedGateway, result: GatewayResult<*>, wasUncertain: Boolean): SendResult = when (result) {
         is GatewayResult.Success<*> -> error("failed() 只处理失败的结果")
-        is GatewayResult.Garbled -> retryLater(key) // 2xx 但读不懂：请求确实到了，网关可能已入库
+        is GatewayResult.Garbled -> retryLater(gateway, key) // 2xx 但读不懂：请求确实到了，网关可能已入库
         is GatewayResult.TransportFailed -> when (result.failure) {
-            is TransportFailure.Unreachable -> waiting(key, wasUncertain)
+            is TransportFailure.Unreachable -> waiting(gateway, key, wasUncertain)
             is TransportFailure.KeyMismatch -> connectionBlocked(key, gateway, NeedsUser.KEY_MISMATCH, BlockedReason.KEY_MISMATCH, wasUncertain)
-            is TransportFailure.Interrupted -> retryLater(key)
+            is TransportFailure.Interrupted -> retryLater(gateway, key)
         }
 
         is GatewayResult.Rejected -> when {
             result.status == 401 || result.code == ErrorCode.GATEWAY_AUTH_REVOKED || result.code == ErrorCode.GATEWAY_AUTH_INVALID ->
                 connectionBlocked(key, gateway, NeedsUser.AUTH_REJECTED, BlockedReason.AUTH_REJECTED, wasUncertain)
 
-            result.code == ErrorCode.RECORD_VERSION_CONFLICT -> blocked(key, BlockedReason.VERSION_CONFLICT)
-            result.code == ErrorCode.RECORD_DELETED -> blocked(key, BlockedReason.RECORD_DELETED)
-            result.code == ErrorCode.RECORD_NOT_ORIGIN_DEVICE -> blocked(key, BlockedReason.NOT_ORIGIN_DEVICE)
-            result.retryable -> retryLater(key)
-            else -> blocked(key, BlockedReason.REQUEST_REJECTED)
+            result.code == ErrorCode.RECORD_VERSION_CONFLICT -> blocked(gateway, key, BlockedReason.VERSION_CONFLICT)
+            result.code == ErrorCode.RECORD_DELETED -> blocked(gateway, key, BlockedReason.RECORD_DELETED)
+            result.code == ErrorCode.RECORD_NOT_ORIGIN_DEVICE -> blocked(gateway, key, BlockedReason.NOT_ORIGIN_DEVICE)
+            result.retryable -> retryLater(gateway, key)
+            else -> blocked(gateway, key, BlockedReason.REQUEST_REJECTED)
         }
     }
 
@@ -638,6 +652,9 @@ class SyncEngine(
             else -> Standing.CONFLICTING
         }
     }
+
+    /** 在围栏里构造出的提交（null = 本机已经读不到这一版）：外层的 null 留给“已经不是这份配对”。 */
+    private class Built(val submission: RevisionSubmission?)
 
     private companion object {
         val NO_REQUEST_IN_FLIGHT = setOf(SyncState.PENDING, SyncState.RETRY_SCHEDULED, SyncState.WAITING_GATEWAY)

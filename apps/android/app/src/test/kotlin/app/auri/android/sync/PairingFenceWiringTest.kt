@@ -40,14 +40,38 @@ class PairingFenceWiringTest {
 
     private val ledgerWrites = Regex("""additions\.(useGateway|gatewayHas|refused)\(""")
 
+    /** 结果驱动的任务转移（再评 S2）：这四个事件都是“网关（或连接）给了结论”才产生的，只许在 settle 的围栏里发。 */
+    private val resultDrivenTransitions = Regex("""deliver\(key, (event|SyncEvent\.(STORED_CONFIRMED|VERSION_CONFLICT|KEY_MISMATCH|AUTH_REVOKED))\)""")
+
     @Test
     fun `引擎里每一处改缓存与目标的调用（换账本、记账、拒收）都在围栏里`() {
         val engine = code("sync/src/main/kotlin/app/auri/sync/engine/SyncEngine.kt")
-        val (outside, fences) = withoutBlocks(engine, "fenced(gateway) {")
+        val (outsideFenced, fences) = withoutBlocks(engine, "fenced(gateway) {")
+        val (outside, settles) = withoutBlocks(outsideFenced, "settle(gateway, key) {")
 
         assertTrue("围栏之外还有改账调用：${ledgerWrites.find(outside)?.value}", ledgerWrites.find(outside) == null)
-        assertTrue("围栏块数量不对（attempt 里 3 处、追加里 3 处）：$fences", fences >= 6)
+        assertEquals("fenced 围栏块数量不对（attempt 里换账本 1 处、追加里 3 处）", 4, fences)
+        assertEquals("settle 围栏块数量不对（入库、等待、排重试、永久拒绝、连接问题各 1 处）", 5, settles)
         assertTrue("围栏必须是配对存储的 whileCurrent，不能是先判断后动作的两步", "pairing.whileCurrent(gateway, change) != null" in engine)
+        assertTrue("settle 的围栏也必须是配对存储的 whileCurrent", "pairing.whileCurrent(gateway, outcome) ?: stale(key)" in engine)
+    }
+
+    @Test
+    fun `引擎里结果驱动的任务转移（已入库、被拒绝、连接问题）都在 settle 的围栏里，不是先判断后转移的两步`() {
+        val engine = code("sync/src/main/kotlin/app/auri/sync/engine/SyncEngine.kt")
+        val (outside, _) = withoutBlocks(engine, "settle(gateway, key) {")
+
+        assertTrue("settle 之外还有结果驱动的转移：${resultDrivenTransitions.find(outside)?.value}", resultDrivenTransitions.find(outside) == null)
+        assertTrue("stillPaired 之后再转移的两步写法不许回来", Regex("""if \(!stillPaired\(gateway\)\) return stale\(key\)""").find(outside) == null)
+    }
+
+    @Test
+    fun `引擎里构造提交（冻结意图标签的写）在围栏里，旧配对的残余尝试不能在改配之后去冻结`() {
+        val engine = code("sync/src/main/kotlin/app/auri/sync/engine/SyncEngine.kt")
+        val (outside, fences) = withoutBlocks(engine, "pairing.whileCurrent(gateway) {")
+
+        assertEquals("构造提交的围栏只有一处", 1, fences)
+        assertTrue("围栏之外不许再有构造提交的调用", "source.submissionFor(" !in outside)
     }
 
     @Test
