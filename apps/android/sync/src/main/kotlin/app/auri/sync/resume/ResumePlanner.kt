@@ -6,6 +6,7 @@ import app.auri.sync.engine.RetryPolicy
 import app.auri.sync.engine.SyncJob
 import app.auri.sync.loop.restartingProducer
 import app.auri.sync.machine.SyncState
+import app.auri.sync.pairing.NeedsUser
 import app.auri.sync.pairing.PairingState
 import app.auri.sync.policy.DataFlowState
 import kotlinx.coroutines.CoroutineScope
@@ -21,9 +22,14 @@ import kotlinx.coroutines.flow.onStart
  * 停下等用户处理的任务，叫醒了也发不出去，所以不算；没配对、配对记录丢了、公钥不符、令牌被拒同理；
  * 没授权、开着严格仅本地、设置读不出来同理（评审 B1：醒来也不会发，一直要求叫醒只会白白打扰系统）。
  * 叫醒的计划和被叫醒后的收尾判断（[ResumeRunner]）共用这一个判断。
+ *
+ * “网关太旧”（[NeedsUser.GATEWAY_TOO_OLD]）**不算**停下等用户：用户不用重新配对，只要更新网关，更新之后被叫醒的那一轮开头
+ * （[app.auri.sync.engine.SyncEngine] 的 healContract）自己问出来、清掉标记、接着发。要是这时取消叫醒，进程被杀之后就没有任何东西再去问
+ * “网关升级了没有”，文字一直留在手机上，直到用户碰巧打开应用（再评 S7）。所以叫醒留着，重新探测的频率有界：叫醒是 JobScheduler 的持久任务，
+ * 每次被叫醒后还有活就请系统稍后再叫（初始 30 秒、指数增长、系统上限 5 小时），没有活（发完、授权收回、用户重新配对）就取消。
  */
 fun needsResume(pairing: PairingState, jobs: List<SyncJob>, policy: DataFlowState, additionsDue: Boolean = false): Boolean =
-    policy.textMayEnterGateway && pairing is PairingState.Paired && pairing.gateway.needsUser == null &&
+    policy.textMayEnterGateway && pairing is PairingState.Paired && pairing.gateway.needsUser.let { it == null || it == NeedsUser.GATEWAY_TOO_OLD } &&
         (additionsDue || jobs.any { it.state != SyncState.STORED && it.state != SyncState.BLOCKED })
 
 /**

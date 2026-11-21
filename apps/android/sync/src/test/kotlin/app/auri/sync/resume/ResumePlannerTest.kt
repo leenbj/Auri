@@ -132,6 +132,36 @@ class ResumePlannerTest {
     }
 
     @Test
+    fun `网关太旧（不是连接坏了，用户只要更新网关）：有活就留着叫醒，更新之后进程被杀也能被叫醒接着发；没活才取消（再评 S7）`() = runTest {
+        val tooOld = PairingState.Paired(SyncSamples.pairedGateway(needsUser = NeedsUser.GATEWAY_TOO_OLD))
+
+        val withWork = rig(tooOld, listOf(job(SyncState.WAITING_GATEWAY)))
+        assertEquals("以前这里是 cancel：叫醒被取消，升级网关之后要等用户打开应用才接着发", listOf("ensure"), withWork.scheduler.calls.toList())
+
+        val additionsOnly = Rig(this, tooOld, listOf(job(SyncState.STORED))).also { it.additionsDue.value = true }
+        additionsOnly.planner.start(backgroundScope)
+        runCurrent()
+        assertEquals("欠着追加也一样", listOf("ensure"), additionsOnly.scheduler.calls.toList())
+
+        val nothingToSend = rig(tooOld, listOf(job(SyncState.STORED)))
+        assertEquals("没有活就没有叫醒的必要", listOf("cancel"), nothingToSend.scheduler.calls.toList())
+    }
+
+    @Test
+    fun `网关太旧的标记被清掉（用户更新了网关、被叫醒的一轮问出来了）：叫醒不重复登记；标记被打上：叫醒也不被取消`() = runTest {
+        val rig = rig(paired, listOf(job(SyncState.PENDING)))
+        assertEquals(listOf("ensure"), rig.scheduler.calls.toList())
+
+        rig.pairing.value = PairingState.Paired(SyncSamples.pairedGateway(needsUser = NeedsUser.GATEWAY_TOO_OLD))
+        runCurrent()
+        assertEquals("被打上“网关太旧”：叫醒留着，不取消也不重复登记", listOf("ensure"), rig.scheduler.calls.toList())
+
+        rig.pairing.value = paired
+        runCurrent()
+        assertEquals("标记清掉：结论还是“有活”，不重复登记", listOf("ensure"), rig.scheduler.calls.toList())
+    }
+
+    @Test
     fun `配对记录还没读出来：什么也不做，不能把已经登记的叫醒取消掉；读出来之后才决定`() = runTest {
         // 用真的 ObservablePairingStore：它读过一次之前不发出任何状态（不猜一个“未配对”）
         val store = ObservablePairingStore(InMemoryPairingStore(SyncSamples.pairedGateway()))
@@ -230,6 +260,9 @@ class ResumePlannerTest {
             PairingState.NotPaired to false,
             PairingState.Lost to false,
             PairingState.Paired(SyncSamples.pairedGateway(needsUser = NeedsUser.KEY_MISMATCH)) to false,
+            PairingState.Paired(SyncSamples.pairedGateway(needsUser = NeedsUser.AUTH_REJECTED)) to false,
+            // 网关太旧不是“停下等用户处理”：用户只要更新网关，更新之后下一轮自己恢复（再评 S7），所以叫醒要留着
+            PairingState.Paired(SyncSamples.pairedGateway(needsUser = NeedsUser.GATEWAY_TOO_OLD)) to true,
             paired to true,
         )
         for ((pairing, usable) in pairings) {

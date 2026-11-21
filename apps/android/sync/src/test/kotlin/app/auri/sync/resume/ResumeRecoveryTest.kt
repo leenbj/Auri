@@ -9,6 +9,7 @@ import app.auri.sync.destinations.TargetDecision
 import app.auri.sync.engine.JobKey
 import app.auri.sync.gateway.SendMode
 import app.auri.sync.machine.SyncState
+import app.auri.sync.pairing.NeedsUser
 import app.auri.sync.testing.DispatchRig
 import app.auri.sync.testing.InMemoryDataFlowPolicy
 import java.time.Instant
@@ -22,6 +23,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -366,5 +368,31 @@ class ResumeRecoveryTest {
 
         assertTrue("新的活要有新的叫醒", os.pending)
         assertEquals(emptyList<String>(), os.violations.toList())
+    }
+
+    // ---- 再评 S7：网关太旧期间叫醒留着，升级之后被叫醒的那一轮自己恢复 ----
+
+    @Test
+    fun `网关太旧期间进程被杀：重启后叫醒仍然登记着；用户更新网关之后被叫醒的一轮自己恢复、发完，发完才不再需要叫醒`() = runTest {
+        val rig = DispatchRig(this)
+        rig.server.supportedVersions = listOf("1.1")
+        val key = rig.transcribed()
+        rig.engine.runOnce() // 问出网关太旧：文字退回等待，配对记录打上标记
+        assertEquals(NeedsUser.GATEWAY_TOO_OLD, rig.pairing.gateway!!.needsUser)
+        assertEquals(SyncState.WAITING_GATEWAY, rig.jobs.get(key)!!.state)
+
+        rig.restart() // 进程被杀：什么都不记得，只有磁盘上的任务表与配对记录
+        val wakes = start(rig)
+        assertEquals("网关太旧也要留着叫醒：以前这里取消了，升级之后没人再来问，要等用户打开应用", listOf("ensure"), wakes.calls.toList())
+
+        rig.server.supportedVersions = listOf("1.2") // 用户更新了网关
+        rig.engine.runOnce() // 系统叫醒后跑的那一轮：开头问出已经更新、清掉标记，照常发
+
+        assertEquals(SyncState.STORED, rig.jobs.get(key)!!.state)
+        assertNull("标记自己清掉了，不需要重新配对", rig.pairing.gateway!!.needsUser)
+        assertFalse(
+            "发完了：收尾判断是不必再叫醒",
+            needsResume(rig.pairing.state, rig.jobs.all(), InMemoryDataFlowPolicy.GRANTED, rig.dispatch.due().isNotEmpty()),
+        )
     }
 }
