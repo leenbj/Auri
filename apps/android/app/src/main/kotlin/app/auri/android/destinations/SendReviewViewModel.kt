@@ -7,8 +7,10 @@ import app.auri.sync.destinations.Choice
 import app.auri.sync.destinations.DecideResult
 import app.auri.sync.destinations.DispatchItem
 import app.auri.sync.destinations.DispatchStore
+import app.auri.sync.destinations.GatewayDelivery
 import app.auri.sync.destinations.TargetDecision
 import app.auri.sync.engine.JobKey
+import app.auri.sync.engine.Refusal
 import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.SendMode
 import app.auri.sync.policy.DataFlowState
@@ -38,7 +40,9 @@ import kotlinx.coroutines.launch
  *   │   ├─ intent                     标签：CONTEXT 备忘 / ACTION_REQUEST 请求执行。只是数据上的标记，不执行任何东西、不给 Agent 额外权限。
  *   │   ├─ intentLocked               标签已冻结：引擎开始为它构造提交（网关马上就要拿到这一版）的那一刻起，标签不可更改，canChangeIntent 为 false。
  *   │   │                              在那之前（没网、等网关、排队）都还能改，提交带的就是改后的（评审 M3）。
- *   │   ├─ targets: List<ReviewTarget> 每个目的地的处置：自动发送 / 等你确认 / 你已确认 / 你选择了不发送 / 不会发给它。
+ *   │   ├─ targets: List<ReviewTarget> 每个目的地的处置：自动发送 / 等你确认 / 你已确认 / 你选择了不发送 / 不会发给它 / 没有送给它。
+ *   │   │                              “没有送给它” = 网关没有（也不会）为它建 Delivery：它暂停期间错过的、或网关拒收的；之后目的地恢复也不补发，
+ *   │   │                              所以没有什么可决定的——不摆“确认发送 / 不发送”，界面说清原因（复评 R10，ReviewTarget.delivery / refusal）。
  *   │   │                              文字照常入库、不等你；预览确认的目的地在“你确认”之前**网关上没有给它的 Delivery**，它的 Agent 领不到这条文字（评审 B2）。
  *   │   ├─ awaitingUser               还有等你决定的目标。
  *   │   └─ 所有这些文字都是转录出来的**未审核初稿**（UNREVIEWED_LABEL）：自动发送出去的请求里就是 review_state=not_reviewed。
@@ -63,9 +67,17 @@ data class ReviewTarget(
     val decision: TargetDecision,
     /** 目的地还在并且接收这条文字的标签。 */
     val eligible: Boolean,
+    /** 网关上有没有这个目标的 Delivery（账上记的）。被拒绝的目标之后目的地恢复了也不补发：界面要如实说，不能还摆出“确认发送”（复评 R10）。 */
+    val delivery: GatewayDelivery = GatewayDelivery.NOT_YET,
+    /** [delivery] 是 [GatewayDelivery.REFUSED] 时的原因（暂停期间错过的 / 网关拒收的）；否则为 null。 */
+    val refusal: Refusal? = null,
 ) {
-    /** 等着用户做决定（并且这个决定真的会影响发送）：界面据此显示“确认发送 / 不发送”两个按钮。 */
-    val awaitingUser: Boolean get() = decision == TargetDecision.AWAITING && eligible
+    /**
+     * 等着用户做决定（并且这个决定真的会影响发送）：界面据此显示“确认发送 / 不发送”两个按钮。
+     * 与账本的 [app.auri.sync.destinations.DispatchTarget.awaitingUser] 同一个判断：被拒绝建 Delivery 的目标没有什么可决定的，
+     * 确认与不发送背后都是 NotEligible——摆出两个什么也不做的按钮是在骗用户（复评 R10）。
+     */
+    val awaitingUser: Boolean get() = decision == TargetDecision.AWAITING && eligible && delivery != GatewayDelivery.REFUSED
 }
 
 data class ReviewItem(
@@ -154,7 +166,7 @@ class SendReviewViewModel(
         intent = intent,
         createdAt = createdAt,
         intentLocked = intentLocked,
-        targets = targets.map { ReviewTarget(it.destinationId, it.destinationName, it.sendMode, it.decision, it.eligible) },
+        targets = targets.map { ReviewTarget(it.destinationId, it.destinationName, it.sendMode, it.decision, it.eligible, it.delivery, it.refusal) },
     )
 
     companion object {

@@ -77,7 +77,7 @@ private fun Item(item: ReviewItem, onConfirm: (JobKey, String) -> Unit, onSkip: 
 @Composable
 private fun Target(key: JobKey, target: ReviewTarget, onConfirm: (JobKey, String) -> Unit, onSkip: (JobKey, String) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text((target.name ?: "（不认识的目的地）") + " · " + describeSendMode(target.sendMode) + " · " + describeDecision(target.decision, target.eligible))
+        Text((target.name ?: "（不认识的目的地）") + " · " + describeSendMode(target.sendMode) + " · " + describeDecision(target.decision, target.eligible, target.delivery, target.refusal))
         if (target.awaitingUser) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { onConfirm(key, target.destinationId) }) { Text("确认发送") }

@@ -2,12 +2,14 @@ package app.auri.android.destinations
 
 import app.auri.sync.destinations.AuthResult
 import app.auri.sync.destinations.DeliveryView
+import app.auri.sync.destinations.GatewayDelivery
 import app.auri.sync.destinations.GatewayStage
 import app.auri.sync.destinations.QueuedPhase
 import app.auri.sync.destinations.ServiceFailure
 import app.auri.sync.destinations.TargetDecision
 import app.auri.sync.destinations.UnavailableReason
 import app.auri.sync.destinations.UnknownReason
+import app.auri.sync.engine.Refusal
 import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.SendMode
 import app.auri.sync.pairing.NeedsUser
@@ -219,6 +221,25 @@ class DestinationTextTest {
         )
 
         assertEquals(texts.toString(), texts.size, texts.toSet().size)
+    }
+
+    @Test
+    fun `复评 R10：网关没有为这个目标建投递时，预览页如实说没送给它，不再说自动发送、等你确认或你已确认发送；暂停与网关拒收分开说`() {
+        val claims = listOf("自动发送", "等你确认", "你已确认发送")
+        for (decision in listOf(TargetDecision.AUTO, TargetDecision.AWAITING, TargetDecision.CONFIRMED)) {
+            val suspended = describeDecision(decision, true, GatewayDelivery.REFUSED, Refusal.SUSPENDED)
+            assertTrue("$decision：暂停期间没建投递，之后也不补发：$suspended", "没有送给它" in suspended && "暂停" in suspended && "不补发" in suspended)
+            for (refusal in listOf(Refusal.NOT_CREATED, Refusal.REJECTED, null)) {
+                val refused = describeDecision(decision, true, GatewayDelivery.REFUSED, refusal)
+                assertTrue("$decision $refusal：网关没有为它建投递：$refused", "没有送给它" in refused && "网关没有为它建投递" in refused)
+                assertTrue("$decision $refusal：这时候不许再说它会发或等你确认：$refused", claims.none { it in refused })
+            }
+            assertTrue("$decision：暂停与网关拒收是两种情形，说法不同", suspended != describeDecision(decision, true, GatewayDelivery.REFUSED, Refusal.REJECTED))
+            assertTrue("$decision：暂停期间的说法里也不许有“会发”", claims.none { it in suspended })
+        }
+        assertEquals("你选择了不发送的目标不受影响：这是你的决定", describeDecision(TargetDecision.SKIPPED, true, GatewayDelivery.NOT_YET), describeDecision(TargetDecision.SKIPPED, true, GatewayDelivery.REFUSED, Refusal.SUSPENDED))
+        assertEquals("目的地已撤销或不收这种标签：老说法优先", describeDecision(TargetDecision.AWAITING, false), describeDecision(TargetDecision.AWAITING, false, GatewayDelivery.REFUSED, Refusal.SUSPENDED))
+        assertEquals("没有拒收时一切照旧", "等你确认", describeDecision(TargetDecision.AWAITING, true, GatewayDelivery.NOT_YET, null))
     }
 
     @Test

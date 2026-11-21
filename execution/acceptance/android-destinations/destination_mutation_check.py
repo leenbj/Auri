@@ -786,6 +786,61 @@ MUTATIONS: tuple = (
         sync_tests("StoredStatesRecoveryTest"), SYNC_RESULTS,
         ("故障期间又来了新的变动",),
     ),
+    # ---- 复评 R10：预览确认的目标在暂停期间被记成“没建投递”，界面要如实说，也不能摆出两个什么也不做的按钮 ----
+    Mutation(
+        "r10-vm-drops-delivery",
+        "复评 R10：视图模型要把账本里的网关投递与拒收原因交给界面：丢掉，被拒收的目标在续签恢复之后看上去仍是“等你确认”",
+        (Edit(SEND_REVIEW_VM, "it.eligible, it.delivery, it.refusal) },", "it.eligible) },"),),
+        app_tests("SendReviewViewModelTest"), APP_RESULTS,
+        # 真跑之后改正的预期：组合测试直接构造 ReviewTarget、不经过 toReview()，拦这一处的是走完整条路径的行为测试
+        ("复评 R10：预览确认的目标在目的地暂停期间被记成没建投递",),
+    ),
+    Mutation(
+        "r10-awaiting-ignores-refused",
+        "复评 R10：界面的“等你决定”必须与账本的 awaitingUser 同一个判断：忽略被拒收的，就会摆出确认与不发送两个返回 NotEligible 的按钮",
+        (Edit(SEND_REVIEW_VM, " && eligible && delivery != GatewayDelivery.REFUSED\n", " && eligible\n"),),
+        app_tests("SendReviewViewModelTest"), APP_RESULTS,
+        ("复评 R10：预览确认的目标在目的地暂停期间被记成没建投递", "复评 R10：界面认为在等你决定，当且仅当账本认为在等你决定"),
+    ),
+    Mutation(
+        "r10-describe-ignores-refusal",
+        "复评 R10：没建投递的目标，预览页要如实说“没有送给它”：沿用“等你确认 / 自动发送 / 你已确认发送”，用户会以为它会发",
+        (Edit(DESCRIPTIONS, "    decision != TargetDecision.SKIPPED && delivery == GatewayDelivery.REFUSED -> describeRefusal(refusal)\n", ""),),
+        app_tests("DestinationTextTest"), APP_RESULTS,
+        ("复评 R10：网关没有为这个目标建投递时，预览页如实说没送给它",),
+    ),
+    Mutation(
+        "r10-skipped-overridden-by-refusal",
+        "复评 R10：用户自己选了不发送的目标仍说“你选择了不发送”：被拒收的说法盖过它，就把用户的决定说成了系统的拒收",
+        (Edit(DESCRIPTIONS, "    decision != TargetDecision.SKIPPED && delivery == GatewayDelivery.REFUSED -> describeRefusal(refusal)\n", "    delivery == GatewayDelivery.REFUSED -> describeRefusal(refusal)\n"),),
+        app_tests("DestinationTextTest"), APP_RESULTS,
+        ("复评 R10：网关没有为这个目标建投递时，预览页如实说没送给它",),
+    ),
+    Mutation(
+        "r10-refusal-reasons-merged",
+        "复评 R10：暂停期间错过的与网关拒收的要分开说：合成一句，用户分不清“恢复就能发”还是“这条永远不会发”（暂停的不补发）",
+        (Edit(
+            DESCRIPTIONS,
+            '    if (refusal == Refusal.SUSPENDED) "没有送给它：它的凭证被撤销、暂停期间这条文字没有建投递，恢复之后也不补发"\n    else "没有送给它：网关没有为它建投递"\n',
+            '    "没有送给它：网关没有为它建投递"\n',
+        ),),
+        app_tests("DestinationTextTest"), APP_RESULTS,
+        ("复评 R10：网关没有为这个目标建投递时，预览页如实说没送给它",),
+    ),
+    Mutation(
+        "r10-screen-uses-old-describe",
+        "复评 R10：待发送页写每个目标的那句话要带上网关投递与拒收原因（接线守卫）：用老的两个参数，界面又会对着被拒收的目标写“等你确认”",
+        (Edit(SEND_REVIEW_SCREEN, "describeDecision(target.decision, target.eligible, target.delivery, target.refusal))", "describeDecision(target.decision, target.eligible))"),),
+        app_tests("ReviewTargetWiringTest"), APP_RESULTS,
+        ("待发送页给每个目标写的那句话带上网关投递与拒收原因",),
+    ),
+    Mutation(
+        "r10-buttons-ignore-ledger",
+        "复评 R10：确认与不发送两个按钮只在 awaitingUser 时才有（接线守卫）：改成只看“目的地可用”，被拒收的目标又摆出两个什么也不做的按钮",
+        (Edit(SEND_REVIEW_SCREEN, "if (target.awaitingUser) {", "if (target.eligible) {"),),
+        app_tests("ReviewTargetWiringTest"), APP_RESULTS,
+        ("待发送页给每个目标写的那句话带上网关投递与拒收原因",),
+    ),
     Mutation(
         "policy-strict-local-ignored",
         "评审 B1：严格仅本地是统一门禁，压过授权：只看授权就等于开着严格仅本地也照发",

@@ -2,8 +2,14 @@
 
 package app.auri.android.destinations
 
+import app.auri.sync.destinations.Choice
+import app.auri.sync.destinations.CredentialOutcome
+import app.auri.sync.destinations.DecideResult
+import app.auri.sync.destinations.DispatchTarget
+import app.auri.sync.destinations.GatewayDelivery
 import app.auri.sync.destinations.TargetDecision
 import app.auri.sync.engine.JobKey
+import app.auri.sync.engine.Refusal
 import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.SendMode
 import app.auri.sync.policy.DataFlowState
@@ -347,5 +353,46 @@ class SendReviewViewModelTest {
         settle()
 
         assertFalse(viewModel.state.value.dataFlow.textMayEnterGateway)
+    }
+
+    // ---- 复评 R10：预览确认的目标在暂停期间被记成“没建投递”，续签恢复之后不能再摆出两个什么也不做的按钮 ----
+
+    @Test
+    fun `复评 R10：预览确认的目标在目的地暂停期间被记成没建投递，续签恢复之后界面不再摆出确认发送与不发送，并说清为什么没发`() = run { review ->
+        val rig = review.rig
+        val preview = rig.createDestination("预览助手", SendMode.PREVIEW_CONFIRM)
+        assertTrue(rig.service.issueCredential(preview.destinationId) is CredentialOutcome.Issued)
+        val key = rig.transcribed()
+        settle()
+        assertTrue("对照：暂停之前它是真的在等用户决定", review.items.single().targets.single().awaitingUser)
+
+        rig.server.revokeCredential(preview.destinationId) // 唯一的一条有效凭证被撤销 = 暂停
+        rig.service.refresh()
+        settle()
+        assertTrue("续签：目的地恢复", rig.service.issueCredential(preview.destinationId) is CredentialOutcome.Issued)
+        settle()
+
+        val item = review.items.single()
+        val target = item.targets.single()
+        assertEquals("账里这个决定还没做", TargetDecision.AWAITING, target.decision)
+        assertTrue("目的地恢复了，所以“接收这种标签”是真的——问题不在 eligible", target.eligible)
+        assertEquals("账上记着：暂停期间没建投递", GatewayDelivery.REFUSED, target.delivery)
+        assertEquals(Refusal.SUSPENDED, target.refusal)
+        assertFalse("没有什么可决定的：确认与不发送背后都是 NotEligible，不能摆出两个什么也不做的按钮", target.awaitingUser)
+        assertFalse(item.awaitingUser)
+        assertEquals("对照：账本自己的回答就是 NotEligible（确认）", DecideResult.NotEligible, rig.dispatch.decide(key, preview.destinationId, Choice.CONFIRM, rig.clock.now()))
+        assertEquals("对照：账本自己的回答就是 NotEligible（不发送）", DecideResult.NotEligible, rig.dispatch.decide(key, preview.destinationId, Choice.SKIP, rig.clock.now()))
+        val text = describeDecision(target.decision, target.eligible, target.delivery, target.refusal)
+        assertTrue("界面说清它没送给目的地、之后也不补发：$text", "没有送给它" in text && "不补发" in text)
+    }
+
+    @Test
+    fun `复评 R10：界面认为在等你决定，当且仅当账本认为在等你决定：决定、目的地可用与否、网关投递、拒收原因的每一种组合都一致`() {
+        for (decision in TargetDecision.entries) for (eligible in listOf(true, false)) for (delivery in GatewayDelivery.entries) for (refusal in listOf(null) + Refusal.entries) {
+            val ledger = DispatchTarget("d", "名字", SendMode.PREVIEW_CONFIRM, decision, eligible, delivery, refusal)
+            val shown = ReviewTarget("d", "名字", SendMode.PREVIEW_CONFIRM, decision, eligible, delivery, refusal)
+
+            assertEquals("$decision eligible=$eligible $delivery $refusal", ledger.awaitingUser, shown.awaitingUser)
+        }
     }
 }

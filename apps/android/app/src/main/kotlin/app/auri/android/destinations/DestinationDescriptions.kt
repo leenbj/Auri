@@ -2,12 +2,14 @@ package app.auri.android.destinations
 
 import app.auri.sync.destinations.AuthResult
 import app.auri.sync.destinations.DeliveryView
+import app.auri.sync.destinations.GatewayDelivery
 import app.auri.sync.destinations.GatewayStage
 import app.auri.sync.destinations.QueuedPhase
 import app.auri.sync.destinations.ServiceFailure
 import app.auri.sync.destinations.TargetDecision
 import app.auri.sync.destinations.UnavailableReason
 import app.auri.sync.destinations.UnknownReason
+import app.auri.sync.engine.Refusal
 import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.SendMode
 import app.auri.sync.pairing.NeedsUser
@@ -100,13 +102,22 @@ internal fun describeClipboardNotice(): String =
     "复制之后，离开本应用或满 ${SecretClipboardGuard.TIMEOUT_MS / 1_000} 秒，剪贴板里的凭证会自动清掉（只在确认还是这一份时才清）；" +
         "已在后台时系统不让本应用读取，清不了，请自行清空。清掉后只能轮换出新的。"
 
-internal fun describeDecision(decision: TargetDecision, eligible: Boolean): String = when {
+internal fun describeDecision(decision: TargetDecision, eligible: Boolean, delivery: GatewayDelivery = GatewayDelivery.NOT_YET, refusal: Refusal? = null): String = when {
     !eligible -> "不会发给它（这个目的地已被撤销、已暂停，或不接收这种标签）"
+    decision != TargetDecision.SKIPPED && delivery == GatewayDelivery.REFUSED -> describeRefusal(refusal)
     decision == TargetDecision.AUTO -> "自动发送"
     decision == TargetDecision.AWAITING -> "等你确认"
     decision == TargetDecision.CONFIRMED -> "你已确认发送"
     else -> "你选择了不发送"
 }
+
+/**
+ * 网关没有（也不会）为这个目标建投递（复评 R10）：目的地后来恢复了也一样。暂停期间错过的与网关拒收的分开说，
+ * 两种都不许再说“自动发送”“等你确认”“你已确认发送”——那些话说的是会发。
+ */
+private fun describeRefusal(refusal: Refusal?): String =
+    if (refusal == Refusal.SUSPENDED) "没有送给它：它的凭证被撤销、暂停期间这条文字没有建投递，恢复之后也不补发"
+    else "没有送给它：网关没有为它建投递"
 
 /** 一条文字在一个目的地上现在是什么情形。只说网关能证明的。 */
 internal fun describeDelivery(view: DeliveryView): String = when (view) {
