@@ -42,6 +42,27 @@ class ClipboardWiringTest {
     }
 
     @Test
+    fun `复评 R6：应用即将失去焦点（onPause，那一刻还读得到剪贴板）与离开详情页时都叫守卫清；复制之后提示一句话；放进去时标成敏感内容`() {
+        val activity = SourceText.withoutCommentsAndStrings(main("MainActivity.kt"))
+        val onPause = activity.substringAfter("override fun onPause()", "").substringBefore("override fun onWindowFocusChanged")
+        assertTrue("MainActivity 要在 onPause 里叫守卫：$onPause", onPause.contains("runtime.secretClipboard.onLeaving()"))
+        assertTrue("要在 super.onPause() 之前叫：越早越可能还读得到", onPause.indexOf("onLeaving()") < onPause.indexOf("super.onPause()"))
+
+        val page = SourceText.withoutCommentsAndStrings(main("ui/DestinationsPage.kt"))
+        val dispose = page.substringAfter("onDispose {").substringBefore("LaunchedEffect(viewModel)")
+        assertTrue("离开详情页（返回、切走、被销毁）要叫守卫：$dispose", dispose.contains("clipboard.onLeaving()"))
+        val copy = page.substringAfter("onCopyCredential = {").substringBefore("onDismissCredential")
+        assertTrue("复制：先交给守卫放进去，再抹面板：$copy", copy.indexOf("clipboard.copy(credential.reveal())") in 0 until copy.indexOf("viewModel.credentialCopied()"))
+        assertTrue("复制那一下本身不许清（清会让刚复制的凭证当场没了）：$copy", !copy.contains("onLeaving"))
+        assertTrue("复制之后提示一句话：$copy", copy.contains("Toast.makeText(context, describeClipboardNotice(), Toast.LENGTH_LONG).show()"))
+
+        val portSource = main("ui/SecretWindow.kt")
+        val port = SourceText.withoutCommentsAndStrings(portSource)
+        assertTrue("放进剪贴板时标成敏感内容：${port.substringAfter("override fun put(")}", port.substringAfter("override fun put(").substringBefore("override fun peek").contains("putBoolean(EXTRA_IS_SENSITIVE, true)"))
+        assertTrue("敏感标记的键就是系统的那个：旧系统忽略它、新系统据它不展示内容", portSource.contains("\"android.content.extra.IS_SENSITIVE\""))
+    }
+
+    @Test
     fun `clearPrimaryClip 是 API 28 才有的：应用的 minSdk 不低于它，所以不需要降级写法；谁把 minSdk 调低，这里先红`() {
         val gradle = File(androidDir, "app/build.gradle.kts").readText()
         val minSdk = Regex("""minSdk\s*=\s*(\d+)""").find(gradle)?.groupValues?.get(1)?.toInt() ?: error("没找到 minSdk")

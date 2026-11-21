@@ -62,6 +62,7 @@ PAIRING_SERVICE = ANDROID + "sync/src/main/kotlin/app/auri/sync/pairing/PairingS
 SYNC_STATUS = ANDROID + "sync/src/main/kotlin/app/auri/sync/status/SyncStatus.kt"
 SEND_REVIEW_VM = APP_DEST + "SendReviewViewModel.kt"
 CLIPBOARD_GUARD = APP_DEST + "SecretClipboardGuard.kt"
+CLIPBOARD_PORT = APP_UI + "SecretWindow.kt"
 MAIN_ACTIVITY = ANDROID + "app/src/main/kotlin/app/auri/android/MainActivity.kt"
 AURI_RUNTIME = ANDROID + "app/src/main/kotlin/app/auri/android/AuriRuntime.kt"
 CONTAINED_READS = APP_DEST + "ContainedReads.kt"
@@ -608,6 +609,75 @@ MUTATIONS: tuple = (
         sync_tests("ObservablePairingStoreTest"), SYNC_RESULTS,
         ("whileCurrent 经过可观察的外壳也持锁",),
     ),
+    # ---- 复评 R6：没有“剪贴板里还是我们放的”的证明就绝不清；离开时清；标成敏感；复制之后说明 ----
+    Mutation(
+        "r6-timeout-clears-unreadable",
+        "复评 R6：到点时读不了剪贴板（应用在后台）不能清：盲清会抹掉用户后来复制的别的东西（原来的缺陷）",
+        (Edit(CLIPBOARD_GUARD, '            ClipboardPeek.Unreadable -> log.event("clipboard.unverifiable")\n', "            ClipboardPeek.Unreadable -> clear()\n"),),
+        app_tests("SecretClipboardGuardTest"), APP_RESULTS,
+        (
+            "应用不在前台（系统不让读剪贴板）时到点",
+            "读不了的时候剪贴板其实已被别的应用换成了别的东西",
+            "到点时读不了、回到前台时那里已是别人的东西",
+        ),
+    ),
+    Mutation(
+        "r6-leaving-clears-without-verification",
+        "复评 R6：面板关闭 / 离开 / 即将失去焦点时也要先认出是自己放的才清：不认就清，等于在读不到或别人的东西上盲清",
+        (Edit(
+            CLIPBOARD_GUARD,
+            "        if (port.peek() is ClipboardPeek.Ours) {\n            timer?.cancel()\n            clear()\n        }\n",
+            "        timer?.cancel()\n        clear()\n",
+        ),),
+        app_tests("SecretClipboardGuardTest"), APP_RESULTS,
+        ("离开时读不了——没有归属证明，不清", "离开时剪贴板里是别的应用放的东西——不动"),
+    ),
+    Mutation(
+        "r6-leaving-never-clears",
+        "复评 R6：读得到且认得出是自己放的时候，离开就要当场清：不清，凭证会跟着用户离开应用留在剪贴板里",
+        (Edit(
+            CLIPBOARD_GUARD,
+            "        if (port.peek() is ClipboardPeek.Ours) {\n            timer?.cancel()\n            clear()\n        }\n",
+            "        if (port.peek() is ClipboardPeek.Ours) {\n            timer?.cancel()\n        }\n",
+        ),),
+        app_tests("SecretClipboardGuardTest"), APP_RESULTS,
+        ("面板关闭、页面离开或应用即将失去焦点时", "这个进程没有复制过也离开了"),
+    ),
+    Mutation(
+        "r6-activity-no-pause-hook",
+        "复评 R6：应用即将失去焦点（onPause）时要叫守卫：不叫，用户一按 Home 就失去了最后一次能读到剪贴板的机会",
+        (Edit(MAIN_ACTIVITY, "        runtime.secretClipboard.onLeaving()\n        super.onPause()\n", "        super.onPause()\n"),),
+        app_tests("ClipboardWiringTest"), APP_RESULTS,
+        ("应用即将失去焦点（onPause，那一刻还读得到剪贴板）",),
+    ),
+    Mutation(
+        "r6-page-dispose-no-leaving",
+        "复评 R6：离开详情页时要叫守卫：不叫，复制之后返回列表，凭证还留在剪贴板里",
+        (Edit(PAGE, "                    clipboard.onLeaving() // 离开详情页：剪贴板里还是自己放的凭证就清（读不到、或是别人的不动）\n", ""),),
+        app_tests("ClipboardWiringTest"), APP_RESULTS,
+        ("应用即将失去焦点（onPause，那一刻还读得到剪贴板）",),
+    ),
+    Mutation(
+        "r6-port-not-sensitive",
+        "复评 R6：放进剪贴板时要标成敏感内容：不标，系统的剪贴板预览与输入法会把凭证原文亮出来",
+        (Edit(CLIPBOARD_PORT, "            putBoolean(EXTRA_IS_SENSITIVE, true)\n", ""),),
+        app_tests("ClipboardWiringTest"), APP_RESULTS,
+        ("放进去时标成敏感内容",),
+    ),
+    Mutation(
+        "r6-no-notice-after-copy",
+        "复评 R6：复制之后要用一句话说明剪贴板里的凭证的下落（面板已经抹掉了）：不说，用户不知道离开应用就清、也不知道后台清不了",
+        (Edit(PAGE, "                    Toast.makeText(context, describeClipboardNotice(), Toast.LENGTH_LONG).show() // 面板已经抹掉了，复制之后的下落只能这样告诉用户\n", ""),),
+        app_tests("ClipboardWiringTest"), APP_RESULTS,
+        ("复制之后提示一句话",),
+    ),
+    Mutation(
+        "r6-notice-hides-platform-limit",
+        "复评 R6：提示必须如实说“已在后台时系统不让读、清不了、要自行清空”：藏起这个平台限制，用户会以为一定清掉了",
+        (Edit(DESCRIPTIONS, '        "已在后台时系统不让本应用读取，清不了，请自行清空。清掉后只能轮换出新的。"', '        "清掉后只能轮换出新的。"'),),
+        app_tests("DestinationTextTest"), APP_RESULTS,
+        ("复评 R6：复制之后的提示如实说清掉的条件与做不到的事",),
+    ),
     Mutation(
         "policy-strict-local-ignored",
         "评审 B1：严格仅本地是统一门禁，压过授权：只看授权就等于开着严格仅本地也照发",
@@ -852,13 +922,8 @@ MUTATIONS: tuple = (
         app_tests("SecretClipboardGuardTest"), APP_RESULTS,
         ("别的应用后来复制了别的东西（读得到）",),
     ),
-    Mutation(
-        "b5-unreadable-keeps-credential",
-        "评审 B5：用户退出去粘贴时应用在后台、系统不让读剪贴板：认不出归属就不清，凭证会一直留着",
-        (Edit(CLIPBOARD_GUARD, "            is ClipboardPeek.Ours, ClipboardPeek.Unreadable -> clear()", "            is ClipboardPeek.Ours -> clear()\n            ClipboardPeek.Unreadable -> Unit"),),
-        app_tests("SecretClipboardGuardTest"), APP_RESULTS,
-        ("应用不在前台（系统不让读剪贴板）",),
-    ),
+    # 评审 B5 的 b5-unreadable-keeps-credential 已退役（复评 R6）：它保护的是“读不了也清”，R6 判定这是缺陷、整个反过来；
+    # 对偶的保护在下面的 r6-timeout-clears-unreadable。
     Mutation(
         "b5-old-timer-clears-new-copy",
         "评审 B5：再复制一次要重新计时：旧定时器不作废，会在第二次复制后 10 秒就把它清掉，用户来不及粘贴",
@@ -897,7 +962,7 @@ MUTATIONS: tuple = (
     Mutation(
         "b5-notice-states-wrong-seconds",
         "评审 B5：界面告诉用户的期限必须是守卫真正用的：写死一个数，用户按它的话去粘贴，实际早已被清掉",
-        (Edit(DESCRIPTIONS, '    "复制之后请在 ${SecretClipboardGuard.TIMEOUT_MS / 1_000} 秒内粘贴给 Agent', '    "复制之后请在 30 秒内粘贴给 Agent'),),
+        (Edit(DESCRIPTIONS, '    "复制之后，离开本应用或满 ${SecretClipboardGuard.TIMEOUT_MS / 1_000} 秒，', '    "复制之后，离开本应用或满 30 秒，'),),
         app_tests("DestinationTextTest"), APP_RESULTS,
         ("凭证面板如实说剪贴板里的凭证到点会被清掉",),
     ),

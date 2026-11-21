@@ -15,9 +15,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Ticket 22 评审 B5：复制出去的凭证不能无限期留在系统剪贴板里（任何拿到焦点的应用、输入法的剪贴板历史、跨设备同步都读得到它）。
- * 凭证复制出去之后唯一的用处是粘贴给别处——通常要退出本应用——所以“清”不能挑退后台的那一刻（那会把刚复制的东西当场删掉），
- * 而是到点（60 秒）清，并且只清自己放的那一份：别的应用后来复制的东西不动。
+ * Ticket 22 评审 B5 / 复评 R6：复制出去的凭证不能无限期留在系统剪贴板里（任何拿到焦点的应用、输入法的剪贴板历史、跨设备同步都读得到它），
+ * 但清理只能在**证明剪贴板里现在还是我们放的那一份**时做：Android 10 起不在前台的应用读到的剪贴板是“空”，而清却不受限——后台里清是盲的，
+ * 盲清会把用户后来复制的别的东西（会议室门牌、验证码、另一份凭证）一并抹掉。所以：读得到并认得出是自己的才清（面板关闭 / 页面离开 / 应用即将失去焦点 /
+ * 前台里满 60 秒 / 回到前台时发现到期）；读不到一律不动，凭证会留着直到被覆盖或系统自己清，这是平台限制，README 如实写明。
  * 时间是虚拟的、剪贴板是假的（按 Android 的规矩：不在前台读到的是“空”，写和清照常），所以每个先后顺序都可以逐一摆出来。
  */
 class SecretClipboardGuardTest {
@@ -95,14 +96,104 @@ class SecretClipboardGuardTest {
     }
 
     @Test
-    fun `应用不在前台（系统不让读剪贴板）：认不出归属也到点清，宁可多清一次，不让凭证留着`() = guarded { clipboard, guard ->
+    fun `复评 R6：应用不在前台（系统不让读剪贴板）时到点——认不出归属就绝不清，凭证留着也比误清强`() = guarded { clipboard, guard ->
         guard.copy(SECRET)
         clipboard.readable = false // 用户退出去粘贴了：Android 10 起后台应用读到的是空
 
         passTime(SecretClipboardGuard.TIMEOUT_MS)
 
-        assertNull("读不了也清", clipboard.text)
+        assertEquals("没有归属证明：一次都不清", 0, clipboard.clears)
+        assertEquals("凭证原样留着（平台限制，README 如实写明）", SECRET, clipboard.text)
+        assertTrue("记一条“确认不了”，没有凭证：$lines", lines.contains("clipboard.unverifiable") && lines.none { it.contains(SECRET) })
+    }
+
+    @Test
+    fun `复评 R6：读不了的时候剪贴板其实已被别的应用换成了别的东西——到点绝不能把它清掉（盲清的真实后果）`() = guarded { clipboard, guard ->
+        guard.copy(SECRET)
+        clipboard.readable = false
+        passTime(30_000)
+        clipboard.otherAppCopies("会议室门牌 4F-12") // 后台读不了，所以守卫并不知道
+
+        passTime(30_000)
+
+        assertEquals("别人后来复制的东西原样还在", "会议室门牌 4F-12", clipboard.text)
+        assertEquals(0, clipboard.clears)
+    }
+
+    @Test
+    fun `复评 R6：到点时读不了、之后回到前台读得到了——确认还是我们放的、且已到期，才清`() = guarded { clipboard, guard ->
+        guard.copy(SECRET)
+        clipboard.readable = false
+        passTime(SecretClipboardGuard.TIMEOUT_MS) // 到点时在后台：没清
+        clipboard.readable = true // 用户回来了，窗口拿到了焦点
+
+        guard.onForeground()
+
+        assertNull("此刻读得到、认得出是自己的、已到期：清", clipboard.text)
         assertEquals(1, clipboard.clears)
+    }
+
+    @Test
+    fun `复评 R6：到点时读不了、回到前台时那里已是别人的东西——不动`() = guarded { clipboard, guard ->
+        guard.copy(SECRET)
+        clipboard.readable = false
+        passTime(SecretClipboardGuard.TIMEOUT_MS)
+        clipboard.otherAppCopies("别人复制的")
+        clipboard.readable = true
+
+        guard.onForeground()
+
+        assertEquals("别人复制的", clipboard.text)
+        assertEquals(0, clipboard.clears)
+    }
+
+    @Test
+    fun `复评 R6：面板关闭、页面离开或应用即将失去焦点时（读得到、认得出是自己的）当场清，并作废定时器`() = guarded { clipboard, guard ->
+        guard.copy(SECRET)
+        passTime(5_000)
+
+        guard.onLeaving()
+
+        assertNull("当场清，不等 60 秒", clipboard.text)
+        assertEquals(1, clipboard.clears)
+        clipboard.otherAppCopies("之后别人复制的")
+        passTime(SecretClipboardGuard.TIMEOUT_MS)
+        assertEquals("定时器已作废：到点不会再去动别人的东西", "之后别人复制的", clipboard.text)
+        assertEquals("总共只清了一次", 1, clipboard.clears)
+    }
+
+    @Test
+    fun `复评 R6：离开时读不了——没有归属证明，不清；之后在前台到点还是会清`() = guarded { clipboard, guard ->
+        guard.copy(SECRET)
+        clipboard.readable = false
+
+        guard.onLeaving()
+
+        assertEquals("读不了就不动", SECRET, clipboard.text)
+        assertEquals(0, clipboard.clears)
+        clipboard.readable = true // 用户在前台里又回来了（比如只是下拉了通知栏）
+        passTime(SecretClipboardGuard.TIMEOUT_MS)
+        assertNull("定时器还在：前台里到点照清", clipboard.text)
+    }
+
+    @Test
+    fun `复评 R6：离开时剪贴板里是别的应用放的东西——不动，也不记成清过`() = guarded { clipboard, guard ->
+        guard.copy(SECRET)
+        clipboard.otherAppCopies("别人复制的")
+
+        guard.onLeaving()
+
+        assertEquals("别人复制的", clipboard.text)
+        assertEquals(0, clipboard.clears)
+    }
+
+    @Test
+    fun `复评 R6：这个进程没有复制过也离开了，但剪贴板里有上一个进程放的、带我们标记的凭证——那也是我们的，清`() = guarded { clipboard, guard ->
+        clipboard.put(SECRET, at = 0)
+
+        guard.onLeaving()
+
+        assertNull(clipboard.text)
     }
 
     @Test

@@ -92,9 +92,13 @@ internal fun describeCredentialRules(rotating: Boolean): String =
     if (rotating) "轮换会让旧凭证立刻失效：正在用旧凭证的 Agent 需要换成新的。新凭证只显示这一次。"
     else "凭证只显示这一次，关掉之后找不回来（需要时可以轮换出新的）。拿到凭证的 Agent 可以读取这个目的地的文字，请只交给你信任的 Agent。"
 
-/** 复制之后剪贴板里的凭证什么时候没有：SecretClipboardGuard 到点清（评审 B5），说的秒数取自它真正用的那个常量。 */
+/**
+ * 复制之后剪贴板里的凭证的下落（评审 B5，复评 R6）：面板里与复制之后的提示都用这一句。说的秒数取自守卫真正用的那个常量；
+ * 如实说三件事：什么时候自动清（离开本应用或满时限）、只在确认还是这一份时才清（不会动用户后来复制的东西）、已在后台时系统不让读、清不了（平台限制，要自己清空）。
+ */
 internal fun describeClipboardNotice(): String =
-    "复制之后请在 ${SecretClipboardGuard.TIMEOUT_MS / 1_000} 秒内粘贴给 Agent；到时剪贴板里的凭证会自动清掉，之后只能轮换出新的。"
+    "复制之后，离开本应用或满 ${SecretClipboardGuard.TIMEOUT_MS / 1_000} 秒，剪贴板里的凭证会自动清掉（只在确认还是这一份时才清）；" +
+        "已在后台时系统不让本应用读取，清不了，请自行清空。清掉后只能轮换出新的。"
 
 internal fun describeDecision(decision: TargetDecision, eligible: Boolean): String = when {
     !eligible -> "不会发给它（这个目的地已被撤销、已暂停，或不接收这种标签）"

@@ -170,6 +170,16 @@ class DestinationTextTest {
     }
 
     @Test
+    fun `复评 R6：复制之后的提示如实说清掉的条件与做不到的事：离开本应用就清、只在确认还是这一份时才清、后台里清不了要自己清空`() {
+        val notice = describeClipboardNotice()
+
+        assertTrue("说清“离开本应用就清”，别让人以为还能切到别的应用再粘贴：$notice", "离开本应用" in notice)
+        assertTrue("说清只在确认还是这一份时才清（不会动用户后来复制的东西）：$notice", "确认" in notice)
+        assertTrue("说清退到后台之后系统不让读、清不了，要用户自己清空——平台限制不能瞒：$notice", "清不了" in notice && "自行清空" in notice)
+        assertTrue("一句话（Toast 用）：不换行", '\n' !in notice)
+    }
+
+    @Test
     fun `凭证已丢掉的说明（评审 B6）：叫用户轮换，说清旧的会立刻失效，不说成功也不说已处理`() {
         val text = describeCredentialLost()
 
