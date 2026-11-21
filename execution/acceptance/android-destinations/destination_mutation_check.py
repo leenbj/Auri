@@ -678,6 +678,35 @@ MUTATIONS: tuple = (
         app_tests("DestinationTextTest"), APP_RESULTS,
         ("复评 R6：复制之后的提示如实说清掉的条件与做不到的事",),
     ),
+    # ---- 复评 R8：授权那一行的时间读不懂就当没授权（不确定就是不许） ----
+    Mutation(
+        "r8-grant-time-not-checked",
+        "复评 R8：授权那一行的时间也要逐字合规：不看时间，被改坏的行（granted v2 … nonsense）仍然放行文字",
+        (Edit(POLICY_SQL, "        if (!isCanonicalInstant(parts[4])) return null\n", ""),),
+        platform_tests("DataFlowPolicySqlTest"), PLATFORM_RESULTS,
+        ("复评 R8：授权那一行的时间读不懂就当没授权",),
+    ),
+    Mutation(
+        "r8-grant-time-lenient",
+        "复评 R8：时间要按规范写法逐字往返才算：宽松解析认下的写法（偏移量、小写、多余的零、闰秒）不能算授权",
+        (Edit(POLICY_SQL, "        Instant.parse(text).toString() == text\n", "        Instant.parse(text)\n        true\n"),),
+        platform_tests("DataFlowPolicySqlTest"), PLATFORM_RESULTS,
+        ("复评 R8：授权那一行的时间读不懂就当没授权",),
+    ),
+    Mutation(
+        "r8-grant-time-unparseable-accepted",
+        "复评 R8：解析不出来的时间按“不是授权”处理：不能因为解析抛了异常就放行（fail-closed）",
+        (Edit(POLICY_SQL, "    } catch (_: RuntimeException) {\n        false\n    }", "    } catch (_: RuntimeException) {\n        true\n    }"),),
+        platform_tests("DataFlowPolicySqlTest"), PLATFORM_RESULTS,
+        ("复评 R8：授权那一行的时间读不懂就当没授权",),
+    ),
+    Mutation(
+        "r8-grant-time-over-strict",
+        "复评 R8：严格不能误伤：grantTo 自己写出的时刻读回来必须还是授权，过严会让用户的授权悄悄失效、文字永远发不出去",
+        (Edit(POLICY_SQL, "        Instant.parse(text).toString() == text\n", "        Instant.parse(text).toString() == text && text.length == 20\n"),),
+        platform_tests("DataFlowPolicySqlTest"), PLATFORM_RESULTS,
+        ("复评 R8：严格不等于误伤",),
+    ),
     Mutation(
         "policy-strict-local-ignored",
         "评审 B1：严格仅本地是统一门禁，压过授权：只看授权就等于开着严格仅本地也照发",

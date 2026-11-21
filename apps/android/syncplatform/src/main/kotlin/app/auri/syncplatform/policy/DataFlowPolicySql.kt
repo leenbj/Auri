@@ -13,6 +13,7 @@ import java.time.Instant
  * - 从没写过 → 用户什么都没设置：不授权、严格仅本地没开（[StoredDataFlow.Unset]）——文字照样不会发。
  * - 授权那一行必须**逐字**是 `granted v2 <网关编号> <公钥指纹> <时间>` 才算授权，授给的就是行里写的那个网关（复评 R3，SEC-002：同意限定在指定的网关上）；
  *   `revoked …`、别的版本号（含 v1：那时授权是全局的，不知道给了谁，读起来是“没授权”）、被改坏的内容都当没授权。
+ *   时间也要逐字合规（复评 R8）：必须是 [grantTo] 写出的那种规范写法（[Instant.toString] 逐字往返），读不懂的时间 = 这一行被改坏了 = 不是授权。
  * - 严格仅本地那一行只有 `off` 才算没开；`on` 和任何读不懂的内容都当开。
  * - 读本身出任何故障（[readOrClosed]）→ [StoredDataFlow.Closed]。
  * 授权那一行带上范围、版本与时间：以后要核对“用户在什么时候、对哪台网关、按哪一版的文案授权的”有据可查（PRD SEC-002：授权记录含范围、版本、时间与撤销状态）。
@@ -52,8 +53,15 @@ class DataFlowPolicySql(private val sql: SqlDb) {
     private fun grantee(value: String): GatewayIdentity? {
         val parts = value.split(' ')
         if (parts.size != 5 || parts[0] != "granted" || parts[1] != GRANT_VERSION) return null
-        // shortcut: 第五段（时间）这里还没有解析，下一条评审项（R8）补上严格解析
+        if (!isCanonicalInstant(parts[4])) return null
         return GatewayIdentity(parts[2].takeIf { GATEWAY_ID.matches(it) } ?: return null, parts[3].takeIf { KEY_SHA256.matches(it) } ?: return null)
+    }
+
+    /** 时间必须是 [Instant.toString] 的规范写法：宽松的解析器认下的偏移量、小写、多余的零、闰秒等写法一律不算（读不懂就是被改坏了）。 */
+    private fun isCanonicalInstant(text: String): Boolean = try {
+        Instant.parse(text).toString() == text
+    } catch (_: RuntimeException) {
+        false
     }
 
     private fun value(name: String): String? = sql.query("SELECT value FROM data_flow_policy WHERE name = ?", name) { it.string(0) }.firstOrNull()

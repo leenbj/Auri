@@ -169,6 +169,47 @@ class DataFlowPolicySqlTest {
     }
 
     @Test
+    fun `复评 R8：授权那一行的时间读不懂就当没授权，不是时间随便写什么都行（含评审给的 granted v1 nonsense）`() {
+        val db = newDb()
+        val policy = DataFlowPolicySql(db)
+        val id = gatewayA.gatewayId
+        val key = gatewayA.keySha256
+        val invalidTimes = listOf(
+            "nonsense", "not-a-time", "2026-13-40T99:99:99Z", "2026-02-30T08:00:00Z", "2026-11-20", "2026-11-20T08:00:00", "08:00:00Z",
+            "1763625600000", "1763625600", "2026-11-20T08:00:00+00:00", "2026-11-20T09:00:00+01:00", "2026-11-20t08:00:00z", "2026-11-20T08:00:00.000Z",
+            "2026-11-20T08:00:00.1230Z", "2026-11-20T23:59:60Z", "2026-11-20T08:00:00Z\n", "???",
+        )
+        for (time in invalidTimes) {
+            db.rawPut("gateway_text_grant", grantRow(time = time))
+
+            assertNull("时间“$time”读不懂：整行不能算授权（不确定就是不许）", policy.read().grantedTo)
+            assertFalse(policy.read().viewFor(gatewayA).textMayEnterGateway)
+        }
+        for (row in listOf("granted v1 nonsense", "granted v2 nonsense", "granted v2 $id nonsense", "granted v2 $id $key nonsense")) {
+            db.rawPut("gateway_text_grant", row)
+
+            assertNull("“$row” 不能算授权", policy.read().grantedTo)
+        }
+        db.rawPut("gateway_text_grant", grantRow(time = "2026-11-20T08:00:00Z"))
+        assertEquals("对照：同一行换成规范的时间就是授权，坏的只可能是时间", gatewayA, policy.read().grantedTo)
+    }
+
+    @Test
+    fun `复评 R8：严格不等于误伤：grantTo 自己写出的各种时刻（整秒、毫秒、纳秒、纪元、远古与远未来）读回来都还是授权`() {
+        val instants = listOf(
+            Instant.parse("2026-11-20T08:00:00Z"), Instant.parse("2026-11-20T08:00:00.123Z"), Instant.parse("2026-11-20T08:00:00.123456Z"),
+            Instant.parse("2026-11-20T08:00:00.123456789Z"), Instant.EPOCH, Instant.parse("0001-01-01T00:00:00Z"), Instant.parse("9999-12-31T23:59:59.999999999Z"),
+            Instant.parse("+10000-01-01T00:00:00Z"), Instant.ofEpochSecond(1_900_000_000L, 1L),
+        )
+        for (instant in instants) {
+            val db = newDb()
+            DataFlowPolicySql(db).grantTo(gatewayA, instant)
+
+            assertEquals("$instant 写进去的那一行读回来必须还是授权（${db.row("gateway_text_grant")}）", gatewayA, DataFlowPolicySql(db).read().grantedTo)
+        }
+    }
+
+    @Test
     fun `严格仅本地的行只有 off 才算没开：on 和读不懂的内容都算开（不确定就是不许）`() {
         val db = newDb()
         val policy = DataFlowPolicySql(db)
