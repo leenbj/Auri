@@ -399,6 +399,17 @@ def _suspended_destination_ids(conn: Any, tenant_id: str, destination_ids: list[
     return {row["destination_id"] for row in rows}
 
 
+def _has_revocation_cutoff_column(conn: Any) -> bool:
+    """Whether this database already has migration 0005's column.
+
+    shortcut: always true in a real deployment (migrations run before serving). The upgrade test runs the current code
+    on a schema frozen at migration 0002 (AURI_GATEWAY_MIGRATIONS_DIR) to create "legacy" data through the public API, so
+    the write path (first store) must not require a column that legacy schema lacks; drop this once that test seeds
+    its legacy database another way.
+    """
+    return any(row[1] == "revocation_cutoff" for row in conn.execute("PRAGMA table_info(destinations)"))
+
+
 def _past_cutoff_destination_ids(
     conn: Any, tenant_id: str, destination_ids: list[str], stored_at: str
 ) -> set[str]:
@@ -408,7 +419,7 @@ def _past_cutoff_destination_ids(
     Delivery is created for it: a PENDING row nobody can ever claim would only make the phone's status say
     "stored". Like a suspended Destination it is skipped, not refused, so the other targets of the request still get theirs.
     """
-    if not destination_ids:
+    if not destination_ids or not _has_revocation_cutoff_column(conn):
         return set()
     placeholders = ", ".join("?" for _ in destination_ids)
     rows = conn.execute(
