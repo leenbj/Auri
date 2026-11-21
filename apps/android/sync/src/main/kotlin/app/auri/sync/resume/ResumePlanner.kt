@@ -12,9 +12,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emptyFlow
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
 
 /**
@@ -39,6 +37,11 @@ fun needsResume(pairing: PairingState, jobs: List<SyncJob>, policy: DataFlowStat
  * 做成独立的流就会比任务表旧一拍，在“入库”的那一刻把叫醒取消、过一会儿才补登记——这中间进程被杀就没人再来做。
  * 重启后的第一次评估同样只凭磁盘上的账（任务表、发送账）算，所以提交之后、登记之前被杀也能在下一个进程里补上。
  *
+ * 可是“下一个进程”要有人把应用叫起来才有：用户确认预览之后账上立刻欠下追加，而叫醒要等这里异步反应过来才登记（复评 R12）。
+ * 所以登记与取消都经过 [WakeGate]：用户确认之前先经它登记叫醒、再提交（见 [WakeAheadDispatchStore]）；这里每个输入变一次，
+ * “现算 + 登记或取消”在它的锁里一气呵成——读账与取消之间用户若确认了，手里过时的“没活了”不会把刚登记的叫醒抹掉。
+ * “结论不变不重复登记”也记在门里。没传 [gate] 就给自己造一道（没有别人要和它抢）。
+ *
  * @param additionsOwed 现在账上还欠不欠要向网关追加的 Delivery（实时读，不缓存）。
  * @param additionsChanged 发送账变了（决定、网关上有没有 Delivery、目的地缓存）：重新评估一次。任务表的变化已经在 [jobs] 里。
  */
@@ -46,17 +49,16 @@ class ResumePlanner(
     private val pairing: Flow<PairingState>,
     private val jobs: Flow<List<SyncJob>>,
     private val policy: Flow<DataFlowState>,
-    private val scheduler: ResumeScheduler,
+    scheduler: ResumeScheduler,
     private val clock: Clock,
     private val retry: RetryPolicy = RetryPolicy(),
     private val log: SyncLog = SyncLog.None,
     private val additionsOwed: suspend () -> Boolean = { false },
     private val additionsChanged: Flow<*> = emptyFlow<Unit>(),
+    private val gate: WakeGate = WakeGate(scheduler, log),
 ) {
     fun start(scope: CoroutineScope): Job = scope.restartingProducer("resume", log, clock, retry) {
         combine(pairing, jobs, policy, additionsChanged.onStart { emit(Unit) }) { pairingState, list, dataFlow, _ -> Triple(pairingState, list, dataFlow) }
-            .map { (pairingState, list, dataFlow) -> needsResume(pairingState, list, dataFlow, additionsOwed()) }
-            .distinctUntilChanged()
-            .collect { needed -> if (needed) scheduler.ensureScheduled() else scheduler.cancel() }
+            .collect { (pairingState, list, dataFlow) -> gate.reconcile { needsResume(pairingState, list, dataFlow, additionsOwed()) } }
     }
 }

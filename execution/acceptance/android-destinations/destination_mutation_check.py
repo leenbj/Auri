@@ -57,6 +57,7 @@ POLICY_SQL = SYNCPLATFORM + "policy/DataFlowPolicySql.kt"
 SQLITE_POLICY = SYNCPLATFORM + "policy/SqliteDataFlowPolicy.kt"
 STORED_STATES = ANDROID + "sync/src/main/kotlin/app/auri/sync/policy/StoredStatesRecovery.kt"
 RESUME_PLANNER = ANDROID + "sync/src/main/kotlin/app/auri/sync/resume/ResumePlanner.kt"
+WAKE_GATE = ANDROID + "sync/src/main/kotlin/app/auri/sync/resume/WakeGate.kt"
 SYNC_RUNTIME = SYNCPLATFORM + "SyncRuntime.kt"
 PAIRING_FILE_STORE = ANDROID + "sync/src/main/kotlin/app/auri/sync/pairing/FilePairingStore.kt"
 PAIRING_OBSERVABLE = ANDROID + "sync/src/main/kotlin/app/auri/sync/pairing/ObservablePairingStore.kt"
@@ -848,6 +849,102 @@ MUTATIONS: tuple = (
         (Edit(DETAIL_VM, 'refreshOn.containReadFailures("destination.detail.refresh", log).collect', "refreshOn.collect"),),
         app_tests("ReadFailureContainmentTest"), APP_RESULTS,
         ("复评 R11：详情页的“本机之外的变化”流",),
+    ),
+    # ---- 复评 R12：叫醒要在提交确认之前登记（先登记、再提交），并且不能被规划器手里过时的“没活了”取消 ----
+    Mutation(
+        "r12-confirm-no-prewake",
+        "复评 R12：用户确认之前要先登记叫醒：不套这层，提交之后才等规划器异步登记，两者之间进程被杀就再也没人把应用叫起来",
+        (Edit(WAKE_GATE, '        if (choice == Choice.CONFIRM) wakes.ahead { inner.decide(key, destinationId, choice, now) } else inner.decide(key, destinationId, choice, now)\n', "        inner.decide(key, destinationId, choice, now)\n"),),
+        sync_tests("ResumeRecoveryTest", "ResumePlannerTest"), SYNC_RESULTS,
+        ("确认预览：提交的那一刻系统里已经登记着叫醒", "确认提交之后、规划器还没来得及反应进程就被杀", "预先登记被系统拒绝"),
+    ),
+    Mutation(
+        "r12-prewake-after-commit",
+        "复评 R12：登记叫醒必须在提交之前：先提交、后登记，两者之间被杀（提交已落账、叫醒还没有）就没人来发",
+        (Edit(WAKE_GATE, '    suspend fun <T> ahead(commit: suspend () -> T): T = lock.withLock {\n        try {\n            scheduler.ensureScheduled()\n            told = null\n        } catch (cancelled: CancellationException) {\n            throw cancelled\n        } catch (failure: Exception) {\n            log.event("resume.prewake-failed ${failure::class.simpleName}")\n        }\n        commit()\n    }\n', '    suspend fun <T> ahead(commit: suspend () -> T): T = lock.withLock {\n        val committed = commit()\n        try {\n            scheduler.ensureScheduled()\n            told = null\n        } catch (cancelled: CancellationException) {\n            throw cancelled\n        } catch (failure: Exception) {\n            log.event("resume.prewake-failed ${failure::class.simpleName}")\n        }\n        committed\n    }\n'),),
+        sync_tests("ResumeRecoveryTest", "ResumePlannerTest"), SYNC_RESULTS,
+        ("确认预览：提交的那一刻系统里已经登记着叫醒", "确认提交之后、规划器还没来得及反应进程就被杀"),
+    ),
+    Mutation(
+        "r12-prewake-failure-blocks-confirm",
+        "复评 R12：系统拒绝登记不能拦住用户的决定：异常往外抛，用户点了确认却什么都没记下，也没有任何提示",
+        (Edit(WAKE_GATE, '    suspend fun <T> ahead(commit: suspend () -> T): T = lock.withLock {\n        try {\n            scheduler.ensureScheduled()\n            told = null\n        } catch (cancelled: CancellationException) {\n            throw cancelled\n        } catch (failure: Exception) {\n            log.event("resume.prewake-failed ${failure::class.simpleName}")\n        }\n        commit()\n    }\n', '    suspend fun <T> ahead(commit: suspend () -> T): T = lock.withLock {\n        scheduler.ensureScheduled()\n        told = null\n        commit()\n    }\n'),),
+        sync_tests("ResumeRecoveryTest", "ResumePlannerTest"), SYNC_RESULTS,
+        ("预先登记被系统拒绝",),
+    ),
+    Mutation(
+        "r12-skip-also-prewakes",
+        "复评 R12：只有“确认发送”才欠追加、才预先登记：连“不发送”也登记，白白打扰系统（登记了又没有活）",
+        (Edit(WAKE_GATE, '        if (choice == Choice.CONFIRM) wakes.ahead { inner.decide(key, destinationId, choice, now) } else inner.decide(key, destinationId, choice, now)\n', "        wakes.ahead { inner.decide(key, destinationId, choice, now) }\n"),),
+        sync_tests("ResumeRecoveryTest", "ResumePlannerTest"), SYNC_RESULTS,
+        ("“不发送”不欠任何追加",),
+    ),
+    Mutation(
+        "r12-planner-outside-lock",
+        "复评 R12：规划器“现算 + 登记或取消”要在门的锁里：不在锁里，读完账到取消之间用户确认了，手里过时的“没活了”把刚登记的叫醒抹掉",
+        (Edit(WAKE_GATE, "        lock.withLock {\n            val now = needed()\n", "        run {\n            val now = needed()\n"),),
+        sync_tests("ResumeRecoveryTest", "ResumePlannerTest"), SYNC_RESULTS,
+        ("规划器正在现算“没活了”的当口用户确认了", "确认正在提交（叫醒已经预先登记）的当口"),
+    ),
+    Mutation(
+        "r12-ahead-outside-lock",
+        "复评 R12：用户确认的“登记 + 提交”要在门的锁里：不在锁里，规划器正在现算时确认插进去，随后规划器过时的取消把叫醒抹掉",
+        (Edit(WAKE_GATE, "    suspend fun <T> ahead(commit: suspend () -> T): T = lock.withLock {\n", "    suspend fun <T> ahead(commit: suspend () -> T): T = run {\n"),),
+        sync_tests("ResumeRecoveryTest", "ResumePlannerTest"), SYNC_RESULTS,
+        ("规划器正在现算“没活了”的当口用户确认了", "确认正在提交（叫醒已经预先登记）的当口"),
+    ),
+    Mutation(
+        "r12-commit-outside-lock",
+        "复评 R12：提交本身也要在锁里：只有登记在锁里、提交在锁外，规划器能在“已登记、未落账”的当口现算出“没活了”并取消，随后提交落账时系统里没有叫醒",
+        (Edit(WAKE_GATE, '    suspend fun <T> ahead(commit: suspend () -> T): T = lock.withLock {\n        try {\n            scheduler.ensureScheduled()\n            told = null\n        } catch (cancelled: CancellationException) {\n            throw cancelled\n        } catch (failure: Exception) {\n            log.event("resume.prewake-failed ${failure::class.simpleName}")\n        }\n        commit()\n    }\n', '    suspend fun <T> ahead(commit: suspend () -> T): T {\n        lock.withLock {\n            try {\n                scheduler.ensureScheduled()\n                told = null\n            } catch (cancelled: CancellationException) {\n                throw cancelled\n            } catch (failure: Exception) {\n                log.event("resume.prewake-failed ${failure::class.simpleName}")\n            }\n        }\n        return commit()\n    }\n'),),
+        sync_tests("ResumeRecoveryTest", "ResumePlannerTest"), SYNC_RESULTS,
+        ("确认正在提交（叫醒已经预先登记）的当口",),
+    ),
+    Mutation(
+        "r12-planner-reads-before-lock",
+        "复评 R12：账要在锁里读（现算）：锁外先读好再进锁，等于带着过时的答案去登记或取消",
+        (Edit(
+            RESUME_PLANNER,
+            "            .collect { (pairingState, list, dataFlow) -> gate.reconcile { needsResume(pairingState, list, dataFlow, additionsOwed()) } }\n",
+            "            .collect { (pairingState, list, dataFlow) ->\n                val owedNow = additionsOwed()\n                gate.reconcile { needsResume(pairingState, list, dataFlow, owedNow) }\n            }\n",
+        ),),
+        sync_tests("ResumeRecoveryTest", "ResumePlannerTest"), SYNC_RESULTS,
+        ("规划器正在现算“没活了”的当口用户确认了",),
+    ),
+    Mutation(
+        "r12-told-stays-true-after-prewake",
+        "复评 R12：预先登记之后要把“告诉过系统什么”忘掉：记成“有”，而提交什么也没改时没有信号叫规划器再算，系统又已把那个叫醒收走，之后新来的活就因“结论没变”而不登记",
+        (Edit(WAKE_GATE, "            told = null\n", "            told = true\n"),),
+        sync_tests("ResumeRecoveryTest", "ResumePlannerTest"), SYNC_RESULTS,
+        ("预先登记之后账上什么也没变",),
+    ),
+    Mutation(
+        "r12-gate-no-dedupe",
+        "复评 R12：结论与上次告诉系统的一样就不再打扰系统：不去重，每个输入变一次就登记或取消一次",
+        (Edit(WAKE_GATE, "            if (now != told) {\n", "            if (true) {\n"),),
+        sync_tests("ResumeRecoveryTest", "ResumePlannerTest"), SYNC_RESULTS,
+        ("结论没变就不重复打扰系统",),
+    ),
+    Mutation(
+        "r12-gate-told-before-apply",
+        "复评 R12：登记或取消抛异常时不能记成“告诉过了”：先记后做，系统拒绝之后规划器的重试看到“结论没变”就跳过，请求丢了",
+        (Edit(WAKE_GATE, "                if (now) scheduler.ensureScheduled() else scheduler.cancel()\n                told = now\n", "                told = now\n                if (now) scheduler.ensureScheduled() else scheduler.cancel()\n"),),
+        sync_tests("ResumeRecoveryTest", "ResumePlannerTest"), SYNC_RESULTS,
+        ("系统暂时拒绝登记",),
+    ),
+    Mutation(
+        "r12-runtime-planner-own-gate",
+        "复评 R12：规划器要拿和确认路同一道门（接线守卫）：不传，规划器给自己造一道，两条路各锁各的，门形同虚设",
+        (Edit(SYNC_RUNTIME, "        gate = wakes,\n", ""),),
+        app_tests("ResumeWiringGuardTest"), APP_RESULTS,
+        ("确认预览的路与叫醒规划器共用同一道门",),
+    ),
+    Mutation(
+        "r12-runtime-dispatch-unwrapped",
+        "复评 R12：界面、引擎用的发送账要是套了“先登记叫醒”壳的那一份（接线守卫）：不套，用户确认走的还是老路",
+        (Edit(SYNC_RUNTIME, "val dispatch: DispatchStore = WakeAheadDispatchStore(SqliteDispatchStore(library), wakes)", "val dispatch: DispatchStore = SqliteDispatchStore(library)"),),
+        app_tests("ResumeWiringGuardTest"), APP_RESULTS,
+        ("确认预览的路与叫醒规划器共用同一道门",),
     ),
     Mutation(
         "policy-strict-local-ignored",

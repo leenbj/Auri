@@ -8,6 +8,7 @@ import app.auri.platform.system.SystemClock
 import app.auri.sync.SyncController
 import app.auri.sync.SyncLog
 import app.auri.sync.destinations.DestinationService
+import app.auri.sync.destinations.DispatchStore
 import app.auri.sync.destinations.LocalAuthenticator
 import app.auri.sync.discovery.GatewayDiscovery
 import app.auri.sync.discovery.GatewayLocator
@@ -38,6 +39,8 @@ import app.auri.sync.policy.states
 import app.auri.sync.resume.ResumePlanner
 import app.auri.sync.resume.ResumeRunner
 import app.auri.sync.resume.ResumeScheduler
+import app.auri.sync.resume.WakeAheadDispatchStore
+import app.auri.sync.resume.WakeGate
 import app.auri.sync.resume.needsResume
 import app.auri.sync.status.SyncStatus
 import app.auri.syncplatform.discovery.NsdGatewayDiscovery
@@ -99,8 +102,14 @@ class SyncRuntime(
 ) : SyncController {
     val jobs = SqliteSyncJobStore(library)
 
-    /** 发送账（Ticket 22）：Destination 缓存、预览确认的决定、意图标签、网关上有没有 Delivery 的账。引擎每次发送前向它要 publication，每轮最后向它要还欠的 Delivery。 */
-    val dispatch = SqliteDispatchStore(library)
+    /** 系统里那个叫醒的唯一出入口（复评 R12）：规划器与“用户确认预览”两条路共用它的锁，确认先登记叫醒、再提交，规划器手里过时的“没活了”抹不掉它。 */
+    private val wakes = WakeGate(resume, log)
+
+    /**
+     * 发送账（Ticket 22）：Destination 缓存、预览确认的决定、意图标签、网关上有没有 Delivery 的账。引擎每次发送前向它要 publication，每轮最后向它要还欠的 Delivery。
+     * 外面套着“确认之前先登记叫醒”的壳（复评 R12）：界面、引擎、状态汇总拿到的都是这一份。
+     */
+    val dispatch: DispatchStore = WakeAheadDispatchStore(SqliteDispatchStore(library), wakes)
 
     /**
      * “文字能不能进网关”的两道开关（评审 B1）：默认关、读不出来也当关；引擎在每个可能发请求的地方先问它，
@@ -148,6 +157,7 @@ class SyncRuntime(
         log = log,
         additionsOwed = { dispatch.due().isNotEmpty() },
         additionsChanged = dispatch.changes(),
+        gate = wakes,
     )
     private val resumeRunner = ResumeRunner(
         ready = { started.await() },
