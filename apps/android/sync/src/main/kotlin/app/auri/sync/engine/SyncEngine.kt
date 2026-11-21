@@ -340,7 +340,8 @@ class SyncEngine(
             ?: return waiting(gateway, key, wasUncertain, releaseIntent = !wasUncertain)
         return when (put) {
             is GatewayResult.Success -> stored(gateway, key, put.value.deliveries.filter { it.revision == key.revision }.map { it.destinationId })
-            else -> failed(key, gateway, put, wasUncertain, recheck)
+            // 客户端证明“一定没发出”的失败（连接或握手没成、公钥不符），并且是第一次尝试：刚冻结的标签放开（再评 S9）
+            else -> failed(key, gateway, put, wasUncertain, recheck, releaseIntentIfUnsent = !wasUncertain)
         }
     }
 
@@ -425,11 +426,19 @@ class SyncEngine(
      * 两步的顺序不能反（进程死在中间时，配对记录上有标记、任务只是回到排队，比“任务停了、记录上没标记、没人会去解除”好）；
      * 第二步仍在围栏里：两步之间用户改配了，任务不能被旧配对的结论停下（再评 S2）。
      */
-    private suspend fun connectionBlocked(key: JobKey, gateway: PairedGateway, needs: NeedsUser, reason: BlockedReason, wasUncertain: Boolean): SendResult {
+    private suspend fun connectionBlocked(
+        key: JobKey,
+        gateway: PairedGateway,
+        needs: NeedsUser,
+        reason: BlockedReason,
+        wasUncertain: Boolean,
+        releaseIntent: Boolean = false,
+    ): SendResult {
         // 配对记录里的这份已经不是发请求时的那份（途中重新配对了）：这是旧配对的结论，作废。写记录这一步本身就是原子的比对
         if (!recordConnectionProblem(gateway, needs)) return stale(key)
         val event = if (needs == NeedsUser.KEY_MISMATCH) SyncEvent.KEY_MISMATCH else SyncEvent.AUTH_REVOKED
         return settle(gateway, key) {
+            if (releaseIntent) source.unfreezeUnsent(key) // 与任务的停下在同一个围栏里（再评 S9，同 [waiting]）
             deliver(key, event) { it.copy(uncertain = wasUncertain, blockedReason = reason) }
             SendResult.CONNECTION_BLOCKED
         }
@@ -477,20 +486,27 @@ class SyncEngine(
         return settleVerdict(verdict, key, gateway, wasUncertain) ?: blocked(gateway, key, BlockedReason.REQUEST_REJECTED)
     }
 
+    /**
+     * [releaseIntentIfUnsent]：这次尝试构造提交时冻结了标签，并且之前没有任何一次可能送到过（第一次尝试）。
+     * 此时若失败是客户端**证明请求一定没发出**的那两种（[TransportFailure.Unreachable]、[TransportFailure.KeyMismatch]：PinnedHttpsClient 在握手完成、
+     * 核对指纹之前的任何失败），标签放开（再评 S9）；其余失败——写出请求之后断线、网关回了任何响应——网关可能已经看到这个标签，冻结不动。
+     */
     private suspend fun failed(
         key: JobKey,
         gateway: PairedGateway,
         result: GatewayResult<*>,
         wasUncertain: Boolean,
         recheck: suspend () -> ContractAnswer?,
+        releaseIntentIfUnsent: Boolean = false,
     ): SendResult = when (result) {
         is GatewayResult.Success<*> -> error("failed() 只处理失败的结果")
         is GatewayResult.Garbled -> retryLater(gateway, key) // 2xx 但读不懂：请求确实到了，网关可能已入库
         is GatewayResult.TransportFailed -> {
             contract.invalidate() // 连接断过：重连之后网关可能不是原来的版本，下一次联系前重新问（再评 S6）
             when (result.failure) {
-                is TransportFailure.Unreachable -> waiting(gateway, key, wasUncertain)
-                is TransportFailure.KeyMismatch -> connectionBlocked(key, gateway, NeedsUser.KEY_MISMATCH, BlockedReason.KEY_MISMATCH, wasUncertain)
+                is TransportFailure.Unreachable -> waiting(gateway, key, wasUncertain, releaseIntent = releaseIntentIfUnsent)
+                is TransportFailure.KeyMismatch ->
+                    connectionBlocked(key, gateway, NeedsUser.KEY_MISMATCH, BlockedReason.KEY_MISMATCH, wasUncertain, releaseIntent = releaseIntentIfUnsent)
                 is TransportFailure.Interrupted -> retryLater(gateway, key)
             }
         }
