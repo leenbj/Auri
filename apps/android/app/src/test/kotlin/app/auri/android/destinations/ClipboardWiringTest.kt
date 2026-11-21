@@ -74,6 +74,28 @@ class ClipboardWiringTest {
     }
 
     @Test
+    fun `再评 S11：真机端口按内容认归属——放进去时记摘要、读时核对、清了就忘；不看描述里的额外字段（别的应用抄得走、伪造得出）；摘要只在内存里`() {
+        val port = SourceText.withoutCommentsAndStrings(main("ui/SecretWindow.kt"))
+        val put = port.substringAfter("override fun put(").substringBefore("override fun peek")
+        val peek = port.substringAfter("override fun peek").substringBefore("override fun clear")
+        val clear = port.substringAfter("override fun clear")
+
+        assertTrue("放进去时记下内容摘要：$put", put.contains("ownership.remember(secret, at)"))
+        assertTrue("读时按内容核对：$peek", peek.contains("ownership.classify"))
+        assertTrue("读时不看描述与额外字段：$peek", !peek.contains("primaryClipDescription") && !peek.contains("extras"))
+        assertTrue("清了就忘：$clear", clear.contains("ownership.forget()"))
+        assertTrue("旧标记整个去掉，免得又有人拿它认归属：$port", !port.contains("COPIED_AT"))
+
+        val ownershipSource = main("destinations/ClipOwnership.kt")
+        val ownership = SourceText.withoutCommentsAndStrings(ownershipSource)
+        assertTrue("对比的是 SHA-256 摘要，不是文字", ownershipSource.contains("MessageDigest.getInstance(\"SHA-256\")"))
+        assertTrue(
+            "摘要只在内存里：这个类不碰文件、数据库与偏好：$ownership",
+            !Regex("""java\.io|java\.nio|SharedPreferences|SQLite|openFileOutput|DataStore|noBackupFilesDir""").containsMatchIn(ownership),
+        )
+    }
+
+    @Test
     fun `clearPrimaryClip 是 API 28 才有的：应用的 minSdk 不低于它，所以不需要降级写法；谁把 minSdk 调低，这里先红`() {
         val gradle = File(androidDir, "app/build.gradle.kts").readText()
         val minSdk = Regex("""minSdk\s*=\s*(\d+)""").find(gradle)?.groupValues?.get(1)?.toInt() ?: error("没找到 minSdk")

@@ -202,7 +202,8 @@ class SecretClipboardGuardTest {
     }
 
     @Test
-    fun `复评 R6：这个进程没有复制过也离开了，但剪贴板里有上一个进程放的、带我们标记的凭证——那也是我们的，清`() = guarded { clipboard, guard ->
+    fun `守卫自己没有复制过，但端口证明剪贴板里是我们放的（守卫信端口的证明，不靠自己的记忆）：离开时清`() = guarded { clipboard, guard ->
+        // 真机端口的证明是内存里的内容摘要，只在同一个进程里有效（再评 S11：进程重启后认不出、不清，见 ClipOwnershipTest）
         clipboard.put(SECRET, at = 0)
 
         guard.onLeaving()
@@ -227,8 +228,8 @@ class SecretClipboardGuardTest {
     }
 
     @Test
-    fun `回到前台时发现已经到期（定时器随被杀的进程丢了）：认出剪贴板里自己的标记，到期就清，没到期不动`() = guarded { clipboard, guard ->
-        clipboard.put(SECRET, at = 0) // 上一个进程放的；它的定时器随进程一起没了，这个守卫对它一无所知
+    fun `回到前台时发现已经到期（到点时没清成，守卫手里没有定时器可等）：端口证明是自己的，到期就清，没到期不动`() = guarded { clipboard, guard ->
+        clipboard.put(SECRET, at = 0) // 端口证明是我们放的，但这个守卫没有给它排过定时器（到点时人在后台、或进程被冻结过）
         passTime(SecretClipboardGuard.TIMEOUT_MS - 1)
 
         guard.onForeground()
@@ -240,7 +241,7 @@ class SecretClipboardGuardTest {
     }
 
     @Test
-    fun `设备重启过（标记里的时刻比现在的开机计时还大）：算到期`() = guarded { clipboard, guard ->
+    fun `放入时刻比现在的开机计时还大（时钟对不上，例如设备重启过）：算到期，清`() = guarded { clipboard, guard ->
         clipboard.put(SECRET, at = 10_000_000)
 
         guard.onForeground()
