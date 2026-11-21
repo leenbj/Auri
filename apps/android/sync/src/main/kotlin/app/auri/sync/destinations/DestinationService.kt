@@ -192,7 +192,7 @@ class DestinationService(
                     is Connect.Ready -> connected.session
                     is Connect.Blocked -> return@withLock CredentialOutcome.Failed(connected.failure)
                 }
-                val result = session.client.issueCredential(session.address, session.gateway.token, destinationId)
+                val result = session.client.issueCredential(session.address, session.gateway.token, destinationId).noteOutcome()
                 when (result) {
                     is GatewayResult.Success -> {
                         // 确认还是这一份配对与写缓存在同一把锁里（复评 R5）
@@ -243,7 +243,7 @@ class DestinationService(
             is Connect.Blocked -> return recordIds.associateWith { Remote.Unusable(UnknownReason.GATEWAY_UNREACHABLE) }
         }
         return recordIds.associateWith { recordId ->
-            when (val result = session.client.recordStatus(session.address, session.gateway.token, recordId)) {
+            when (val result = session.client.recordStatus(session.address, session.gateway.token, recordId).noteOutcome()) {
                 is GatewayResult.Success -> Remote.Answer(result.value.destinations)
                 is GatewayResult.TransportFailed -> Remote.Unusable(UnknownReason.GATEWAY_UNREACHABLE)
                 is GatewayResult.Rejected, is GatewayResult.Garbled -> Remote.Unusable(UnknownReason.GATEWAY_ANSWER_UNUSABLE)
@@ -306,7 +306,11 @@ class DestinationService(
         gateway.needsUser?.takeIf { it != NeedsUser.GATEWAY_TOO_OLD }?.let { return Connect.Blocked(ServiceFailure.NeedsRepair(it)) }
         return when (val located = locator.locate(gateway)) {
             is Located.Reachable -> verified(gateway, located.address)
-            Located.Unreachable -> Connect.Blocked(ServiceFailure.Unreachable)
+            Located.Unreachable -> {
+                contract.invalidate() // 连不上过：回来时网关可能已不是原来的版本，下一次操作重新问（再评 S6）
+                Connect.Blocked(ServiceFailure.Unreachable)
+            }
+
             Located.KeyMismatch -> Connect.Blocked(ServiceFailure.NeedsRepair(NeedsUser.KEY_MISMATCH))
         }
     }
@@ -331,6 +335,12 @@ class DestinationService(
         }
     }
 
+    /**
+     * 管理请求没成功（连接断了、被拒绝、读不懂）：网关可能已不是原来的版本（进程活着时被换回旧版本），作废“兼容”的记忆，
+     * 下一次操作重新问版本，不拿过期的结论继续发（再评 S6）。成功的回答原样放过。
+     */
+    private fun <T> GatewayResult<T>.noteOutcome(): GatewayResult<T> = also { if (it !is GatewayResult.Success) contract.invalidate() }
+
     /** 请求途中用户重新配对了：旧配对的回答不能写进新配对的缓存。 */
     private suspend fun stillPaired(gateway: PairedGateway): Boolean {
         val current = (pairing.load() as? PairingState.Paired)?.gateway ?: return false
@@ -350,7 +360,7 @@ class DestinationService(
             is Connect.Ready -> connected.session
             is Connect.Blocked -> return@withLock ServiceResult.Failed(connected.failure)
         }
-        val result = request(session)
+        val result = request(session).noteOutcome()
         when (result) {
             is GatewayResult.Success -> {
                 pairing.whileCurrent(session.gateway) { apply(session, result.value) } ?: return@withLock ServiceResult.Failed(ServiceFailure.NotPaired)

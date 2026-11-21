@@ -30,14 +30,29 @@ enum class ContractAnswer {
  * 只把“兼容”记在内存里：同一份配对、同一个进程里只问一次；进程重启或重新配对之后重新问（网关可能已经被换成旧的）。
  * 太旧、没问成都不记——前者要在用户更新网关之后自己恢复，后者下次再问。同步引擎与管理页共用同一个实例（见 SyncRuntime）。
  *
- * shortcut: 兼容的结论在进程活着期间一直有效；同一进程里网关被降级、而手机没有重启的话要到下次重启才发现。有真实的降级场景再加存活期限。
+ * 兼容的记忆**不是永久的**（再评 S6）：同一个进程里网关可能被换回旧版本，所以任何“网关可能变了”的迹象都要 [invalidate]：
+ * 连接断过（连不上、传输中断、平台报告网络变了）、请求被当成“不合规”拒绝（旧网关对 1.2 的请求回的就是 422）。作废之后下一次 [check] 重新问。
  */
 class ContractGuard {
     private val lock = Any()
     private var verified: PairedGateway? = null
 
+    /** 作废的世代：[invalidate] 加一。[check] 在发问之前记下世代，回来时世代变了就不把“兼容”记下来——那是作废之前的网关说的。 */
+    private var generation = 0L
+
+    /** 作废兼容的记忆：下一次 [check] 重新问网关。已经在路上的那一次提问，它的“兼容”答复只交给提问的人、不再被记住。 */
+    fun invalidate() {
+        synchronized(lock) {
+            verified = null
+            generation += 1
+        }
+    }
+
     suspend fun check(gateway: PairedGateway, address: GatewayAddress, client: GatewayClient): ContractAnswer {
-        if (synchronized(lock) { verified?.isSamePairing(gateway) == true }) return ContractAnswer.COMPATIBLE
+        val asked = synchronized(lock) {
+            if (verified?.isSamePairing(gateway) == true) return ContractAnswer.COMPATIBLE
+            generation
+        }
         val answer = when (val result = client.contractVerdict(address, gateway.token)) {
             is GatewayResult.Success -> when (result.value) {
                 ContractVerdict.COMPATIBLE -> ContractAnswer.COMPATIBLE
@@ -49,7 +64,7 @@ class ContractGuard {
             is GatewayResult.Garbled -> ContractAnswer.UNCONFIRMED
             is GatewayResult.TransportFailed -> if (result.failure is TransportFailure.KeyMismatch) ContractAnswer.KEY_MISMATCH else ContractAnswer.UNCONFIRMED
         }
-        if (answer == ContractAnswer.COMPATIBLE) synchronized(lock) { verified = gateway }
+        if (answer == ContractAnswer.COMPATIBLE) synchronized(lock) { if (generation == asked) verified = gateway }
         return answer
     }
 

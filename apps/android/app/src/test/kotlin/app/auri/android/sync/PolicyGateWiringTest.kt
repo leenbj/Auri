@@ -48,8 +48,9 @@ class PolicyGateWiringTest {
         val (outside, gated) = withoutBlocks(engine, "permit.gated {")
 
         assertTrue("gated 之外还有直接发往网关的调用：${outboundCalls.find(outside)?.value}", outboundCalls.find(outside) == null)
-        // attempt：定位、合同版本、状态查询、PUT 各 1；healContract：定位、合同版本；probe：定位 1；addDeliveries：定位、合同版本、追加各 1
-        assertEquals("gated 块的数量不对（新增请求路径要套 gated，并更新这里的数）", 10, gated)
+        // attempt：定位、合同版本、状态查询、PUT 各 1；healContract：定位、合同版本；probe：定位 1；addDeliveries：定位、合同版本、追加各 1；
+        // revalidate（请求被当成“不合规”拒绝后重新问版本，再评 S6）：合同版本 1——attempt 与 addDeliveries 共用
+        assertEquals("gated 块的数量不对（新增请求路径要套 gated，并更新这里的数）", 11, gated)
         assertTrue("Permit 的比对必须是世代", "policy.generation == generation" in engine)
         assertTrue("世代必须在问放行之前记下：先记再问，问的过程中有人改了才看得出", "val generation = policy.generation return if (mayTransmit(gateway)) Permit(generation) else null" in engine)
     }

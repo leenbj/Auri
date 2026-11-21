@@ -82,6 +82,8 @@ enum class SendResult {
  * - **只和说合同 1.2 的网关说话**（评审 R7）：联系网关传任何东西之前，先问它会哪些合同版本（[ContractGuard]）。太旧就一个数据请求都不发，
  *   配对记录打上“网关太旧”、任务退回等待（不是永久拒绝）；更新网关之后这一轮的开头自己问出来、清掉标记，不需要重新配对。
  *   没问成（连不上、网关出错、读不懂）同样什么都不发，也不冤枉网关“太旧”。
+ *   “兼容”的结论不是永久的（再评 S6）：连接断过（连不上、传输中断、平台报告网络变了）就作废、下次联系前重新问；任何“请求不合规”的拒绝在判成永久之前也先作废、
+ *   重新问一次——问出太旧（可重试）、没问成（只是等）都不是永久拒绝，只有网关刚刚确认还说 1.2、请求仍被拒才是。网关在进程活着时被换回旧版本，也不会冤死任何一条文字。
  * - **结果跟着配对走**：请求发出时是哪份配对，结果就只对那份有效。途中用户重新配对、改配别的网关，晚到的结果（被拒、
  *   公钥不符、甚至“已入库”）全部作废，任务回到排队、对新配对重新来过；一轮同步里缓存的网关地址也只对同一份配对有效。
  *   “是不是那份配对”与“结果落账”是同一把锁里的同一件事（[settle]，再评 S2），不是先看一眼再写。
@@ -172,6 +174,7 @@ class SyncEngine(
      */
     suspend fun networkLost() {
         offline = true // 先记下再动任务：在途的请求这时完成，也能看到“没网”
+        contract.invalidate() // 断过网：回来时网关可能已不是原来的版本，下一次联系前重新问（再评 S6）
         for (job in jobs.all()) {
             if (job.state in NO_REQUEST_IN_FLIGHT) deliver(job.key, SyncEvent.GATEWAY_UNREACHABLE)
         }
@@ -183,6 +186,7 @@ class SyncEngine(
      */
     suspend fun networkChanged() {
         offline = false
+        contract.invalidate() // 换了网络（或网络回来了）：同上，重新问版本（再评 S6）
         resetAdditionsBackoff() // 旧的失败发生在另一个网络上
         for (job in jobs.all()) {
             if (job.state == SyncState.RETRY_SCHEDULED) deliver(job.key, SyncEvent.RETRY_DUE) { it.copy(attempts = 0) }
@@ -290,13 +294,9 @@ class SyncEngine(
         // 请求要离开手机了：先确认这台网关说的是手机说的合同版本（评审 R7）。放在构造提交之前——旧网关不该冻结意图标签（评审 M3）
         val client = GatewayClient(http.forPin(gateway.pin))
         val verdict = permit.gated { contract.check(gateway, address, client) } ?: return waiting(gateway, key, wasUncertain)
-        when (verdict) {
-            ContractAnswer.COMPATIBLE -> Unit
-            ContractAnswer.TOO_OLD -> return tooOld(key, gateway, wasUncertain)
-            ContractAnswer.UNCONFIRMED -> return waiting(gateway, key, wasUncertain)
-            ContractAnswer.AUTH_REJECTED -> return connectionBlocked(key, gateway, NeedsUser.AUTH_REJECTED, BlockedReason.AUTH_REJECTED, wasUncertain)
-            ContractAnswer.KEY_MISMATCH -> return connectionBlocked(key, gateway, NeedsUser.KEY_MISMATCH, BlockedReason.KEY_MISMATCH, wasUncertain)
-        }
+        settleVerdict(verdict, key, gateway, wasUncertain)?.let { return it }
+        // 之后任何请求被当成“不合规”拒绝时，判成永久之前先重新问一次版本（再评 S6）：兼容是内存里的结论，进程活着时网关可能已被换回旧版本
+        val recheck: suspend () -> ContractAnswer? = { revalidate(gateway, address, client) }
         // 合同版本探测也是一次网络往返：回来再问一次放行（复评 R4）；下面的状态查询与 PUT 之前只有本地操作，它们挂着的时候授权也可能被收回：
         // 所以状态查询、PUT 交出去的前一刻都用这张 Permit 再比一次世代（再评 S3）
         permit = permitFor(gateway) ?: return waiting(gateway, key, wasUncertain)
@@ -322,8 +322,8 @@ class SyncEngine(
                     Standing.DELETED -> return blocked(gateway, key, BlockedReason.RECORD_DELETED)
                     Standing.FOREIGN -> return blocked(gateway, key, BlockedReason.NOT_ORIGIN_DEVICE)
                 }
-                is GatewayResult.Rejected -> if (!(answer.status == 404 && answer.code == ErrorCode.REQUEST_INVALID)) return failed(key, gateway, answer, wasUncertain)
-                else -> return failed(key, gateway, answer, wasUncertain)
+                is GatewayResult.Rejected -> if (!(answer.status == 404 && answer.code == ErrorCode.REQUEST_INVALID)) return failed(key, gateway, answer, wasUncertain, recheck)
+                else -> return failed(key, gateway, answer, wasUncertain, recheck)
             }
         }
         // 请求离开手机之前的最后一问（复评 R4）：状态查询的回答在路上时授权可能收回了。
@@ -340,7 +340,7 @@ class SyncEngine(
             ?: return waiting(gateway, key, wasUncertain, releaseIntent = !wasUncertain)
         return when (put) {
             is GatewayResult.Success -> stored(gateway, key, put.value.deliveries.filter { it.revision == key.revision }.map { it.destinationId })
-            else -> failed(key, gateway, put, wasUncertain)
+            else -> failed(key, gateway, put, wasUncertain, recheck)
         }
     }
 
@@ -449,13 +449,50 @@ class SyncEngine(
     private suspend fun recordConnectionProblem(gateway: PairedGateway, needs: NeedsUser): Boolean =
         pairing.update { current -> if (current.isSamePairing(gateway)) current.copy(needsUser = needs) else null }
 
-    private suspend fun failed(key: JobKey, gateway: PairedGateway, result: GatewayResult<*>, wasUncertain: Boolean): SendResult = when (result) {
+    /** 联系网关之前（以及请求被当成“不合规”拒绝之后）的版本结论，换算成这条任务的下一步；兼容返回 null，往下发。 */
+    private suspend fun settleVerdict(verdict: ContractAnswer, key: JobKey, gateway: PairedGateway, wasUncertain: Boolean): SendResult? = when (verdict) {
+        ContractAnswer.COMPATIBLE -> null
+        ContractAnswer.TOO_OLD -> tooOld(key, gateway, wasUncertain)
+        ContractAnswer.UNCONFIRMED -> waiting(gateway, key, wasUncertain)
+        ContractAnswer.AUTH_REJECTED -> connectionBlocked(key, gateway, NeedsUser.AUTH_REJECTED, BlockedReason.AUTH_REJECTED, wasUncertain)
+        ContractAnswer.KEY_MISMATCH -> connectionBlocked(key, gateway, NeedsUser.KEY_MISMATCH, BlockedReason.KEY_MISMATCH, wasUncertain)
+    }
+
+    /**
+     * 作废“兼容”的记忆、重新问一次网关会哪些版本（再评 S6）。和别的请求一样先问放行、交出去的前一刻比世代；没放行返回 null（什么也没发）。
+     */
+    private suspend fun revalidate(gateway: PairedGateway, address: GatewayAddress, client: GatewayClient): ContractAnswer? {
+        contract.invalidate()
+        val permit = permitFor(gateway) ?: return null
+        return permit.gated { contract.check(gateway, address, client) }
+    }
+
+    /**
+     * 请求被当成“不合规”拒绝（再评 S6）：判成永久拒绝之前先确认不是网关变了。兼容是内存里的结论，进程活着时网关可能已被换回旧版本，
+     * 旧网关对带着 1.2 内容的请求回的就是 422。作废记忆、重新问一次（[recheck]）：问出太旧（可重试，更新网关后自动恢复）、没问成（只是等）、
+     * 连接问题，都**不是**永久拒绝；只有网关刚刚确认还说 1.2、请求仍被拒绝，才是请求本身有问题。
+     */
+    private suspend fun rejectedAsInvalid(key: JobKey, gateway: PairedGateway, wasUncertain: Boolean, recheck: suspend () -> ContractAnswer?): SendResult {
+        val verdict = recheck() ?: return waiting(gateway, key, wasUncertain) // 授权刚被收回：什么都不再发，等
+        return settleVerdict(verdict, key, gateway, wasUncertain) ?: blocked(gateway, key, BlockedReason.REQUEST_REJECTED)
+    }
+
+    private suspend fun failed(
+        key: JobKey,
+        gateway: PairedGateway,
+        result: GatewayResult<*>,
+        wasUncertain: Boolean,
+        recheck: suspend () -> ContractAnswer?,
+    ): SendResult = when (result) {
         is GatewayResult.Success<*> -> error("failed() 只处理失败的结果")
         is GatewayResult.Garbled -> retryLater(gateway, key) // 2xx 但读不懂：请求确实到了，网关可能已入库
-        is GatewayResult.TransportFailed -> when (result.failure) {
-            is TransportFailure.Unreachable -> waiting(gateway, key, wasUncertain)
-            is TransportFailure.KeyMismatch -> connectionBlocked(key, gateway, NeedsUser.KEY_MISMATCH, BlockedReason.KEY_MISMATCH, wasUncertain)
-            is TransportFailure.Interrupted -> retryLater(gateway, key)
+        is GatewayResult.TransportFailed -> {
+            contract.invalidate() // 连接断过：重连之后网关可能不是原来的版本，下一次联系前重新问（再评 S6）
+            when (result.failure) {
+                is TransportFailure.Unreachable -> waiting(gateway, key, wasUncertain)
+                is TransportFailure.KeyMismatch -> connectionBlocked(key, gateway, NeedsUser.KEY_MISMATCH, BlockedReason.KEY_MISMATCH, wasUncertain)
+                is TransportFailure.Interrupted -> retryLater(gateway, key)
+            }
         }
 
         is GatewayResult.Rejected -> when {
@@ -466,7 +503,7 @@ class SyncEngine(
             result.code == ErrorCode.RECORD_DELETED -> blocked(gateway, key, BlockedReason.RECORD_DELETED)
             result.code == ErrorCode.RECORD_NOT_ORIGIN_DEVICE -> blocked(gateway, key, BlockedReason.NOT_ORIGIN_DEVICE)
             result.retryable -> retryLater(gateway, key)
-            else -> blocked(gateway, key, BlockedReason.REQUEST_REJECTED)
+            else -> rejectedAsInvalid(key, gateway, wasUncertain, recheck)
         }
     }
 
@@ -501,24 +538,7 @@ class SyncEngine(
         rememberAddress(gateway, address)
         val client = GatewayClient(http.forPin(gateway.pin))
         // 追加也是联系网关：先确认版本（旧网关没有这个端点，发过去只会被当成永久拒绝，评审 R7）
-        when (permit.gated { contract.check(gateway, address, client) } ?: return) {
-            ContractAnswer.COMPATIBLE -> Unit
-            ContractAnswer.TOO_OLD -> {
-                pairing.markGatewayTooOld(gateway)
-                return additionsRetryLater() // 追加没有任务表的计时器：排下一次重问，更新网关之后 runOnce 开头自己恢复
-            }
-
-            ContractAnswer.UNCONFIRMED -> return additionsRetryLater()
-            ContractAnswer.AUTH_REJECTED -> {
-                recordConnectionProblem(gateway, NeedsUser.AUTH_REJECTED)
-                return
-            }
-
-            ContractAnswer.KEY_MISMATCH -> {
-                recordConnectionProblem(gateway, NeedsUser.KEY_MISMATCH)
-                return
-            }
-        }
+        if (!additionsMayProceed(gateway, permit.gated { contract.check(gateway, address, client) } ?: return)) return
         for (addition in due) {
             permit = permitFor(gateway) ?: return // 请求离开手机之前再问一次放行
             val result = permit.gated { client.addDeliveries(address, gateway.token, addition.key.recordId, addition.key.revision, addition.intent, listOf(addition.destinationId)) } ?: return
@@ -535,13 +555,16 @@ class SyncEngine(
                 }
 
                 is GatewayResult.Garbled -> return additionsRetryLater() // 请求到了、回答读不懂：追加是幂等的，再问一次
-                is GatewayResult.TransportFailed -> when (result.failure) {
-                    is TransportFailure.KeyMismatch -> {
-                        recordConnectionProblem(gateway, NeedsUser.KEY_MISMATCH)
-                        return
-                    }
+                is GatewayResult.TransportFailed -> {
+                    contract.invalidate() // 连接断过：重连之后网关可能不是原来的版本，下一次联系前重新问（再评 S6）
+                    when (result.failure) {
+                        is TransportFailure.KeyMismatch -> {
+                            recordConnectionProblem(gateway, NeedsUser.KEY_MISMATCH)
+                            return
+                        }
 
-                    else -> return additionsRetryLater()
+                        else -> return additionsRetryLater()
+                    }
                 }
 
                 is GatewayResult.Rejected -> when {
@@ -551,11 +574,41 @@ class SyncEngine(
                     }
 
                     result.retryable -> return additionsRetryLater()
-                    else -> if (!fenced(gateway) { additions.refused(addition.key, ids, Refusal.REJECTED) }) return
+                    else -> {
+                        // 记成永久拒绝之前先重新问一次版本（再评 S6）：旧网关没有这个端点或不认 1.2 的请求，回的也是这种拒绝。
+                        // 问出太旧、没问成、连接问题，都不记拒绝（欠的追加还在，更新网关后补上）；网关刚刚确认还说 1.2，才是这个请求本身被拒绝
+                        if (!additionsMayProceed(gateway, revalidate(gateway, address, client) ?: return)) return
+                        if (!fenced(gateway) { additions.refused(addition.key, ids, Refusal.REJECTED) }) return
+                    }
                 }
             }
         }
         resetAdditionsBackoff()
+    }
+
+    /** 追加之前（以及请求被拒绝之后）的版本结论：只有兼容才往下；太旧要标记并排下一次重问，没问成排下一次重问，连接问题记进配对记录。 */
+    private suspend fun additionsMayProceed(gateway: PairedGateway, verdict: ContractAnswer): Boolean = when (verdict) {
+        ContractAnswer.COMPATIBLE -> true
+        ContractAnswer.TOO_OLD -> {
+            pairing.markGatewayTooOld(gateway)
+            additionsRetryLater() // 追加没有任务表的计时器：排下一次重问，更新网关之后 runOnce 开头自己恢复
+            false
+        }
+
+        ContractAnswer.UNCONFIRMED -> {
+            additionsRetryLater()
+            false
+        }
+
+        ContractAnswer.AUTH_REJECTED -> {
+            recordConnectionProblem(gateway, NeedsUser.AUTH_REJECTED)
+            false
+        }
+
+        ContractAnswer.KEY_MISMATCH -> {
+            recordConnectionProblem(gateway, NeedsUser.KEY_MISMATCH)
+            false
+        }
     }
 
     private fun additionsRetryLater() {
@@ -676,6 +729,7 @@ class SyncEngine(
             return locator.locate(gateway).also {
                 value = it
                 forPairing = gateway
+                if (it == Located.Unreachable) contract.invalidate() // 连不上过：回来时网关可能已不是原来的版本，下一次联系前重新问（再评 S6）
             }
         }
     }
