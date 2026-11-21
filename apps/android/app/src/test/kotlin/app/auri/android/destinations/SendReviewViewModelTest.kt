@@ -2,6 +2,7 @@
 
 package app.auri.android.destinations
 
+import app.auri.android.netguard.SourceText
 import app.auri.sync.destinations.Choice
 import app.auri.sync.destinations.CredentialOutcome
 import app.auri.sync.destinations.DecideResult
@@ -13,7 +14,11 @@ import app.auri.sync.engine.Refusal
 import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.SendMode
 import app.auri.sync.policy.DataFlowState
+import app.auri.sync.resume.ResumeScheduler
+import app.auri.sync.resume.WakeAheadDispatchStore
+import app.auri.sync.resume.WakeGate
 import app.auri.sync.testing.DispatchRig
+import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
@@ -394,5 +399,71 @@ class SendReviewViewModelTest {
 
             assertEquals("$decision eligible=$eligible $delivery $refusal", ledger.awaitingUser, shown.awaitingUser)
         }
+    }
+
+    // ---- 再评 S8：系统不让登记后台叫醒时，确认不落账，页面说要再点一次 ----
+
+    /** 系统头几次拒绝登记“稍后叫醒”（JobScheduler 拒绝），之后恢复。 */
+    private class RefusingScheduler(var refusals: Int) : ResumeScheduler {
+        val registered = AtomicInteger()
+
+        override fun ensureScheduled() {
+            if (refusals > 0) {
+                refusals -= 1
+                throw IllegalStateException("JobScheduler refused")
+            }
+            registered.incrementAndGet()
+        }
+
+        override fun cancel() = Unit
+    }
+
+    @Test
+    fun `再评 S8：系统不让登记后台叫醒时点“确认发送”：什么也没记下、页面说没记下请再点一次、同步不被叫起来；系统恢复后再点就落账并收掉那句话`() = runTest {
+        val rig = DispatchRig(this)
+        val preview = rig.createDestination("Claude Code", SendMode.PREVIEW_CONFIRM)
+        val key = rig.transcribed("还没决定要不要发")
+        val system = RefusingScheduler(refusals = 1)
+        val woken = AtomicInteger()
+        val viewModel = SendReviewViewModel(
+            WakeAheadDispatchStore(rig.dispatch, WakeGate(system, rig.log)),
+            LibraryItemTexts(rig.library),
+            rig.clock,
+            { woken.incrementAndGet() },
+            backgroundScope,
+            rig.policy.states(),
+            rig.log,
+        )
+        settle()
+        rig.engine.runOnce() // 文字先入库，预览目标等用户决定
+        settle()
+        assertFalse("对照：一开始没有这句提示", viewModel.state.value.confirmNeedsRetry)
+
+        viewModel.confirm(key, preview.destinationId)
+        settle()
+
+        val refused = viewModel.state.value
+        assertTrue("页面要如实说这次确认没记下、请再点一次", refused.confirmNeedsRetry)
+        assertEquals("确认没有落账：还在等用户", TargetDecision.AWAITING, refused.items.single().targets.single().decision)
+        assertTrue("按钮还在，用户能再点", refused.items.single().awaitingUser)
+        assertEquals("没有新的决定，同步不用被叫起来", 0, woken.get())
+
+        viewModel.confirm(key, preview.destinationId) // 用户再点一次，这回系统接受了
+        settle()
+
+        val retried = viewModel.state.value
+        assertFalse("落账了：那句话收掉", retried.confirmNeedsRetry)
+        assertEquals(TargetDecision.CONFIRMED, retried.items.single().targets.single().decision)
+        assertEquals(1, woken.get())
+        assertEquals("登记成功了一次", 1, system.registered.get())
+    }
+
+    @Test
+    fun `再评 S8：那句话说清没记下、什么都没变、请再点一次；待发送页在 state·confirmNeedsRetry 时把它摆出来`() {
+        val note = describeConfirmNeedsRetry()
+
+        for (needle in listOf("没有记下", "没有改变", "再点一次")) assertTrue("缺“$needle”：$note", needle in note)
+        val screen = SourceText.withoutCommentsAndStrings(File("..").resolve("app/src/main/kotlin/app/auri/android/ui/SendReviewScreen.kt").readText())
+        assertTrue("待发送页没有在 state.confirmNeedsRetry 时显示 describeConfirmNeedsRetry()", Regex("""state\.confirmNeedsRetry[^\n]*describeConfirmNeedsRetry\(\)""").containsMatchIn(screen))
     }
 }

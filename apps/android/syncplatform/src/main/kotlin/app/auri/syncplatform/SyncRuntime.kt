@@ -162,9 +162,12 @@ class SyncRuntime(
     private val resumeRunner = ResumeRunner(
         ready = { started.await() },
         runPass = engine::runOnce,
+        // 收尾判断在门的锁里做（再评 S8）：与“用户确认前先登记叫醒”、规划器的登记与取消串行；没活就同步取消系统里的叫醒，有活就请系统稍后再叫
         stillNeeded = {
-            val paired = pairing.load()
-            needsResume(paired, jobs.all(), policy.current((paired as? PairingState.Paired)?.gateway?.identity), dispatch.due().isNotEmpty())
+            wakes.finishing {
+                val paired = pairing.load()
+                needsResume(paired, jobs.all(), policy.current((paired as? PairingState.Paired)?.gateway?.identity), dispatch.due().isNotEmpty())
+            }
         },
         log = log,
     )

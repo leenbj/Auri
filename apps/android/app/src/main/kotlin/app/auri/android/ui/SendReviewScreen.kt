@@ -16,6 +16,7 @@ import app.auri.android.destinations.ReviewItem
 import app.auri.android.destinations.ReviewTarget
 import app.auri.android.destinations.SendReviewUiState
 import app.auri.android.destinations.UNREVIEWED_LABEL
+import app.auri.android.destinations.describeConfirmNeedsRetry
 import app.auri.android.destinations.describeDataFlowHold
 import app.auri.android.destinations.describeDecision
 import app.auri.android.destinations.describeIntent
@@ -41,6 +42,7 @@ fun SendReviewScreen(
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Button(onClick = onBack) { Text("返回") } }
         if (state.unreadable) item { Text(describeUnreadable()) }
+        if (state.confirmNeedsRetry) item { Text(describeConfirmNeedsRetry()) }
         describeDataFlowHold(state.dataFlow)?.let { hold -> item { Text(hold) } }
         item {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {

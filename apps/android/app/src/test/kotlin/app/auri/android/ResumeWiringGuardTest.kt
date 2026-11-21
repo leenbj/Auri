@@ -31,4 +31,18 @@ class ResumeWiringGuardTest {
         assertTrue("界面、引擎与状态汇总用的发送账是套了壳的那一份", Regex("""val dispatch: DispatchStore = WakeAheadDispatchStore\(SqliteDispatchStore\(library\), wakes\)""").containsMatchIn(runtime))
         assertTrue("规划器与壳共用这一道门", Regex("""gate\s*=\s*wakes""").containsMatchIn(plannerCall))
     }
+
+    /**
+     * 再评 S8：被叫醒的那一轮收尾时“还要不要再叫醒”必须在门的锁里现算（WakeGate.finishing）：收尾判断与确认的“登记 + 提交”串行，没活时同步取消。
+     * 自己拼运行器的测试（ResumeRecoveryTest）看不到 SyncRuntime 里这一处接线；没包进去，旧的缝就回来了——
+     * 判断“没活了”之后、jobFinished 生效之前用户确认的预览，会因为系统里“还有一个”而没登记叫醒，随后叫醒被这一轮自己带走。
+     */
+    @Test
+    fun `被叫醒的那一轮的收尾判断经过门：在门的锁里现算，不是在门外读一下就下结论`() {
+        val runnerCall = runtime.substringAfter("private val resumeRunner = ResumeRunner(").substringBefore("override val status")
+
+        assertTrue("应当找到运行器的构造：$runnerCall", runnerCall.contains("ready =") && runnerCall.contains("runPass ="))
+        assertTrue("收尾判断要包在 wakes.finishing 里：$runnerCall", Regex("""stillNeeded\s*=\s*\{\s*wakes\.finishing\s*\{""").containsMatchIn(runnerCall))
+        assertTrue("现算用的是同一个判断，读的是实时的账", runnerCall.contains("needsResume(") && runnerCall.contains("dispatch.due().isNotEmpty()"))
+    }
 }

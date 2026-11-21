@@ -19,6 +19,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -49,7 +50,9 @@ import kotlinx.coroutines.launch
  *   ├─ defaultIntent                  新录出来的文字用的标签（默认备忘）；在录音之前改。
  *   ├─ dataFlow                       文字能不能进网关（评审 B1：与配对、与各 Destination 的发送方式都是各自独立的授权，默认关；“严格仅本地”压过授权）。
  *   │                                  没放行时页面如实说“确认只是记下你的决定，现在不会发出”，不假装发出去了；没读到时按没放行算。
- *   └─ unreadable                     读不到本机保存的发送记录（评审 H4）：items 是最近一次读到的，会自动重试；页面如实说读不到，不把空白当成“没有文字”。
+ *   ├─ unreadable                     读不到本机保存的发送记录（评审 H4）：items 是最近一次读到的，会自动重试；页面如实说读不到，不把空白当成“没有文字”。
+ *   └─ confirmNeedsRetry              最近一次“确认发送”没有落账（再评 S8）：系统不让应用登记后台叫醒，没有它应用一被杀这条确认就没人送出，所以不记；
+ *                                      页面如实说没记下、什么都没变、请再点一次；用户再点就作废这句话。
  *
  * 写（都不阻塞）：confirm(key, destinationId) / skip(key, destinationId) / setIntent(key, intent) / setDefaultIntent(intent)。
  *   决定是持久的、幂等的：同一个决定重复多少次（双击、进程被杀后重来）只放行一次，重复的什么也不改。
@@ -99,6 +102,11 @@ data class SendReviewUiState(
     val dataFlow: DataFlowState = DataFlowState.Closed,
     /** 读不到本机保存的发送记录（评审 H4）：[items] 是最近一次读到的（可能是旧的，也可能是空的），会自动重试，读到之后恢复。 */
     val unreadable: Boolean = false,
+    /**
+     * 最近一次“确认发送”**没有落账**（再评 S8）：系统不让应用登记“稍后在后台继续发送”，没有它应用一被杀这条确认就没人送出，所以不记这个决定。
+     * 页面如实说没记下、什么都没变、请再点一次；用户再点（无论结果）就收掉这句话，点成了自然不再显示。
+     */
+    val confirmNeedsRetry: Boolean = false,
 )
 
 class SendReviewViewModel(
@@ -110,7 +118,10 @@ class SendReviewViewModel(
     dataFlow: Flow<DataFlowState>,
     private val log: SyncLog = SyncLog.None,
 ) : ViewModel() {
-    val state: StateFlow<SendReviewUiState> = combine(dispatch.changes().onStart { emit(0L) }, dataFlow.onStart { emit(DataFlowState.Closed) }) { _, flow -> load(flow) }
+    /** 最近一次“确认发送”没有落账（系统不让登记后台叫醒，再评 S8）：用户再点一次就作废，点成了自然不再说。 */
+    private val confirmNeedsRetry = MutableStateFlow(false)
+
+    val state: StateFlow<SendReviewUiState> = combine(dispatch.changes().onStart { emit(0L) }, dataFlow.onStart { emit(DataFlowState.Closed) }, confirmNeedsRetry) { _, flow, retry -> load(flow).copy(confirmNeedsRetry = retry) }
         // 读发送账失败不能逃出作用域（评审 H4）：记一行日志、如实标上“读不到”（留着最近读到的）、过一会儿重读
         .containReadFailures("send.review", log) { last -> emit((last ?: SendReviewUiState()).copy(unreadable = true)) }
         .stateIn(scope, SharingStarted.Eagerly, SendReviewUiState())
@@ -133,9 +144,15 @@ class SendReviewViewModel(
 
     private fun decide(key: JobKey, destinationId: String, choice: Choice) {
         scope.launch {
+            confirmNeedsRetry.value = false // 用户又点了一次：之前那句话作废，这次的结果再决定要不要说
             val result = guarded("decide") { dispatch.decide(key, destinationId, choice, clock.now()) }
-            // Decided：刚记下一个新决定，让同步立刻跑一轮（确认的话要追加 Delivery）。其余（早就决定过、没有这个目标）什么也不变
-            if (result is DecideResult.Decided) onDecided()
+            // Decided：刚记下一个新决定，让同步立刻跑一轮（确认的话要追加 Delivery）。
+            // WakeUnavailable：确认没有落账（系统不让登记后台叫醒），如实告诉用户再点一次（再评 S8）。其余（早就决定过、没有这个目标）什么也不变
+            when (result) {
+                is DecideResult.Decided -> onDecided()
+                is DecideResult.WakeUnavailable -> confirmNeedsRetry.value = true
+                else -> Unit
+            }
         }
     }
 

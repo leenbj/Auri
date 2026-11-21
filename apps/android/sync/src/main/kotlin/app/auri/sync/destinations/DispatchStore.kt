@@ -86,6 +86,12 @@ sealed interface DecideResult {
 
     /** 这个 Destination 已经被撤销、暂停（凭证被撤销）或不接收这条文字的意图：没有什么可决定的。 */
     data object NotEligible : DecideResult
+
+    /**
+     * 确认**没有落账**（再评 S8）：系统不让应用登记“稍后在后台继续发送”（JobScheduler 拒绝）。确认之后要向网关追加 Delivery，
+     * 而应用一旦被系统杀掉，没有这个登记就没有任何东西会把它送出去——所以不记这个决定，让用户稍后再点一次。账上什么也没变。
+     */
+    data object WakeUnavailable : DecideResult
 }
 
 sealed interface IntentResult {

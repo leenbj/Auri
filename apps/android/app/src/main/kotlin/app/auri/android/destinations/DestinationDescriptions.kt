@@ -161,5 +161,9 @@ internal fun describeSuspension(): String =
 internal fun describeUnreadable(): String =
     "读不到这台手机上保存的发送记录（存储暂时出了问题）：下面显示的可能不是最新的，也可能是空的，并不代表没有。会自动重试，不需要你操作。"
 
+/** “确认发送”没有落账时（再评 S8）：如实说没记下、为什么、什么都没变、请再点一次；不假装已经确认。 */
+internal fun describeConfirmNeedsRetry(): String =
+    "这次“确认发送”没有记下：系统暂时不让应用登记后台继续发送（没有它，应用被关掉后这条确认就没人送出）。什么都没有改变，请稍后再点一次“确认发送”。"
+
 internal fun describeCreateHint(): String =
     "创建时必须选一种发送方式，没有默认值：这是你对“转录出来的文字可以发给这个 Agent”的授权。"

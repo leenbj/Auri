@@ -24,6 +24,9 @@ import kotlinx.coroutines.sync.withLock
  * 告诉过系统什么（[told]）只在锁里读写：结论与上一次告诉系统的一样就不再打扰系统；登记 / 取消抛异常时不记（重试时照旧会做）；
  * 预先登记之后记成“不知道”——提交可能什么也没改（早就决定过了），没有任何信号会叫规划器再算，而系统可能已把那个叫醒跑完收走，
  * 这时若还认为“系统里有”，之后真有新的活时规划器会因为“结论没变”而不登记。
+ *
+ * 第三个进门的是被叫醒的那一轮的收尾（再评 S8，[finishing]）：它判断“没活了”到 jobFinished 生效之间有个异步的缝，确认的预先登记会在这个缝里看到
+ * “已经有一个”而什么也不做，叫醒随即被这一轮自己带走。所以收尾的判断与取消也在这把锁里。
  */
 class WakeGate(private val scheduler: ResumeScheduler, private val log: SyncLog = SyncLog.None) {
     private val lock = Mutex()
@@ -41,11 +44,36 @@ class WakeGate(private val scheduler: ResumeScheduler, private val log: SyncLog 
     }
 
     /**
-     * 提交一个会让账上欠下活的决定之前用：先登记叫醒，再在同一把锁里 [commit]。
-     * 系统拒绝登记（异常）不拦用户的决定：记一条只有事件名与异常类名的日志、照常提交，叫醒由规划器随后（发送账变了就会现算）补上，
-     * 退化成本来的“提交之后异步登记”，不比以前差；决定本身在进程活着时由同步循环照常送出。
+     * 被叫醒的那一轮收尾时用（再评 S8）：在同一把锁里现算还有没有活 [needed]（读的是磁盘上的账，不能缓存），返回的就是 jobFinished 的“请稍后再叫醒我”。
+     *
+     * 要防的是：这一轮判断“没活了”之后、jobFinished 生效之前，用户确认了一个预览目标。确认的预先登记（[ahead]）问系统“有没有叫醒”——
+     * getPendingJob 在 jobFinished 异步生效之前还看得见这个正在收尾的任务，于是它什么也不做，随后这个任务被收走：叫醒被这一轮自己的收尾带走了，
+     * 账上却欠着追加。所以收尾判断与确认的“登记 + 提交”在同一把锁里，顺序只有两种：
+     * - 确认在前：这里现算时账上已经欠着，返回 true，请系统稍后再叫；
+     * - 确认在后：这里已经**同步**取消了系统里的叫醒（JobScheduler.cancel 立刻生效，jobFinished 不是），确认再登记时系统里没有任务，登记的是新的；
+     *   这一轮随后迟到的 jobFinished 落在已被摘掉的执行上，系统忽略。
+     * 没活时不看 [told]：它记的是“告诉过系统什么”，不是系统里此刻有什么——这一轮本身可能就是个门不知道的任务（持久任务重启后到点、系统自己重排）。
+     * 有活时不动系统（调用方随后以 reschedule = true 收尾，系统会再叫），门里记成“不知道”：规划器的下一次评估会重新确认系统里有叫醒。
+     * 取消被系统拒绝（异常）原样往外抛，[ResumeRunner] 把它当“没得出结论”、请系统稍后再叫醒，不丢叫醒。
      */
-    suspend fun <T> ahead(commit: suspend () -> T): T = lock.withLock {
+    suspend fun finishing(needed: suspend () -> Boolean): Boolean = lock.withLock {
+        val now = needed()
+        if (now) {
+            told = null
+        } else {
+            scheduler.cancel()
+            told = false
+        }
+        now
+    }
+
+    /**
+     * 提交一个会让账上欠下活的决定之前用：先登记叫醒，再在同一把锁里 [commit]，返回 [commit] 的结果。
+     * 系统拒绝登记（异常）就**不提交**、返回 null（再评 S8）：记一条只有事件名与异常类名的日志，账上什么也不改。
+     * 以前是照常提交、让规划器随后补登记——可那要的是同一个系统调用，系统这时多半仍然拒绝，于是账上欠着追加、应用一被杀就再没有任何东西把它送出去，
+     * 用户看到的却是“已确认”。现在宁可让用户知道没记下、再点一次。
+     */
+    suspend fun <T> ahead(commit: suspend () -> T): T? = lock.withLock {
         try {
             scheduler.ensureScheduled()
             told = null
@@ -53,16 +81,21 @@ class WakeGate(private val scheduler: ResumeScheduler, private val log: SyncLog 
             throw cancelled
         } catch (failure: Exception) {
             log.event("resume.prewake-failed ${failure::class.simpleName}")
+            return@withLock null
         }
         commit()
     }
 }
 
 /**
- * 发送账的壳：用户“确认发送”落账之前，先让 [WakeGate] 登记叫醒。其余一切原样交给 [inner]。
- * “不发送”不欠任何追加，不登记。
+ * 发送账的壳：用户“确认发送”落账之前，先让 [WakeGate] 登记叫醒；登记不上就不落账，回 [DecideResult.WakeUnavailable]（再评 S8）。
+ * 其余一切原样交给 [inner]。“不发送”不欠任何追加，不登记，也就不会因为系统拒绝登记而落不下账。
  */
 class WakeAheadDispatchStore(private val inner: DispatchStore, private val wakes: WakeGate) : DispatchStore by inner {
     override suspend fun decide(key: JobKey, destinationId: String, choice: Choice, now: Instant): DecideResult =
-        if (choice == Choice.CONFIRM) wakes.ahead { inner.decide(key, destinationId, choice, now) } else inner.decide(key, destinationId, choice, now)
+        if (choice == Choice.CONFIRM) {
+            wakes.ahead { inner.decide(key, destinationId, choice, now) } ?: DecideResult.WakeUnavailable
+        } else {
+            inner.decide(key, destinationId, choice, now)
+        }
 }
