@@ -163,6 +163,20 @@ class SecretClipboardGuardTest {
     }
 
     @Test
+    fun `再评 S10：失去焦点（分屏里点了另一个窗口，没有 onPause）时当场清；随后 Activity 真的暂停再叫一次——不重复清，更不碰那之后别人复制的`() = guarded { clipboard, guard ->
+        guard.copy(SECRET)
+        passTime(3_000)
+
+        guard.onLeaving() // 窗口失去焦点
+        assertNull("失焦那一刻读得到、认得出是自己的：当场清", clipboard.text)
+        clipboard.otherAppCopies("在另一个窗口里复制的")
+        guard.onLeaving() // 之后 Activity 才真的走到 onPause：同一个入口再叫一次
+
+        assertEquals("第二次不动别人的", "在另一个窗口里复制的", clipboard.text)
+        assertEquals("总共只清了一次", 1, clipboard.clears)
+    }
+
+    @Test
     fun `复评 R6：离开时读不了——没有归属证明，不清；之后在前台到点还是会清`() = guarded { clipboard, guard ->
         guard.copy(SECRET)
         clipboard.readable = false

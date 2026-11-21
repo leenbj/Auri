@@ -108,8 +108,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        // Android 10 起只有拿到焦点的应用读得了剪贴板（onStart / onResume 时窗口还没有焦点，读到的是空）：复制出去的凭证已到期就清掉
-        if (hasFocus) runtime.secretClipboard.onForeground()
+        // 拿到焦点：Android 10 起只有拿到焦点的应用读得了剪贴板（onStart / onResume 时窗口还没有焦点，读到的是空），复制出去的凭证已到期就清掉。
+        // 失去焦点：分屏里点了另一个窗口、系统对话框、下拉通知栏都不走 onPause，凭证不能就这么留着——按“离开”处理：刚失焦的这一刻通常还读得到，
+        // 认得出是自己放的就清；读不到、或是别人的，守卫不动（再评 S10）
+        if (hasFocus) runtime.secretClipboard.onForeground() else runtime.secretClipboard.onLeaving()
     }
 
     private fun onStartPressed() {

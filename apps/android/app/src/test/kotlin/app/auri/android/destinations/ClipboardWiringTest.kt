@@ -63,6 +63,17 @@ class ClipboardWiringTest {
     }
 
     @Test
+    fun `再评 S10：窗口失去焦点时也叫守卫按“离开”处理——分屏里点了别的窗口、系统对话框、下拉通知栏都不走 onPause，凭证不能就这么留着`() {
+        val activity = SourceText.withoutCommentsAndStrings(main("MainActivity.kt"))
+        val onFocus = activity.substringAfter("override fun onWindowFocusChanged(hasFocus: Boolean)").substringBefore("private fun onStartPressed")
+
+        assertTrue(
+            "hasFocus 为 false 时要叫 onLeaving（与 onPause 同一个核实归属的入口）：$onFocus",
+            Regex("""onForeground\(\)\s*else\s*runtime\.secretClipboard\.onLeaving\(\)""").containsMatchIn(onFocus),
+        )
+    }
+
+    @Test
     fun `clearPrimaryClip 是 API 28 才有的：应用的 minSdk 不低于它，所以不需要降级写法；谁把 minSdk 调低，这里先红`() {
         val gradle = File(androidDir, "app/build.gradle.kts").readText()
         val minSdk = Regex("""minSdk\s*=\s*(\d+)""").find(gradle)?.groupValues?.get(1)?.toInt() ?: error("没找到 minSdk")
