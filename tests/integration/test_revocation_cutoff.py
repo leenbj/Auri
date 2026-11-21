@@ -115,6 +115,9 @@ def test_a_suspension_that_ended_before_the_upgrade_gets_its_cutoff_from_the_cre
     """旧库里已经发生过的暂停：升级（迁移 0005）时按凭证历史补上截止点；只是轮换的 Destination 不设。
 
     先用当前网关造数据，再把库退回“迁移 0005 之前”的样子（去掉那一列、删掉迁移记录），重启时迁移会重新执行。
+    第三轮 S1：升级补出的截止点是保守的（库里已有文字的最晚入库时间与凭证历史里的最晚时刻），所以升级那一刻库里已有的文字，
+    对补了截止点的 Destination 一律不可见——包括暂停结束之后、升级之前入库的 `after`（原来这里断言它可见）：同一份数据里
+    “恢复之后入库”与“时钟回拨之前入库、时间戳偏晚”长得一模一样，分不开，宁可多藏。升级之后入库的文字照常可见。
     """
     data_dir = tmp_path / "upgrade-gw"
     first = GatewayProcess(data_dir)
@@ -161,13 +164,148 @@ def test_a_suspension_that_ended_before_the_upgrade_gets_its_cutoff_from_the_cre
     upgraded.start()
     try:
         agent = McpAgent(upgraded.base_url, "replacement-after-suspension")
-        assert [row["record_id"] for row in agent.record_list()["records"]] == [after["record_id"]]
+        assert agent.record_list()["records"] == []
         not_found(agent, "record_get", {"record_id": before["record_id"]})
-        assert [d["record_id"] for d in agent.claim()["deliveries"]] == [after["record_id"]]
+        not_found(agent, "record_get", {"record_id": after["record_id"]})
+        assert agent.claim()["deliveries"] == []
+        fresh = upgraded.publish(token, [suspended.destination_id], text="升级之后入库的")
+        assert [row["record_id"] for row in agent.record_list()["records"]] == [fresh["record_id"]]
+        assert [d["record_id"] for d in agent.claim()["deliveries"]] == [fresh["record_id"]]
         rotation_agent = McpAgent(upgraded.base_url, "replacement-after-rotation")
         assert [d["record_id"] for d in rotation_agent.claim()["deliveries"]] == [kept["record_id"]]
     finally:
         upgraded.stop()
+
+
+# ---- 第三轮 S1：升级补截止点不能被网关时钟回拨骗过 ----
+#
+# 旧库里一次已经结束的暂停，只剩墙上时间可以用来补截止点。时钟回拨过时，替换凭证的签发时间可能比撤销之前入库的文字
+# 的入库时间还早，甚至比旧凭证的撤销时间还早（按时间先后连“暂停”都认不出来）。迁移因此不信时间先后：用插入顺序与
+# “轮换是在签发的同一瞬间撤销旧凭证”认出结束过的暂停，截止点取库里已有文字的最晚入库时间与凭证历史里最晚时刻的较大者。
+
+
+def sha(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+@contextlib.contextmanager
+def upgraded_gateway(tmp_path: pathlib.Path, seed, rewrite):
+    """用当前网关造数据（`seed(网关, 手机令牌) -> seeded`），把库退回迁移 0005 之前的样子，由 `rewrite` 伪造凭证与时钟的历史，
+    再重启让迁移在这份历史上执行；交出升级之后的网关、手机令牌与 `seeded`。"""
+    data_dir = tmp_path / "upgrade-gw"
+    first = GatewayProcess(data_dir)
+    first.start()
+    try:
+        token = first.pair_device("Legacy Phone")["device_token"]
+        seeded = seed(first, token)
+    finally:
+        first.stop()
+    with contextlib.closing(sqlite3.connect(data_dir / "gateway.db")) as conn:
+        tenant_id, device_id = conn.execute("SELECT tenant_id, device_id FROM devices").fetchone()
+
+        def add_credential(destination_id: str, token_value: str, issued_at: str) -> None:
+            conn.execute(
+                "INSERT INTO destination_credentials (credential_id, tenant_id, destination_id, token_hash, issued_by_device_id, issued_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (f"cred-{token_value}", tenant_id, destination_id, sha(token_value), device_id, issued_at),
+            )
+
+        conn.execute("ALTER TABLE destinations DROP COLUMN revocation_cutoff")
+        conn.execute("DELETE FROM schema_migrations WHERE version = 5")
+        rewrite(conn, add_credential, seeded)
+        conn.commit()
+    upgraded = GatewayProcess(data_dir)
+    upgraded.start()
+    try:
+        yield upgraded, token, seeded
+    finally:
+        upgraded.stop()
+
+
+def seed_one_destination_with_one_text(text: str, name: str):
+    def seed(gateway: GatewayProcess, token: str):
+        dest = gateway.create_agent_destination(token, name)
+        return dest, gateway.publish(token, [dest.destination_id], text=text)
+
+    return seed
+
+
+def test_an_upgrade_hides_a_text_stored_while_the_clock_ran_ahead_of_the_replacement_credential(tmp_path: pathlib.Path) -> None:
+    """暂停之前入库的文字，入库时网关时钟跑在前面：时间戳（06-01）比后来校正过的替换凭证（01-03）还晚。
+
+    旧的补法只取替换凭证的签发时间（01-03）：文字落在截止点之后，替换凭证读得到撤销之前的文字。
+    """
+
+    def rewrite(conn, add_credential, seeded):
+        dest, ahead = seeded
+        conn.execute(
+            "UPDATE destination_credentials SET issued_at = '2025-12-31T00:00:00.000000Z', revoked_at = '2026-01-02T00:00:00.000000Z'"
+            " WHERE destination_id = ?",
+            (dest.destination_id,),
+        )
+        conn.execute("UPDATE revisions SET stored_at = '2026-06-01T00:00:00.000000Z' WHERE record_id = ?", (ahead["record_id"],))
+        # 真实的暂停会取消排着的投递：这条文字的 Delivery 在撤销那一刻被取消，列表、搜索、读取照样认得它
+        conn.execute(
+            "UPDATE deliveries SET state = 'CANCELLED', cancelled_at = '2026-01-02T00:00:00.000000Z' WHERE destination_id = ?",
+            (dest.destination_id,),
+        )
+        add_credential(dest.destination_id, "replacement-after-fast-clock", "2026-01-03T00:00:00.000000Z")
+
+    seed = seed_one_destination_with_one_text(f"{OLD_TEXT}（入库时网关时钟跑在前面）", "时钟快过的")
+    with upgraded_gateway(tmp_path, seed, rewrite) as (gateway, _token, (_dest, ahead)):
+        agent = McpAgent(gateway.base_url, "replacement-after-fast-clock")
+        assert agent.record_list()["records"] == []
+        assert agent.record_search(OLD_TEXT)["matches"] == []
+        not_found(agent, "record_get", {"record_id": ahead["record_id"]})
+        assert agent.claim()["deliveries"] == []
+
+
+def test_an_upgrade_recognises_a_finished_suspension_even_when_the_clock_was_set_back_before_the_replacement(tmp_path: pathlib.Path) -> None:
+    """旧凭证签发在 02-01、撤销在 02-02（时钟偏快），时钟校正之后替换凭证签发在 01-15：按时间先后，替换凭证“早于”旧凭证，
+    旧的补法认不出这是一次结束过的暂停，根本不补截止点，替换凭证什么都读得到。"""
+
+    def rewrite(conn, add_credential, seeded):
+        dest, text = seeded
+        conn.execute(
+            "UPDATE destination_credentials SET issued_at = '2026-02-01T00:00:00.000000Z', revoked_at = '2026-02-02T00:00:00.000000Z'"
+            " WHERE destination_id = ?",
+            (dest.destination_id,),
+        )
+        conn.execute("UPDATE revisions SET stored_at = '2026-02-01T12:00:00.000000Z' WHERE record_id = ?", (text["record_id"],))
+        conn.execute(
+            "UPDATE deliveries SET state = 'CANCELLED', cancelled_at = '2026-02-02T00:00:00.000000Z' WHERE destination_id = ?",
+            (dest.destination_id,),
+        )
+        add_credential(dest.destination_id, "replacement-after-set-back-clock", "2026-01-15T00:00:00.000000Z")
+
+    seed = seed_one_destination_with_one_text(f"{OLD_TEXT}（旧凭证有效期间入库）", "时钟回拨过的")
+    with upgraded_gateway(tmp_path, seed, rewrite) as (gateway, _token, (_dest, text)):
+        agent = McpAgent(gateway.base_url, "replacement-after-set-back-clock")
+        assert agent.record_list()["records"] == []
+        assert agent.record_search(OLD_TEXT)["matches"] == []
+        not_found(agent, "record_get", {"record_id": text["record_id"]})
+        assert agent.claim()["deliveries"] == []
+
+
+def test_an_upgrade_does_not_mistake_a_rotation_after_a_clock_rollback_for_a_suspension(tmp_path: pathlib.Path) -> None:
+    """同样是时钟被调回去，但这次只是轮换：旧凭证在新凭证签发的同一瞬间被撤销（01-20），排着的文字照常交给新凭证。
+    保守是对“暂停”而言；把每一次轮换都当暂停，会让排队的文字悄悄领不到。"""
+
+    def rewrite(conn, add_credential, seeded):
+        dest, waiting = seeded
+        conn.execute(
+            "UPDATE destination_credentials SET issued_at = '2026-02-01T00:00:00.000000Z', revoked_at = '2026-01-20T00:00:00.000000Z'"
+            " WHERE destination_id = ?",
+            (dest.destination_id,),
+        )
+        conn.execute("UPDATE revisions SET stored_at = '2026-02-01T12:00:00.000000Z' WHERE record_id = ?", (waiting["record_id"],))
+        add_credential(dest.destination_id, "replacement-after-rotation-under-rollback", "2026-01-20T00:00:00.000000Z")
+
+    seed = seed_one_destination_with_one_text("轮换之前入库、一直排着的", "只轮换过的")
+    with upgraded_gateway(tmp_path, seed, rewrite) as (gateway, _token, (_dest, waiting)):
+        agent = McpAgent(gateway.base_url, "replacement-after-rotation-under-rollback")
+        assert [row["record_id"] for row in agent.record_list()["records"]] == [waiting["record_id"]]
+        assert [d["record_id"] for d in agent.claim()["deliveries"]] == [waiting["record_id"]]
 
 
 # ---- R2：延迟到达的“追加 Delivery”不能把撤销之前入库的文字送给替换凭证 ----

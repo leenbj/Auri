@@ -1092,16 +1092,38 @@ MUTATIONS: tuple = (
     Mutation(
         "r1-gw-migration-no-backfill",
         "再评审 R1（网关）：升级迁移要按凭证历史给已经发生过的暂停补上截止点：不补，升级前就暂停过的 Destination 的旧文字对替换凭证照样可见",
-        (Edit(GATEWAY_MIGRATION_0005, '    SELECT MAX(c.issued_at)\n', '    SELECT NULL\n'),),
+        (Edit(GATEWAY_MIGRATION_0005, 'UPDATE destinations\nSET revocation_cutoff = MAX(\n', 'UPDATE destinations\nSET revocation_cutoff = NULL + MAX(\n'),),
         gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
         ('test_a_suspension_that_ended_before_the_upgrade_gets_its_cutoff_from_the_credential_history',),
     ),
     Mutation(
         "r1-gw-migration-backfills-rotations",
         "再评审 R1（网关）：迁移只给“旧凭证全部先于新凭证被撤销”的暂停补截止点：连轮换也补，升级后轮换过的 Destination 排着的文字就被藏起来",
-        (Edit(GATEWAY_MIGRATION_0005, '            AND (p.revoked_at IS NULL OR p.revoked_at >= c.issued_at)\n', '            AND (p.revoked_at IS NULL AND 0)\n'),),
+        (Edit(GATEWAY_MIGRATION_0005, '                    AND (p.revoked_at IS NULL OR p.revoked_at >= c.issued_at)\n', '                    AND (p.revoked_at IS NULL AND 0)\n'),),
         gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
         ('test_a_suspension_that_ended_before_the_upgrade_gets_its_cutoff_from_the_credential_history',),
+    ),
+    # ---- 第三轮 S1：升级补截止点不信时间先后（网关迁移 0005，pytest 集成测试） ----
+    Mutation(
+        "s1-gw-migration-ignores-revision-times",
+        "第三轮 S1（网关）：补出的截止点要不低于库里已有文字的最晚入库时间：只看凭证的时间，网关时钟跑快时入库的文字（时间戳比替换凭证还晚）就落到截止点之后，替换凭证读得到撤销之前的文字",
+        (Edit(GATEWAY_MIGRATION_0005, "    COALESCE((SELECT MAX(r.stored_at) FROM revisions AS r WHERE r.tenant_id = destinations.tenant_id), '')\n", "    ''\n"),),
+        gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
+        ('test_an_upgrade_hides_a_text_stored_while_the_clock_ran_ahead_of_the_replacement_credential', 'test_a_suspension_that_ended_before_the_upgrade_gets_its_cutoff_from_the_credential_history'),
+    ),
+    Mutation(
+        "s1-gw-migration-trusts-time-order",
+        "第三轮 S1（网关）：认出“结束过的暂停”不能只靠时间先后：时钟调回去之后，替换凭证的签发时间比旧凭证的签发、撤销时间还早，按时间先后认不出这是暂停，不补截止点，替换凭证什么都读得到（还要看插入顺序与“轮换在签发的同一瞬间撤销旧凭证”）",
+        (Edit(GATEWAY_MIGRATION_0005, "                  WHERE p.tenant_id = c.tenant_id AND p.destination_id = c.destination_id AND p.rowid < c.rowid\n", "                  WHERE p.tenant_id = c.tenant_id AND p.destination_id = c.destination_id AND p.rowid < c.rowid AND 0\n"),),
+        gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
+        ('test_an_upgrade_recognises_a_finished_suspension_even_when_the_clock_was_set_back_before_the_replacement',),
+    ),
+    Mutation(
+        "s1-gw-migration-treats-every-later-credential-as-suspension",
+        "第三轮 S1（网关）：不看时间先后的识别不能把轮换也当成暂停：不排除“旧凭证在新凭证签发的同一瞬间被撤销”，每个签发过第二条凭证的 Destination 都被补上截止点，排着的文字就被悄悄藏起来",
+        (Edit(GATEWAY_MIGRATION_0005, "                    AND q.credential_id <> c.credential_id AND q.revoked_at = c.issued_at\n", "                    AND q.credential_id <> c.credential_id AND q.revoked_at = c.issued_at AND 0\n"),),
+        gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
+        ('test_an_upgrade_does_not_mistake_a_rotation_after_a_clock_rollback_for_a_suspension', 'test_a_suspension_that_ended_before_the_upgrade_gets_its_cutoff_from_the_credential_history'),
     ),
     # ---- 再评审 R2：延迟的追加与首次入库不为截止点之前的文字建 Delivery ----
     Mutation(
