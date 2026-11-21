@@ -366,6 +366,12 @@ def _cancel_open_deliveries(conn: Any, tenant_id: str, destination_id: str, now_
         )
 
 
+# 撤销截止点（Ticket 22 再评审 R1/R2）的可见性条件：入库时间不晚于 Destination 的截止点（暂停结束、签发替换凭证的那一刻）的文字，
+# 这个 Destination 的 Agent 一律看不到（列表、搜索、读取、领取、续租、确认、拒收）。`dst` 是 destinations、`r` 是 revisions 的别名。
+# 严格大于：同一时钟刻度里分不出先后时，宁可不给。
+AFTER_REVOCATION_CUTOFF = "(dst.revocation_cutoff IS NULL OR r.stored_at > dst.revocation_cutoff)"
+
+
 def _suspended_destination_ids(conn: Any, tenant_id: str, destination_ids: list[str]) -> set[str]:
     """Which of these Destinations are suspended: a credential was issued once, none is active now.
 
@@ -1044,6 +1050,19 @@ def issue_destination_credential(
                 )
 
             replaced_previous = bool(dest["credential_issued"])
+            if destination_id in _suspended_destination_ids(conn, auth.tenant_id, [destination_id]):
+                # 暂停到此结束：这一刻起，入库时间不晚于截止点的文字，替换凭证一律看不到、也不会为它们建 Delivery（再评审 R1/R2）。
+                # 与已有文字的最晚入库时间取较大者：网关时钟回拨过也不会让旧文字落到截止点之后。
+                conn.execute(
+                    """
+                    UPDATE destinations
+                    SET revocation_cutoff = MAX(
+                        ?, COALESCE((SELECT MAX(stored_at) FROM revisions WHERE tenant_id = ?), '')
+                    )
+                    WHERE tenant_id = ? AND destination_id = ?
+                    """,
+                    (now_iso, auth.tenant_id, auth.tenant_id, destination_id),
+                )
             if replaced_previous:
                 conn.execute(
                     """

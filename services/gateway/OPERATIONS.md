@@ -96,6 +96,7 @@ PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway revoke-credential -
 - 撤销的那一刻，它上面还没被领取（`PENDING`）和租约中（`LEASED`）的投递被**取消**（`CANCELLED`）；已确认、已拒收的历史不动。之后签发的新凭证**领不到**这些文字——撤销前、撤销期间攒下的文字不会补发。
 - 暂停期间新入库的文字照常入库，但**不再为它建投递**（手机提交时点名它也不报错、不拒收）。
 - 在手机上对这个 Destination“生成/轮换凭证”才恢复，且只对恢复**之后**入库的文字生效。手机上它会显示“已暂停”（网关在 Destination 资源里给 `credential_active: false`）。
+- **撤销截止点**（再评审 R1）：恢复的那一刻网关给这个 Destination 记一个“撤销截止点”（`destinations.revocation_cutoff`；与库里已有文字的最晚入库时间取较大者，所以网关时钟回拨过也不会漏）。入库时间不晚于它的文字，替换凭证在**每一条** Agent 路径上都看不到：`record_list` 不列、`record_search` 搜不到、`record_get` 回 404（含已取消、已确认的旧投递）、`delivery_claim` 领不到、`delivery_renew_lease` / `delivery_ack` / `delivery_nack` 认不出旧的投递编号与租约（回 404，连已确认那条的重复确认也不再回答）。只轮换（不暂停）不设截止点，排队的文字照常交给新凭证。截止点只往后走：再暂停一次、再恢复，它就移到那一次。升级到这一版时，旧库里已经结束的暂停按凭证历史补上截止点（迁移 `0005`：某条凭证签发时，更早的凭证都在它之前就已撤销，而轮换是在签发的同一瞬间撤销旧的）。
 - 想让 Agent 接着收原来的文字：不要撤销凭证，用手机“轮换凭证”（旧凭证立即失效，排着的投递保留给新凭证）。
 - 撤销一条已经被轮换掉的旧凭证什么也不改变（它早已失效，Destination 另有有效凭证）；从没签发过凭证的 Destination 不是“暂停”。
 
