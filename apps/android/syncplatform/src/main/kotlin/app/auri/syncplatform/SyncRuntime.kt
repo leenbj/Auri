@@ -27,8 +27,14 @@ import app.auri.sync.pairing.ObservablePairingStore
 import app.auri.sync.pairing.PairingOutcome
 import app.auri.sync.pairing.PairingPayload
 import app.auri.sync.pairing.PairingService
+import app.auri.sync.pairing.PairingState
 import app.auri.sync.pairing.SecretBox
 import app.auri.sync.policy.DataFlowPolicy
+import app.auri.sync.policy.DataFlowState
+import app.auri.sync.policy.current
+import app.auri.sync.policy.reconcile
+import app.auri.sync.policy.setGrantFor
+import app.auri.sync.policy.states
 import app.auri.sync.resume.ResumePlanner
 import app.auri.sync.resume.ResumeRunner
 import app.auri.sync.resume.ResumeScheduler
@@ -50,6 +56,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -103,7 +111,14 @@ class SyncRuntime(
     /** 配对状态（可观察）。读它之前先 [start]：启动时才读第一次，之前没有任何状态。 */
     val pairing = ObservablePairingStore(FilePairingStore(pairingFile, box))
 
-    private val pairingService = PairingService(pairing, http, discovery, clock, device, log)
+    /**
+     * 对**配对着的那个网关**的两道开关（复评 R3：授权是给某个网关的，换了配对就不再算数）。引擎问的是“对我要联系的这个网关”，
+     * 叫醒计划、同步状态汇总与发送审阅页看的都是这一份。
+     */
+    val dataFlow: Flow<DataFlowState> = policy.states(pairing.states.map { (it as? PairingState.Paired)?.gateway?.identity }.distinctUntilChanged())
+
+    // 换配对记录之前先作废不是给新网关的文字授权
+    private val pairingService = PairingService(pairing, http, discovery, clock, device, beforeSaving = { policy.forgetGrantExcept(it) }, log = log)
     private val locator = GatewayLocator(http, discovery, log)
 
     /** 手机只和说合同 1.2 的网关说话（评审 R7）：同步引擎与目的地管理共用，同一份配对在一个进程里只问一次网关的版本。 */
@@ -127,7 +142,7 @@ class SyncRuntime(
     private val planner = ResumePlanner(
         pairing.states,
         jobs.observe(),
-        policy.states(),
+        dataFlow,
         resume,
         clock,
         log = log,
@@ -137,18 +152,23 @@ class SyncRuntime(
     private val resumeRunner = ResumeRunner(
         ready = { started.await() },
         runPass = engine::runOnce,
-        stillNeeded = { needsResume(pairing.load(), jobs.all(), policy.current(), dispatch.due().isNotEmpty()) },
+        stillNeeded = {
+            val paired = pairing.load()
+            needsResume(paired, jobs.all(), policy.current((paired as? PairingState.Paired)?.gateway?.identity), dispatch.due().isNotEmpty())
+        },
         log = log,
     )
 
     /** 界面要的同步状态汇总：配对状态、任务表、数据流开关与发送账里等用户确认的文字，任何一边变了都重新汇总（评审 M2）。 */
-    override val status: Flow<SyncStatus> = SyncStatus.watch(pairing.states, jobs.observe(), policy.states(), dispatch)
+    override val status: Flow<SyncStatus> = SyncStatus.watch(pairing.states, jobs.observe(), dataFlow, dispatch)
 
     fun start(): Job = scope.launch {
         // 同步出故障不能带倒整个进程（录音在同一个进程里，这个作用域又没有异常处理器，逃出来的异常就是应用崩溃）：
         // 记下来，循环照常起来，它的第一轮会再试
         try {
             pairing.refresh()
+            // 授权只留给配对着的那个网关：换配对时的清理万一没跑成（进程被杀、写库失败），在这里补上
+            policy.reconcile(pairing.load())
             // 上次进程在“刚配好对、还没把停下的任务放回队列”时被杀：配对记录是好的，任务却还停着。放回去。
             engine.resolveAfterRepair()
         } catch (cancelled: CancellationException) {
@@ -181,10 +201,12 @@ class SyncRuntime(
     /** 回到前台、用户点了“现在同步”：立刻跑一轮，并让探测的退避从头开始。 */
     override fun syncNow() = loop.nudge()
 
-    /** 用户明确打开或收回“文字可以进网关”。打开之后马上跑一轮：之前被留在本机的文字这时才发出去。 */
+    /**
+     * 用户明确打开或收回“文字可以进网关”。打开 = 同意发给**现在配对着的这个网关**（之后换了配对，这份同意就不再算数）；
+     * 没有配对着的网关时没有“我指定的网关”可授权，什么也不记。打开之后马上跑一轮：之前被留在本机的文字这时才发出去。
+     */
     override suspend fun setGatewayTextGranted(granted: Boolean) {
-        policy.setGatewayTextGranted(granted)
-        loop.nudge()
+        if (policy.setGrantFor(pairing.load(), granted)) loop.nudge()
     }
 
     /** 用户打开或关闭“严格仅本地”。关掉之后马上跑一轮（授权仍在的话，被留住的文字这时才发）。 */

@@ -112,6 +112,14 @@ class SyncScreenTextTest {
     }
 
     @Test
+    fun `复评 R3：开关旁的说明讲清同意只对现在配对的这台网关有效，改配别的网关要重新打开`() {
+        val hint = describeGrantHint()
+
+        assertTrue(hint, "只对现在配对的这台网关有效" in hint)
+        assertTrue(hint, "重新打开" in hint)
+    }
+
+    @Test
     fun `计数那一行六个数都在，顺序固定`() {
         assertEquals("排队 1 · 发送中 2 · 等网关 3 · 稍后重试 4 · 需处理 5 · 已入库 6", describeCounts(SyncCounts(1, 2, 3, 4, 5, 6)))
     }

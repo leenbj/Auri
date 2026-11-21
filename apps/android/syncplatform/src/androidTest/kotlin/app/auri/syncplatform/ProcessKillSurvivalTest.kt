@@ -149,14 +149,15 @@ class ProcessKillSurvivalTest {
 
             override fun now(): Instant = Instant.now()
         }
+        val pairedGateway = SyncSamples.pairedGateway(pin = SpkiPin.parse("2e".repeat(32))!!)
         val engine = SyncEngine(
             jobs = jobs,
-            pairing = InMemoryPairingStore(SyncSamples.pairedGateway(pin = SpkiPin.parse("2e".repeat(32))!!)),
+            pairing = InMemoryPairingStore(pairedGateway),
             source = RecordLibrarySubmissionSource(library, SubmissionBuilder("test")),
             http = http,
             locator = GatewayLocator(http, FakeDiscovery()),
             clock = clock,
-            policy = InMemoryDataFlowPolicy(), // 装配时显式授权：这个测试测的是被杀后的接回
+            policy = InMemoryDataFlowPolicy(gateway = pairedGateway.identity), // 装配时显式授权（给这个网关）：这个测试测的是被杀后的接回
         )
 
         engine.runOnce() // 重启后的第一轮

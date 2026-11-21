@@ -108,8 +108,11 @@ class RealGatewayDestinationsTest {
         val log = CollectingLog()
         val authenticator = ScriptedAuthenticator()
 
-        /** 装配时显式授权：文字能进网关是用户的一道独立授权，这个文件的多数测试讲的是别的事。 */
-        val policy = InMemoryDataFlowPolicy()
+        /**
+         * 装配时显式授权：文字能进网关是用户的一道独立授权，这个文件的多数测试讲的是别的事。
+         * 授权是给某个网关的（复评 R3），所以配对成功后随即同意新配对的那一台（见 [pairWith]）；开关指的网关也在那时对上。
+         */
+        val policy = InMemoryDataFlowPolicy(gateway = null)
         val fixture = InMemoryDispatchFixture()
         val library = InMemoryRecordLibrary()
         private val key = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
@@ -117,7 +120,10 @@ class RealGatewayDestinationsTest {
         private val store = FilePairingStore(File(dir, "pairing.bin"), AesGcmSecretBox({ key }, "pairing-record"))
         private val http = HttpExchangeFactory { pin -> RecordingExchange(PinnedHttpsClient(pin), calls) }
         private val locator = GatewayLocator(http, NoDiscovery, log)
-        private val pairing = PairingService(store, http, NoDiscovery, RealClock, DeviceInfo(APP_VERSION, "jvm-real-gateway-test", "Ticket 22 real gateway test"), log)
+        private val pairing = PairingService(
+            store, http, NoDiscovery, RealClock, DeviceInfo(APP_VERSION, "jvm-real-gateway-test", "Ticket 22 real gateway test"),
+            beforeSaving = { policy.forgetGrantExcept(it) }, log = log,
+        )
         val engine = SyncEngine(
             jobs = fixture.jobs,
             pairing = store,
@@ -138,6 +144,8 @@ class RealGatewayDestinationsTest {
             check(parsed is PayloadParse.Valid) { "网关给的配对载荷手机端不认：$parsed" }
             val outcome = pairing.pair(parsed.payload)
             check(outcome is PairingOutcome.Paired) { "配对结果不是成功：$outcome" }
+            policy.gateway = outcome.gateway.identity
+            policy.grantTo(outcome.gateway.identity) // 测试里的用户配对之后随即同意文字发给它
         }
 
         /** 一条新录音转写出了文字：Record 与它的 ASR 初稿 Revision 发布（未审核），同步任务登记、发送账规划目标（Android：库的 publicationStep）。 */

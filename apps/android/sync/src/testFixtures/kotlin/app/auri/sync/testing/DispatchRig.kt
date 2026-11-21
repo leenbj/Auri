@@ -57,7 +57,7 @@ class DispatchRig(
     val server = FakeGateway(now = clock::now)
     val library = InMemoryRecordLibrary()
     val pairing = InMemoryPairingStore(gateway)
-    val policy = InMemoryDataFlowPolicy(policyState)
+    val policy = InMemoryDataFlowPolicy(policyState, gateway?.identity) // 授权是给这个网关的
     val log = CollectingLog()
     val authenticator = ScriptedAuthenticator()
 

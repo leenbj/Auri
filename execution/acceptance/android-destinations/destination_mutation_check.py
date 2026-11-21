@@ -56,6 +56,7 @@ POLICY = ANDROID + "sync/src/main/kotlin/app/auri/sync/policy/DataFlowPolicy.kt"
 POLICY_SQL = SYNCPLATFORM + "policy/DataFlowPolicySql.kt"
 RESUME_PLANNER = ANDROID + "sync/src/main/kotlin/app/auri/sync/resume/ResumePlanner.kt"
 SYNC_RUNTIME = SYNCPLATFORM + "SyncRuntime.kt"
+PAIRING_SERVICE = ANDROID + "sync/src/main/kotlin/app/auri/sync/pairing/PairingService.kt"
 SYNC_STATUS = ANDROID + "sync/src/main/kotlin/app/auri/sync/status/SyncStatus.kt"
 SEND_REVIEW_VM = APP_DEST + "SendReviewViewModel.kt"
 CLIPBOARD_GUARD = APP_DEST + "SecretClipboardGuard.kt"
@@ -117,7 +118,11 @@ LOG_CREDENTIAL = Edit(
 ADDITIONS_NEVER_RUN = Edit(ENGINE, "                addDeliveries(location)\n            }\n", "            }\n")
 
 # 评审 B1：引擎问“文字放行了吗”的那一处——真网关测试与单测各跑一遍，用同一份编辑
-POLICY_GATE_OPEN = Edit(ENGINE, "    private suspend fun mayTransmit(): Boolean = policy.current().textMayEnterGateway", "    private suspend fun mayTransmit(): Boolean = true")
+POLICY_GATE_OPEN = Edit(
+    ENGINE,
+    "    private suspend fun mayTransmit(gateway: PairedGateway?): Boolean = policy.current(gateway?.identity).textMayEnterGateway",
+    "    private suspend fun mayTransmit(gateway: PairedGateway?): Boolean = true",
+)
 
 # 评审 B3：手机读 Destination 的 credential_active（真网关测试与单测各跑一遍，用同一份编辑）
 GATEWAY_CLIENT = SYNC_GATEWAY + "GatewayClient.kt"
@@ -324,10 +329,10 @@ MUTATIONS: tuple = (
         (Edit(
             ENGINE,
             "        // 落盘之后、联系网关之前再问一次放行：刚才被收回的，连网关都不去碰，退回等待（“不确定”还原成发送之前的样子）\n"
-            "        if (!mayTransmit()) return waiting(key, wasUncertain)\n"
+            "        if (!mayTransmit(gateway)) return waiting(key, wasUncertain)\n"
             "        val address = when (val located = location.get(gateway)) {",
             "        source.submissionFor(key)\n"
-            "        if (!mayTransmit()) return waiting(key, wasUncertain)\n"
+            "        if (!mayTransmit(gateway)) return waiting(key, wasUncertain)\n"
             "        val address = when (val located = location.get(gateway)) {",
         ),),
         sync_tests("DispatchEngineTest"), SYNC_RESULTS,
@@ -433,7 +438,7 @@ MUTATIONS: tuple = (
         (Edit(
             ENGINE,
             "        // 落盘之后、联系网关之前再问一次放行：刚才被收回的，连网关都不去碰，退回等待（“不确定”还原成发送之前的样子）\n"
-            "        if (!mayTransmit()) return waiting(key, wasUncertain)\n",
+            "        if (!mayTransmit(gateway)) return waiting(key, wasUncertain)\n",
             "",
         ),),
         sync_tests("DataFlowGateTest"), SYNC_RESULTS,
@@ -445,7 +450,7 @@ MUTATIONS: tuple = (
         (Edit(
             ENGINE,
             "        // 请求离开手机之前的最后一问：刚才被收回的，什么都没发出去，退回等待（“不确定”还原成发送之前的样子）\n"
-            "        if (!mayTransmit()) return waiting(key, wasUncertain)\n",
+            "        if (!mayTransmit(gateway)) return waiting(key, wasUncertain)\n",
             "",
         ),),
         sync_tests("DataFlowGateTest"), SYNC_RESULTS,
@@ -461,16 +466,62 @@ MUTATIONS: tuple = (
     Mutation(
         "policy-unset-means-granted",
         "评审 B1：从没设置过时必须是“没授权”（默认关）：默认成已授权，等于配对就自动同意文字进网关",
-        (Edit(POLICY_SQL, "        gatewayTextGranted = value(TEXT_GRANT)?.let(::isGrant) ?: false,", "        gatewayTextGranted = value(TEXT_GRANT)?.let(::isGrant) ?: true,"),),
+        (Edit(
+            POLICY_SQL,
+            "        grantedTo = value(TEXT_GRANT)?.let(::grantee),",
+            '        grantedTo = value(TEXT_GRANT)?.let(::grantee) ?: GatewayIdentity("00000000-0000-4000-8000-000000000000", "0".repeat(64)),',
+        ),),
         platform_tests("DataFlowPolicySqlTest"), PLATFORM_RESULTS,
         ("从没设置过：没有授权",),
     ),
     Mutation(
         "policy-unreadable-opens",
-        "评审 B1：设置读不出来时必须按最保守的算（不授权、严格仅本地）：读不出来就放行是 fail-open",
-        (Edit(POLICY_SQL, "    } catch (_: Exception) {\n        DataFlowState.Closed\n    }", "    } catch (_: Exception) {\n        DataFlowState(gatewayTextGranted = true, strictLocal = false)\n    }"),),
+        "评审 B1：设置读不出来时必须按最保守的算（不授权、严格仅本地）：读不出来当成“没设置过”，严格仅本地就被悄悄松开了",
+        (Edit(POLICY_SQL, "    } catch (_: Exception) {\n        StoredDataFlow.Closed\n    }", "    } catch (_: Exception) {\n        StoredDataFlow.Unset\n    }"),),
         platform_tests("DataFlowPolicySqlTest"), PLATFORM_RESULTS,
         ("读不出来（表不存在、连接坏了）",),
+    ),
+    Mutation(
+        "r3-grant-is-global",
+        "复评 R3：授权只对给出它的那个网关算数：只看“有人授权过”，等于换了网关之后新网关照样收到文字",
+        (Edit(POLICY, "gatewayTextGranted = gateway != null && grantedTo == gateway", "gatewayTextGranted = grantedTo != null"),),
+        sync_tests("GatewayBoundConsentTest"), SYNC_RESULTS,
+        ("授权给了网关 A，重新配对到网关 B 之后：B 一个字节也收不到，文字留在手机上",),
+    ),
+    Mutation(
+        "r3-grant-ignores-the-key-pin",
+        "复评 R3：网关的身份是“编号 + 公钥指纹”：只认编号，同编号换了公钥的另一台网关就会继承原来的同意",
+        (Edit(ANDROID + "sync/src/main/kotlin/app/auri/sync/pairing/PairedGateway.kt", "GatewayIdentity(gatewayId, pin.hex)", 'GatewayIdentity(gatewayId, "")'),),
+        sync_tests("GatewayBoundConsentTest"), SYNC_RESULTS,
+        ("同一个网关编号、公钥换了：是另一台网关，原来的同意对它不算数",),
+    ),
+    Mutation(
+        "r3-pairing-skips-the-grant-clearing",
+        "复评 R3：配对成功、换配对记录之前要先把别的网关的授权清掉（主动清理）：不清的话两步之间新网关挂着旧授权",
+        (Edit(PAIRING_SERVICE, "                    beforeSaving(gateway.identity)\n", "                    if (false) beforeSaving(gateway.identity)\n"),),
+        sync_tests("PairingServiceTest"), SYNC_RESULTS,
+        ("配对成功：先让授权只留给新网关，再换配对记录",),
+    ),
+    Mutation(
+        "r3-sql-clearing-keeps-the-wrong-grant",
+        "复评 R3：清理要作废“给的不是新网关”的授权：条件写反就是留下了不该留的、作废了该留的",
+        (Edit(POLICY_SQL, "        if (granted != null && granted != keep) put(TEXT_GRANT, revoked(now))", "        if (granted != null && granted == keep) put(TEXT_GRANT, revoked(now))"),),
+        platform_tests("DataFlowPolicySqlTest"), PLATFORM_RESULTS,
+        ("换配对的清理：授权不是给新网关的就作废并留下记录",),
+    ),
+    Mutation(
+        "r3-runtime-forgets-the-clearing-hook",
+        "复评 R3：装配里忘了把“换配对前清授权”接到配对服务上：单测各自全绿，设备上换网关后旧授权还在（读的时候的绑定是最后一道防线，不是清理的替代）",
+        (Edit(SYNC_RUNTIME, "beforeSaving = { policy.forgetGrantExcept(it) }, ", ""),),
+        app_tests("SyncStatusWiringTest"), APP_RESULTS,
+        ("复评 R3：文字授权在装配里绑在配对着的网关上",),
+    ),
+    Mutation(
+        "r3-hint-forgets-the-binding",
+        "复评 R3：开关旁的说明不讲“同意只对现在配对的这台网关有效”：用户不知道换网关后要重新打开",
+        (Edit(APP_UI + "SyncScreen.kt", "同意只对现在配对的这台网关有效，改配别的网关后要重新打开。", ""),),
+        app_tests("SyncScreenTextTest"), APP_RESULTS,
+        ("复评 R3：开关旁的说明讲清同意只对现在配对的这台网关有效",),
     ),
     Mutation(
         "policy-resume-ignores-gate",
@@ -1052,7 +1103,7 @@ MUTATIONS: tuple = (
     Mutation(
         "m2-runtime-bypasses-the-ledger",
         "评审 M2：SyncRuntime 又自己拼 combine、只看任务表：设备上页面照旧只剩“已同步”，而单测全绿",
-        (Edit(SYNC_RUNTIME, "SyncStatus.watch(pairing.states, jobs.observe(), policy.states(), dispatch)", "kotlinx.coroutines.flow.combine(pairing.states, jobs.observe(), policy.states()) { p, l, d -> SyncStatus.of(p, l, d) }"),),
+        (Edit(SYNC_RUNTIME, "SyncStatus.watch(pairing.states, jobs.observe(), dataFlow, dispatch)", "kotlinx.coroutines.flow.combine(pairing.states, jobs.observe(), dataFlow) { p, l, d -> SyncStatus.of(p, l, d) }"),),
         app_tests("SyncStatusWiringTest"), APP_RESULTS,
         ("同步状态流经 SyncStatus 的 watch",),
     ),

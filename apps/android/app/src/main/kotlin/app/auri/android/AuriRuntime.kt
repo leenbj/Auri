@@ -226,7 +226,7 @@ class AuriRuntime(
     val sendReviewViewModelFactory = object : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
-            SendReviewViewModel(sync.dispatch, itemTexts, SystemClock, sync::syncNow, scopeOf(), sync.policy.states(), AndroidSyncLog) as T
+            SendReviewViewModel(sync.dispatch, itemTexts, SystemClock, sync::syncNow, scopeOf(), sync.dataFlow, AndroidSyncLog) as T
     }
 
     /** 每个目的地一个详情视图模型（以编号为键，见 MainActivity）；离开详情页时它自己抹掉凭证。 */

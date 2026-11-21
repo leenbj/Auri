@@ -60,6 +60,12 @@ class PairingService(
     private val discovery: GatewayDiscovery,
     private val clock: Clock,
     private val device: DeviceInfo,
+    /**
+     * 配对记录换成 [PairedGateway] 之前调用（复评 R3）：文字授权是给某个网关的，别的网关的授权在这里作废。
+     * 在换记录**之前**作废：反过来的话，两步之间旧网关的授权还挂在新网关身上。它失败了不拦配对（令牌只出现这一次），
+     * 授权在读的时候本来就只对给出它的网关算数，这里只是主动清理。
+     */
+    private val beforeSaving: suspend (GatewayIdentity) -> Unit = {},
     private val log: SyncLog = SyncLog.None,
 ) {
     /** 一个地址上兑换的终局：要么拿到了令牌，要么有个必须停下的结论。 */
@@ -113,7 +119,14 @@ class PairingService(
         )
         return try {
             // 令牌只会出现这一次：网关已经签发，调用方此刻被取消也必须把它存下来
-            withContext(NonCancellable) { store.save(gateway) }
+            withContext(NonCancellable) {
+                try {
+                    beforeSaving(gateway.identity)
+                } catch (failure: Exception) {
+                    log.event("pairing.consent-clear-failed ${failure::class.simpleName}")
+                }
+                store.save(gateway)
+            }
             PairingOutcome.Paired(gateway)
         } catch (cancelled: CancellationException) {
             throw cancelled

@@ -24,6 +24,7 @@ import app.auri.sync.pairing.PairingStore
 import app.auri.sync.pairing.clearGatewayTooOld
 import app.auri.sync.pairing.markGatewayTooOld
 import app.auri.sync.policy.DataFlowPolicy
+import app.auri.sync.policy.current
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
@@ -120,7 +121,7 @@ class SyncEngine(
             passLock.withLock {
                 recoverInterrupted()
                 retryDue()
-                if (!mayTransmit()) { // 文字没有放行：这一轮到此为止，任务原样留在手机上（上面两步只改本地状态）
+                if (!mayTransmit(pairedGateway())) { // 文字没有放行（对配对着的这个网关）：这一轮到此为止，任务原样留在手机上（上面两步只改本地状态）
                     log.event("pass.held-by-policy")
                     return
                 }
@@ -257,8 +258,8 @@ class SyncEngine(
             deliver(key, SyncEvent.SEND_STARTED)
             return SendResult.SKIPPED
         }
-        if (!mayTransmit()) return SendResult.SKIPPED // 先问放行：没放行就连“开始发送”都不落盘
         val gateway = usableGateway() ?: return SendResult.SKIPPED
+        if (!mayTransmit(gateway)) return SendResult.SKIPPED // 先问放行（授权只对给出它的那个网关算数）：没放行就连“开始发送”都不落盘
 
         var before = job
         // 先落盘：记成“发送中、结果不确定”，之后才会有请求离开手机
@@ -270,7 +271,7 @@ class SyncEngine(
         val wasUncertain = before.uncertain
 
         // 落盘之后、联系网关之前再问一次放行：刚才被收回的，连网关都不去碰，退回等待（“不确定”还原成发送之前的样子）
-        if (!mayTransmit()) return waiting(key, wasUncertain)
+        if (!mayTransmit(gateway)) return waiting(key, wasUncertain)
         val address = when (val located = location.get(gateway)) {
             is Located.Reachable -> located.address
             Located.Unreachable -> return waiting(key, wasUncertain)
@@ -294,7 +295,7 @@ class SyncEngine(
         additions.useGateway(gateway.gatewayId)
         val submission = source.submissionFor(key) ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)
         // 请求离开手机之前的最后一问：刚才被收回的，什么都没发出去，退回等待（“不确定”还原成发送之前的样子）
-        if (!mayTransmit()) return waiting(key, wasUncertain)
+        if (!mayTransmit(gateway)) return waiting(key, wasUncertain)
 
         if (wasUncertain) {
             // 上一次可能已经送到：先问网关。只有网关明确说“已入库”才确认，明确说“没有”才往下重发；问不到就不重发。
@@ -446,7 +447,7 @@ class SyncEngine(
             resetAdditionsBackoff()
             return
         }
-        if (offline || !mayTransmit()) return // 断网期间不探测：网络回来时 SyncLoop 会再跑一轮
+        if (offline || !mayTransmit(gateway)) return // 断网期间不探测：网络回来时 SyncLoop 会再跑一轮
         if (gateway == null) return
         val address = when (val located = location.get(gateway)) {
             is Located.Reachable -> located.address
@@ -478,7 +479,7 @@ class SyncEngine(
             }
         }
         for (addition in due) {
-            if (!mayTransmit()) return // 请求离开手机之前再问一次放行
+            if (!mayTransmit(gateway)) return // 请求离开手机之前再问一次放行
             val result = client.addDeliveries(address, gateway.token, addition.key.recordId, addition.key.revision, addition.intent, listOf(addition.destinationId))
             if (!stillPaired(gateway)) return // 途中换了配对：这个结果对新配对没有意义，下一轮对新配对重新算
             val ids = listOf(addition.destinationId)
@@ -539,10 +540,10 @@ class SyncEngine(
     }
 
     private suspend fun probe(location: Location) {
-        if (!mayTransmit()) return // 探测本身就是一次联系
+        val gateway = usableGateway() ?: return
+        if (!mayTransmit(gateway)) return // 探测本身就是一次联系
         val waiting = jobs.all().filter { it.state == SyncState.WAITING_GATEWAY }
         if (waiting.isEmpty()) return
-        val gateway = usableGateway() ?: return
         when (location.get(gateway)) {
             // 公钥不符也算“有人应答”：让下一次发送在“发送中”撞上它，按状态机报 KEY_MISMATCH（此时没有任何带令牌的请求发出）
             is Located.Reachable, Located.KeyMismatch -> waiting.forEach { deliver(it.key, SyncEvent.GATEWAY_REACHABLE) }
@@ -555,8 +556,14 @@ class SyncEngine(
         for (job in jobs.all()) if (job.state == SyncState.PENDING) deliver(job.key, SyncEvent.GATEWAY_UNREACHABLE)
     }
 
-    /** 文字可以进网关吗。[DataFlowPolicy.current] 承诺读不出来就回答“不许”；万一它抛了，外层的 catch 收住，同样什么都不发。 */
-    private suspend fun mayTransmit(): Boolean = policy.current().textMayEnterGateway
+    /**
+     * 文字可以进 [gateway] 吗（复评 R3：授权是给某一个网关的，这里问的是“对我要联系的这个网关”，不是“全局有没有开”）。
+     * [DataFlowPolicy.stored] 承诺读不出来就回答“不许”；万一它抛了，外层的 catch 收住，同样什么都不发。没有配对的网关也就没有授权。
+     */
+    private suspend fun mayTransmit(gateway: PairedGateway?): Boolean = policy.current(gateway?.identity).textMayEnterGateway
+
+    /** 配对着的网关，不论连接有没有问题（同意是对它的身份给的，连接要用户处理时也一样）。 */
+    private suspend fun pairedGateway(): PairedGateway? = (pairing.load() as? PairingState.Paired)?.gateway
 
     private suspend fun usableGateway(): PairedGateway? = (pairing.load() as? PairingState.Paired)?.gateway?.takeIf { it.needsUser == null }
 

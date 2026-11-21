@@ -2,8 +2,9 @@ package app.auri.syncplatform.policy
 
 import app.auri.capture.coordinator.Clock
 import app.auri.platform.library.SqliteRecordLibrary
+import app.auri.sync.pairing.GatewayIdentity
 import app.auri.sync.policy.DataFlowPolicy
-import app.auri.sync.policy.DataFlowState
+import app.auri.sync.policy.StoredDataFlow
 import app.auri.syncplatform.dispatch.AndroidSqlDb
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
@@ -18,23 +19,26 @@ import kotlinx.coroutines.flow.map
 class SqliteDataFlowPolicy(private val library: SqliteRecordLibrary, private val clock: Clock) : DataFlowPolicy {
     private val changes = MutableStateFlow(0L)
 
-    override suspend fun current(): DataFlowState = try {
+    override suspend fun stored(): StoredDataFlow = try {
         library.withDatabase { db -> DataFlowPolicySql(AndroidSqlDb(db)).readOrClosed() }
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (_: Exception) {
-        DataFlowState.Closed // 连数据库都打不开：同样不许
+        StoredDataFlow.Closed // 连数据库都打不开：同样不许
     }
 
-    override fun states(): Flow<DataFlowState> = changes.map { current() }.distinctUntilChanged()
+    override fun storedStates(): Flow<StoredDataFlow> = changes.map { stored() }.distinctUntilChanged()
 
-    override suspend fun setGatewayTextGranted(granted: Boolean) {
-        library.withDatabase { db -> DataFlowPolicySql(AndroidSqlDb(db)).setGatewayTextGranted(granted, clock.now()) }
-        changes.value += 1
-    }
+    override suspend fun grantTo(gateway: GatewayIdentity) = write { grantTo(gateway, clock.now()) }
 
-    override suspend fun setStrictLocal(on: Boolean) {
-        library.withDatabase { db -> DataFlowPolicySql(AndroidSqlDb(db)).setStrictLocal(on) }
+    override suspend fun revokeGrant() = write { revokeGrant(clock.now()) }
+
+    override suspend fun forgetGrantExcept(gateway: GatewayIdentity?) = write { forgetGrantExcept(gateway, clock.now()) }
+
+    override suspend fun setStrictLocal(on: Boolean) = write { setStrictLocal(on) }
+
+    private suspend fun write(change: DataFlowPolicySql.() -> Unit) {
+        library.withDatabase { db -> DataFlowPolicySql(AndroidSqlDb(db)).change() }
         changes.value += 1
     }
 }

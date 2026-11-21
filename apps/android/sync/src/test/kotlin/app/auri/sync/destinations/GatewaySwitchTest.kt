@@ -28,7 +28,9 @@ class GatewaySwitchTest {
     private suspend fun DispatchRig.repairWithAnotherGateway(): FakeGateway {
         val other = FakeGateway(now = clock::now)
         lan.host(addressB, TlsFixtures.gatewayB) { other.handle(it) }
-        pairing.save(SyncSamples.pairedGateway(pin = TlsFixtures.gatewayB.pin, addresses = listOf(addressB)).copy(gatewayId = "0f0f0f0f-1bfb-53b3-85a3-4d36b680fe6e"))
+        val gatewayB = SyncSamples.pairedGateway(pin = TlsFixtures.gatewayB.pin, addresses = listOf(addressB)).copy(gatewayId = "0f0f0f0f-1bfb-53b3-85a3-4d36b680fe6e")
+        pairing.save(gatewayB)
+        policy.grantTo(gatewayB.identity) // 文字授权是给某个网关的（复评 R3）：这些测试讲的是别的事，所以用户对新配对的 B 随即同意
         return other
     }
 

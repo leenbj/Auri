@@ -12,6 +12,12 @@ import java.time.Instant
  */
 enum class NeedsUser { KEY_MISMATCH, AUTH_REJECTED, GATEWAY_TOO_OLD }
 
+/**
+ * 用户同意把文字发给的那台网关：网关编号加公钥指纹（复评 R3，SEC-002 把同意限定在“指定的网关”上）。
+ * 两样都得对：同一个编号换了公钥、同一把公钥换了编号，都是另一台网关，原来的同意对它不算数。
+ */
+data class GatewayIdentity(val gatewayId: String, val keySha256: String)
+
 /** 配对的结果：手机认识的那台网关。整个记录（含令牌、公钥指纹、地址）只以密文落盘，见 FilePairingStore。 */
 data class PairedGateway(
     val gatewayId: String,
@@ -25,6 +31,9 @@ data class PairedGateway(
     val pairedAt: Instant,
     val needsUser: NeedsUser? = null,
 ) {
+    /** 文字授权按它认人（见 [GatewayIdentity]）。 */
+    val identity: GatewayIdentity get() = GatewayIdentity(gatewayId, pin.hex)
+
     /** 是不是同一份配对：同一台设备、同一次配对时刻、同一个固定公钥。用户重新配对、改配别的网关之后就不是了。 */
     fun isSamePairing(other: PairedGateway) = deviceId == other.deviceId && pairedAt == other.pairedAt && pin == other.pin
 

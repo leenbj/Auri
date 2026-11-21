@@ -588,6 +588,13 @@ class SyncEngineTest {
         token = DeviceToken.parse(newTokenText)!!,
     )
 
+    /** 用户改配到 B，并对 B 另行同意文字发给它（复评 R3：授权是给某个网关的，换了配对就得重新同意）。这些测试讲的是配对代次，不是同意。 */
+    private suspend fun SyncRig.repairToB() {
+        val gatewayB = pairedToB()
+        pairing.save(gatewayB)
+        policy.grantTo(gatewayB.identity)
+    }
+
     private fun SyncRig.hostGatewayB(): FakeGateway = FakeGateway(now = clock::now).also { serverB -> lan.host(addressB, TlsFixtures.gatewayB) { serverB.handle(it) } }
 
     /** 启动一轮同步，让它的第一个 PUT 停在网关里（任务处于发送中）；返回放行用的闸门和这一轮的作业。 */
@@ -641,7 +648,7 @@ class SyncEngineTest {
         val serverB = rig.hostGatewayB()
         val (gate, pass) = rig.startPassHeldAtFirstPut(key)
 
-        rig.pairing.save(pairedToB())
+        rig.repairToB()
         gate.complete(null) // 旧网关正常入库并回了 200
         pass.join()
 
@@ -659,7 +666,7 @@ class SyncEngineTest {
         val serverB = rig.hostGatewayB()
         val (gate, pass) = rig.startPassHeldAtFirstPut(first)
 
-        rig.pairing.save(pairedToB())
+        rig.repairToB()
         gate.complete(null)
         pass.join()
 
@@ -681,7 +688,7 @@ class SyncEngineTest {
         rig.scope.runCurrent()
         assertEquals("卡在向旧网关问结果这一步", listOf("GET status ${key.recordId}"), rig.server.calls.toList())
 
-        rig.pairing.save(pairedToB())
+        rig.repairToB()
         gate.complete(null) // 旧网关回答：已入库，哈希相同
         pass.join()
 

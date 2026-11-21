@@ -268,7 +268,56 @@ class PairingServiceTest {
     fun `日志收集器不是摆设：配对流程确实往里写了事件`() {
         gatewayAt(nas)
         val lines = mutableListOf<String>()
-        runBlocking { PairingService(store, lanSim.factory, discovery, clock, device, SyncLog { lines += it }).pair(payload()) }
+        runBlocking { PairingService(store, lanSim.factory, discovery, clock, device, log = SyncLog { lines += it }).pair(payload()) }
         assertTrue(lines.any { it.startsWith("pairing.") })
+    }
+
+    // ---- 复评 R3：文字授权是给某个网关的，换配对时在换记录之前作废不是给新网关的授权 ----
+
+    /** 记下“记录什么时候被换掉”，好和授权清理的先后比一比。 */
+    private class OrderedStore(private val inner: PairingStore, private val events: MutableList<String>) : PairingStore by inner {
+        override suspend fun save(gateway: PairedGateway) {
+            events += "save"
+            inner.save(gateway)
+        }
+    }
+
+    @Test
+    fun `配对成功：先让授权只留给新网关，再换配对记录（反过来的话两步之间旧授权还挂在新网关上）`() {
+        gatewayAt(nas)
+        val events = mutableListOf<String>()
+        val service = PairingService(OrderedStore(store, events), lanSim.factory, discovery, clock, device, beforeSaving = { events += "keep-only ${it.gatewayId}" })
+
+        val outcome = pair(service = service)
+
+        val paired = (outcome as PairingOutcome.Paired).gateway
+        assertEquals(listOf("keep-only ${SyncSamples.GATEWAY_ID}", "save"), events)
+        assertEquals("交给清理的是新网关的身份（编号 + 公钥指纹）", GatewayIdentity(SyncSamples.GATEWAY_ID, TlsFixtures.gatewayA.pin.hex), paired.identity)
+    }
+
+    @Test
+    fun `授权清理失败不拦配对：令牌只出现这一次，必须存下来；失败记一行不含机密的日志`() {
+        gatewayAt(nas)
+        val service = PairingService(store, lanSim.factory, discovery, clock, device, beforeSaving = { throw IllegalStateException("disk I/O error ${SyncSamples.TOKEN_TEXT}") }, log = SyncLog { logLines += it })
+
+        val outcome = pair(service = service)
+
+        assertTrue(outcome is PairingOutcome.Paired)
+        assertTrue("记录照常换成了新的", runBlocking { store.load() } is PairingState.Paired)
+        assertTrue("清理失败要留痕：${logLines}", logLines.contains("pairing.consent-clear-failed IllegalStateException"))
+        logLines.forEach { assertFalse("日志里不能出现异常消息里的内容：$it", it.contains(SyncSamples.TOKEN_TEXT) || it.contains("disk I/O")) }
+    }
+
+    @Test
+    fun `没配成（配对码被拒、二维码过期、找不到网关）：授权一点也不动`() {
+        var cleared = 0
+        val service = PairingService(store, lanSim.factory, discovery, clock, device, beforeSaving = { cleared += 1 })
+
+        assertEquals(PairingOutcome.Expired, pair(payload(expiresAt = "2026-11-15T02:05:00Z"), service))
+        assertEquals(PairingOutcome.NotFound, pair(service = service))
+        gatewayAt(nas) { ScriptedExchange.json(422, errorBody("PAIRING_CODE_INVALID")) }
+        assertEquals(PairingOutcome.CodeRejected, pair(service = service))
+
+        assertEquals("配对记录没换，授权也不能动", 0, cleared)
     }
 }

@@ -59,7 +59,13 @@ fun SyncScreen(
             status.causes.forEach { Text("· " + describeCause(it)) }
             describeAwaitingYou(status.awaitingYou)?.let { Text(it) }
             Text(describeCounts(status.counts))
-            DataFlowSwitch("允许把文字发送到我配对的网关", describeGrantHint(), status.dataFlow.gatewayTextGranted, onGatewayTextGranted)
+            DataFlowSwitch(
+                "允许把文字发送到我配对的网关",
+                describeGrantHint(),
+                status.dataFlow.gatewayTextGranted,
+                onGatewayTextGranted,
+                enabled = status.headline != SyncHeadline.NOT_PAIRED, // 没有配对就没有“我配对的网关”可同意
+            )
             DataFlowSwitch("严格仅本地", describeStrictLocalHint(), status.dataFlow.strictLocal, onStrictLocal)
             if (state.policyNotSaved) Text(describePolicyNotSaved())
         }
@@ -86,9 +92,9 @@ fun SyncScreen(
 }
 
 @Composable
-private fun DataFlowSwitch(label: String, hint: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+private fun DataFlowSwitch(label: String, hint: String, checked: Boolean, onChange: (Boolean) -> Unit, enabled: Boolean = true) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Switch(checked = checked, onCheckedChange = onChange)
+        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
         Column {
             Text(label)
             Text(hint)
@@ -113,7 +119,8 @@ internal fun describeHeadline(status: SyncStatus): String = when (status.headlin
 internal fun describeAwaitingYou(count: Int): String? =
     if (count <= 0) null else "有 $count 条文字在等你确认：确认之前不会发给对应的 Agent，Agent 领不到它们。请到“发送”页逐条确认，或选择不发送。"
 
-internal fun describeGrantHint(): String = "默认关闭。关闭时，即使已经配对，录下的文字也只留在这台手机上；这与“音频上传”“Agent 读取”“自动发送”是各自独立的授权。"
+internal fun describeGrantHint(): String =
+    "默认关闭。关闭时，即使已经配对，录下的文字也只留在这台手机上；这与“音频上传”“Agent 读取”“自动发送”是各自独立的授权。同意只对现在配对的这台网关有效，改配别的网关后要重新打开。"
 
 internal fun describeStrictLocalHint(): String = "开启后文字一个字节也不会离开这台手机，优先于上面的开关；也不会改走云端或其它通道。"
 

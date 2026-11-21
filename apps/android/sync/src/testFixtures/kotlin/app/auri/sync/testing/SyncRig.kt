@@ -41,7 +41,7 @@ class SyncRig(
     val server = FakeGateway(now = clock::now)
     val jobs = InMemorySyncJobStore()
     val pairing = InMemoryPairingStore(gateway)
-    val policy = InMemoryDataFlowPolicy(policyState)
+    val policy = InMemoryDataFlowPolicy(policyState, gateway?.identity) // 授权是给这个网关的
     val log = CollectingLog()
     val decisions = CopyOnWriteArrayList<SyncDecision>()
     val submissions = ConcurrentHashMap<JobKey, RevisionSubmission>()

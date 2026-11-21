@@ -121,6 +121,11 @@ class RealGatewayTest {
         val dir: File,
         val key: SecretKey = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey(),
         discovery: GatewayDiscovery = NoDiscovery,
+        /**
+         * 装配时显式授权：这个文件测的是同步与配对本身。授权是给某个网关的（复评 R3），所以配对成功后随即同意新配对的那一台（见 [pairWith]）。
+         * 授权存在用户的数据库里，重建本地库、重启都不丢：重建出来的“同一部手机”接着用同一份。
+         */
+        val policy: InMemoryDataFlowPolicy = InMemoryDataFlowPolicy(gateway = null),
     ) {
         /** 引擎与配对服务发出的每个请求（“方法 路径”），按顺序。 */
         val calls = CopyOnWriteArrayList<String>()
@@ -149,11 +154,14 @@ class RealGatewayTest {
             http = http,
             locator = GatewayLocator(http, discovery, log),
             clock = RealClock,
-            policy = InMemoryDataFlowPolicy(), // 装配时显式授权：这个文件测的是同步与配对本身
+            policy = policy,
             retry = RetryPolicy(baseMs = 100, maxMs = 400),
             log = log,
         )
-        val pairing = PairingService(store, http, discovery, RealClock, DeviceInfo(APP_VERSION, "jvm-real-gateway-test", "Ticket 21 real gateway test"), log)
+        val pairing = PairingService(
+            store, http, discovery, RealClock, DeviceInfo(APP_VERSION, "jvm-real-gateway-test", "Ticket 21 real gateway test"),
+            beforeSaving = { policy.forgetGrantExcept(it) }, log = log,
+        )
 
         /** 发布一条 Revision：本地库里有了，同步任务入队。 */
         suspend fun publish(n: Int, text: String): JobKey {
@@ -168,6 +176,8 @@ class RealGatewayTest {
             check(parsed is PayloadParse.Valid) { "网关给的配对载荷手机端不认：$parsed" }
             val outcome = pairing.pair(parsed.payload)
             check(outcome is PairingOutcome.Paired) { "配对结果不是成功：$outcome" }
+            policy.gateway = outcome.gateway.identity
+            policy.grantTo(outcome.gateway.identity) // 测试里的用户配对之后随即同意文字发给它
             return outcome.gateway
         }
 
@@ -369,7 +379,7 @@ class RealGatewayTest {
         assertEquals(SyncState.STORED, lab.phone.jobs.get(original)!!.state)
 
         // 同一部手机（同一份配对记录），本地库被重建，同一条 Record 的第 1 版换了正文
-        val rebuilt = Phone(lab.phone.dir, lab.phone.key)
+        val rebuilt = Phone(lab.phone.dir, lab.phone.key, policy = lab.phone.policy)
         val conflicting = rebuilt.publish(1, "换了的正文，版本号却没变")
         assertEquals(original, conflicting)
 
