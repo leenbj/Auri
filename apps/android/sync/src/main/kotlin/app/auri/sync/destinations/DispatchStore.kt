@@ -147,7 +147,8 @@ interface DispatchStore : PublicationSource, DeliveryAdditions {
 
     /**
      * 这条文字入库时的 publication：意图加上随这次入库就要建 Delivery 的 Destination（空 = 只入库），最多一次提交的合同上限，其余的留给追加。
-     * **调用它就是冻结意图**：引擎在构造提交时调用，从这一刻起标签不能再改（评审 M3）。没有为它规划过的文字（升级前的旧文字、用户修订）只入库。
+     * **调用它就是冻结意图**：引擎在构造提交时调用，从这一刻起标签不能再改（评审 M3）。引擎只在请求真的要离开手机之前调用它——最后一道放行问过之后、紧挨着 PUT；
+     * 被拦下、问网关的路上被作废的尝试不会走到这里，标签还能改（复评 R13）。没有为它规划过的文字（升级前的旧文字、用户修订）只入库。
      */
     override suspend fun publicationFor(key: JobKey): Publication
 

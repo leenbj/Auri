@@ -852,6 +852,23 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `复评 R13：看过哈希之后、构造提交之前本机把这条文字删了：停下等用户，一个 PUT 都不发`() = runRig { rig ->
+        val key = rig.publish()
+        var readsAfterProbe = 0
+        // 探测之后第二次问放行（紧挨着 PUT 的最后一道）放行了，同一刻本机的文字没了：先看哈希时还在，构造提交时读不到
+        rig.policy.onRead = {
+            if (rig.server.capabilityCalls.get() > 0 && ++readsAfterProbe == 2) rig.submissions.remove(key)
+        }
+
+        rig.engine.runOnce()
+
+        assertTrue("文字是在最后一道放行时没的", readsAfterProbe >= 2)
+        assertEquals(SyncState.BLOCKED, rig.job(key).state)
+        assertEquals(BlockedReason.LOCAL_DATA_MISSING, rig.job(key).blockedReason)
+        assertTrue("PUT 不能发出去：${rig.lan.delivered.map { it.second.path }}", rig.lan.delivered.none { it.second.method == "PUT" })
+    }
+
+    @Test
     fun `任务表写不进去：不会假装已经开始发送（先落盘后发送）`() = runRig { rig ->
         val key = rig.publish()
         val failing = object : SyncJobStore by rig.jobs {

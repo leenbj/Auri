@@ -278,7 +278,7 @@ MUTATIONS += (
     Mutation(
         "pairing-save-can-be-cancelled",
         "令牌只出现一次：网关签发之后，即使调用方被取消也必须存下来",
-        (Edit(PAIRING, "withContext(NonCancellable) { store.save(gateway) }", "store.save(gateway)"),),
+        (Edit(PAIRING, "            withContext(NonCancellable) {\n                try {\n                    beforeSaving(gateway.identity)\n", "            run {\n                try {\n                    beforeSaving(gateway.identity)\n"),),
         PAIRING_TESTS, "sync/build/test-results/test",
         ("即使调用方被取消，令牌也要存下来",),
     ),
@@ -587,7 +587,7 @@ MUTATIONS += (
     Mutation(
         "engine-local-data-missing-retried",
         "本机没有可发的内容时停下等用户，不无限重试",
-        (Edit(ENGINE, "?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)", "?: return retryLater(key)"),),
+        (Edit(ENGINE, "source.textSha256For(key) ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)", "source.textSha256For(key) ?: return retryLater(key)"),),
         ENGINE_TESTS, SYNC_TEST[0],
         ("本机已经没有这条 Revision",),
     ),
@@ -1151,6 +1151,7 @@ AURI_RUNTIME = "apps/android/app/src/main/kotlin/app/auri/android/AuriRuntime.kt
 SYNC_RUNTIME = "apps/android/syncplatform/src/main/kotlin/app/auri/syncplatform/SyncRuntime.kt"
 RESUME_TESTS = (":sync:test", "--tests", "*ResumePlannerTest*", "--tests", "*ResumeRunnerTest*")
 RESUME_PLANNER = "apps/android/sync/src/main/kotlin/app/auri/sync/resume/ResumePlanner.kt"
+WAKE_GATE = "apps/android/sync/src/main/kotlin/app/auri/sync/resume/WakeGate.kt"  # 复评 R12 之后“去重与登记/取消”在这里，不在规划器里
 RESUME_RUNNER = "apps/android/sync/src/main/kotlin/app/auri/sync/resume/ResumeRunner.kt"
 SYNCPLATFORM_MANIFEST = "apps/android/syncplatform/src/main/AndroidManifest.xml"
 MIC_TESTS = (":platform:testDebugUnitTest", "--tests", "*NoPhoneMicPathTest*")
@@ -1496,21 +1497,21 @@ MUTATIONS += (
     Mutation(
         "resume-planner-reschedules-every-change",
         "结论没变不重复打扰系统（F7）",
-        (Edit(RESUME_PLANNER, ".distinctUntilChanged()", ""),),
+        (Edit(WAKE_GATE, "            if (now != told) {\n", "            if (true) {\n"),),
         RESUME_TESTS, SYNC_TEST[0],
         ("结论没变就不重复打扰系统",),
     ),
     Mutation(
         "resume-planner-never-cancels",
         "没活了要取消叫醒（F7）",
-        (Edit(RESUME_PLANNER, "if (needed) scheduler.ensureScheduled() else scheduler.cancel()", "if (needed) scheduler.ensureScheduled() else Unit"),),
+        (Edit(WAKE_GATE, "if (now) scheduler.ensureScheduled() else scheduler.cancel()", "if (now) scheduler.ensureScheduled() else Unit"),),
         RESUME_TESTS, SYNC_TEST[0],
         ("任务都已入库", "没有任何任务", "跟着变"),
     ),
     Mutation(
         "resume-planner-never-schedules",
         "有活要登记叫醒（F7）",
-        (Edit(RESUME_PLANNER, "if (needed) scheduler.ensureScheduled() else scheduler.cancel()", "if (needed) Unit else scheduler.cancel()"),),
+        (Edit(WAKE_GATE, "if (now) scheduler.ensureScheduled() else scheduler.cancel()", "if (now) Unit else scheduler.cancel()"),),
         RESUME_TESTS, SYNC_TEST[0],
         ("已配对并且有任务没发完", "跟着变"),
     ),
@@ -1858,7 +1859,7 @@ MUTATIONS += (
     Mutation(
         "sync-vm-invalid-qr-silently-ignored",
         "不是配对载荷的二维码要给出 INVALID_QR，不能悄悄没反应",
-        (Edit(VIEWMODEL, "                progress.compareAndSet(current, PairingProgress.Failed(PairingProblem.INVALID_QR))\n", ""),),
+        (Edit(VIEWMODEL, "                progress.compareAndSet(current, PairingProgress.Failed(problem))\n", ""),),
         VM_TESTS, APP_TEST,
         ("不是配对载荷的二维码给出 INVALID_QR",),
     ),

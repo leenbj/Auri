@@ -366,6 +366,26 @@ class SubmissionBuilderTest {
         assertEquals(JsonArray(emptyList()), second)
     }
 
+    @Test
+    fun `复评 R13：只看文字的哈希不问发送账（问发送账就是冻结意图），构造提交才问，而且只问一次`() = runBlocking {
+        val library = InMemoryRecordLibrary()
+        var asked = 0
+        val source = RecordLibrarySubmissionSource(library, builder) { asked += 1; Publication(Intent.CONTEXT, emptyList()) }
+        val entry = Samples.entry(1)
+        library.addRecord(entry)
+        val published = library.publishRevision(Samples.draft(entry.recordId, "第一版"))
+        val key = JobKey(entry.recordId, published.number)
+
+        assertEquals("哈希就是这一版文字的哈希", published.textSha256, source.textSha256For(key))
+        assertEquals("只看哈希没有问发送账：标签没有被冻结", 0, asked)
+        assertNull("没有这条 Record", source.textSha256For(JobKey(Samples.uuid(99), 1)))
+        assertNull("没有这一版", source.textSha256For(JobKey(entry.recordId, 2)))
+        assertEquals(0, asked)
+
+        assertEquals("要发的请求带着同一个哈希", published.textSha256, source.submissionFor(key)!!.textSha256)
+        assertEquals("构造提交问一次发送账", 1, asked)
+    }
+
     // 把合同样本里的值还原成手机本地数据：与真实网关测试共用（testFixtures 里的 FixtureRecords）
     private fun localDataFrom(instance: JsonObject): Pair<RecordEntry, Revision> = FixtureRecords.localDataFrom(instance)
 }

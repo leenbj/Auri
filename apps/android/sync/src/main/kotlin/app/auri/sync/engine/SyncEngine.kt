@@ -293,19 +293,19 @@ class SyncEngine(
         // 合同版本探测也是一次网络往返：回来再问一次放行（复评 R4）；下面的状态查询与 PUT 之前只有本地计算
         if (!mayTransmit(gateway)) return waiting(key, wasUncertain)
 
-        // 网关找到了，请求马上要离开手机：到这一刻才为它构造提交——构造提交就是冻结意图标签（评审 M3）。
-        // 没网、等网关、排队的时候标签都还能改；构造出来的提交带的是冻结的那个值。
-        // 换了网关的话，按旧网关规划的目标在这里（构造之前）先作废：旧网关的 Destination 编号不许进新网关的请求（评审 H2）。
+        // 换了网关的话，按旧网关规划的目标在这里（构造提交之前）先作废：旧网关的 Destination 编号不许进新网关的请求（评审 H2）。
         // 改账要先确认配对着的仍是这一份（复评 R5）：这一轮在网络上等的时候用户若换了网关，它是旧配对的残余，对新配对的账一个字也不许碰
         if (!fenced(gateway) { additions.useGateway(gateway.gatewayId) }) return stale(key)
-        val submission = source.submissionFor(key) ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)
+        // 请求会不会发还没定：这里只看这条文字在不在、哈希是什么。**不构造提交**——构造提交就是冻结意图标签（评审 M3），
+        // 而下面任何一步（问网关、最后一道放行、配对被换）都可能让这次尝试什么也没发就结束，那时用户还想改标签（复评 R13）
+        val textSha256 = source.textSha256For(key) ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)
 
         if (wasUncertain) {
             // 上一次可能已经送到：先问网关。只有网关明确说“已入库”才确认，明确说“没有”才往下重发；问不到就不重发。
             val answer = client.recordStatus(address, gateway.token, key.recordId)
             if (!stillPaired(gateway)) return stale(key)
             when (answer) {
-                is GatewayResult.Success -> when (answer.value.standing(key.revision, submission.textSha256, gateway.deviceId)) {
+                is GatewayResult.Success -> when (answer.value.standing(key.revision, textSha256, gateway.deviceId)) {
                     Standing.SAME_STORED -> {
                         val seen = answer.value.destinations.filter { it.revision == key.revision }.map { it.destinationId }
                         if (!fenced(gateway) { additions.gatewayHas(key, seen) }) return stale(key)
@@ -324,6 +324,9 @@ class SyncEngine(
         // 请求离开手机之前的最后一问（复评 R4）：状态查询的回答在路上时授权可能收回了。这一问紧挨着 PUT，中间只有本地计算；
         // 刚才被收回的，什么都没发出去，退回等待（“不确定”还原成发送之前的样子）
         if (!mayTransmit(gateway)) return waiting(key, wasUncertain)
+        // 请求马上要离开手机：到这一刻才为它构造提交，构造提交就是冻结意图标签（评审 M3、复评 R13）。
+        // 没网、等网关、排队、被最后一道放行拦下、问网关的路上被作废——这些尝试都没走到这里，标签都还能改；构造出来的提交带的是冻结的那个值
+        val submission = source.submissionFor(key) ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)
         val put = client.putRevision(address, gateway.token, submission)
         if (!stillPaired(gateway)) return stale(key)
         return when (put) {

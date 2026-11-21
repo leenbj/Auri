@@ -946,6 +946,42 @@ MUTATIONS: tuple = (
         app_tests("ResumeWiringGuardTest"), APP_RESULTS,
         ("确认预览的路与叫醒规划器共用同一道门",),
     ),
+    # ---- 复评 R13：意图标签只在传输真正开始时冻结（紧挨着 PUT 之前），被拦下或中途作废的尝试不锁标签 ----
+    Mutation(
+        "r13-engine-seals-before-status-query",
+        "复评 R13：回到原来的顺序：先构造提交（冻结意图）、再问网关、再问最后一道放行：问完网关被拦下或配对被换，什么也没发，标签却已经锁死",
+        (Edit(ENGINE, '        val textSha256 = source.textSha256For(key) ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)\n', '        val submission = source.submissionFor(key) ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)\n        val textSha256 = submission.textSha256\n'), Edit(ENGINE, '        val submission = source.submissionFor(key) ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)\n        val put = client.putRevision(address, gateway.token, submission)\n', '        val put = client.putRevision(address, gateway.token, submission)\n')),
+        sync_tests("DispatchEngineTest"), SYNC_RESULTS,
+        ('复评 R13：紧挨着请求的最后一道放行没通过', '复评 R13：结果不确定、从没真正发出去过的任务先问网关', '复评 R13：问网关的路上用户改配了另一个网关'),
+    ),
+    Mutation(
+        "r13-engine-seals-before-final-check",
+        "复评 R13：构造提交（冻结意图）要排在最后一道放行之后：排在前面，授权在这一步收回时请求没发、标签已锁",
+        (Edit(ENGINE, '        val submission = source.submissionFor(key) ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)\n        val put = client.putRevision(address, gateway.token, submission)\n', '        val put = client.putRevision(address, gateway.token, submission)\n'), Edit(ENGINE, '        // 请求离开手机之前的最后一问（复评 R4）：状态查询的回答在路上时授权可能收回了。这一问紧挨着 PUT，中间只有本地计算；\n', '        val submission = source.submissionFor(key) ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)\n        // 请求离开手机之前的最后一问（复评 R4）：状态查询的回答在路上时授权可能收回了。这一问紧挨着 PUT，中间只有本地计算；\n')),
+        sync_tests("DispatchEngineTest"), SYNC_RESULTS,
+        ('复评 R13：紧挨着请求的最后一道放行没通过', '复评 R13：结果不确定、从没真正发出去过的任务先问网关'),
+    ),
+    Mutation(
+        "r13-engine-peeks-through-submission",
+        "复评 R13：先看哈希不能借道构造提交：借道就是冻结，问网关之前标签已锁（哈希本身可以取，只是不能经过会冻结的入口）",
+        (Edit(ENGINE, '        val textSha256 = source.textSha256For(key) ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)\n', '        val textSha256 = source.submissionFor(key)?.textSha256 ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)\n'),),
+        sync_tests("DispatchEngineTest"), SYNC_RESULTS,
+        ('复评 R13：紧挨着请求的最后一道放行没通过', '复评 R13：结果不确定、从没真正发出去过的任务先问网关', '复评 R13：问网关的路上用户改配了另一个网关'),
+    ),
+    Mutation(
+        "r13-source-peek-asks-publications",
+        "复评 R13：只看哈希的入口也去问发送账：问发送账就是冻结意图，“不冻结”的承诺落了空",
+        (Edit(LIBRARY_SOURCE, "        return builder.build(entry, revision)?.textSha256\n", "        return builder.build(entry, revision, publications.publicationFor(key))?.textSha256\n"),),
+        sync_tests("SubmissionBuilderTest", "DispatchEngineTest"), SYNC_RESULTS,
+        ('复评 R13：只看文字的哈希不问发送账', '复评 R13：紧挨着请求的最后一道放行没通过', '复评 R13：结果不确定、从没真正发出去过的任务先问网关', '复评 R13：问网关的路上用户改配了另一个网关'),
+    ),
+    Mutation(
+        "r13-engine-missing-at-seal-retried",
+        "复评 R13：看过哈希之后、构造提交之前本机把文字删了：构造提交读不到就是“本机没有可发的内容”，停下等用户；当成可重试，会无限重试一条永远发不出的文字",
+        (Edit(ENGINE, "        val submission = source.submissionFor(key) ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)\n        val put = client.putRevision(address, gateway.token, submission)\n", "        val submission = source.submissionFor(key) ?: return retryLater(key)\n        val put = client.putRevision(address, gateway.token, submission)\n"),),
+        sync_tests("SyncEngineTest"), SYNC_RESULTS,
+        ("复评 R13：看过哈希之后、构造提交之前本机把这条文字删了",),
+    ),
     Mutation(
         "policy-strict-local-ignored",
         "评审 B1：严格仅本地是统一门禁，压过授权：只看授权就等于开着严格仅本地也照发",
@@ -1306,7 +1342,7 @@ MUTATIONS: tuple = (
     Mutation(
         "h2-engine-does-not-align-before-submission",
         "评审 H2：构造提交之前不对账：旧网关的 Destination 编号进了新网关的请求，被 422 拒绝，文字永远卡在 BLOCKED",
-        (Edit(ENGINE, "        if (!fenced(gateway) { additions.useGateway(gateway.gatewayId) }) return stale(key)\n        val submission = source.submissionFor(key)", "        val submission = source.submissionFor(key)"),),
+        (Edit(ENGINE, "        if (!fenced(gateway) { additions.useGateway(gateway.gatewayId) }) return stale(key)\n", ""),),
         sync_tests("GatewaySwitchTest"), SYNC_RESULTS,
         ("排着的文字不带旧网关的 Destination 编号去新网关",),
     ),

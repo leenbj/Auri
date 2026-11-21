@@ -343,4 +343,100 @@ class DispatchEngineTest {
         assertEquals("action_request", rig.server.putBodies.single().publication().getValue("intent").jsonPrimitive.content)
         assertEquals("开始发送之后就冻结了", IntentResult.Locked, rig.dispatch.setIntent(key, Intent.CONTEXT, rig.clock.now()))
     }
+
+    // ---- 复评 R13：意图只在传输真正开始时冻结，被拦下或中途作废的尝试不锁标签 ----
+
+    /**
+     * 引擎调完 useGateway 之后第一次问放行，就是紧挨着 PUT 的最后一道（复评 R4）：中间只有本地计算与状态查询，它们不读设置。
+     * 不按“第几次读”数——合同探测、追加那一遍都会多读，数法一变测试就偏；这里盯的是引擎自己的一步（换账本）之后的第一次读。
+     */
+    private class RevokeAtTheFinalCheck {
+        private var armed = false
+        var revoked = false
+            private set
+
+        fun wrap(ledger: DispatchStore): DispatchStore = object : DispatchStore by ledger {
+            override suspend fun useGateway(gatewayId: String) {
+                ledger.useGateway(gatewayId)
+                armed = true
+            }
+        }
+
+        fun install(rig: DispatchRig) {
+            armed = false
+            rig.policy.onRead = {
+                if (armed) {
+                    armed = false
+                    revoked = true
+                    rig.policy.setGatewayTextGranted(false)
+                }
+            }
+        }
+    }
+
+    private fun DispatchRig.putsSent() = lan.delivered.count { it.second.method == "PUT" }
+
+    @Test
+    fun `复评 R13：紧挨着请求的最后一道放行没通过：什么都没发，标签还能改；重新放行后网关收到的是改后的标签，发出去之后才冻结`() = runTest {
+        val final = RevokeAtTheFinalCheck()
+        val rig = DispatchRig(this, wrapLedger = final::wrap)
+        rig.createDestination("写作助手", SendMode.AUTO_SEND, setOf(Intent.CONTEXT, Intent.ACTION_REQUEST))
+        val key = rig.transcribed()
+        final.install(rig)
+
+        rig.engine.runOnce()
+
+        assertTrue("授权是在最后一道放行时收回的", final.revoked)
+        assertEquals("PUT 不能发出去", 0, rig.putsSent())
+        assertEquals(SyncState.WAITING_GATEWAY, rig.jobs.get(key)!!.state)
+        assertEquals("请求根本没离开手机：标签还没冻结，用户还能改", IntentResult.Changed, rig.dispatch.setIntent(key, Intent.ACTION_REQUEST, rig.clock.now()))
+
+        rig.policy.onRead = null
+        rig.policy.setGatewayTextGranted(true)
+        rig.engine.runOnce()
+
+        assertEquals("网关收到的是用户在被拦下期间改的那个标签", "action_request", rig.server.putBodies.single().publication().getValue("intent").jsonPrimitive.content)
+        assertEquals("请求发出去了才冻结", IntentResult.Locked, rig.dispatch.setIntent(key, Intent.CONTEXT, rig.clock.now()))
+    }
+
+    @Test
+    fun `复评 R13：结果不确定、从没真正发出去过的任务先问网关，问的这一步不冻结标签；最后一道没放行，标签仍可改`() = runTest {
+        val final = RevokeAtTheFinalCheck()
+        val rig = DispatchRig(this, wrapLedger = final::wrap)
+        rig.createDestination("写作助手", SendMode.AUTO_SEND, setOf(Intent.CONTEXT, Intent.ACTION_REQUEST))
+        val key = rig.transcribed()
+        rig.jobs.update(rig.jobs.get(key)!!.copy(uncertain = true)) // 排队里带着“不确定”：被换配对打断过，请求没有真的发出去
+        final.install(rig)
+
+        rig.engine.runOnce()
+
+        assertTrue("授权是在最后一道放行时收回的", final.revoked)
+        assertTrue("先问过网关", rig.lan.delivered.any { it.second.method == "GET" && it.second.path.endsWith("/status") })
+        assertEquals("问完之后最后一道没放行：PUT 没发", 0, rig.putsSent())
+        assertEquals("问网关不是传输文字：标签不能因此冻结", IntentResult.Changed, rig.dispatch.setIntent(key, Intent.ACTION_REQUEST, rig.clock.now()))
+
+        rig.policy.onRead = null
+        rig.policy.setGatewayTextGranted(true)
+        rig.engine.runOnce()
+
+        assertEquals("action_request", rig.server.putBodies.single().publication().getValue("intent").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `复评 R13：问网关的路上用户改配了另一个网关，这一轮作废：没发 PUT，标签仍可改`() = run { rig ->
+        rig.createDestination("写作助手", SendMode.AUTO_SEND, setOf(Intent.CONTEXT, Intent.ACTION_REQUEST))
+        val key = rig.transcribed()
+        rig.jobs.update(rig.jobs.get(key)!!.copy(uncertain = true))
+        rig.server.onRequest = { request ->
+            if (request.method == "GET" && request.path.endsWith("/status")) {
+                rig.server.onRequest = null
+                rig.repairWithAnotherGateway(grant = false) // 回答还在路上，用户把配对改成了 B
+            }
+        }
+
+        rig.engine.runOnce()
+
+        assertEquals("旧配对的这一轮丢掉：一个 PUT 都没发给 A", 0, rig.server.putCount)
+        assertEquals("作废的尝试没有传输文字：标签不能因此冻结", IntentResult.Changed, rig.dispatch.setIntent(key, Intent.ACTION_REQUEST, rig.clock.now()))
+    }
 }

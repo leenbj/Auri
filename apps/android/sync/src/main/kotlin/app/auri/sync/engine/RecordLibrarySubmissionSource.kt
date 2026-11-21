@@ -1,6 +1,8 @@
 package app.auri.sync.engine
 
+import app.auri.capture.library.RecordEntry
 import app.auri.capture.library.RecordLibrary
+import app.auri.capture.library.Revision
 import app.auri.sync.gateway.Publication
 import app.auri.sync.gateway.RevisionSubmission
 import app.auri.sync.gateway.SubmissionBuilder
@@ -21,6 +23,8 @@ fun interface PublicationSource {
 /**
  * 引擎读“要发的那条 Revision”的地方：本地 Record 库里的这一条，经 [SubmissionBuilder] 组成请求。库里没有或不合规就是 null。
  * publication（意图与目标）每次都经 [publications] 现问；不给就是只入库。
+ *
+ * 问 [publications] 就是冻结意图标签（评审 M3），所以只有 [submissionFor] 问它；[textSha256For] 不问（复评 R13）。
  */
 class RecordLibrarySubmissionSource(
     private val library: RecordLibrary,
@@ -28,8 +32,18 @@ class RecordLibrarySubmissionSource(
     private val publications: PublicationSource = PublicationSource.StoreOnly,
 ) : SubmissionSource {
     override suspend fun submissionFor(key: JobKey): RevisionSubmission? {
+        val (entry, revision) = find(key) ?: return null
+        return builder.build(entry, revision, publications.publicationFor(key))
+    }
+
+    override suspend fun textSha256For(key: JobKey): String? {
+        val (entry, revision) = find(key) ?: return null
+        return builder.build(entry, revision)?.textSha256
+    }
+
+    private suspend fun find(key: JobKey): Pair<RecordEntry, Revision>? {
         val entry = library.get(key.recordId) ?: return null
         val revision = entry.revisions.firstOrNull { it.number == key.revision } ?: return null
-        return builder.build(entry, revision, publications.publicationFor(key))
+        return entry to revision
     }
 }
