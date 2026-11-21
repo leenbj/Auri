@@ -7,9 +7,6 @@ import app.auri.sync.gateway.SendMode
 import app.auri.sync.machine.SyncState
 import app.auri.sync.pairing.GatewayAddress
 import app.auri.sync.testing.DispatchRig
-import app.auri.sync.testing.FakeGateway
-import app.auri.sync.testing.SyncSamples
-import app.auri.sync.testing.TlsFixtures
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -22,17 +19,7 @@ import org.junit.Test
  * 引擎与发送账是真的，两个网关与局域网是假的。
  */
 class GatewaySwitchTest {
-    private val addressB = GatewayAddress("192.168.1.30", 8443)
-
-    /** 把配对换成另一个网关 B（不同的网关编号、公钥、地址；B 上一个 Destination 也没有）。 */
-    private suspend fun DispatchRig.repairWithAnotherGateway(): FakeGateway {
-        val other = FakeGateway(now = clock::now)
-        lan.host(addressB, TlsFixtures.gatewayB) { other.handle(it) }
-        val gatewayB = SyncSamples.pairedGateway(pin = TlsFixtures.gatewayB.pin, addresses = listOf(addressB)).copy(gatewayId = "0f0f0f0f-1bfb-53b3-85a3-4d36b680fe6e")
-        pairing.save(gatewayB)
-        policy.grantTo(gatewayB.identity) // 文字授权是给某个网关的（复评 R3）：这些测试讲的是别的事，所以用户对新配对的 B 随即同意
-        return other
-    }
+    private val addressB = DispatchRig.ADDRESS_B
 
     private fun DispatchRig.requestsTo(address: GatewayAddress): List<String> =
         lan.delivered.filter { it.first == address }.map { (_, request) -> request.body?.toString(Charsets.UTF_8).orEmpty() }

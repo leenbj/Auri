@@ -50,6 +50,11 @@ class FilePairingStore(
         }
     }
 
+    override suspend fun <T : Any> whileCurrent(gateway: PairedGateway, block: suspend () -> T): T? = mutex.withLock {
+        val current = withContext(io) { (read() as? PairingState.Paired)?.gateway }
+        if (current?.isSamePairing(gateway) == true) block() else null
+    }
+
     private fun read(): PairingState {
         if (!file.exists()) return PairingState.NotPaired
         val plain = try {

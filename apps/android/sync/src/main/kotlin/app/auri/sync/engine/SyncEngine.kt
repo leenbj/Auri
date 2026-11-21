@@ -295,8 +295,9 @@ class SyncEngine(
 
         // 网关找到了，请求马上要离开手机：到这一刻才为它构造提交——构造提交就是冻结意图标签（评审 M3）。
         // 没网、等网关、排队的时候标签都还能改；构造出来的提交带的是冻结的那个值。
-        // 换了网关的话，按旧网关规划的目标在这里（构造之前）先作废：旧网关的 Destination 编号不许进新网关的请求（评审 H2）
-        additions.useGateway(gateway.gatewayId)
+        // 换了网关的话，按旧网关规划的目标在这里（构造之前）先作废：旧网关的 Destination 编号不许进新网关的请求（评审 H2）。
+        // 改账要先确认配对着的仍是这一份（复评 R5）：这一轮在网络上等的时候用户若换了网关，它是旧配对的残余，对新配对的账一个字也不许碰
+        if (!fenced(gateway) { additions.useGateway(gateway.gatewayId) }) return stale(key)
         val submission = source.submissionFor(key) ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)
 
         if (wasUncertain) {
@@ -306,7 +307,8 @@ class SyncEngine(
             when (answer) {
                 is GatewayResult.Success -> when (answer.value.standing(key.revision, submission.textSha256, gateway.deviceId)) {
                     Standing.SAME_STORED -> {
-                        additions.gatewayHas(key, answer.value.destinations.filter { it.revision == key.revision }.map { it.destinationId })
+                        val seen = answer.value.destinations.filter { it.revision == key.revision }.map { it.destinationId }
+                        if (!fenced(gateway) { additions.gatewayHas(key, seen) }) return stale(key)
                         return stored(key)
                     }
                     Standing.MISSING -> Unit // 网关没有这一版：往下重新提交
@@ -326,9 +328,9 @@ class SyncEngine(
         if (!stillPaired(gateway)) return stale(key)
         return when (put) {
             is GatewayResult.Success -> {
-                // 先记账再确认入库：进程死在两步之间，下一轮先问网关、同样记账（追加是幂等的，最坏只多一个请求）
-                additions.gatewayHas(key, put.value.deliveries.filter { it.revision == key.revision }.map { it.destinationId })
-                stored(key)
+                // 先记账再确认入库：进程死在两步之间，下一轮先问网关、同样记账（追加是幂等的，最坏只多一个请求）。记账同样要确认还是这一份配对（复评 R5）
+                val created = put.value.deliveries.filter { it.revision == key.revision }.map { it.destinationId }
+                if (fenced(gateway) { additions.gatewayHas(key, created) }) stored(key) else stale(key)
             }
 
             else -> failed(key, gateway, put, wasUncertain)
@@ -446,7 +448,7 @@ class SyncEngine(
     private suspend fun addDeliveries(location: Location) {
         // 这一遍从头到尾对同一个网关说话：先定下它，再对账（换了网关，按旧网关规划的目标作废，评审 H2），再看欠什么
         val gateway = usableGateway()
-        if (gateway != null) additions.useGateway(gateway.gatewayId)
+        if (gateway != null && !fenced(gateway) { additions.useGateway(gateway.gatewayId) }) return // 读到配对之后又换了：旧配对的残余不碰新配对的账（复评 R5）
         val due = additions.due()
         if (due.isEmpty()) {
             resetAdditionsBackoff()
@@ -491,8 +493,12 @@ class SyncEngine(
             val ids = listOf(addition.destinationId)
             when (result) {
                 is GatewayResult.Success -> {
-                    if (result.value.deliveries.any { it.destinationId == addition.destinationId }) additions.gatewayHas(addition.key, ids)
-                    else additions.refused(addition.key, ids, Refusal.NOT_CREATED)
+                    // 记账与“还是这一份配对”的判断在同一把锁里（复评 R5）：不是了就把这一遍丢掉，下一轮对新配对重新算
+                    val recorded = fenced(gateway) {
+                        if (result.value.deliveries.any { it.destinationId == addition.destinationId }) additions.gatewayHas(addition.key, ids)
+                        else additions.refused(addition.key, ids, Refusal.NOT_CREATED)
+                    }
+                    if (!recorded) return
                 }
 
                 is GatewayResult.Garbled -> return additionsRetryLater() // 请求到了、回答读不懂：追加是幂等的，再问一次
@@ -512,7 +518,7 @@ class SyncEngine(
                     }
 
                     result.retryable -> return additionsRetryLater()
-                    else -> additions.refused(addition.key, ids, Refusal.REJECTED)
+                    else -> if (!fenced(gateway) { additions.refused(addition.key, ids, Refusal.REJECTED) }) return
                 }
             }
         }
@@ -567,6 +573,13 @@ class SyncEngine(
      * [DataFlowPolicy.stored] 承诺读不出来就回答“不许”；万一它抛了，外层的 catch 收住，同样什么都不发。没有配对的网关也就没有授权。
      */
     private suspend fun mayTransmit(gateway: PairedGateway?): Boolean = policy.current(gateway?.identity).textMayEnterGateway
+
+    /**
+     * 只在“配对着的仍是 [gateway] 这一份配对”的前提下改发送账里的缓存与目标（复评 R5）。判断与改动在配对存储的同一把锁里，
+     * 所以没有“刚判断完、还没写，用户重新配对了”的缝：一轮同步在网络上等的时候用户换了网关，醒来的这一轮（旧配对的残余）一个字也写不进新配对的账。
+     * 已经不是这一份就什么也不碰、返回 false，调用方把这一轮丢掉。
+     */
+    private suspend fun fenced(gateway: PairedGateway, change: suspend () -> Unit): Boolean = pairing.whileCurrent(gateway, change) != null
 
     /** 配对着的网关，不论连接有没有问题（同意是对它的身份给的，连接要用户处理时也一样）。 */
     private suspend fun pairedGateway(): PairedGateway? = (pairing.load() as? PairingState.Paired)?.gateway

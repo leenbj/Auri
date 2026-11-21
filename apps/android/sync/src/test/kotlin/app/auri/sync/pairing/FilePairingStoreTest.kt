@@ -225,6 +225,62 @@ class FilePairingStoreTest {
         assertEquals("save 排在 update 之后：最终留下的是新记录", fresh, (store.load() as PairingState.Paired).gateway)
     }
 
+    // ---- 复评 R5：在“配对着的仍是这一份”的前提下做事，判断与动作在同一把锁里 ----
+
+    @Test
+    fun `whileCurrent 只在配对着的仍是这一份时执行：换了一份、取消了、记录读不出来、从没配对，都不执行也不报错`() = runBlocking {
+        val store = FilePairingStore(file, box)
+        val first = SyncSamples.pairedGateway(lastGoodAddress = null)
+        val second = SyncSamples.pairedGateway(pairedAt = java.time.Instant.parse("2026-11-18T09:00:00Z")) // 重新配对：新的配对时刻
+        var ran = 0
+
+        assertNull("从没配对", store.whileCurrent(first) { ran++ })
+        store.save(first)
+        assertEquals("就是这一份：执行，并交回它的结果", "做了", store.whileCurrent(first) { ran++; "做了" })
+        store.save(second)
+        assertNull("用户重新配对了：第一份不再是当前的", store.whileCurrent(first) { ran++ })
+        assertEquals("新的这一份是当前的", "做了", store.whileCurrent(second) { ran++; "做了" })
+        file.writeBytes(byteArrayOf(1, 2, 3))
+        assertNull("记录读不出来（丢失）：不能当成还是这一份", store.whileCurrent(second) { ran++ })
+        store.clear()
+        assertNull("取消了配对", store.whileCurrent(second) { ran++ })
+
+        assertEquals("只有“就是这一份”的两次执行了", 2, ran)
+    }
+
+    @Test
+    fun `whileCurrent 持锁期间 save 必须等着：判断与动作之间不会被夹进重新配对`() = runBlocking {
+        val store = FilePairingStore(file, box)
+        val first = SyncSamples.pairedGateway()
+        store.save(first)
+        val second = SyncSamples.pairedGateway(pairedAt = java.time.Instant.parse("2026-11-18T09:00:00Z"))
+        val inside = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val events = java.util.concurrent.CopyOnWriteArrayList<String>()
+
+        val working = async(Dispatchers.IO) {
+            store.whileCurrent(first) {
+                events += "动作开始"
+                inside.complete(Unit)
+                release.await() // 动作还在进行时，用户重新配对了
+                events += "动作结束"
+            }
+        }
+        inside.await()
+        val saving = async(Dispatchers.IO) {
+            store.save(second)
+            events += "新配对已写入"
+        }
+        kotlinx.coroutines.delay(300) // 给 save 足够的机会插队
+        assertEquals("save 必须等着：$events", listOf("动作开始"), events.toList())
+        release.complete(Unit)
+        working.await()
+        saving.await()
+
+        assertEquals(listOf("动作开始", "动作结束", "新配对已写入"), events.toList())
+        assertEquals(second, (store.load() as PairingState.Paired).gateway)
+    }
+
     @Test
     fun `toString 不含令牌、指纹和地址`() {
         val text = gateway.toString()

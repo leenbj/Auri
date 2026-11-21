@@ -193,15 +193,20 @@ class DestinationService(
                     is Connect.Blocked -> return@withLock CredentialOutcome.Failed(connected.failure)
                 }
                 val result = session.client.issueCredential(session.address, session.gateway.token, destinationId)
-                if (!stillPaired(session.gateway)) return@withLock CredentialOutcome.Failed(ServiceFailure.NotPaired)
                 when (result) {
                     is GatewayResult.Success -> {
-                        dispatch.applyDestinations(session.gateway.gatewayId, listOf(known.copy(credentialIssued = true, credentialActive = true)), authoritative = false, now = clock.now())
+                        // 确认还是这一份配对与写缓存在同一把锁里（复评 R5）
+                        pairing.whileCurrent(session.gateway) {
+                            dispatch.applyDestinations(session.gateway.gatewayId, listOf(known.copy(credentialIssued = true, credentialActive = true)), authoritative = false, now = clock.now())
+                        } ?: return@withLock CredentialOutcome.Failed(ServiceFailure.NotPaired)
                         log.event("credential.issued replaced=${result.value.replacedPrevious}")
                         CredentialOutcome.Issued(result.value)
                     }
 
-                    else -> CredentialOutcome.Failed(result.failure()).also { log.event("credential.failed ${result::class.simpleName}") }
+                    else -> {
+                        if (!stillPaired(session.gateway)) return@withLock CredentialOutcome.Failed(ServiceFailure.NotPaired)
+                        CredentialOutcome.Failed(result.failure()).also { log.event("credential.failed ${result::class.simpleName}") }
+                    }
                 }
             }
         } finally {
@@ -334,6 +339,7 @@ class DestinationService(
 
     /**
      * 一次管理操作：连上、发请求、**确认还是同一个配对**之后才把回答写进缓存（请求途中重新配对了，旧网关的回答不能写进新网关的缓存）。
+     * 确认与写缓存在配对存储的同一把锁里（复评 R5）：不会在“刚确认完、还没写”的缝里被重新配对插进来。
      */
     private suspend fun <T> gatewayCall(
         name: String,
@@ -345,15 +351,15 @@ class DestinationService(
             is Connect.Blocked -> return@withLock ServiceResult.Failed(connected.failure)
         }
         val result = request(session)
-        if (!stillPaired(session.gateway)) return@withLock ServiceResult.Failed(ServiceFailure.NotPaired)
         when (result) {
             is GatewayResult.Success -> {
-                apply(session, result.value)
+                pairing.whileCurrent(session.gateway) { apply(session, result.value) } ?: return@withLock ServiceResult.Failed(ServiceFailure.NotPaired)
                 log.event("destination.$name ok")
                 ServiceResult.Ok(result.value)
             }
 
             else -> {
+                if (!stillPaired(session.gateway)) return@withLock ServiceResult.Failed(ServiceFailure.NotPaired)
                 val failure = result.failure()
                 log.event("destination.$name failed ${failure::class.simpleName}")
                 ServiceResult.Failed(failure)

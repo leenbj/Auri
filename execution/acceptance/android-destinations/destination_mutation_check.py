@@ -56,6 +56,8 @@ POLICY = ANDROID + "sync/src/main/kotlin/app/auri/sync/policy/DataFlowPolicy.kt"
 POLICY_SQL = SYNCPLATFORM + "policy/DataFlowPolicySql.kt"
 RESUME_PLANNER = ANDROID + "sync/src/main/kotlin/app/auri/sync/resume/ResumePlanner.kt"
 SYNC_RUNTIME = SYNCPLATFORM + "SyncRuntime.kt"
+PAIRING_FILE_STORE = ANDROID + "sync/src/main/kotlin/app/auri/sync/pairing/FilePairingStore.kt"
+PAIRING_OBSERVABLE = ANDROID + "sync/src/main/kotlin/app/auri/sync/pairing/ObservablePairingStore.kt"
 PAIRING_SERVICE = ANDROID + "sync/src/main/kotlin/app/auri/sync/pairing/PairingService.kt"
 SYNC_STATUS = ANDROID + "sync/src/main/kotlin/app/auri/sync/status/SyncStatus.kt"
 SEND_REVIEW_VM = APP_DEST + "SendReviewViewModel.kt"
@@ -302,8 +304,8 @@ MUTATIONS: tuple = (
         "评审 B2：追加的答复成功但里面没有这个目标，必须记为没有送达，不能假设追加一定建成（否则界面谎称已送出）",
         (Edit(
             ENGINE,
-            "                    if (result.value.deliveries.any { it.destinationId == addition.destinationId }) additions.gatewayHas(addition.key, ids)\n                    else additions.refused(addition.key, ids, Refusal.NOT_CREATED)\n",
-            "                    additions.gatewayHas(addition.key, ids)\n",
+            "                        if (result.value.deliveries.any { it.destinationId == addition.destinationId }) additions.gatewayHas(addition.key, ids)\n                        else additions.refused(addition.key, ids, Refusal.NOT_CREATED)\n",
+            "                        additions.gatewayHas(addition.key, ids)\n",
         ),),
         sync_tests("DispatchEngineTest"), SYNC_RESULTS,
         ("追加答复成功却没有这个目标：记为没有送达，不假设追加一定建成",),
@@ -494,6 +496,117 @@ MUTATIONS: tuple = (
         (Edit(ENGINE, "            if (!mayTransmit(gateway)) return // 请求离开手机之前再问一次放行\n", ""),),
         sync_tests("PolicyAfterResponseTest"), SYNC_RESULTS,
         ("追加：第一个追加请求的回答在路上时授权被收回",),
+    ),
+    # ---- 复评 R5：每次改缓存/目标，都在“配对着的仍是这一份”的围栏里，判断与写账在配对存储的同一把锁里 ----
+    Mutation(
+        "r5-attempt-use-gateway-unfenced",
+        "复评 R5：入库前换账本要在配对围栏里：不围，等定位回答的这一轮醒来时配对已是 B，它会清掉 B 的缓存、删掉 B 那条新文字的目标",
+        (Edit(ENGINE, "        if (!fenced(gateway) { additions.useGateway(gateway.gatewayId) }) return stale(key)\n", "        additions.useGateway(gateway.gatewayId)\n"),),
+        sync_tests("StalePassFenceTest", "PairingFenceAtomicityTest"), SYNC_RESULTS,
+        ("一轮对着网关 A 的同步醒来时配对已经是 B", "引擎在入库之前换账本时"),
+    ),
+    Mutation(
+        "r5-attempt-use-gateway-check-then-write",
+        "复评 R5：围栏必须是同一把锁里的判断加写账，不能是“先看一眼再写”的两步：两步的做法在判断与写账之间留着缝，重新配对能插进去",
+        (Edit(
+            ENGINE,
+            "        if (!fenced(gateway) { additions.useGateway(gateway.gatewayId) }) return stale(key)\n",
+            "        if (!stillPaired(gateway)) return stale(key)\n        additions.useGateway(gateway.gatewayId)\n",
+        ),),
+        sync_tests("PairingFenceAtomicityTest"), SYNC_RESULTS,
+        ("引擎在入库之前换账本时",),
+    ),
+    Mutation(
+        "r5-put-success-record-unfenced",
+        "复评 R5：入库成功后的记账也在围栏里：不围，记账与重新配对可以交错，旧网关的回答落进新配对的账",
+        (Edit(
+            ENGINE,
+            "                if (fenced(gateway) { additions.gatewayHas(key, created) }) stored(key) else stale(key)",
+            "                additions.gatewayHas(key, created)\n                stored(key)",
+        ),),
+        sync_tests("PairingFenceAtomicityTest"), SYNC_RESULTS,
+        ("入库成功后记账时",),
+    ),
+    Mutation(
+        "r5-additions-use-gateway-unfenced",
+        "复评 R5：追加那一遍开始换账本也在围栏里：不围，旧配对读到的网关编号会把新配对的缓存与目标清掉",
+        (Edit(
+            ENGINE,
+            "        if (gateway != null && !fenced(gateway) { additions.useGateway(gateway.gatewayId) }) return // 读到配对之后又换了：旧配对的残余不碰新配对的账（复评 R5）\n",
+            "        if (gateway != null) additions.useGateway(gateway.gatewayId)\n",
+        ),),
+        sync_tests("PairingFenceAtomicityTest"), SYNC_RESULTS,
+        ("追加那一遍开始换账本时",),
+    ),
+    Mutation(
+        "r5-additions-record-unfenced",
+        "复评 R5：追加的回答记账（网关已有 / 不会建）也在围栏里：不围，旧网关对追加的回答会写进新配对的账（接线守卫钉住每一处改账调用都在围栏里）",
+        (Edit(
+            ENGINE,
+            "                    val recorded = fenced(gateway) {\n"
+            "                        if (result.value.deliveries.any { it.destinationId == addition.destinationId }) additions.gatewayHas(addition.key, ids)\n"
+            "                        else additions.refused(addition.key, ids, Refusal.NOT_CREATED)\n"
+            "                    }\n"
+            "                    if (!recorded) return\n",
+            "                    if (result.value.deliveries.any { it.destinationId == addition.destinationId }) additions.gatewayHas(addition.key, ids)\n"
+            "                    else additions.refused(addition.key, ids, Refusal.NOT_CREATED)\n",
+        ),),
+        app_tests("PairingFenceWiringTest"), APP_RESULTS,
+        ("引擎里每一处改缓存与目标的调用",),
+    ),
+    Mutation(
+        "r5-service-apply-unfenced",
+        "复评 R5：管理页读写目的地之后写缓存要在围栏里：不围，请求途中重新配对了，旧网关的回答照样写进新配对的缓存",
+        (Edit(
+            SERVICE,
+            "                pairing.whileCurrent(session.gateway) { apply(session, result.value) } ?: return@withLock ServiceResult.Failed(ServiceFailure.NotPaired)\n",
+            "                apply(session, result.value)\n",
+        ),),
+        sync_tests("PairingFenceAtomicityTest"), SYNC_RESULTS,
+        ("管理页读写目的地之后写缓存时",),
+    ),
+    Mutation(
+        "r5-issue-credential-apply-unfenced",
+        "复评 R5：签发凭证之后写缓存也要在围栏里：不围，换了配对之后旧网关签发的结果写进新配对的缓存（接线守卫）",
+        (Edit(
+            SERVICE,
+            "                        pairing.whileCurrent(session.gateway) {\n"
+            "                            dispatch.applyDestinations(session.gateway.gatewayId, listOf(known.copy(credentialIssued = true, credentialActive = true)), authoritative = false, now = clock.now())\n"
+            "                        } ?: return@withLock CredentialOutcome.Failed(ServiceFailure.NotPaired)\n",
+            "                        dispatch.applyDestinations(session.gateway.gatewayId, listOf(known.copy(credentialIssued = true, credentialActive = true)), authoritative = false, now = clock.now())\n",
+        ),),
+        app_tests("PairingFenceWiringTest"), APP_RESULTS,
+        ("目的地服务里写缓存的两处",),
+    ),
+    Mutation(
+        "r5-file-store-while-current-ignores-pairing",
+        "复评 R5：whileCurrent 只在配对着的仍是这一份时执行：不看配对身份，换了配对（或取消、记录丢了）之后旧配对的残余照样执行",
+        (Edit(PAIRING_FILE_STORE, "        if (current?.isSamePairing(gateway) == true) block() else null\n", "        block()\n"),),
+        sync_tests("FilePairingStoreTest"), SYNC_RESULTS,
+        ("whileCurrent 只在配对着的仍是这一份时执行",),
+    ),
+    Mutation(
+        "r5-file-store-while-current-no-lock",
+        "复评 R5：whileCurrent 的判断与动作在存储的同一把锁里：不持锁，动作进行时重新配对（save）能插进来",
+        (Edit(
+            PAIRING_FILE_STORE,
+            "    override suspend fun <T : Any> whileCurrent(gateway: PairedGateway, block: suspend () -> T): T? = mutex.withLock {",
+            "    override suspend fun <T : Any> whileCurrent(gateway: PairedGateway, block: suspend () -> T): T? = run {",
+        ),),
+        sync_tests("FilePairingStoreTest"), SYNC_RESULTS,
+        ("whileCurrent 持锁期间 save 必须等着",),
+    ),
+    Mutation(
+        "r5-observable-while-current-no-fence",
+        "复评 R5：可观察的外壳转交 whileCurrent 时也不能放掉围栏：先 load 判断、再在锁外执行，就把“判断与动作之间”的缝又开了",
+        (Edit(
+            PAIRING_OBSERVABLE,
+            "    override suspend fun <T : Any> whileCurrent(gateway: PairedGateway, block: suspend () -> T): T? = mutex.withLock { delegate.whileCurrent(gateway, block) }",
+            "    override suspend fun <T : Any> whileCurrent(gateway: PairedGateway, block: suspend () -> T): T? =\n"
+            "        if ((delegate.load() as? PairingState.Paired)?.gateway?.isSamePairing(gateway) == true) block() else null",
+        ),),
+        sync_tests("ObservablePairingStoreTest"), SYNC_RESULTS,
+        ("whileCurrent 经过可观察的外壳也持锁",),
     ),
     Mutation(
         "policy-strict-local-ignored",
@@ -860,14 +973,14 @@ MUTATIONS: tuple = (
     Mutation(
         "h2-engine-does-not-align-before-submission",
         "评审 H2：构造提交之前不对账：旧网关的 Destination 编号进了新网关的请求，被 422 拒绝，文字永远卡在 BLOCKED",
-        (Edit(ENGINE, "        additions.useGateway(gateway.gatewayId)\n        val submission = source.submissionFor(key)", "        val submission = source.submissionFor(key)"),),
+        (Edit(ENGINE, "        if (!fenced(gateway) { additions.useGateway(gateway.gatewayId) }) return stale(key)\n        val submission = source.submissionFor(key)", "        val submission = source.submissionFor(key)"),),
         sync_tests("GatewaySwitchTest"), SYNC_RESULTS,
         ("排着的文字不带旧网关的 Destination 编号去新网关",),
     ),
     Mutation(
         "h2-engine-additions-skip-alignment",
         "评审 H2：追加之前不对账：账上欠着的、给旧网关 Destination 的追加被发给了新网关",
-        (Edit(ENGINE, "        if (gateway != null) additions.useGateway(gateway.gatewayId)\n", ""),),
+        (Edit(ENGINE, "        if (gateway != null && !fenced(gateway) { additions.useGateway(gateway.gatewayId) }) return // 读到配对之后又换了：旧配对的残余不碰新配对的账（复评 R5）\n", ""),),
         sync_tests("GatewaySwitchTest"), SYNC_RESULTS,
         ("旧网关的 Destination 编号不会被追加给新网关",),
     ),

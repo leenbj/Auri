@@ -63,6 +63,15 @@ interface PairingStore {
      */
     suspend fun update(transform: (PairedGateway) -> PairedGateway?): Boolean
 
+    /**
+     * 在配对着的仍是 [gateway] 这一份配对（[isSamePairing]：同一设备、同一配对时刻、同一把公钥）的前提下执行 [block]，返回它的结果；
+     * 已经不是这一份（换了、取消了、没配对、记录丢了）就不执行，返回 null。
+     * 判断与 [block] 在**同一把锁**里：[save]、[update]、[clear] 都等着，所以“刚判断完、还没做，用户重新配对了”这个缝不存在
+     * （复评 R5：旧配对的残余——一轮同步在网络上等的时候用户换了网关——不能改新配对的账）。
+     * [block] 里不许再调用这个存储（同一把锁，会死锁）；它应当很短（一次本地写）。
+     */
+    suspend fun <T : Any> whileCurrent(gateway: PairedGateway, block: suspend () -> T): T?
+
     suspend fun clear()
 }
 
