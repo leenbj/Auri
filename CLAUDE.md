@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `docs/research/asr-candidates.md`：本地转录候选模型核实报告（E1 调研结论与第一轮真机评测名单）。
 - `execution/baseline/README.md`：DEV-001 的基线记录（2026-10-20，开发机与三端工具链状态）。其中“网关主机需公网域名与 TLS”一项已被 ADR-0018 取代。
 - `execution/p0-spikes/{android,harmonyos,ios}-probe/`：三端一次性 P0 探针源码（不是产品代码），当前在对应原生工具链下均**尚未编译**（`ios-probe` 另有 `results/2026-10-20-freeclip2-iphone-air.md` 早期实测记录，新版音量往返停止复测待编译运行；`android-probe` 与 `harmonyos-probe` 尚无真机实测结果）。构建、离线单测、装机、取日志命令见各目录 `README.md` 及下文“命令”一节；实测结论放各自 `results/`，原始日志不入库。
-- `contracts/`：数据合同（当前版本 `1.1`；初始 1.0 由 DEV-002 冻结，1.1 新增三个网关错误码：`GATEWAY_AUTH_INVALID`、`REQUEST_INVALID`、`PAIRING_CODE_INVALID`）。`schemas/` 是 JSON Schema，`fixtures/` 是有效/无效样本、哈希测试向量和四个状态机的转移表与事件序列样本。**字段名、枚举值和状态机规则以这里为准**，说明见 `contracts/README.md`。
+- `contracts/`：数据合同（当前版本 `1.2`；初始 1.0 由 DEV-002 冻结，1.1 新增三个网关错误码：`GATEWAY_AUTH_INVALID`、`REQUEST_INVALID`、`PAIRING_CODE_INVALID`；1.2 随 Ticket 22 再评审 R7 提升：Destination 资源多一个可选字段 `credential_active`、新增给已入库 Revision 追加 Delivery 的端点与两条消息，并写入三条网关规则——撤销最后一条有效凭证 = 暂停、替换凭证的撤销截止点、每个 Tenant 至多 50 个有效 Destination；网关只通告 1.2，手机遇到更旧的网关什么都不发）。`schemas/` 是 JSON Schema，`fixtures/` 是有效/无效样本、哈希测试向量和四个状态机的转移表与事件序列样本。**字段名、枚举值和状态机规则以这里为准**，说明见 `contracts/README.md`。
 - `services/gateway/`：Gateway 服务端代码（Python + 官方 MCP SDK + SQLite，含配对与设备认证、Destination 与凭证管理、Revision 幂等入库、Delivery 状态机与 MCP 租约投递、局域网自签 TLS 与 mDNS 广播，运维说明见 `services/gateway/OPERATIONS.md`）。
 - `tests/`：`tests/contract/`（合同测试）、`tests/integration/`（Gateway 黑盒集成测试）、`tests/security/`（安全与拒收测试），三目录合并执行为 `.venv/bin/pytest tests/contract tests/integration tests/security`；`tests/hardware/`、`tests/asr-benchmarks/` 目前只有 `.gitkeep`。
 - `apps/`、`core/`、`services/asr-proxy/`、`services/dispatcher/`、`packages/` 目前只有 `.gitkeep`。
@@ -46,7 +46,7 @@ PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway revoke-credential -
 PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway delete-device-records --data-dir /tmp/auri-gateway-data --device-id <device_id>
 PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway backup --data-dir /tmp/auri-gateway-data --output /tmp/auri-gateway-backup.tar.gz
 PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway restore --backup /tmp/auri-gateway-backup.tar.gz --data-dir /tmp/auri-gateway-restored
-.venv/bin/pytest tests/contract tests/integration tests/security   # 全部（529 个），约 4 分钟：租约到期测试必须真实等待（合同规定租约最短 10 秒）
+.venv/bin/pytest tests/contract tests/integration tests/security   # 全部（543 个），约 4 分半钟：租约到期测试必须真实等待（合同规定租约最短 10 秒）
 ```
 
 MCP 端点（`/mcp`，Agent 经 Destination 凭证领取并确认投递）使用官方 MCP Python SDK，版本精确锁定在 `services/gateway/requirements.txt`；升级 SDK 后必须重跑全部网关测试。
@@ -166,15 +166,16 @@ cd apps/android
 adb logcat -d -s AuriCapture:I                                                                     # 真机：采集状态、最近一次打断的原因（interrupted=… code=…）与启动恢复计数（orphan recovery: recovered=…），没有文字、路径、标识
 ```
 
-Android 目的地管理与发送方式（Ticket 22，同在 `apps/android/`：`:sync` 的 `destinations/` 是纯 Kotlin/JVM（目的地服务、发送账接口 `DispatchStore`、投递状态映射、本机核验接口 `LocalAuthenticator`），`:syncplatform` 的 `dispatch/`（SQLite 发送账，与 Record 库同库、发布 Revision 的同一个事务）与 `auth/`（`BiometricPrompt` 只认强生物识别）是 Android 实现，`:app` 里是“发送”页（目的地列表与创建、详情、发送审阅、凭证只显示一次且显示时禁截屏、复制 60 秒后清剪贴板）；没有新增网络类与依赖，只多一个 `USE_BIOMETRIC` 权限；文字进网关要用户先授权（默认关，配对不等于同意；“严格仅本地”压过授权）；预览确认只拦 Delivery、不拦文字入库（网关新增 `POST /v1/records/{record_id}/revisions/{revision}/deliveries` 给已入库的 Revision 追加 Delivery，缺口 G13 已关闭）；撤销 Destination 的最后一条有效凭证 = 暂停它（取消排着的投递，签发新凭证才恢复）；一个 Tenant 至多 50 个有效 Destination（网关裁决，第 51 个回 `409 REQUEST_INVALID`）；以上网关改动合同仍是 1.1；步骤、真机流程（`NOT_RUN`）、合同缺口 G14–G17、变异表（132 条）与评审修复轮的结果见 `execution/acceptance/android-destinations/README.md`）：
+Android 目的地管理与发送方式（Ticket 22，同在 `apps/android/`：`:sync` 的 `destinations/` 是纯 Kotlin/JVM（目的地服务、发送账接口 `DispatchStore`、投递状态映射、本机核验接口 `LocalAuthenticator`），`:syncplatform` 的 `dispatch/`（SQLite 发送账，与 Record 库同库、发布 Revision 的同一个事务）与 `auth/`（`BiometricPrompt` 只认强生物识别）是 Android 实现，`:app` 里是“发送”页（目的地列表与创建、详情、发送审阅、凭证只显示一次且显示时禁截屏、复制 60 秒后清剪贴板）；没有新增网络类与依赖，只多一个 `USE_BIOMETRIC` 权限；文字进网关要用户先授权（默认关，配对不等于同意；“严格仅本地”压过授权）；预览确认只拦 Delivery、不拦文字入库（网关新增 `POST /v1/records/{record_id}/revisions/{revision}/deliveries` 给已入库的 Revision 追加 Delivery，缺口 G13 已关闭）；撤销 Destination 的最后一条有效凭证 = 暂停它（取消排着的投递，签发新凭证才恢复）；一个 Tenant 至多 50 个有效 Destination（网关裁决，第 51 个回 `409 REQUEST_INVALID`）；以上网关改动原本不动合同（1.1），再评审 R7 起升到 1.2（网关只通告 1.2；手机联系网关之前先问版本，网关太旧就什么都不发、提示“请先更新网关”，更新后自己恢复；**升级顺序：先升手机应用、再升网关**，旧版手机连新网关会把每条文字永久拒绝）；撤销后签发的替换凭证读不到撤销之前的文字（网关记“撤销截止点”，R1/R2）；文字授权跟着网关身份走（对 A 授权、改配到 B 要重新同意，R3）；引擎里改账的调用都在配对围栏里（R5）；凭证认不出归属绝不清剪贴板、离开应用时才清（R6）；步骤、真机流程（`NOT_RUN`）、合同缺口 G14–G17、变异表（221 条）与两轮评审修复的结果见 `execution/acceptance/android-destinations/README.md`）：
 
 ```bash
 cd apps/android
-./gradlew :sync:test :syncplatform:testDebugUnitTest :app:testDebugUnitTest   # JVM 单测（440 + 105 + 297，含 Ticket 19/21 的），不需要设备；内存紧张时加 --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2，要新鲜结果加 --rerun
+./gradlew :sync:test :syncplatform:testDebugUnitTest :app:testDebugUnitTest   # JVM 单测（511 + 111 + 320，含 Ticket 19/21 的），不需要设备；内存紧张时加 --no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2，要新鲜结果加 --rerun
 ./gradlew :sync:realGatewayTest                                                # 真实 Python 网关 + 官方 MCP 客户端（25 个 = Ticket 21 的 12 + 本票的 13）：两种发送方式创建、凭证只给一次、Agent 经 MCP 领取并确认、预览确认在用户确认前网关上有文字但没有这个 Destination 的 Delivery、撤销凭证 = 暂停、50 个上限
 cd ../..
-AURI_GRADLE_ARGS=--no-daemon .venv/bin/pytest execution/acceptance/android-destinations   # Python 验收工具（457 个；含真实调用 Gradle 的合同输出校验，需要 JAVA_HOME）
-.venv/bin/python execution/acceptance/android-destinations/destination_mutation_check.py --list   # 变异检查（132 条，整表真跑约 1 小时）：机器同 Ticket 21（只改仓库外的快照）；--only <id…> / --match <正则> 选条目，同样读 AURI_GRADLE_ARGS
+.venv/bin/pytest tests/integration/test_revocation_cutoff.py tests/integration/test_contract_version.py   # 撤销截止点（复评 R1/R2，11 个）与合同版本协商（R7，3 个）的网关黑盒测试：真网关进程 + 官方 MCP 客户端，不需要 Gradle
+AURI_GRADLE_ARGS=--no-daemon .venv/bin/pytest execution/acceptance/android-destinations   # Python 验收工具（737 个，其中 686 个是变异表自检；含真实调用 Gradle 的合同输出校验，需要 JAVA_HOME）
+.venv/bin/python execution/acceptance/android-destinations/destination_mutation_check.py --list   # 变异检查（221 条，整表真跑约 2.5 小时，建议分批）：机器同 Ticket 21（只改仓库外的快照）；--only <id…> / --match <正则> 选条目，同样读 AURI_GRADLE_ARGS；`--match '^(r1|r2)-'` 里的 12 条网关一侧条目用 pytest 跑变异后的网关（解释器取仓库 .venv，不走 Gradle）
 AURI_GATEWAY_URL=https://<电脑地址>:8443/mcp AURI_GATEWAY_SPKI_SHA256=<配对时取得的指纹> AURI_DESTINATION_CREDENTIAL=<凭证> .venv/bin/python execution/acceptance/android-destinations/real_gateway_agent.py claim   # 真机验收时在电脑上扮演 Agent（claim | ack <delivery_id> <lease_token> | probe；凭证只经环境变量）
 ```
 
