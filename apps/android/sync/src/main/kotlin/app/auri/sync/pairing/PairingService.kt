@@ -13,6 +13,7 @@ import app.auri.sync.gateway.GatewayResult
 import app.auri.sync.gateway.RedeemResponse
 import app.auri.sync.http.HttpExchangeFactory
 import app.auri.sync.http.TransportFailure
+import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -62,10 +63,13 @@ class PairingService(
     private val device: DeviceInfo,
     /**
      * 配对记录换成 [PairedGateway] 之前调用（复评 R3）：文字授权是给某个网关的，别的网关的授权在这里作废。
-     * 在换记录**之前**作废：反过来的话，两步之间旧网关的授权还挂在新网关身上。它失败了不拦配对（令牌只出现这一次），
-     * 授权在读的时候本来就只对给出它的网关算数，这里只是主动清理。
+     * 在换记录**之前**作废：反过来的话，两步之间旧网关的授权还挂在新网关身上。它失败了不拦配对（令牌只出现这一次）。
+     * 它只是主动清理，安全不靠它一定成功（复评三 S5）：授权记着是在哪一段配对（[GatewayIdentity.pairingEpoch]）里给的，
+     * 换网关、取消配对之后重新配对都会开始新的一段，旧同意对不上，哪怕这一步失败了、A→B→A 之后 A 的旧记录还留着。
      */
     private val beforeSaving: suspend (GatewayIdentity) -> Unit = {},
+    /** 新一段配对的世代（只在需要新世代时才调用）；默认随机，测试可注入固定值。 */
+    private val newEpoch: () -> String = { UUID.randomUUID().toString() },
     private val log: SyncLog = SyncLog.None,
 ) {
     /** 一个地址上兑换的终局：要么拿到了令牌，要么有个必须停下的结论。 */
@@ -108,7 +112,7 @@ class PairingService(
 
     private suspend fun remember(payload: PairingPayload, address: GatewayAddress, response: RedeemResponse): PairingOutcome {
         if (response.gatewayId != payload.gatewayId) return PairingOutcome.WrongGateway
-        val gateway = PairedGateway(
+        val redeemed = PairedGateway(
             gatewayId = response.gatewayId,
             deviceId = response.deviceId,
             pin = payload.publicKeySha256,
@@ -119,13 +123,15 @@ class PairingService(
         )
         return try {
             // 令牌只会出现这一次：网关已经签发，调用方此刻被取消也必须把它存下来
-            withContext(NonCancellable) {
+            val gateway = withContext(NonCancellable) {
+                val stamped = redeemed.copy(pairingEpoch = epochFor(redeemed))
                 try {
-                    beforeSaving(gateway.identity)
+                    beforeSaving(stamped.identity)
                 } catch (failure: Exception) {
                     log.event("pairing.consent-clear-failed ${failure::class.simpleName}")
                 }
-                store.save(gateway)
+                store.save(stamped)
+                stamped
             }
             PairingOutcome.Paired(gateway)
         } catch (cancelled: CancellationException) {
@@ -133,6 +139,21 @@ class PairingService(
         } catch (_: Exception) {
             PairingOutcome.NotSaved
         }
+    }
+
+    /**
+     * 这一段配对的世代（复评三 S5）：现在配对着的恰好是同一台网关（编号与公钥都一样）就沿用它的世代——同一台网关重新配对不用重新同意；
+     * 其余一切情况（换了网关、没配对、取消过、记录读不出来或读取出错）都是新的一段，换新世代：拿不准就当换了，旧同意不跟过来。
+     */
+    private suspend fun epochFor(fresh: PairedGateway): String {
+        val current = try {
+            (store.load() as? PairingState.Paired)?.gateway
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        }
+        return current?.takeIf { it.gatewayId == fresh.gatewayId && it.pin == fresh.pin }?.pairingEpoch ?: newEpoch()
     }
 
     private fun finish(outcome: PairingOutcome): PairingOutcome {

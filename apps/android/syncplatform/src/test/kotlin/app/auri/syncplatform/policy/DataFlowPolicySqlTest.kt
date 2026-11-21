@@ -23,8 +23,9 @@ class DataFlowPolicySqlTest {
     private val gatewayA = GatewayIdentity("fa1b98ec-1bfb-53b3-85a3-4d36b680fe6e", "a".repeat(64))
     private val gatewayB = GatewayIdentity("0f0f0f0f-1bfb-53b3-85a3-4d36b680fe6e", "b".repeat(64))
 
-    /** 一行规规矩矩的 v2 授权（给 [gateway]、时间 [time]）。 */
-    private fun grantRow(gateway: GatewayIdentity = gatewayA, time: String = "2026-11-20T08:00:00Z") = "granted v2 ${gateway.gatewayId} ${gateway.keySha256} $time"
+    /** 一行规规矩矩的 v3 授权（给 [gateway] 的那一段配对、时间 [time]）。 */
+    private fun grantRow(gateway: GatewayIdentity = gatewayA, time: String = "2026-11-20T08:00:00Z") =
+        "granted v3 ${gateway.gatewayId} ${gateway.keySha256} ${gateway.pairingEpoch} $time"
 
     private fun newDb(): JdbcSqlDb {
         val connection = DriverManager.getConnection("jdbc:sqlite::memory:")
@@ -55,7 +56,11 @@ class DataFlowPolicySqlTest {
 
         assertEquals(gatewayA, reopened.grantedTo)
         assertTrue(reopened.viewFor(gatewayA).textMayEnterGateway)
-        assertEquals("授权记录含范围（哪台网关）、版本与时间（SEC-002）", "granted v2 ${gatewayA.gatewayId} ${gatewayA.keySha256} 2026-11-20T08:00:00.123Z", db.row("gateway_text_grant"))
+        assertEquals(
+            "授权记录含范围（哪台网关、哪一段配对）、版本与时间（SEC-002）",
+            "granted v3 ${gatewayA.gatewayId} ${gatewayA.keySha256} ${gatewayA.pairingEpoch} 2026-11-20T08:00:00.123Z",
+            db.row("gateway_text_grant"),
+        )
     }
 
     @Test
@@ -98,11 +103,11 @@ class DataFlowPolicySqlTest {
         policy.grantTo(gatewayA, t0)
         policy.forgetGrantExcept(gatewayA, t0.plusSeconds(60))
         assertEquals("同一台网关重新配对：授权原样保留，连那一行都不重写", gatewayA, policy.read().grantedTo)
-        assertEquals("granted v2 ${gatewayA.gatewayId} ${gatewayA.keySha256} 2026-11-20T08:00:00.123Z", db.row("gateway_text_grant"))
+        assertEquals("granted v3 ${gatewayA.gatewayId} ${gatewayA.keySha256} ${gatewayA.pairingEpoch} 2026-11-20T08:00:00.123Z", db.row("gateway_text_grant"))
 
         policy.forgetGrantExcept(gatewayB, t0.plusSeconds(120))
         assertNull("配到了另一台网关：A 的授权作废", policy.read().grantedTo)
-        assertEquals("作废也留下记录", "revoked v2 2026-11-20T08:02:00.123Z", db.row("gateway_text_grant"))
+        assertEquals("作废也留下记录", "revoked v3 2026-11-20T08:02:00.123Z", db.row("gateway_text_grant"))
 
         policy.grantTo(gatewayB, t0.plusSeconds(180))
         policy.forgetGrantExcept(null, t0.plusSeconds(240))
@@ -121,6 +126,50 @@ class DataFlowPolicySqlTest {
     }
 
     @Test
+    fun `旧版本的授权（v2，不知道是哪一段配对里给的）读起来是没授权，要用户对现在这一段配对重新同意`() {
+        val db = newDb()
+        db.rawPut("gateway_text_grant", "granted v2 ${gatewayA.gatewayId} ${gatewayA.keySha256} 2026-11-20T08:00:00.123Z")
+
+        val stored = DataFlowPolicySql(db).read()
+
+        assertNull(stored.grantedTo)
+        assertFalse(stored.viewFor(gatewayA).textMayEnterGateway)
+    }
+
+    @Test
+    fun `复评三 S5：授权记着是哪一段配对里给的：同一台网关换了一段配对，旧的同意对不上、也不会被清理漏掉的记录带回来`() {
+        val db = newDb()
+        val policy = DataFlowPolicySql(db)
+        val firstSegment = gatewayA.copy(pairingEpoch = "epoch-one")
+        val secondSegment = gatewayA.copy(pairingEpoch = "epoch-two")
+        policy.grantTo(firstSegment, t0)
+
+        val stored = policy.read()
+
+        assertEquals(firstSegment, stored.grantedTo)
+        assertTrue(stored.viewFor(firstSegment).textMayEnterGateway)
+        assertFalse("同一个编号、同一把公钥、另一段配对：同意没给过它", stored.viewFor(secondSegment).textMayEnterGateway)
+
+        policy.forgetGrantExcept(secondSegment, t0.plusSeconds(30))
+        assertNull("清理能跑成时，同一台网关的新一段配对也不留旧同意", policy.read().grantedTo)
+    }
+
+    @Test
+    fun `授权那一行里的世代写得不合规（空白、过长、含非法字符）就当没授权`() {
+        val db = newDb()
+        val policy = DataFlowPolicySql(db)
+        val id = gatewayA.gatewayId
+        val key = gatewayA.keySha256
+        for (epoch in listOf("x".repeat(65), "has/slash", "有中文", "a@b")) {
+            db.rawPut("gateway_text_grant", "granted v3 $id $key $epoch 2026-11-20T08:00:00Z")
+
+            assertNull("世代“$epoch”不合规：整行不能算授权", policy.read().grantedTo)
+        }
+        db.rawPut("gateway_text_grant", "granted v3 $id $key epoch-7f3a_A.1 2026-11-20T08:00:00Z")
+        assertEquals("对照：合规的世代是授权", gatewayA.copy(pairingEpoch = "epoch-7f3a_A.1"), policy.read().grantedTo)
+    }
+
+    @Test
     fun `收回授权：立刻回到不放行（不论原来授权给了谁），收回也留下记录`() {
         val db = newDb()
         val policy = DataFlowPolicySql(db)
@@ -129,7 +178,7 @@ class DataFlowPolicySqlTest {
         policy.revokeGrant(t0.plusSeconds(60))
 
         assertFalse(policy.read().viewFor(gatewayA).textMayEnterGateway)
-        assertEquals("revoked v2 2026-11-20T08:01:00.123Z", db.row("gateway_text_grant"))
+        assertEquals("revoked v3 2026-11-20T08:01:00.123Z", db.row("gateway_text_grant"))
     }
 
     @Test
@@ -147,17 +196,20 @@ class DataFlowPolicySqlTest {
     }
 
     @Test
-    fun `授权的行不是逐字合规就当没授权：别的版本、大小写、缺字段、多字段、编号或指纹写法不对、空、被改坏`() {
+    fun `授权的行不是逐字合规就当没授权：别的版本、大小写、缺字段（含缺世代）、多字段、编号或指纹写法不对、空、被改坏`() {
         val db = newDb()
         val policy = DataFlowPolicySql(db)
         val id = gatewayA.gatewayId
         val key = gatewayA.keySha256
+        val epoch = gatewayA.pairingEpoch
+        val time = "2026-11-20T08:00:00Z"
         val broken = listOf(
-            "granted v3 $id $key 2026-11-20T08:00:00Z", "GRANTED v2 $id $key 2026-11-20T08:00:00Z", "granted v2 $id $key", "granted v2 $id", "granted v2", "granted",
-            "granted v2 $id $key 2026-11-20T08:00:00Z extra", "granted  v2 $id $key 2026-11-20T08:00:00Z",
-            "granted v2 ${id.uppercase()} $key 2026-11-20T08:00:00Z", "granted v2 not-a-uuid $key 2026-11-20T08:00:00Z",
-            "granted v2 $id ${key.uppercase()} 2026-11-20T08:00:00Z", "granted v2 $id ${key.take(63)} 2026-11-20T08:00:00Z", "granted v2 $id ${key}0 2026-11-20T08:00:00Z",
-            "revoked v2 2026-11-20T08:00:00Z", "", "true", "1", "granted v1 2026-11-20T08:00:00Z",
+            "granted v4 $id $key $epoch $time", "GRANTED v3 $id $key $epoch $time", "granted v3 $id $key $epoch", "granted v3 $id $key", "granted v3 $id", "granted v3", "granted",
+            "granted v3 $id $key $epoch $time extra", "granted  v3 $id $key $epoch $time",
+            "granted v3 ${id.uppercase()} $key $epoch $time", "granted v3 not-a-uuid $key $epoch $time",
+            "granted v3 $id ${key.uppercase()} $epoch $time", "granted v3 $id ${key.take(63)} $epoch $time", "granted v3 $id ${key}0 $epoch $time",
+            "granted v3 $id $key $time", "granted v2 $id $key $time",
+            "revoked v3 $time", "", "true", "1", "granted v1 $time",
         )
         for (row in broken) {
             db.rawPut("gateway_text_grant", row)
@@ -185,7 +237,7 @@ class DataFlowPolicySqlTest {
             assertNull("时间“$time”读不懂：整行不能算授权（不确定就是不许）", policy.read().grantedTo)
             assertFalse(policy.read().viewFor(gatewayA).textMayEnterGateway)
         }
-        for (row in listOf("granted v1 nonsense", "granted v2 nonsense", "granted v2 $id nonsense", "granted v2 $id $key nonsense")) {
+        for (row in listOf("granted v1 nonsense", "granted v3 nonsense", "granted v3 $id nonsense", "granted v3 $id $key nonsense", "granted v3 $id $key ${gatewayA.pairingEpoch} nonsense")) {
             db.rawPut("gateway_text_grant", row)
 
             assertNull("“$row” 不能算授权", policy.read().grantedTo)

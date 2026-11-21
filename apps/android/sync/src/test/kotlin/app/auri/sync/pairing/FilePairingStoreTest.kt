@@ -42,6 +42,43 @@ class FilePairingStoreTest {
         assertEquals(NeedsUser.KEY_MISMATCH, loaded.needsUser)
     }
 
+    // ---- 复评三 S5：这一段配对的世代随配对记录一起、一次原子写入落盘 ----
+
+    private val legacyRecord = """{"version":1,"gateway_id":"${SyncSamples.GATEWAY_ID}","device_id":"${SyncSamples.DEVICE_ID}","pin_sha256":"${TlsFixtures.gatewayA.pin.hex}","addresses":[{"host":"192.168.1.20","port":8443}],"last_good_address":null,"token":"${SyncSamples.TOKEN_TEXT}","paired_at":"2026-11-15T02:05:00Z","needs_user":null}"""
+
+    @Test
+    fun `这一段配对的世代随记录落盘，换存储对象（重启）后读回，并且进入文字授权认的身份`() = runBlocking {
+        FilePairingStore(file, box).save(gateway.copy(pairingEpoch = "epoch-7f3a"))
+
+        val loaded = (FilePairingStore(file, box).load() as PairingState.Paired).gateway
+
+        assertEquals("epoch-7f3a", loaded.pairingEpoch)
+        assertEquals(GatewayIdentity(SyncSamples.GATEWAY_ID, TlsFixtures.gatewayA.pin.hex, "epoch-7f3a"), loaded.identity)
+    }
+
+    @Test
+    fun `升级前的记录（没有世代这一项）读成 legacy 世代，其余字段照常；世代写得不合规的记录当作丢失`() = runBlocking {
+        file.writeBytes(box.seal(legacyRecord.toByteArray()))
+        val legacy = (FilePairingStore(file, box).load() as PairingState.Paired).gateway
+        assertEquals(GatewayIdentity.LEGACY_EPOCH, legacy.pairingEpoch)
+        assertEquals(SyncSamples.GATEWAY_ID, legacy.gatewayId)
+
+        for (bad in listOf("", "has space", "x".repeat(65), "含中文")) {
+            file.writeBytes(box.seal(legacyRecord.replace("\"needs_user\":null", "\"needs_user\":null,\"pairing_epoch\":\"$bad\"").toByteArray()))
+            assertEquals("世代不合规：$bad", PairingState.Lost, FilePairingStore(file, box).load())
+        }
+    }
+
+    @Test
+    fun `update 改记录（记最近连上的地址、打标记）时世代原样带着走`() = runBlocking {
+        val store = FilePairingStore(file, box)
+        store.save(gateway.copy(pairingEpoch = "epoch-7f3a", needsUser = null))
+
+        store.update { it.copy(lastGoodAddress = SyncSamples.NAS_ADDRESS) }
+
+        assertEquals("epoch-7f3a", (store.load() as PairingState.Paired).gateway.pairingEpoch)
+    }
+
     @Test
     fun `磁盘上的文件里找不到令牌、指纹、标识、主机名（只有密文）`() = runBlocking {
         FilePairingStore(file, box).save(gateway)

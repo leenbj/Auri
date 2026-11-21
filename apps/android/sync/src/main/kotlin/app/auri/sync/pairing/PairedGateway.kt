@@ -13,15 +13,31 @@ import java.time.Instant
 enum class NeedsUser { KEY_MISMATCH, AUTH_REJECTED, GATEWAY_TOO_OLD }
 
 /**
- * 用户同意把文字发给的那台网关：网关编号加公钥指纹（复评 R3，SEC-002 把同意限定在“指定的网关”上）。
- * 两样都得对：同一个编号换了公钥、同一把公钥换了编号，都是另一台网关，原来的同意对它不算数。
+ * 用户同意把文字发给的那台网关：网关编号加公钥指纹（复评 R3，SEC-002 把同意限定在“指定的网关”上），再加上这一段配对的世代。
+ * 编号与公钥两样都得对：同一个编号换了公钥、同一把公钥换了编号，都是另一台网关，原来的同意对它不算数。
+ *
+ * [pairingEpoch]（复评三 S5）：这一段配对的世代。换成别的网关、取消配对、配对记录丢了之后重新配对，都会开始新的一段，世代换新；
+ * 同一台网关重新配对（中间没换过）沿用原来的。同意记着它是在哪一段配对里给的：就算换配对时的主动清理没跑成，
+ * A→B→A 之后 A 的旧同意也对不上新一段的世代，不会复活——失败时关着（不放行），不靠清理一定成功。
+ * 世代随配对记录一起、一次原子写入落盘（见 FilePairingStore）。升级前的记录没有世代，读成 [LEGACY_EPOCH]。
  */
-data class GatewayIdentity(val gatewayId: String, val keySha256: String) {
+data class GatewayIdentity(val gatewayId: String, val keySha256: String, val pairingEpoch: String = LEGACY_EPOCH) {
     /**
      * 发送账认“Destination 缓存与排着的目标属于哪台网关”的写法（复评三 S4）：编号加公钥指纹，缺一不可。
      * 同一个编号换了公钥是另一台网关（它那里没有 A 的 Destination），缓存与排着的目标都不能沿用。
+     * 不含世代：同一台网关的 Destination 不因为重新配对而变（换了网关再换回来，换网关那一步已经作废过缓存）。
      */
     val ledgerKey: String get() = "$gatewayId $keySha256"
+
+    companion object {
+        /** 升级前写下的配对记录（与那时的授权）没有世代：统一读成这个值。 */
+        const val LEGACY_EPOCH = "legacy"
+
+        private val EPOCH = Regex("^[A-Za-z0-9._-]{1,64}$")
+
+        /** 世代要能原样写进授权那一行（不含空白）：落盘的记录里读到不合规的值，整条记录或整行授权作废。 */
+        fun isValidEpoch(text: String): Boolean = EPOCH.matches(text)
+    }
 }
 
 /** 配对的结果：手机认识的那台网关。整个记录（含令牌、公钥指纹、地址）只以密文落盘，见 FilePairingStore。 */
@@ -36,9 +52,11 @@ data class PairedGateway(
     val token: DeviceToken,
     val pairedAt: Instant,
     val needsUser: NeedsUser? = null,
+    /** 这一段配对的世代（复评三 S5，见 [GatewayIdentity.pairingEpoch]）：只由 PairingService 在配对时定，其余地方只带着它走。 */
+    val pairingEpoch: String = GatewayIdentity.LEGACY_EPOCH,
 ) {
     /** 文字授权按它认人（见 [GatewayIdentity]）。 */
-    val identity: GatewayIdentity get() = GatewayIdentity(gatewayId, pin.hex)
+    val identity: GatewayIdentity get() = GatewayIdentity(gatewayId, pin.hex, pairingEpoch)
 
     /** 是不是同一份配对：同一台设备、同一次配对时刻、同一个固定公钥。用户重新配对、改配别的网关之后就不是了。 */
     fun isSamePairing(other: PairedGateway) = deviceId == other.deviceId && pairedAt == other.pairedAt && pin == other.pin

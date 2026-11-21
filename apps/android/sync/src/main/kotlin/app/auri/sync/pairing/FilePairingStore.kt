@@ -99,6 +99,8 @@ class FilePairingStore(
         val token: String,
         @SerialName("paired_at") val pairedAt: String,
         @SerialName("needs_user") val needsUser: String?,
+        /** 这一段配对的世代（复评三 S5）；升级前的记录没有这一项，读成 [GatewayIdentity.LEGACY_EPOCH]。 */
+        @SerialName("pairing_epoch") val pairingEpoch: String = GatewayIdentity.LEGACY_EPOCH,
     )
 
     @Serializable
@@ -116,6 +118,7 @@ class FilePairingStore(
             token = gateway.token.reveal(),
             pairedAt = gateway.pairedAt.toString(),
             needsUser = gateway.needsUser?.name,
+            pairingEpoch = gateway.pairingEpoch,
         ),
     ).toByteArray(Charsets.UTF_8)
 
@@ -136,13 +139,14 @@ class FilePairingStore(
         if (addresses.isEmpty()) return null
         val lastGood = stored.lastGoodAddress?.let { it.toAddress() ?: return null }
         val needsUser = stored.needsUser?.let { name -> NeedsUser.entries.firstOrNull { it.name == name } ?: return null }
+        if (!GatewayIdentity.isValidEpoch(stored.pairingEpoch)) return null
         if (!Wire.TIMESTAMP.matches(stored.pairedAt)) return null
         val pairedAt = try {
             OffsetDateTime.parse(stored.pairedAt).toInstant()
         } catch (_: DateTimeParseException) {
             return null
         }
-        return PairedGateway(stored.gatewayId, stored.deviceId, pin, addresses, lastGood, token, pairedAt, needsUser)
+        return PairedGateway(stored.gatewayId, stored.deviceId, pin, addresses, lastGood, token, pairedAt, needsUser, stored.pairingEpoch)
     }
 
     private fun StoredAddress.toAddress(): GatewayAddress? =

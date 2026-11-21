@@ -11,8 +11,9 @@ import java.time.Instant
  *
  * 读的规矩是“不确定就是不许”（评审 B1）：
  * - 从没写过 → 用户什么都没设置：不授权、严格仅本地没开（[StoredDataFlow.Unset]）——文字照样不会发。
- * - 授权那一行必须**逐字**是 `granted v2 <网关编号> <公钥指纹> <时间>` 才算授权，授给的就是行里写的那个网关（复评 R3，SEC-002：同意限定在指定的网关上）；
- *   `revoked …`、别的版本号（含 v1：那时授权是全局的，不知道给了谁，读起来是“没授权”）、被改坏的内容都当没授权。
+ * - 授权那一行必须**逐字**是 `granted v3 <网关编号> <公钥指纹> <配对世代> <时间>` 才算授权，授给的就是行里写的那一段配对里的那个网关
+ *   （复评 R3，SEC-002：同意限定在指定的网关上；复评三 S5：再限定在指定的一段配对上，换配对时的清理没跑成也不会让旧同意复活）；
+ *   `revoked …`、别的版本号（含 v1：那时授权是全局的；v2：不知道是哪一段配对里给的——读起来都是“没授权”，要用户重新同意）、被改坏的内容都当没授权。
  *   时间也要逐字合规（复评 R8）：必须是 [grantTo] 写出的那种规范写法（[Instant.toString] 逐字往返），读不懂的时间 = 这一行被改坏了 = 不是授权。
  * - 严格仅本地那一行只有 `off` 才算没开；`on` 和任何读不懂的内容都当开。
  * - 读本身出任何故障（[readOrClosed]）→ [StoredDataFlow.Closed]。
@@ -33,7 +34,7 @@ class DataFlowPolicySql(private val sql: SqlDb) {
 
     /** 同意文字进 [gateway]。只存一份授权：给另一个网关授权，原来的那份就被替换掉。 */
     fun grantTo(gateway: GatewayIdentity, now: Instant) = sql.transaction {
-        put(TEXT_GRANT, "granted $GRANT_VERSION ${gateway.gatewayId} ${gateway.keySha256} $now")
+        put(TEXT_GRANT, "granted $GRANT_VERSION ${gateway.gatewayId} ${gateway.keySha256} ${gateway.pairingEpoch} $now")
     }
 
     /** 收回授权（不论给了谁）。 */
@@ -49,12 +50,16 @@ class DataFlowPolicySql(private val sql: SqlDb) {
 
     private fun revoked(now: Instant) = "revoked $GRANT_VERSION $now"
 
-    /** 这一行授权给了谁；不是一行规规矩矩的 v2 授权就是 null。 */
+    /** 这一行授权给了谁（哪个网关、哪一段配对）；不是一行规规矩矩的 v3 授权就是 null。 */
     private fun grantee(value: String): GatewayIdentity? {
         val parts = value.split(' ')
-        if (parts.size != 5 || parts[0] != "granted" || parts[1] != GRANT_VERSION) return null
-        if (!isCanonicalInstant(parts[4])) return null
-        return GatewayIdentity(parts[2].takeIf { GATEWAY_ID.matches(it) } ?: return null, parts[3].takeIf { KEY_SHA256.matches(it) } ?: return null)
+        if (parts.size != 6 || parts[0] != "granted" || parts[1] != GRANT_VERSION) return null
+        if (!isCanonicalInstant(parts[5])) return null
+        return GatewayIdentity(
+            parts[2].takeIf { GATEWAY_ID.matches(it) } ?: return null,
+            parts[3].takeIf { KEY_SHA256.matches(it) } ?: return null,
+            parts[4].takeIf { GatewayIdentity.isValidEpoch(it) } ?: return null,
+        )
     }
 
     /** 时间必须是 [Instant.toString] 的规范写法：宽松的解析器认下的偏移量、小写、多余的零、闰秒等写法一律不算（读不懂就是被改坏了）。 */
@@ -71,8 +76,11 @@ class DataFlowPolicySql(private val sql: SqlDb) {
     }
 
     companion object {
-        /** 授权所依据的文案/范围的版本。文案或范围变了就升版本：旧版本的授权读起来是“没授权”，要用户重新同意（v2：授权带上了它是给哪个网关的）。 */
-        const val GRANT_VERSION = "v2"
+        /**
+         * 授权所依据的文案/范围的版本。文案或范围变了就升版本：旧版本的授权读起来是“没授权”，要用户重新同意
+         * （v2：授权带上了它是给哪个网关的；v3：再带上是哪一段配对里给的，复评三 S5）。
+         */
+        const val GRANT_VERSION = "v3"
         private val GATEWAY_ID = Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
         private val KEY_SHA256 = Regex("^[0-9a-f]{64}$")
         private const val TEXT_GRANT = "gateway_text_grant"
