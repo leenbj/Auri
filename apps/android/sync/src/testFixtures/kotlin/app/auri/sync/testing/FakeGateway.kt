@@ -161,17 +161,27 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
         }
     }
 
-    suspend fun handle(request: HttpRequest): HttpReply = when {
-        request.method == "GET" && request.path == "/health" -> ScriptedExchange.json(200, """{"status":"ok"}""")
-        request.method == "GET" && request.path == "/v1/capabilities" -> capabilities()
-        request.method == "PUT" && PUT_PATH.matches(request.path) -> put(request)
-        request.method == "POST" && ADDITION_PATH.matches(request.path) -> addDeliveries(request)
-        request.method == "GET" && STATUS_PATH.matches(request.path) -> status(request)
-        request.method == "GET" && request.path == "/v1/destinations" -> listDestinations()
-        request.method == "POST" && request.path == "/v1/destinations" -> createDestination(request)
-        request.method == "DELETE" && DESTINATION_PATH.matches(request.path) -> revokeDestination(DESTINATION_PATH.matchEntire(request.path)!!.groupValues[1])
-        request.method == "POST" && CREDENTIAL_PATH.matches(request.path) -> issueCredential(request, CREDENTIAL_PATH.matchEntire(request.path)!!.groupValues[1])
-        else -> error(404, "REQUEST_INVALID", false)
+    /**
+     * 请求已经到了网关、回答还没发回手机的这一刻调用（每个请求一次，在网关做任何处理之前）。
+     * 测试用它在“回答在路上”的缝里改手机上的设置（例如用户收回授权），让交错是确定的：手机收到回答时，设置已经变了。
+     */
+    @Volatile
+    var onRequest: (suspend (HttpRequest) -> Unit)? = null
+
+    suspend fun handle(request: HttpRequest): HttpReply {
+        onRequest?.invoke(request)
+        return when {
+            request.method == "GET" && request.path == "/health" -> ScriptedExchange.json(200, """{"status":"ok"}""")
+            request.method == "GET" && request.path == "/v1/capabilities" -> capabilities()
+            request.method == "PUT" && PUT_PATH.matches(request.path) -> put(request)
+            request.method == "POST" && ADDITION_PATH.matches(request.path) -> addDeliveries(request)
+            request.method == "GET" && STATUS_PATH.matches(request.path) -> status(request)
+            request.method == "GET" && request.path == "/v1/destinations" -> listDestinations()
+            request.method == "POST" && request.path == "/v1/destinations" -> createDestination(request)
+            request.method == "DELETE" && DESTINATION_PATH.matches(request.path) -> revokeDestination(DESTINATION_PATH.matchEntire(request.path)!!.groupValues[1])
+            request.method == "POST" && CREDENTIAL_PATH.matches(request.path) -> issueCredential(request, CREDENTIAL_PATH.matchEntire(request.path)!!.groupValues[1])
+            else -> error(404, "REQUEST_INVALID", false)
+        }
     }
 
     private fun capabilities(): HttpReply {

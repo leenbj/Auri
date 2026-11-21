@@ -277,6 +277,8 @@ class SyncEngine(
             Located.Unreachable -> return waiting(key, wasUncertain)
             Located.KeyMismatch -> return connectionBlocked(key, gateway, NeedsUser.KEY_MISMATCH, BlockedReason.KEY_MISMATCH, wasUncertain)
         }
+        // 定位网关是一次网络往返，用户可能在这期间收回了授权：每个回答回来之后、下一步之前都重新问一次，收回了就不再发任何请求（复评 R4）
+        if (!mayTransmit(gateway)) return waiting(key, wasUncertain)
         rememberAddress(gateway, address)
 
         // 请求要离开手机了：先确认这台网关说的是手机说的合同版本（评审 R7）。放在构造提交之前——旧网关不该冻结意图标签（评审 M3）
@@ -288,14 +290,14 @@ class SyncEngine(
             ContractAnswer.AUTH_REJECTED -> return connectionBlocked(key, gateway, NeedsUser.AUTH_REJECTED, BlockedReason.AUTH_REJECTED, wasUncertain)
             ContractAnswer.KEY_MISMATCH -> return connectionBlocked(key, gateway, NeedsUser.KEY_MISMATCH, BlockedReason.KEY_MISMATCH, wasUncertain)
         }
+        // 合同版本探测也是一次网络往返：回来再问一次放行（复评 R4）；下面的状态查询与 PUT 之前只有本地计算
+        if (!mayTransmit(gateway)) return waiting(key, wasUncertain)
 
         // 网关找到了，请求马上要离开手机：到这一刻才为它构造提交——构造提交就是冻结意图标签（评审 M3）。
         // 没网、等网关、排队的时候标签都还能改；构造出来的提交带的是冻结的那个值。
         // 换了网关的话，按旧网关规划的目标在这里（构造之前）先作废：旧网关的 Destination 编号不许进新网关的请求（评审 H2）
         additions.useGateway(gateway.gatewayId)
         val submission = source.submissionFor(key) ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)
-        // 请求离开手机之前的最后一问：刚才被收回的，什么都没发出去，退回等待（“不确定”还原成发送之前的样子）
-        if (!mayTransmit(gateway)) return waiting(key, wasUncertain)
 
         if (wasUncertain) {
             // 上一次可能已经送到：先问网关。只有网关明确说“已入库”才确认，明确说“没有”才往下重发；问不到就不重发。
@@ -317,6 +319,9 @@ class SyncEngine(
                 else -> return failed(key, gateway, answer, wasUncertain)
             }
         }
+        // 请求离开手机之前的最后一问（复评 R4）：状态查询的回答在路上时授权可能收回了。这一问紧挨着 PUT，中间只有本地计算；
+        // 刚才被收回的，什么都没发出去，退回等待（“不确定”还原成发送之前的样子）
+        if (!mayTransmit(gateway)) return waiting(key, wasUncertain)
         val put = client.putRevision(address, gateway.token, submission)
         if (!stillPaired(gateway)) return stale(key)
         return when (put) {
@@ -457,6 +462,7 @@ class SyncEngine(
                 return
             }
         }
+        if (!mayTransmit(gateway)) return // 定位网关是一次网络往返：回来再问一次放行（复评 R4）
         rememberAddress(gateway, address)
         val client = GatewayClient(http.forPin(gateway.pin))
         // 追加也是联系网关：先确认版本（旧网关没有这个端点，发过去只会被当成永久拒绝，评审 R7）

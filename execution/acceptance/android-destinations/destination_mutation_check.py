@@ -446,15 +446,54 @@ MUTATIONS: tuple = (
     ),
     Mutation(
         "policy-second-gate-missing",
-        "评审 B1：取到要发的内容之后、真正发出之前还要再问一次放行（中间用户可能收回了授权）：少这一道，收回之后还会发出一个请求",
+        "评审 B1 / 复评 R4：紧挨着 PUT 的最后一问（状态查询的回答在路上时用户可能收回了授权）：少这一道，收回之后还会发出一个 PUT",
         (Edit(
             ENGINE,
-            "        // 请求离开手机之前的最后一问：刚才被收回的，什么都没发出去，退回等待（“不确定”还原成发送之前的样子）\n"
+            "        // 请求离开手机之前的最后一问（复评 R4）：状态查询的回答在路上时授权可能收回了。这一问紧挨着 PUT，中间只有本地计算；\n"
+            "        // 刚才被收回的，什么都没发出去，退回等待（“不确定”还原成发送之前的样子）\n"
             "        if (!mayTransmit(gateway)) return waiting(key, wasUncertain)\n",
             "",
         ),),
-        sync_tests("DataFlowGateTest"), SYNC_RESULTS,
-        ("联系过网关、取到要发的内容之后、请求发出之前授权被收回",),
+        sync_tests("DataFlowGateTest", "PolicyAfterResponseTest"), SYNC_RESULTS,
+        ("联系过网关、合同版本探测之后、紧挨着请求发出的最后一道", "问网关结果的回答在路上时授权被收回"),
+    ),
+    Mutation(
+        "r4-no-gate-after-locating",
+        "复评 R4：定位网关是一次网络往返，回来之后要再问一次放行：少这一道，往返期间收回授权之后，合同版本探测照发",
+        (Edit(
+            ENGINE,
+            "        // 定位网关是一次网络往返，用户可能在这期间收回了授权：每个回答回来之后、下一步之前都重新问一次，收回了就不再发任何请求（复评 R4）\n"
+            "        if (!mayTransmit(gateway)) return waiting(key, wasUncertain)\n",
+            "",
+        ),),
+        sync_tests("PolicyAfterResponseTest"), SYNC_RESULTS,
+        ("定位网关的回答在路上时授权被收回：不再发合同版本探测",),
+    ),
+    Mutation(
+        "r4-no-gate-after-contract-probe",
+        "复评 R4：合同版本探测也是网络往返，回来之后要再问一次放行：少这一道，往返期间收回授权之后，结果不确定的任务照样去问状态",
+        (Edit(
+            ENGINE,
+            "        // 合同版本探测也是一次网络往返：回来再问一次放行（复评 R4）；下面的状态查询与 PUT 之前只有本地计算\n"
+            "        if (!mayTransmit(gateway)) return waiting(key, wasUncertain)\n",
+            "",
+        ),),
+        sync_tests("PolicyAfterResponseTest"), SYNC_RESULTS,
+        ("合同版本探测的回答在路上时授权被收回",),
+    ),
+    Mutation(
+        "r4-additions-no-gate-after-locating",
+        "复评 R4：追加那一遍里定位网关回来之后也要再问一次放行：少这一道，收回授权之后合同版本探测照发",
+        (Edit(ENGINE, "        if (!mayTransmit(gateway)) return // 定位网关是一次网络往返：回来再问一次放行（复评 R4）\n", ""),),
+        sync_tests("PolicyAfterResponseTest"), SYNC_RESULTS,
+        ("追加：定位网关的回答在路上时授权被收回",),
+    ),
+    Mutation(
+        "r4-additions-no-gate-before-each-request",
+        "复评 R4：每一个追加请求之前都要问一次放行（前一个的回答在路上时用户可能收回了授权）：少这一道，收回之后后面的追加照发",
+        (Edit(ENGINE, "            if (!mayTransmit(gateway)) return // 请求离开手机之前再问一次放行\n", ""),),
+        sync_tests("PolicyAfterResponseTest"), SYNC_RESULTS,
+        ("追加：第一个追加请求的回答在路上时授权被收回",),
     ),
     Mutation(
         "policy-strict-local-ignored",

@@ -173,17 +173,17 @@ class DataFlowGateTest {
     }
 
     @Test
-    fun `联系过网关、取到要发的内容之后、请求发出之前授权被收回：PUT 没发出去，任务退回等待，不确定的标记不变`() = runRig(InMemoryGranted) { rig ->
+    fun `联系过网关、合同版本探测之后、紧挨着请求发出的最后一道：授权被收回，PUT 没发出去，任务退回等待，不确定的标记不变`() = runRig(InMemoryGranted) { rig ->
         val key = rig.publish()
-        // SEND_STARTED 之后第一次问（联系网关之前）还放行；第二次问（取到要发的内容之后、请求发出之前）看到的是已经收回的授权
-        var readsAfterStarted = 0
+        // 合同版本探测完成之后第一次问（构造提交之前）还放行；第二次问（紧挨着 PUT 的最后一道，复评 R4）看到的是已经收回的授权
+        var readsAfterProbe = 0
         rig.policy.onRead = {
-            if (rig.decisionsFor(key).any { it.event == SyncEvent.SEND_STARTED } && ++readsAfterStarted == 2) rig.policy.setGatewayTextGranted(false)
+            if (rig.server.capabilityCalls.get() > 0 && ++readsAfterProbe == 2) rig.policy.setGatewayTextGranted(false)
         }
 
         rig.engine.runOnce()
 
-        assertEquals("联系网关之前那一道放行了，之后这一道才拦的", 2, readsAfterStarted)
+        assertEquals("探测之后第一道放行了，紧挨着 PUT 的最后一道才拦的", 2, readsAfterProbe)
         assertTrue("PUT 不能发出去：${rig.lan.delivered.map { it.second.path }}", rig.lan.delivered.none { it.second.method == "PUT" })
         assertTrue("网关不该收到任何入库调用：${rig.server.calls}", rig.server.calls.isEmpty())
         val job: SyncJob = rig.job(key)
