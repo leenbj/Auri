@@ -81,4 +81,11 @@ fun interface SubmissionSource {
      * 默认实现经 [submissionFor]：没有副作用的来源（测试里的 lambda）这样就够；[submissionFor] 有副作用的实现必须覆盖它。
      */
     suspend fun textSha256For(key: JobKey): String? = submissionFor(key)?.textSha256
+
+    /**
+     * [submissionFor] 冻结了意图标签、而请求最终没有离开手机（再评 S3：构造提交挂着的时候授权被收回；再评 S9：连不上、握手没成）——
+     * 把冻结放开，用户还能改标签。**只有引擎确定这是第一次尝试（之前没有任何一次可能送出过）时才调用**；
+     * 上一次可能已经送到的，网关上可能已经有那个标签，冻结必须留着。默认什么也不做（没有冻结的来源）。
+     */
+    suspend fun unfreezeUnsent(key: JobKey) = Unit
 }

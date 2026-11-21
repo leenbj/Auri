@@ -61,6 +61,10 @@ class JdbcDispatchStore(private val sql: JdbcSqlDb, private val signal: MutableS
 
     override suspend fun publicationFor(key: JobKey): Publication = write { publicationFor(key) }
 
+    override suspend fun unfreezeUnsent(key: JobKey) {
+        if (logic.unfreezeUnsent(key)) signal.value += 1
+    }
+
     override suspend fun due(): List<DeliveryAddition> = logic.due()
 
     override suspend fun gatewayHas(key: JobKey, destinationIds: Collection<String>) = write { gatewayHas(key, destinationIds) }

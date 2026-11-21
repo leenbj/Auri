@@ -128,6 +128,11 @@ class DispatchSql(private val sql: SqlDb) {
         Publication(item.intent, item.targets.filter { it.willReceive }.take(Publication.MAX_DESTINATIONS).map { it.destinationId })
     }
 
+    /** 放开 [publicationFor] 的冻结（请求没有离开手机）：只动还冻着的那一行；之后用户又能改标签，下一次构造提交带的是改后的。 */
+    fun unfreezeUnsent(key: JobKey): Boolean = sql.transaction {
+        sql.update("UPDATE dispatch_items SET intent_locked = 0 WHERE record_id = ? AND revision = ? AND intent_locked = 1", key.recordId, key.revision) > 0
+    }
+
     /** 已入库的 Revision 上还欠的 Delivery：目标会收到它、账上网关还没有它、没被拒绝过；目的地不在了或不接收这个意图的不算。最早的在前。 */
     fun due(): List<DeliveryAddition> {
         val known = destinationsById()

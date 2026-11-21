@@ -126,6 +126,14 @@ class InMemoryDispatchStore(private val disk: InMemoryDispatchDisk) : DispatchSt
         Publication(item.intent, ids)
     }
 
+    override suspend fun unfreezeUnsent(key: JobKey) = disk.lock.withLock {
+        val item = disk.items[key]
+        if (item != null && item.intentLocked) {
+            item.intentLocked = false
+            bump()
+        }
+    }
+
     override suspend fun due(): List<DeliveryAddition> = disk.lock.withLock {
         disk.items.entries.sortedBy { it.value.order }.flatMap { (key, item) ->
             if (jobs.get(key)?.state != SyncState.STORED) return@flatMap emptyList()

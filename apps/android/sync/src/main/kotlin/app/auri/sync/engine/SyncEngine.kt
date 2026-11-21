@@ -74,6 +74,8 @@ enum class SendResult {
  * - **没放行就一个字节也不发**（评审 B1）：配对只说明手机认得这台网关，不说明用户同意把文字送过去。每个可能联系网关的地方——
  *   一轮同步的开头、探测、一条任务开始发送之前、请求离开手机之前——先问 [DataFlowPolicy]；没授权、开着严格仅本地、读不出来，
  *   一律什么都不做（连探测、连 mDNS 都不去问）。请求离开之前才被收回的，退回等待网关，不留“可能已送到”的标记。
+ *   问放行与请求交出去之间不留缝（再评 S3）：每次问放行记下授权设置的世代，每个请求交给 HTTP 客户端的前一刻再比一次（[Permit.gated]），
+ *   中间有人动过设置（构造提交挂着、换账本、记地址时用户收回了授权）就什么都不发；第一次尝试里构造提交冻结了标签的，请求没发出去就放开冻结。
  * - **文字入库与 Delivery 各管各的**（评审 B2）：同步任务只管把 Revision 送进网关，不等任何人的决定；预览确认的 Destination 在用户确认之后才有 Delivery，
  *   由每一轮同步的最后一步 [addDeliveries] 向网关给这个**已入库的** Revision 追加（网关上幂等）。追加不改任务的状态：失败只影响它自己，按有界退避重来
  *   （[additionsRetryAt] 给 SyncLoop 排计时）；永久拒绝的记进发送账、不再重试。网关回答“有了”才记下，进程在任何一步被杀，下一轮都能从账里重新算出还欠哪些。
@@ -272,28 +274,32 @@ class SyncEngine(
         if (started?.outcome != Outcome.TRANSITION) return SendResult.SKIPPED
         val wasUncertain = before.uncertain
 
-        // 落盘之后、联系网关之前再问一次放行：刚才被收回的，连网关都不去碰，退回等待（“不确定”还原成发送之前的样子）
-        if (!mayTransmit(gateway)) return waiting(gateway, key, wasUncertain)
-        val address = when (val located = location.get(gateway)) {
+        // 落盘之后、联系网关之前再问一次放行：刚才被收回的，连网关都不去碰，退回等待（“不确定”还原成发送之前的样子）。
+        // 每次问放行得到一张 Permit（记着问之前的世代，再评 S3）；每个请求交出去的前一刻 gated 再比一次，问与发之间有人动过设置就不发
+        var permit = permitFor(gateway) ?: return waiting(gateway, key, wasUncertain)
+        val located = permit.gated { location.get(gateway) } ?: return waiting(gateway, key, wasUncertain)
+        val address = when (located) {
             is Located.Reachable -> located.address
             Located.Unreachable -> return waiting(gateway, key, wasUncertain)
             Located.KeyMismatch -> return connectionBlocked(key, gateway, NeedsUser.KEY_MISMATCH, BlockedReason.KEY_MISMATCH, wasUncertain)
         }
         // 定位网关是一次网络往返，用户可能在这期间收回了授权：每个回答回来之后、下一步之前都重新问一次，收回了就不再发任何请求（复评 R4）
-        if (!mayTransmit(gateway)) return waiting(gateway, key, wasUncertain)
+        permit = permitFor(gateway) ?: return waiting(gateway, key, wasUncertain)
         rememberAddress(gateway, address)
 
         // 请求要离开手机了：先确认这台网关说的是手机说的合同版本（评审 R7）。放在构造提交之前——旧网关不该冻结意图标签（评审 M3）
         val client = GatewayClient(http.forPin(gateway.pin))
-        when (contract.check(gateway, address, client)) {
+        val verdict = permit.gated { contract.check(gateway, address, client) } ?: return waiting(gateway, key, wasUncertain)
+        when (verdict) {
             ContractAnswer.COMPATIBLE -> Unit
             ContractAnswer.TOO_OLD -> return tooOld(key, gateway, wasUncertain)
             ContractAnswer.UNCONFIRMED -> return waiting(gateway, key, wasUncertain)
             ContractAnswer.AUTH_REJECTED -> return connectionBlocked(key, gateway, NeedsUser.AUTH_REJECTED, BlockedReason.AUTH_REJECTED, wasUncertain)
             ContractAnswer.KEY_MISMATCH -> return connectionBlocked(key, gateway, NeedsUser.KEY_MISMATCH, BlockedReason.KEY_MISMATCH, wasUncertain)
         }
-        // 合同版本探测也是一次网络往返：回来再问一次放行（复评 R4）；下面的状态查询与 PUT 之前只有本地计算
-        if (!mayTransmit(gateway)) return waiting(gateway, key, wasUncertain)
+        // 合同版本探测也是一次网络往返：回来再问一次放行（复评 R4）；下面的状态查询与 PUT 之前只有本地操作，它们挂着的时候授权也可能被收回：
+        // 所以状态查询、PUT 交出去的前一刻都用这张 Permit 再比一次世代（再评 S3）
+        permit = permitFor(gateway) ?: return waiting(gateway, key, wasUncertain)
 
         // 换了网关的话，按旧网关规划的目标在这里（构造提交之前）先作废：旧网关的 Destination 编号不许进新网关的请求（评审 H2）。
         // 改账要先确认配对着的仍是这一份（复评 R5）：这一轮在网络上等的时候用户若换了网关，它是旧配对的残余，对新配对的账一个字也不许碰
@@ -306,7 +312,7 @@ class SyncEngine(
             // 上一次可能已经送到：先问网关。只有网关明确说“已入库”才确认，明确说“没有”才往下重发；问不到就不重发。
             // 回答不在这里单独判断“还是不是这份配对”：下面每一种结论都经 settle，判断与落账在配对存储的同一把锁里（再评 S2）；
             // 往下发 PUT 的那一路则在冻结意图的围栏里判断
-            val answer = client.recordStatus(address, gateway.token, key.recordId)
+            val answer = permit.gated { client.recordStatus(address, gateway.token, key.recordId) } ?: return waiting(gateway, key, wasUncertain)
             when (answer) {
                 is GatewayResult.Success -> when (answer.value.standing(key.revision, textSha256, gateway.deviceId)) {
                     Standing.SAME_STORED -> return stored(gateway, key, answer.value.destinations.filter { it.revision == key.revision }.map { it.destinationId })
@@ -320,15 +326,18 @@ class SyncEngine(
                 else -> return failed(key, gateway, answer, wasUncertain)
             }
         }
-        // 请求离开手机之前的最后一问（复评 R4）：状态查询的回答在路上时授权可能收回了。这一问紧挨着 PUT，中间只有本地计算；
+        // 请求离开手机之前的最后一问（复评 R4）：状态查询的回答在路上时授权可能收回了。
         // 刚才被收回的，什么都没发出去，退回等待（“不确定”还原成发送之前的样子）
-        if (!mayTransmit(gateway)) return waiting(gateway, key, wasUncertain)
+        permit = permitFor(gateway) ?: return waiting(gateway, key, wasUncertain)
         // 请求马上要离开手机：到这一刻才为它构造提交，构造提交就是冻结意图标签（评审 M3、复评 R13）。
         // 没网、等网关、排队、被最后一道放行拦下、问网关的路上被作废——这些尝试都没走到这里，标签都还能改；构造出来的提交带的是冻结的那个值。
         // 冻结是写账，和别的写账一样在围栏里（再评 S2）：判断“还是这一份配对”与冻结在配对存储的同一把锁里，旧配对的残余尝试不会在改配之后去冻结
         val built = pairing.whileCurrent(gateway) { Built(source.submissionFor(key)) } ?: return stale(key)
         val submission = built.submission ?: return blocked(gateway, key, BlockedReason.LOCAL_DATA_MISSING)
-        val put = client.putRevision(address, gateway.token, submission)
+        // 构造提交是一次本地数据库操作，会挂起：上面那一问是在它之前，挂着的时候授权被收回的话，这里比出来世代变了——PUT 不发（再评 S3）。
+        // 第一次尝试（之前没有任何一次可能送出过）：请求既然没离开手机，刚冻结的标签放开；上一次可能已经送到的，网关上也许已经有那个标签，冻结不放
+        val put = permit.gated { client.putRevision(address, gateway.token, submission) }
+            ?: return waiting(gateway, key, wasUncertain, releaseIntent = !wasUncertain)
         return when (put) {
             is GatewayResult.Success -> stored(gateway, key, put.value.deliveries.filter { it.revision == key.revision }.map { it.destinationId })
             else -> failed(key, gateway, put, wasUncertain)
@@ -379,8 +388,13 @@ class SyncEngine(
         return SendResult.RETRY_LATER
     }
 
-    /** 请求没有离开手机（连不上）：“不确定”回到发送之前的样子。 */
-    private suspend fun waiting(gateway: PairedGateway, key: JobKey, wasUncertain: Boolean): SendResult = settle(gateway, key) {
+    /**
+     * 请求没有离开手机（连不上、被放行拦下）：“不确定”回到发送之前的样子。
+     * [releaseIntent]：这次尝试构造提交时冻结了标签、请求却没发出去——放开冻结（[SubmissionSource.unfreezeUnsent]），
+     * 与任务的转移在同一个围栏里：旧配对的残余尝试不会在改配之后去动账。只有第一次尝试可以放开（之前没有任何一次可能送出过）。
+     */
+    private suspend fun waiting(gateway: PairedGateway, key: JobKey, wasUncertain: Boolean, releaseIntent: Boolean = false): SendResult = settle(gateway, key) {
+        if (releaseIntent) source.unfreezeUnsent(key)
         deliver(key, SyncEvent.GATEWAY_UNREACHABLE) { it.copy(uncertain = wasUncertain) }
         SendResult.WAITING_GATEWAY
     }
@@ -471,9 +485,11 @@ class SyncEngine(
             resetAdditionsBackoff()
             return
         }
-        if (offline || !mayTransmit(gateway)) return // 断网期间不探测：网络回来时 SyncLoop 会再跑一轮
+        if (offline) return // 断网期间不探测：网络回来时 SyncLoop 会再跑一轮
+        var permit = permitFor(gateway) ?: return
         if (gateway == null) return
-        val address = when (val located = location.get(gateway)) {
+        val located = permit.gated { location.get(gateway) } ?: return
+        val address = when (located) {
             is Located.Reachable -> located.address
             Located.Unreachable -> return additionsRetryLater()
             Located.KeyMismatch -> {
@@ -481,11 +497,11 @@ class SyncEngine(
                 return
             }
         }
-        if (!mayTransmit(gateway)) return // 定位网关是一次网络往返：回来再问一次放行（复评 R4）
+        permit = permitFor(gateway) ?: return // 定位网关是一次网络往返：回来再问一次放行（复评 R4）
         rememberAddress(gateway, address)
         val client = GatewayClient(http.forPin(gateway.pin))
         // 追加也是联系网关：先确认版本（旧网关没有这个端点，发过去只会被当成永久拒绝，评审 R7）
-        when (contract.check(gateway, address, client)) {
+        when (permit.gated { contract.check(gateway, address, client) } ?: return) {
             ContractAnswer.COMPATIBLE -> Unit
             ContractAnswer.TOO_OLD -> {
                 pairing.markGatewayTooOld(gateway)
@@ -504,8 +520,8 @@ class SyncEngine(
             }
         }
         for (addition in due) {
-            if (!mayTransmit(gateway)) return // 请求离开手机之前再问一次放行
-            val result = client.addDeliveries(address, gateway.token, addition.key.recordId, addition.key.revision, addition.intent, listOf(addition.destinationId))
+            permit = permitFor(gateway) ?: return // 请求离开手机之前再问一次放行
+            val result = permit.gated { client.addDeliveries(address, gateway.token, addition.key.recordId, addition.key.revision, addition.intent, listOf(addition.destinationId)) } ?: return
             if (!stillPaired(gateway)) return // 途中换了配对：这个结果对新配对没有意义，下一轮对新配对重新算
             val ids = listOf(addition.destinationId)
             when (result) {
@@ -555,8 +571,16 @@ class SyncEngine(
      */
     private suspend fun healContract(location: Location) {
         val gateway = (pairing.load() as? PairingState.Paired)?.gateway?.takeIf { it.needsUser == NeedsUser.GATEWAY_TOO_OLD } ?: return
-        val answer = when (val located = location.get(gateway)) {
-            is Located.Reachable -> contract.check(gateway, located.address, GatewayClient(http.forPin(gateway.pin)))
+        // 探一次也是联系网关（定位、问能力各一个请求）：和发送一样，每个请求之前问放行并在交出去的前一刻比世代（再评 S3）；
+        // 没放行就不探，标记原样留着，下一轮再来
+        var permit = permitFor(gateway) ?: return
+        val located = permit.gated { location.get(gateway) } ?: return
+        val answer = when (located) {
+            is Located.Reachable -> {
+                permit = permitFor(gateway) ?: return // 定位是一次网络往返：回来再问一次放行
+                permit.gated { contract.check(gateway, located.address, GatewayClient(http.forPin(gateway.pin))) } ?: return
+            }
+
             Located.Unreachable -> ContractAnswer.UNCONFIRMED
             Located.KeyMismatch -> ContractAnswer.KEY_MISMATCH
         }
@@ -570,10 +594,10 @@ class SyncEngine(
 
     private suspend fun probe(location: Location) {
         val gateway = usableGateway() ?: return
-        if (!mayTransmit(gateway)) return // 探测本身就是一次联系
+        val permit = permitFor(gateway) ?: return // 探测本身就是一次联系
         val waiting = jobs.all().filter { it.state == SyncState.WAITING_GATEWAY }
         if (waiting.isEmpty()) return
-        when (location.get(gateway)) {
+        when (permit.gated { location.get(gateway) } ?: return) {
             // 公钥不符也算“有人应答”：让下一次发送在“发送中”撞上它，按状态机报 KEY_MISMATCH（此时没有任何带令牌的请求发出）
             is Located.Reachable, Located.KeyMismatch -> waiting.forEach { deliver(it.key, SyncEvent.GATEWAY_REACHABLE) }
             Located.Unreachable -> Unit
@@ -590,6 +614,22 @@ class SyncEngine(
      * [DataFlowPolicy.stored] 承诺读不出来就回答“不许”；万一它抛了，外层的 catch 收住，同样什么都不发。没有配对的网关也就没有授权。
      */
     private suspend fun mayTransmit(gateway: PairedGateway?): Boolean = policy.current(gateway?.identity).textMayEnterGateway
+
+    /**
+     * 一张放行（再评 S3）：记着问放行**之前**的授权世代。问放行是一次挂起的读，问完到请求交给 HTTP 客户端之间还有别的本地操作
+     * （构造提交、换账本、记地址），授权随时可能在这中间被收回——“问完就算”留下的就是这条缝。
+     * [gated] 在请求交出去的前一刻再比一次世代：变过就一个请求也不发（返回 null），调用方退回等待，下一轮重新问。
+     * 世代只管“还没交出去”的请求：已经交给客户端的（连接、握手在路上），收回授权召不回来。
+     */
+    private inner class Permit(private val generation: Long) {
+        suspend fun <T : Any> gated(request: suspend () -> T): T? = if (policy.generation == generation) request() else null
+    }
+
+    /** 文字可以进 [gateway] 吗？可以就给一张 [Permit]，不可以是 null。世代在问之前记下：问的过程中有人改了设置，世代就与这一张不同。 */
+    private suspend fun permitFor(gateway: PairedGateway?): Permit? {
+        val generation = policy.generation
+        return if (mayTransmit(gateway)) Permit(generation) else null
+    }
 
     /**
      * 只在“配对着的仍是 [gateway] 这一份配对”的前提下改发送账里的缓存与目标（复评 R5）。判断与改动在配对存储的同一把锁里，

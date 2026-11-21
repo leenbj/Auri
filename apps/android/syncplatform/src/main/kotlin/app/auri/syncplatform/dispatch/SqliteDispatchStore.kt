@@ -66,6 +66,11 @@ class SqliteDispatchStore(private val library: SqliteRecordLibrary) : DispatchSt
     /** 构造提交就是冻结意图（界面上的标签随之锁住），所以要发变化信号。 */
     override suspend fun publicationFor(key: JobKey): Publication = write { publicationFor(key) }
 
+    /** 请求没有离开手机、放开冻结：界面上的标签随之又能改，所以要发变化信号（没有冻着的什么都没改，不发）。 */
+    override suspend fun unfreezeUnsent(key: JobKey) {
+        if (read { unfreezeUnsent(key) }) ownChanges.value += 1
+    }
+
     override suspend fun due(): List<DeliveryAddition> = read { due() }
 
     override suspend fun gatewayHas(key: JobKey, destinationIds: Collection<String>) = write { gatewayHas(key, destinationIds) }

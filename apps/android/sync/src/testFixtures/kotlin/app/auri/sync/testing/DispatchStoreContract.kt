@@ -366,6 +366,42 @@ abstract class DispatchStoreContract {
     }
 
     @Test
+    fun unfreezing_an_unsent_submission_lets_the_user_change_the_intent_again_and_the_next_submission_carries_it() = runBlocking {
+        val fixture = newFixture()
+        fixture.know(destination(auto, SendMode.AUTO_SEND, setOf(Intent.CONTEXT, Intent.ACTION_REQUEST)))
+        fixture.publish(keyA, RevisionSource.ASR, t0)
+        fixture.store.publicationFor(keyA) // 构造提交：冻结
+        assertEquals(IntentResult.Locked, fixture.store.setIntent(keyA, Intent.ACTION_REQUEST, t0))
+
+        fixture.store.unfreezeUnsent(keyA) // 请求最终没有离开手机（再评 S3、S9）
+
+        assertFalse("请求没有离开手机：冻结放开", fixture.store.item(keyA)!!.intentLocked)
+        assertEquals(IntentResult.Changed, fixture.store.setIntent(keyA, Intent.ACTION_REQUEST, t0))
+        assertEquals("下一次构造提交带的是改后的标签", Publication(Intent.ACTION_REQUEST, listOf(auto)), fixture.store.publicationFor(keyA))
+        assertTrue("请求真的要发了才又冻结", fixture.store.item(keyA)!!.intentLocked)
+        assertEquals(IntentResult.Locked, fixture.store.setIntent(keyA, Intent.CONTEXT, t0))
+    }
+
+    @Test
+    fun unfreezing_touches_nothing_but_the_freeze_and_ignores_an_unfrozen_or_unknown_item() = runBlocking {
+        val fixture = newFixture()
+        fixture.know(destination(auto, SendMode.AUTO_SEND, setOf(Intent.CONTEXT, Intent.ACTION_REQUEST)), destination(preview, SendMode.PREVIEW_CONFIRM, createdAt = t0.plusSeconds(1)))
+        fixture.publish(keyA, RevisionSource.ASR, t0)
+        val untouched = fixture.store.item(keyA)!!
+
+        fixture.store.unfreezeUnsent(keyA) // 还没冻结
+        fixture.store.unfreezeUnsent(keyB) // 没有这条文字
+
+        assertEquals("没冻结的什么都不动", untouched, fixture.store.item(keyA))
+        assertNull(fixture.store.item(keyB))
+
+        fixture.store.publicationFor(keyA)
+        fixture.store.unfreezeUnsent(keyA)
+
+        assertEquals("放开的只有冻结：意图、每个目标的决定与账都原样", untouched, fixture.store.item(keyA))
+    }
+
+    @Test
     fun an_item_whose_text_is_already_registered_for_sync_can_still_change_its_intent_before_the_first_send() = runBlocking {
         val fixture = newFixture()
         fixture.know(destination(auto, SendMode.AUTO_SEND, setOf(Intent.CONTEXT, Intent.ACTION_REQUEST)))

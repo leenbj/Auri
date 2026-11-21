@@ -3,6 +3,7 @@ package app.auri.sync.testing
 import app.auri.sync.pairing.GatewayIdentity
 import app.auri.sync.policy.DataFlowPolicy
 import app.auri.sync.policy.DataFlowState
+import app.auri.sync.policy.PolicyGeneration
 import app.auri.sync.policy.StoredDataFlow
 import app.auri.sync.policy.current
 import app.auri.sync.policy.states
@@ -51,20 +52,25 @@ class InMemoryDataFlowPolicy(
 
     override fun storedStates(): Flow<StoredDataFlow> = state.map { if (unreadable) StoredDataFlow.Closed else it }
 
+    private val generations = PolicyGeneration()
+
+    override val generation: Long get() = generations.value
+
+    // 和真实实现一样：每次改动前后世代各加一（见 PolicyGeneration）
     override suspend fun grantTo(gateway: GatewayIdentity) {
-        state.value = state.value.copy(grantedTo = gateway)
+        generations.around<Unit> { state.value = state.value.copy(grantedTo = gateway) }
     }
 
     override suspend fun revokeGrant() {
-        state.value = state.value.copy(grantedTo = null)
+        generations.around<Unit> { state.value = state.value.copy(grantedTo = null) }
     }
 
     override suspend fun forgetGrantExcept(gateway: GatewayIdentity?) {
-        if (state.value.grantedTo != gateway) state.value = state.value.copy(grantedTo = null)
+        generations.around<Unit> { if (state.value.grantedTo != gateway) state.value = state.value.copy(grantedTo = null) }
     }
 
     override suspend fun setStrictLocal(on: Boolean) {
-        state.value = state.value.copy(strictLocal = on)
+        generations.around<Unit> { state.value = state.value.copy(strictLocal = on) }
     }
 
     /** 方便测试：用户对 [gateway]（开关指的网关）打开或收回授权。 */

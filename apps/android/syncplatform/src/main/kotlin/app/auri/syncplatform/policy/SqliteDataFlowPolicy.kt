@@ -4,6 +4,7 @@ import app.auri.capture.coordinator.Clock
 import app.auri.platform.library.SqliteRecordLibrary
 import app.auri.sync.pairing.GatewayIdentity
 import app.auri.sync.policy.DataFlowPolicy
+import app.auri.sync.policy.PolicyGeneration
 import app.auri.sync.policy.StoredDataFlow
 import app.auri.sync.policy.recoveringStoredStates
 import app.auri.syncplatform.dispatch.AndroidSqlDb
@@ -50,8 +51,23 @@ class SqliteDataFlowPolicy(private val library: SqliteRecordLibrary, private val
 
     override suspend fun setStrictLocal(on: Boolean) = write { setStrictLocal(on) }
 
+    /**
+     * 世代（再评 S3）：开始写之前加一；写完（成败都算）在**数据库线程上、紧接着写**再加一——之后任何读（问放行也是读，走同一条连接）都排在它后面，
+     * 所以“读到收回之后的设置”与“世代变过”不会错开；不放在回到调用方之后，那里隔着一次调度。
+     */
+    private val generations = PolicyGeneration()
+
+    override val generation: Long get() = generations.value
+
     private suspend fun write(change: DataFlowPolicySql.() -> Unit) {
-        library.withDatabase { db -> DataFlowPolicySql(AndroidSqlDb(db)).change() }
+        generations.changing()
+        library.withDatabase { db ->
+            try {
+                DataFlowPolicySql(AndroidSqlDb(db)).change()
+            } finally {
+                generations.changed()
+            }
+        }
         changes.value += 1
     }
 }

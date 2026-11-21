@@ -152,6 +152,13 @@ interface DispatchStore : PublicationSource, DeliveryAdditions {
      */
     override suspend fun publicationFor(key: JobKey): Publication
 
+    /**
+     * 放开 [publicationFor] 做的冻结（再评 S3、S9）：构造提交时标签冻结了，可请求最终没有离开手机——被最后一道放行拦下、连不上网关——用户还该能改。
+     * 只放开一条还冻着的；没冻结的、没有这条文字的什么也不做。**调用方负责保证“网关上不可能已经有这个标签”**（引擎只在第一次尝试时调用）：
+     * 这里放开了，之后再构造提交带的就是用户改后的标签。
+     */
+    override suspend fun unfreezeUnsent(key: JobKey)
+
     /** 新录出来的文字用的意图标签；用户可以在录音前改。默认 [Intent.CONTEXT]（备忘）。 */
     suspend fun defaultIntent(): Intent
 

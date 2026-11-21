@@ -14,6 +14,9 @@ import app.auri.sync.gateway.SubmissionBuilder
 fun interface PublicationSource {
     suspend fun publicationFor(key: JobKey): Publication
 
+    /** [publicationFor] 冻结了标签、请求却没有离开手机：放开冻结（见 [SubmissionSource.unfreezeUnsent]）。没有冻结的来源什么也不做。 */
+    suspend fun unfreezeUnsent(key: JobKey) = Unit
+
     companion object {
         /** 只入库、不投递：Ticket 21 的行为，也是没有接发送账时的样子。 */
         val StoreOnly = PublicationSource { Publication.StoreOnly }
@@ -40,6 +43,8 @@ class RecordLibrarySubmissionSource(
         val (entry, revision) = find(key) ?: return null
         return builder.build(entry, revision)?.textSha256
     }
+
+    override suspend fun unfreezeUnsent(key: JobKey) = publications.unfreezeUnsent(key)
 
     private suspend fun find(key: JobKey): Pair<RecordEntry, Revision>? {
         val entry = library.get(key.recordId) ?: return null

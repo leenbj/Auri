@@ -49,6 +49,12 @@ data class StoredDataFlow(val grantedTo: GatewayIdentity?, val strictLocal: Bool
 /** 持久化的两道开关加上改它们的入口。引擎在每一次可能发请求的地方先问它（见 SyncEngine，问的是“对我要联系的这个网关”）。 */
 interface DataFlowPolicy {
     /**
+     * 设置的世代（再评 S3，见 [PolicyGeneration]）：每次改设置开始前与落定后各加一，读它不挂起。
+     * 引擎问放行之前先记下它、请求交给 HTTP 客户端的前一刻再比一次：变过就什么都不发。实现必须保证“改了设置之后再读到的世代一定变过”。
+     */
+    val generation: Long
+
+    /**
      * 存档现在的样子。**读取出任何故障都按 [StoredDataFlow.Closed] 回答，绝不抛出、绝不当成放行**。
      */
     suspend fun stored(): StoredDataFlow
