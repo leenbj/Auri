@@ -399,6 +399,29 @@ def _suspended_destination_ids(conn: Any, tenant_id: str, destination_ids: list[
     return {row["destination_id"] for row in rows}
 
 
+def _past_cutoff_destination_ids(
+    conn: Any, tenant_id: str, destination_ids: list[str], stored_at: str
+) -> set[str]:
+    """Which of these Destinations have a revocation cutoff at or after `stored_at` (Ticket 22 re-review R2).
+
+    A text stored by then is invisible to the Destination's Agent for good (`AFTER_REVOCATION_CUTOFF`), so no
+    Delivery is created for it: a PENDING row nobody can ever claim would only make the phone's status say
+    "stored". Like a suspended Destination it is skipped, not refused, so the other targets of the request still get theirs.
+    """
+    if not destination_ids:
+        return set()
+    placeholders = ", ".join("?" for _ in destination_ids)
+    rows = conn.execute(
+        f"""
+        SELECT destination_id FROM destinations
+        WHERE tenant_id = ? AND destination_id IN ({placeholders})
+          AND revocation_cutoff IS NOT NULL AND revocation_cutoff >= ?
+        """,
+        (tenant_id, *destination_ids, stored_at),
+    ).fetchall()
+    return {row["destination_id"] for row in rows}
+
+
 def _validate_publication_destinations(
     conn: Any, tenant_id: str, destination_ids: list[str], intent: str
 ) -> None:
@@ -650,6 +673,7 @@ def store_revision(
             _validate_publication_destinations(conn, tenant_id, destination_ids, publication["intent"])
             # 暂停的 Destination（凭证被撤销、还没签发新的）不建 Delivery，也不让整条文字被拒：手机可能还不知道
             suspended = _suspended_destination_ids(conn, tenant_id, destination_ids)
+            suspended |= _past_cutoff_destination_ids(conn, tenant_id, destination_ids, now_iso)
             destination_ids = [dest_id for dest_id in destination_ids if dest_id not in suspended]
 
             prior_published = conn.execute(
@@ -808,7 +832,7 @@ def add_revision_deliveries(
                 )
             stored = conn.execute(
                 """
-                SELECT 1 FROM revisions
+                SELECT stored_at FROM revisions
                 WHERE tenant_id = ? AND record_id = ? AND revision = ?
                 """,
                 (tenant_id, record_id, revision),
@@ -835,6 +859,8 @@ def add_revision_deliveries(
             _validate_publication_destinations(conn, tenant_id, missing, intent)
             # 暂停的 Destination（凭证被撤销、还没签发新的）不建，也不让整个请求失败：回答里没有它
             suspended = _suspended_destination_ids(conn, tenant_id, missing)
+            # 撤销截止点（再评审 R2）：撤销之前入库的文字，替换凭证永远看不到，延迟到达的追加也不为它建 Delivery
+            suspended |= _past_cutoff_destination_ids(conn, tenant_id, missing, stored["stored_at"])
             missing = [dest_id for dest_id in missing if dest_id not in suspended]
 
             higher_exists = (
