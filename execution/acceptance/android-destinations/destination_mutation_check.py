@@ -54,6 +54,8 @@ BIOMETRIC_GATE = SYNCPLATFORM + "auth/BiometricGate.kt"
 ENGINE = SYNC_ENGINE + "SyncEngine.kt"
 POLICY = ANDROID + "sync/src/main/kotlin/app/auri/sync/policy/DataFlowPolicy.kt"
 POLICY_SQL = SYNCPLATFORM + "policy/DataFlowPolicySql.kt"
+SQLITE_POLICY = SYNCPLATFORM + "policy/SqliteDataFlowPolicy.kt"
+STORED_STATES = ANDROID + "sync/src/main/kotlin/app/auri/sync/policy/StoredStatesRecovery.kt"
 RESUME_PLANNER = ANDROID + "sync/src/main/kotlin/app/auri/sync/resume/ResumePlanner.kt"
 SYNC_RUNTIME = SYNCPLATFORM + "SyncRuntime.kt"
 PAIRING_FILE_STORE = ANDROID + "sync/src/main/kotlin/app/auri/sync/pairing/FilePairingStore.kt"
@@ -706,6 +708,83 @@ MUTATIONS: tuple = (
         (Edit(POLICY_SQL, "        Instant.parse(text).toString() == text\n", "        Instant.parse(text).toString() == text && text.length == 20\n"),),
         platform_tests("DataFlowPolicySqlTest"), PLATFORM_RESULTS,
         ("复评 R8：严格不等于误伤",),
+    ),
+    # ---- 复评 R9：存档读失败时先关门（Closed），之后按退避重试，读到了发出真实值（不能永远停在 Closed 上） ----
+    Mutation(
+        "r9-sqlite-states-no-recovery",
+        "复评 R9：SqliteDataFlowPolicy 的存档变化流要走恢复算子：改回“每次变动读一次、失败就停在 Closed”，一次暂时的数据库故障之后引擎与界面永远不许发（接线守卫）",
+        (
+            Edit(SQLITE_POLICY, "changes.recoveringStoredStates(::readOrNull).distinctUntilChanged()", "changes.map { stored() }.distinctUntilChanged()"),
+            Edit(SQLITE_POLICY, "import kotlinx.coroutines.flow.distinctUntilChanged\n", "import kotlinx.coroutines.flow.distinctUntilChanged\nimport kotlinx.coroutines.flow.map\n"),
+        ),
+        app_tests("StoredStatesWiringTest"), APP_RESULTS,
+        ("SqliteDataFlowPolicy 的存档变化流走恢复算子",),
+    ),
+    Mutation(
+        "r9-sqlite-read-closes-before-operator",
+        "复评 R9：读失败要让算子看得见（null）：在读里先吞成 Closed，算子分不清“真的最保守”与“暂时读不到”，就不会重试",
+        (Edit(SQLITE_POLICY, "DataFlowPolicySql(AndroidSqlDb(db)).read() }\n    } catch (cancelled: CancellationException) {\n        throw cancelled\n    } catch (_: Exception) {\n        null\n", "DataFlowPolicySql(AndroidSqlDb(db)).readOrClosed() }\n    } catch (cancelled: CancellationException) {\n        throw cancelled\n    } catch (_: Exception) {\n        null\n"),),
+        app_tests("StoredStatesWiringTest"), APP_RESULTS,
+        ("SqliteDataFlowPolicy 的存档变化流走恢复算子",),
+    ),
+    Mutation(
+        "r9-sqlite-read-swallows-cancellation",
+        "复评 R9：读失败的捕获不能吞掉取消：吞了，收集者取消之后读还当成“数据库故障”继续重试",
+        (Edit(SQLITE_POLICY, "DataFlowPolicySql(AndroidSqlDb(db)).read() }\n    } catch (cancelled: CancellationException) {\n        throw cancelled\n    } catch (_: Exception) {\n        null\n", "DataFlowPolicySql(AndroidSqlDb(db)).read() }\n    } catch (_: Exception) {\n        null\n"),),
+        app_tests("StoredStatesWiringTest"), APP_RESULTS,
+        ("SqliteDataFlowPolicy 的存档变化流走恢复算子",),
+    ),
+    Mutation(
+        "r9-operator-no-retry",
+        "复评 R9：读不出来要一直按退避重试到读到为止：只试一轮，数据库好了也没有任何东西再触发读，授权好好存着却永远发不出去（原来的缺陷）",
+        (Edit(STORED_STATES, "        while (true) {\n", "        repeat(1) {\n"),),
+        sync_tests("StoredStatesRecoveryTest"), SYNC_RESULTS,
+        ("读不出来：先立刻回答 Closed，再按", "评审说的那个缺口"),
+    ),
+    Mutation(
+        "r9-operator-no-closed-on-failure",
+        "复评 R9：读不出来的当下就要回答 Closed（不确定就是不许）：不发，引擎与界面沿用故障前的旧答案，授权已被撤销也照发（fail-open）",
+        (Edit(STORED_STATES, "            if (failures == 0) send(StoredDataFlow.Closed)\n", ""),),
+        sync_tests("StoredStatesRecoveryTest"), SYNC_RESULTS,
+        ("读不出来：先立刻回答 Closed，再按", "评审说的那个缺口", "故障期间又来了新的变动"),
+    ),
+    Mutation(
+        "r9-operator-closed-after-first-delay",
+        "复评 R9：Closed 要在读失败的那一刻发，不能等第一次退避之后才发：这段时间里旧答案仍然放行",
+        (
+            Edit(STORED_STATES, "            if (failures == 0) send(StoredDataFlow.Closed)\n            delay(", "            delay("),
+            Edit(STORED_STATES, "            failures += 1\n", "            if (failures == 0) send(StoredDataFlow.Closed)\n            failures += 1\n"),
+        ),
+        sync_tests("StoredStatesRecoveryTest"), SYNC_RESULTS,
+        ("读不出来：先立刻回答 Closed，再按",),
+    ),
+    Mutation(
+        "r9-operator-closed-on-every-failure",
+        "复评 R9：读不出来期间只发一次 Closed：每次重试失败都再发一次，下游每次都被唤醒、重复重算",
+        (Edit(STORED_STATES, "            if (failures == 0) send(StoredDataFlow.Closed)\n", "            send(StoredDataFlow.Closed)\n"),),
+        sync_tests("StoredStatesRecoveryTest"), SYNC_RESULTS,
+        ("读不出来：先立刻回答 Closed，再按",),
+    ),
+    Mutation(
+        "r9-operator-backoff-no-cap",
+        "复评 R9：退避要有 30 秒的封顶：不封顶会翻倍到几分钟、几小时，数据库早就好了还不去读",
+        (Edit(STORED_STATES, "delay((STORED_STATES_RETRY_BASE_MS shl failures.coerceAtMost(MAX_DOUBLINGS)).coerceAtMost(STORED_STATES_RETRY_MAX_MS))", "delay((STORED_STATES_RETRY_BASE_MS shl failures.coerceAtMost(MAX_DOUBLINGS)))"),),
+        sync_tests("StoredStatesRecoveryTest"), SYNC_RESULTS,
+        ("读不出来：先立刻回答 Closed，再按",),
+    ),
+    Mutation(
+        "r9-operator-backoff-constant",
+        "复评 R9：退避要翻倍：恒定 2 秒会在数据库长时间故障时每 2 秒打一次盘",
+        (Edit(STORED_STATES, "delay((STORED_STATES_RETRY_BASE_MS shl failures.coerceAtMost(MAX_DOUBLINGS)).coerceAtMost(STORED_STATES_RETRY_MAX_MS))", "delay(STORED_STATES_RETRY_BASE_MS)"),),
+        sync_tests("StoredStatesRecoveryTest"), SYNC_RESULTS,
+        ("读不出来：先立刻回答 Closed，再按",),
+    ),
+    Mutation(
+        "r9-operator-not-latest",
+        "复评 R9：新的变动要打断旧的重试、立刻重读：不打断，新变动被挡在重试后面，用户刚改的设置要等旧的退避走完才生效",
+        (Edit(STORED_STATES, "    collectLatest {\n", "    collect {\n"), Edit(STORED_STATES, "return@collectLatest", "return@collect")),
+        sync_tests("StoredStatesRecoveryTest"), SYNC_RESULTS,
+        ("故障期间又来了新的变动",),
     ),
     Mutation(
         "policy-strict-local-ignored",
