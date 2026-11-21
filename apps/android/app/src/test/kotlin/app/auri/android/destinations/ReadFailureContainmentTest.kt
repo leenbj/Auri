@@ -15,9 +15,11 @@ import app.auri.capture.testing.FakeTranscriptionAdapter
 import app.auri.capture.testing.InMemoryRecordLibrary
 import app.auri.capture.testing.SequentialIds
 import app.auri.platform.control.ScreenControlAdapter
+import app.auri.sync.destinations.DestinationController
 import app.auri.sync.destinations.DestinationService
 import app.auri.sync.destinations.DispatchItem
 import app.auri.sync.destinations.DispatchStore
+import app.auri.sync.destinations.ItemDelivery
 import app.auri.sync.discovery.GatewayLocator
 import app.auri.sync.gateway.Destination
 import app.auri.sync.gateway.Intent
@@ -32,6 +34,8 @@ import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -232,6 +236,48 @@ class ReadFailureContainmentTest {
         assertFalse(viewModel.state.value.unreadable)
         assertTrue(viewModel.state.value.loaded)
         assertEquals("写作助手", viewModel.state.value.destination?.name)
+    }
+
+    /** 记下详情页读了几次“这个目的地上的文字各自的情形”，其余原样交给真的服务。 */
+    private class CountingController(private val inner: DestinationController) : DestinationController by inner {
+        val deliveryReads = AtomicInteger()
+
+        override suspend fun deliveries(destinationId: String, limit: Int): List<ItemDelivery> {
+            deliveryReads.incrementAndGet()
+            return inner.deliveries(destinationId, limit)
+        }
+    }
+
+    @Test
+    fun `复评 R11：详情页的“本机之外的变化”流（同步状态）暂时出故障：错误不逃出作用域，也不是从此再也不刷新，恢复后它一发值就重读状态`() = runTest {
+        val rig = DispatchRig(this)
+        val destination = rig.createDestination("写作助手", SendMode.PREVIEW_CONFIRM)
+        val escapes = Escapes()
+        val controller = CountingController(rig.service)
+        val external = MutableSharedFlow<Unit>()
+        val subscriptions = AtomicInteger()
+        val refreshOn = flow<Unit> {
+            if (subscriptions.incrementAndGet() == 1) throw IllegalStateException("database disk image is malformed: /data/user/0/app.auri.android/files/secret-draft.db")
+            emitAll(external)
+        }
+
+        DestinationDetailViewModel(destination.destinationId, controller, LibraryItemTexts(rig.library), viewModelScope(escapes), rig.log, refreshOn)
+        runCurrent()
+
+        assertTrue("故障逃出了作用域（线上只记一行日志，这个收集者就此结束）：${escapes.failures}", escapes.failures.isEmpty())
+        assertTrue("记了一行日志（事件名加异常类名）：${rig.log.lines}", rig.log.lines.any { it == "destination.detail.refresh.read.failed IllegalStateException" })
+        assertFalse("日志里没有异常信息：${rig.log.lines}", rig.log.lines.any { "secret-draft" in it || "malformed" in it })
+
+        waitForRetry()
+        assertEquals("过了退避就重新订阅，不是就此放弃", 2, subscriptions.get())
+
+        advanceTimeBy(60_000) // 越过两次刷新之间的最小间隔
+        runCurrent()
+        val before = controller.deliveryReads.get()
+        external.emit(Unit)
+        runCurrent()
+
+        assertEquals("恢复之后同步状态一变，详情页照样重读", before + 1, controller.deliveryReads.get())
     }
 
     // ---- 包装本身：退避、不放弃、只包上游 ----

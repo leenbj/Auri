@@ -160,7 +160,8 @@ class DestinationDetailViewModel(
             }
         }
         scope.launch { controller.destinations.containReadFailures("destination.detail.watch", log).collect { triggers.trySend(Unit) } } // 缓存变了（新文字、新的决定）：重读一遍
-        scope.launch { refreshOn.collect { triggers.trySend(Unit) } }
+        // 同步状态等“本机之外的变化”：它的上游也读本机的库，暂时出故障时不能让这个收集者就此结束（复评 R11），和上面两条一样包住、重试
+        scope.launch { refreshOn.containReadFailures("destination.detail.refresh", log).collect { triggers.trySend(Unit) } }
     }
 
     fun refreshStatuses() {

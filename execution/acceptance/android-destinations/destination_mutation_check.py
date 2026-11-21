@@ -841,6 +841,14 @@ MUTATIONS: tuple = (
         app_tests("ReviewTargetWiringTest"), APP_RESULTS,
         ("待发送页给每个目标写的那句话带上网关投递与拒收原因",),
     ),
+    # ---- 复评 R11：详情页“本机之外的变化”流（同步状态）暂时出故障，不能让它的收集者从此死掉 ----
+    Mutation(
+        "r11-detail-refresh-uncontained",
+        "复评 R11：详情页收集“同步状态变化”要用与其他读流同一套的重试围栏：裸收集，一次暂时的故障就让这个收集者永远结束，详情页再也不随网关侧变化刷新",
+        (Edit(DETAIL_VM, 'refreshOn.containReadFailures("destination.detail.refresh", log).collect', "refreshOn.collect"),),
+        app_tests("ReadFailureContainmentTest"), APP_RESULTS,
+        ("复评 R11：详情页的“本机之外的变化”流",),
+    ),
     Mutation(
         "policy-strict-local-ignored",
         "评审 B1：严格仅本地是统一门禁，压过授权：只看授权就等于开着严格仅本地也照发",
