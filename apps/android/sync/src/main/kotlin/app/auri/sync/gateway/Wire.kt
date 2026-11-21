@@ -13,7 +13,10 @@ import kotlinx.serialization.json.intOrNull
 
 /** common.schema.json 里这几个格式的权威写法（uuid / sha256_hex / timestamp / schema_version）。 */
 internal object Wire {
-    const val SCHEMA_VERSION = "1.1"
+    const val SCHEMA_VERSION = "1.2"
+
+    /** 合同 1.2 之前发布过的版本（评审 R7）：说这些版本的网关是“太旧”，手机不和它说话，界面说先更新网关。 */
+    val OLDER_VERSIONS = setOf("1.0", "1.1")
     val UUID = Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
     val SHA256 = Regex("^[0-9a-f]{64}$")
     val TIMESTAMP = Regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|[+-][0-9]{2}:[0-9]{2})$")

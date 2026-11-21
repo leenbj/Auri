@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.auri.invalid/1.1/pairing.schema.json",
+  "$id": "https://contracts.auri.invalid/1.2/pairing.schema.json",
   "title": "设备配对",
   "description": "ADR-008、ADR-0018。配对码只能由网关命令行生成；网关的身份依据是公钥指纹，不是地址。",
   "$defs": {

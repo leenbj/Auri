@@ -129,7 +129,7 @@ class DestinationsViewModelTest {
         rig.lan.hosts.getValue(SyncSamples.LAN_ADDRESS).handler = { request ->
             if (request.method == "POST") {
                 posts++
-                ScriptedExchange.json(200, """{"schema_version":"1.1"}""")
+                ScriptedExchange.json(200, """{"schema_version":"1.2"}""")
             } else {
                 rig.server.handle(request)
             }

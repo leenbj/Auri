@@ -61,6 +61,7 @@ internal fun describeFailure(failure: ServiceFailure): String = when (failure) {
     is ServiceFailure.NeedsRepair -> when (failure.needs) {
         NeedsUser.KEY_MISMATCH -> "这台网关的身份与配对时记录的不一样，没有发出任何请求。请在网关上重新生成二维码，重新配对。"
         NeedsUser.AUTH_REJECTED -> "网关不再承认这台手机（可能被撤销了）。请重新配对。"
+        NeedsUser.GATEWAY_TOO_OLD -> "这台网关的版本太旧（手机需要合同 1.2），没有发出任何请求。请先更新网关到最新版本；更新后会自动恢复，不需要重新配对。"
     }
     ServiceFailure.Unreachable -> "现在连不上网关（可能不在同一个网络，或网关没开机）。请求没有发出，连上之后再试。"
     is ServiceFailure.Rejected -> "网关拒绝了这次请求（${failure.status}）。" + if (failure.retryable) "稍后可以再试。" else "重试不会有用。"

@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "description": "text_sha256 的跨语言测试向量：正文按 UTF-8 编码后的原始字节直接算 SHA-256，不做 Unicode 规范化、不去空白、不转换换行。nfc 与 nfd 两条看起来相同，哈希必须不同。",
   "vectors": [
     {

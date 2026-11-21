@@ -41,6 +41,7 @@ class DestinationTextTest {
         ServiceFailure.NotPaired,
         ServiceFailure.NeedsRepair(NeedsUser.KEY_MISMATCH),
         ServiceFailure.NeedsRepair(NeedsUser.AUTH_REJECTED),
+        ServiceFailure.NeedsRepair(NeedsUser.GATEWAY_TOO_OLD),
         ServiceFailure.Unreachable,
         ServiceFailure.Rejected(422, null, retryable = false),
         ServiceFailure.Rejected(503, null, retryable = true),
@@ -117,6 +118,13 @@ class DestinationTextTest {
             assertTrue("$failure：$text", "结果不确定" in text && "刷新" in text && "不要直接重试" in text)
         }
         assertTrue("请求一定没发出去的，明说没有发出", "没有发出" in describeFailure(ServiceFailure.Unreachable))
+    }
+
+    @Test
+    fun `网关太旧（评审 R7）：管理页说清没有发出任何请求、先更新网关、更新后自己恢复不用重新配对`() {
+        val text = describeFailure(ServiceFailure.NeedsRepair(NeedsUser.GATEWAY_TOO_OLD))
+
+        for (needle in listOf("版本太旧", "没有发出", "更新网关", "不需要重新配对")) assertTrue("缺“$needle”：$text", needle in text)
     }
 
     @Test

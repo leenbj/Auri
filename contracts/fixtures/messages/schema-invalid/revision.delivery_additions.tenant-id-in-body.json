@@ -7,7 +7,7 @@
     "keyword": "additionalProperties"
   },
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "intent": "context",
     "destination_ids": [
       "65ea2953-505c-5c6f-9474-7cd5b8474104"

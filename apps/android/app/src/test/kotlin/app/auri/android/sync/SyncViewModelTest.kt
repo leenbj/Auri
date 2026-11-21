@@ -85,7 +85,7 @@ class SyncViewModelTest {
 
     private companion object {
         fun payloadText(gatewayId: String = "fa1b98ec-1bfb-53b3-85a3-4d36b680fe6e", code: String = "FIXTURE-PAIRING-CODE-NOT-A-SECRET") = """
-            {"schema_version":"1.1","gateway_id":"$gatewayId","addresses":[{"host":"192.168.1.20","port":8443}],
+            {"schema_version":"1.2","gateway_id":"$gatewayId","addresses":[{"host":"192.168.1.20","port":8443}],
              "mdns_service_type":"_auri-gateway._tcp","public_key_sha256":"${"ab".repeat(32)}","pairing_code":"$code","expires_at":"2099-01-01T00:00:00Z"}
         """.trimIndent().replace("\n", "")
 
@@ -235,12 +235,23 @@ class SyncViewModelTest {
         val vm = viewModel(controller)
 
         vm.onQrText("https://example.com/not-auri")
-        vm.onQrText("""{"schema_version":"1.1"}""")
+        vm.onQrText("""{"schema_version":"1.2"}""")
 
         assertEquals(PairingProgress.Failed(PairingProblem.INVALID_QR), vm.state.value.pairing)
         assertEquals(0, controller.pairCalls.get())
         vm.dismissPairingProblem()
         assertEquals(PairingProgress.Idle, vm.state.value.pairing)
+    }
+
+    @Test
+    fun `二维码是旧合同版本的网关出的：界面说网关太旧，不是二维码坏了，也不会去配对（评审 R7）`() = runTest {
+        val controller = FakeController()
+        val vm = viewModel(controller)
+
+        vm.onQrText(payloadText().replace("\"schema_version\":\"1.2\"", "\"schema_version\":\"1.1\""))
+
+        assertEquals(PairingProgress.Failed(PairingProblem.GATEWAY_TOO_OLD), vm.state.value.pairing)
+        assertEquals(0, controller.pairCalls.get())
     }
 
     @Test

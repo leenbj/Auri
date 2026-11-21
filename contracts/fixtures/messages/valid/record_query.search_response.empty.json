@@ -3,7 +3,7 @@
   "expect": "valid",
   "description": "无匹配内容时返回正常空结果。",
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "matches": [],
     "next_cursor": null
   }

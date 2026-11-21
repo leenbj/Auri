@@ -10,6 +10,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -137,6 +138,39 @@ class FilePairingStoreTest {
         assertTrue(applied)
         assertEquals(NeedsUser.AUTH_REJECTED, (FilePairingStore(file, box).load() as PairingState.Paired).gateway.needsUser)
         assertFalse(String(file.readBytes(), Charsets.ISO_8859_1).contains(SyncSamples.TOKEN_TEXT))
+    }
+
+    @Test
+    fun `网关太旧的标记（评审 R7）落盘，换存储对象（重启）后还在；清掉之后同样持久，配对本身（令牌、公钥、设备）一点没动`() = runBlocking {
+        val store = FilePairingStore(file, box)
+        store.save(gateway.copy(needsUser = null))
+
+        assertTrue(store.markGatewayTooOld(gateway.copy(needsUser = null)))
+        val flagged = (FilePairingStore(file, box).load() as PairingState.Paired).gateway
+        assertEquals(NeedsUser.GATEWAY_TOO_OLD, flagged.needsUser)
+
+        FilePairingStore(file, box).clearGatewayTooOld(flagged)
+
+        val cleared = (FilePairingStore(file, box).load() as PairingState.Paired).gateway
+        assertNull(cleared.needsUser)
+        assertEquals(gateway.copy(needsUser = null), cleared)
+    }
+
+    @Test
+    fun `打“网关太旧”的标记只在同一份配对、没有更重的连接问题时才写：公钥不符不被覆盖，途中重新配对了就不写并告知`() = runBlocking {
+        val store = FilePairingStore(file, box)
+        store.save(gateway) // 带着 KEY_MISMATCH
+        assertTrue("还是这份配对，只是不去改它", store.markGatewayTooOld(gateway))
+        assertEquals(NeedsUser.KEY_MISMATCH, (store.load() as PairingState.Paired).gateway.needsUser)
+
+        val repaired = gateway.copy(needsUser = null, pairedAt = gateway.pairedAt.plusSeconds(60))
+        store.save(repaired)
+        assertFalse("旧配对的结论不能落到新配对上", store.markGatewayTooOld(gateway))
+        assertNull((store.load() as PairingState.Paired).gateway.needsUser)
+
+        store.save(repaired.copy(needsUser = NeedsUser.AUTH_REJECTED))
+        store.clearGatewayTooOld(repaired)
+        assertEquals("清标记只清“网关太旧”这一个", NeedsUser.AUTH_REJECTED, (store.load() as PairingState.Paired).gateway.needsUser)
     }
 
     @Test

@@ -173,7 +173,7 @@ def redeem_pairing_code(db_path: pathlib.Path, body: dict[str, Any]) -> dict[str
             )
             conn.execute("COMMIT")
             return {
-                "schema_version": "1.1",
+                "schema_version": "1.2",
                 "gateway_id": meta["gateway_id"],
                 "device_id": device_id,
                 "device_token": device_token,
@@ -669,7 +669,7 @@ def store_revision(
                     )
                 conn.execute("COMMIT")
                 return {
-                    "schema_version": "1.1",
+                    "schema_version": "1.2",
                     "operation_id": existing["operation_id"],
                     "record_id": record_id,
                     "revision": revision,
@@ -778,7 +778,7 @@ def store_revision(
             )
             conn.execute("COMMIT")
             return {
-                "schema_version": "1.1",
+                "schema_version": "1.2",
                 "operation_id": operation_id,
                 "record_id": record_id,
                 "revision": revision,
@@ -920,7 +920,7 @@ def add_revision_deliveries(
             ]
             conn.execute("COMMIT")
             return {
-                "schema_version": "1.1",
+                "schema_version": "1.2",
                 "record_id": record_id,
                 "revision": revision,
                 "deliveries": deliveries,
@@ -948,7 +948,7 @@ _DESTINATION_SELECT = """
 
 def _destination_row_to_resource(row: Any) -> dict[str, Any]:
     return {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "destination_id": row["destination_id"],
         "display_name": row["display_name"],
         "send_mode": row["send_mode"],
@@ -1026,7 +1026,7 @@ def list_destinations(db_path: pathlib.Path, auth: AuthenticatedDevice) -> dict[
     finally:
         conn.close()
     return {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "destinations": [_destination_row_to_resource(row) for row in rows],
     }
 
@@ -1136,7 +1136,7 @@ def issue_destination_credential(
             )
             conn.execute("COMMIT")
             return {
-                "schema_version": "1.1",
+                "schema_version": "1.2",
                 "destination_id": destination_id,
                 "credential": credential,
                 "issued_at": now_iso,
@@ -1236,7 +1236,7 @@ def _delete_record_in_tx(
             cancelled_ids = json.loads(row["delete_cancelled_delivery_ids_json"] or "[]")
             return (
                 {
-                    "schema_version": "1.1",
+                    "schema_version": "1.2",
                     "record_id": record_id,
                     "deleted_at": row["deleted_at"],
                     "cancelled_delivery_ids": cancelled_ids,
@@ -1263,7 +1263,7 @@ def _delete_record_in_tx(
         )
         return (
             {
-                "schema_version": "1.1",
+                "schema_version": "1.2",
                 "record_id": record_id,
                 "deleted_at": now_iso,
                 "cancelled_delivery_ids": [],
@@ -1319,7 +1319,7 @@ def _delete_record_in_tx(
     )
     return (
         {
-            "schema_version": "1.1",
+            "schema_version": "1.2",
             "record_id": record_id,
             "deleted_at": now_iso,
             "cancelled_delivery_ids": cancelled_delivery_ids,

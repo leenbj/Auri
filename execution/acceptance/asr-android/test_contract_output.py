@@ -42,7 +42,7 @@ def test_text_outside_the_basic_plane_hashes_the_same_in_kotlin_and_python(jvm_o
 
 
 def test_the_engine_failure_scenario_leaves_no_error_file_because_the_contract_has_no_code(jvm_output):
-    """合同 1.1 的缺口：没有“引擎内部失败”的错误码。输出如实只有轨迹，不硬套别的码。"""
+    """合同 1.2 的缺口（1.1 同样没有）：没有“引擎内部失败”的错误码。输出如实只有轨迹，不硬套别的码。"""
     files = {p.name for p in (jvm_output / "failed-engine-exception").iterdir()}
 
     assert "error.json" not in files

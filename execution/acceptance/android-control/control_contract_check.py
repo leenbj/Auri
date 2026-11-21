@@ -1,4 +1,4 @@
-"""校验 Android 耳机控制这条线的产出是否满足合同 1.1（Ticket 17）。
+"""校验 Android 耳机控制这条线的产出是否满足合同 1.2（Ticket 17）。
 
 沿用 Ticket 16 的 execution/acceptance/android-capture/capture_contract_check.py 的做法（读它，不复制、不改它）：
 真实 contracts/schemas/*.json、注册方式与 tests/contract/conftest.py 相同、报错不回显来自输出文件的值。

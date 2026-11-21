@@ -3,7 +3,7 @@
   "expect": "valid",
   "description": "请求体不符合 schema、违反语义规则或夹带身份字段。",
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "code": "REQUEST_INVALID",
     "message": "请求体不符合数据合同或违反语义规则，已拒绝处理。",
     "retryable": false,

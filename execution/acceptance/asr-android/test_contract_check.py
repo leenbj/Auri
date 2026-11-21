@@ -39,7 +39,7 @@ SUCCESS_STEPS = (("RUN_STARTED", "RUNNING"), ("RESULT_TEXT", "SUCCEEDED"))
 
 def error_instance(code: str, operation_id: str | None = JOB_ID) -> dict:
     return {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "code": code,
         "message": "测试用错误。",
         "retryable": False,
@@ -114,7 +114,7 @@ def test_a_task_handle_without_provider_job_id_is_rejected(tmp_path):
 
 
 def test_an_error_code_missing_from_the_contract_is_rejected(tmp_path):
-    """合同 1.1 没有“引擎内部失败”的错误码；硬造一个会被 schema 拦下（见 README 的合同缺口）。"""
+    """合同 1.2（1.1 同样）没有“引擎内部失败”的错误码；硬造一个会被 schema 拦下（见 README 的合同缺口）。"""
     dir_ = make_scenario(
         tmp_path, "failed", steps=(("RUN_STARTED", "RUNNING"), ("PERMANENT_ERROR", "FAILED")),
         content=False, error=error_instance("ASR_ENGINE_FAILED"),

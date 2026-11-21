@@ -105,6 +105,14 @@ class SyncStatusTest {
     }
 
     @Test
+    fun `网关太旧（评审 R7）：需要用户处理，原因单独一项——处置是更新网关，不是重新配对`() {
+        val result = status(pairing = PairingState.Paired(SyncSamples.pairedGateway().copy(needsUser = NeedsUser.GATEWAY_TOO_OLD)))
+
+        assertEquals(SyncHeadline.NEEDS_USER, result.headline)
+        assertEquals(listOf(UserCause.GATEWAY_TOO_OLD), result.causes)
+    }
+
+    @Test
     fun `配对记录读不出来：需要用户重新配对，不能显示成“没配对”的平静状态`() {
         val result = status(job(SyncState.PENDING), pairing = PairingState.Lost)
 

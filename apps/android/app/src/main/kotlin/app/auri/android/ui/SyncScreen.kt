@@ -126,6 +126,7 @@ internal fun describeCause(cause: UserCause): String = when (cause) {
     UserCause.KEY_MISMATCH -> "这台网关的身份与配对时记录的不一样（可能换了网关或证书）。为安全起见没有发送任何内容。请在网关上重新生成配对二维码，重新配对。"
     UserCause.AUTH_REJECTED -> "网关不再承认这台手机（可能被撤销了）。请重新配对。"
     UserCause.PAIRING_LOST -> "本机保存的配对信息丢失（例如清除了安全存储）。请重新配对。"
+    UserCause.GATEWAY_TOO_OLD -> "这台网关的版本太旧（手机需要合同 1.2），为避免文字被它拒收，没有发送任何内容。请先更新网关到最新版本；更新后会自动恢复，不需要重新配对。"
     UserCause.VERSION_CONFLICT -> "有一版文字与网关上同一版的内容冲突，没有被收下。"
     UserCause.RECORD_DELETED -> "有一条记录已在网关上被删除，它的文字不会再发送。"
     UserCause.NOT_ORIGIN_DEVICE -> "网关说有一条记录属于另一台设备，没有被收下。"
@@ -138,6 +139,7 @@ internal fun describeCounts(counts: SyncCounts): String =
 
 internal fun describeProblem(problem: PairingProblem): String = when (problem) {
     PairingProblem.INVALID_QR -> "这不是 Auri 的配对二维码。"
+    PairingProblem.GATEWAY_TOO_OLD -> "这台网关的版本太旧（手机需要合同 1.2），没有向它发送任何请求。请先更新网关到最新版本，再重新生成配对二维码。"
     PairingProblem.EXPIRED -> "二维码已过期。请在网关上重新生成配对二维码。"
     PairingProblem.NOT_FOUND -> "在局域网里找不到网关。请确认手机和网关电脑连在同一个网络，网关已启动。"
     PairingProblem.KEY_MISMATCH -> "对方不是二维码对应的那台网关（公钥指纹不符），配对码没有发给它。"

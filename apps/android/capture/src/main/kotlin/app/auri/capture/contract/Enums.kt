@@ -5,7 +5,7 @@ import kotlinx.serialization.Serializable
 
 // 本文件的枚举名与取值逐个对应 contracts/schemas/common.schema.json 与 adapter.schema.json。
 // 线上取值写在 @SerialName 里（grep 得到）；取值全大写的枚举（命令、状态、错误码）常量名就是线上取值。
-// 合同是冻结的（1.1）：要改取值先走 contracts/README.md 的“修改规则”，不在这里改。
+// 合同是冻结的（1.2）：要改取值先走 contracts/README.md 的“修改规则”，不在这里改。
 
 /** common.schema.json#/$defs/business_command */
 @Serializable

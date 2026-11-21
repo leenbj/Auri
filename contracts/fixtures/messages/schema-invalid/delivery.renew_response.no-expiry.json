@@ -7,7 +7,7 @@
     "keyword": "required"
   },
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "delivery_id": "f2902603-449e-5ad9-beee-8c3c48c0f1f7",
     "lease_token": "fixture-lease-token-not-a-real-secret-2"
   }

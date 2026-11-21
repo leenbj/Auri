@@ -76,7 +76,7 @@ class ActiveModelTranscriptionAdapterTest {
     )
 
     private fun asrError(code: app.auri.asr.contract.ErrorCode) =
-        AsrError("1.1", code, "测试", retryable = false, requiredAction = null, operationId = null)
+        AsrError("1.2", code, "测试", retryable = false, requiredAction = null, operationId = null)
 
     private fun content(text: String) = RevisionContent(
         text = text,

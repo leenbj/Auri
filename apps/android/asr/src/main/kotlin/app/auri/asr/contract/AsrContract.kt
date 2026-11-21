@@ -6,7 +6,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 /**
- * 合同 1.1 里本模块会产生的那部分类型。字段名、取值与 contracts/schemas/ 逐字一致；
+ * 合同 1.2 里本模块会产生的那部分类型。字段名、取值与 contracts/schemas/ 逐字一致；
  * 只放得进合同允许的取值（例如执行位置只有 on_device），写不出云端取值（ADR-0019、SR-05）。
  * 合同里的错误码只列出本模块真的会发出的几个。
  */
@@ -119,7 +119,7 @@ data class AsrError(
 )
 
 object ContractJson {
-    const val SCHEMA_VERSION = "1.1"
+    const val SCHEMA_VERSION = "1.2"
 
     @PublishedApi
     internal val json = Json {

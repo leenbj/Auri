@@ -75,7 +75,7 @@ class PairingServiceTest {
 
     private fun pair(payload: PairingPayload = payload(), service: PairingService = service()) = runBlocking { service.pair(payload) }
 
-    private fun errorBody(code: String) = """{"schema_version":"1.1","code":"$code","message":"x","retryable":false,"required_action":null,"operation_id":null}"""
+    private fun errorBody(code: String) = """{"schema_version":"1.2","code":"$code","message":"x","retryable":false,"required_action":null,"operation_id":null}"""
 
     @Test
     fun `扫码配对成功：配对码只发给核对过公钥的网关，令牌存进安全存储，日志里没有任何机密`() {

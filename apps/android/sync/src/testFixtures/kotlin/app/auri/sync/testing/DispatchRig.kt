@@ -15,6 +15,7 @@ import app.auri.sync.engine.JobKey
 import app.auri.sync.engine.RecordLibrarySubmissionSource
 import app.auri.sync.engine.RetryPolicy
 import app.auri.sync.engine.SyncEngine
+import app.auri.sync.gateway.ContractGuard
 import app.auri.sync.gateway.CreateDestinationRequest
 import app.auri.sync.gateway.Destination
 import app.auri.sync.gateway.Intent
@@ -80,6 +81,7 @@ class DispatchRig(
 
     private fun assemble() {
         val locator = GatewayLocator(lan.factory, discovery, log)
+        val contract = ContractGuard() // 和线上一样：引擎与管理页共用一个，重启（assemble）才换新
         engine = SyncEngine(
             jobs = jobs,
             pairing = pairing,
@@ -91,8 +93,9 @@ class DispatchRig(
             additions = dispatch,
             retry = RetryPolicy(),
             log = log,
+            contract = contract,
         )
-        service = DestinationService(pairing, lan.factory, locator, dispatch, jobs, authenticator, clock, log)
+        service = DestinationService(pairing, lan.factory, locator, dispatch, jobs, authenticator, clock, log, contract)
     }
 
     /** 进程被杀后重启：引擎、服务、发送账实例全换新，磁盘（任务表、发送账、配对记录、Record 库）还是原来的。 */

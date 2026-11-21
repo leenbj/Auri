@@ -7,9 +7,9 @@
     "keyword": "const"
   },
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "gateway_version": "0.1.0",
-    "supported_schema_versions": ["1.1"],
+    "supported_schema_versions": ["1.2"],
     "features": {
       "cloud_asr": true,
       "record_read_tools": true,

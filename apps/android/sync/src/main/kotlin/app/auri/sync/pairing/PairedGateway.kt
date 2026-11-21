@@ -6,8 +6,11 @@ import java.time.Instant
 /**
  * 连接层面“要用户处理”的事实。它不属于某一条同步任务：公钥不符、令牌被拒，对所有任务都一样成立，
  * 在用户重新配对（或确认处理）之前，不能再向网关发任何带令牌的请求。
+ *
+ * [GATEWAY_TOO_OLD]（评审 R7）是其中唯一不用重新配对的：网关说的合同版本比手机要的旧，处置是更新网关。
+ * 在那之前一个数据请求都不发；更新之后下一轮同步问出来、自己清掉这个标记（见 ContractGuard 与 SyncEngine.runOnce）。
  */
-enum class NeedsUser { KEY_MISMATCH, AUTH_REJECTED }
+enum class NeedsUser { KEY_MISMATCH, AUTH_REJECTED, GATEWAY_TOO_OLD }
 
 /** 配对的结果：手机认识的那台网关。整个记录（含令牌、公钥指纹、地址）只以密文落盘，见 FilePairingStore。 */
 data class PairedGateway(
@@ -22,6 +25,9 @@ data class PairedGateway(
     val pairedAt: Instant,
     val needsUser: NeedsUser? = null,
 ) {
+    /** 是不是同一份配对：同一台设备、同一次配对时刻、同一个固定公钥。用户重新配对、改配别的网关之后就不是了。 */
+    fun isSamePairing(other: PairedGateway) = deviceId == other.deviceId && pairedAt == other.pairedAt && pin == other.pin
+
     // 数据类默认的 toString 会打出所有字段：这里只留不含机密、不含网络位置的几项
     override fun toString() = "PairedGateway(gatewayId=$gatewayId, deviceId=$deviceId, needsUser=$needsUser)"
 }
@@ -49,4 +55,18 @@ interface PairingStore {
     suspend fun update(transform: (PairedGateway) -> PairedGateway?): Boolean
 
     suspend fun clear()
+}
+
+/**
+ * 给这份配对打上“网关太旧”（评审 R7）：只在它还是当前的配对、而且没有别的连接问题时才写（公钥不符、令牌被拒是更重的问题，不能被覆盖）。
+ * 返回这份配对现在还是不是当前的配对（用户途中重新配对了就是 false，调用方要把结论作废）。已经带着这个标记时不重写。
+ */
+suspend fun PairingStore.markGatewayTooOld(gateway: PairedGateway): Boolean {
+    update { current -> if (current.isSamePairing(gateway) && current.needsUser == null) current.copy(needsUser = NeedsUser.GATEWAY_TOO_OLD) else null }
+    return (load() as? PairingState.Paired)?.gateway?.isSamePairing(gateway) == true
+}
+
+/** 网关已经更新：清掉“网关太旧”的标记。只清这一个标记、只对这一份配对，不需要重新配对。 */
+suspend fun PairingStore.clearGatewayTooOld(gateway: PairedGateway) {
+    update { current -> if (current.isSamePairing(gateway) && current.needsUser == NeedsUser.GATEWAY_TOO_OLD) current.copy(needsUser = null) else null }
 }

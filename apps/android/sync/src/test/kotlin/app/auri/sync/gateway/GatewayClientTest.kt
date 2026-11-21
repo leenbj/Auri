@@ -32,12 +32,12 @@ class GatewayClientTest {
     private val token = DeviceToken.parse("fixture-device-token-not-a-real-secret-0001")!!
     private val recordId = "a4a7c08d-2767-50d6-9238-6fa277033a49"
     private val sha = "d0d776b5f83facd57fa2b9ecd4e39984745e516a4c4de0495cdb71acc28f56ec"
-    private val submission = RevisionSubmission(recordId, 1, sha, """{"schema_version":"1.1","text":"你好"}""".toByteArray())
+    private val submission = RevisionSubmission(recordId, 1, sha, """{"schema_version":"1.2","text":"你好"}""".toByteArray())
 
     private fun sample(name: String): String = RepoContracts.json("fixtures/messages/valid/$name").jsonObject.getValue("instance").toString()
 
     private fun errorBody(code: String, retryable: Boolean = false) =
-        """{"schema_version":"1.1","code":"$code","message":"x","retryable":$retryable,"required_action":null,"operation_id":null}"""
+        """{"schema_version":"1.2","code":"$code","message":"x","retryable":$retryable,"required_action":null,"operation_id":null}"""
 
     private fun client(script: suspend (HttpRequest) -> app.auri.sync.http.HttpReply): Pair<GatewayClient, ScriptedExchange> {
         val exchange = ScriptedExchange { _, request -> script(request) }
@@ -90,7 +90,7 @@ class GatewayClientTest {
         val reference = Json.parseToJsonElement(sample("pairing.redeem_request.ios-device.json")).jsonObject
         assertEquals("字段集合必须与合同样本一致", reference.keys, sent.keys)
         assertEquals(reference.getValue("device").jsonObject.keys, sent.getValue("device").jsonObject.keys)
-        assertEquals("1.1", sent.getValue("schema_version").jsonPrimitive.content)
+        assertEquals("1.2", sent.getValue("schema_version").jsonPrimitive.content)
         assertEquals("FIXTURE-PAIRING-CODE-NOT-A-SECRET", sent.getValue("pairing_code").jsonPrimitive.content)
         assertEquals("android", sent.getValue("device").jsonObject.getValue("platform").jsonPrimitive.content)
         assertEquals("测试手机", sent.getValue("device").jsonObject.getValue("display_name").jsonPrimitive.content)
@@ -111,14 +111,15 @@ class GatewayClientTest {
     }
 
     @Test
-    fun `redeem：令牌太短、含空白或版本不是 1_1，一律不接受（不存下不合格的令牌）`() = runBlocking {
+    fun `redeem：令牌太短、含空白或版本不是 1_2，一律不接受（不存下不合格的令牌）`() = runBlocking {
         val good = Json.parseToJsonElement(sample("pairing.redeem_response.paired.json")).jsonObject
         fun with(key: String, value: String) = JsonObject(good + (key to JsonPrimitive(value))).toString()
         for (bad in listOf(
             with("device_token", "too-short"),
             with("device_token", "fixture-device token-with-a-space-000000001"),
             with("device_token", "fixture-device-token\r\nX-Injected: 1-0000000000"),
-            with("schema_version", "1.2"),
+            with("schema_version", "1.1"),
+            with("schema_version", "1.3"),
             with("device_id", "NOT-A-UUID"),
             with("paired_at", "yesterday"),
         )) {

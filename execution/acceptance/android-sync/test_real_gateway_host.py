@@ -108,7 +108,7 @@ class Running:
 
     def pair(self, code: str, name: str = "pytest device") -> str:
         status, body = self.request("POST", "/v1/pairing/redeem", {
-            "schema_version": "1.1", "pairing_code": code,
+            "schema_version": "1.2", "pairing_code": code,
             "device": {"platform": "android", "app_version": "0.0.0-test", "os_build": "test", "display_name": name},
         })
         assert status == 200, body

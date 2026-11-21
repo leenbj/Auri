@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.auri.invalid/1.1/delivery.schema.json",
+  "$id": "https://contracts.auri.invalid/1.2/delivery.schema.json",
   "title": "Delivery 的领取、续租、确认与拒收（MCP 工具的输入输出）",
   "description": "PRD 第 17.3、17.4 节。调用者的身份只由认证结果确定，输入里没有 agent_id、tenant_id 或 destination_id。",
   "$defs": {

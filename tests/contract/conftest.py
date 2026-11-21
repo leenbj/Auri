@@ -7,7 +7,7 @@ from referencing import Registry, Resource
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCHEMA_DIR = REPO_ROOT / "contracts" / "schemas"
 FIXTURE_DIR = REPO_ROOT / "contracts" / "fixtures"
-BASE_URI = "https://contracts.auri.invalid/1.1/"
+BASE_URI = "https://contracts.auri.invalid/1.2/"
 
 
 def load_json(path: pathlib.Path):

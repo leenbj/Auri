@@ -53,7 +53,7 @@ class FileProfileStoreTest {
         listOf(
             "这不是 JSON",
             "",
-            """{"schema_version": "1.1"}""",
+            """{"schema_version": "1.2"}""",
             // 内容违反合同：没有证据却宣称“支持”（档案不能靠手改文件变成已校准）
             store().also { it.save(profile()) }.let { file.readText().replace("\"NOT_TESTED\"", "\"SUPPORTED_FOREGROUND\"") },
         ).forEach { content ->

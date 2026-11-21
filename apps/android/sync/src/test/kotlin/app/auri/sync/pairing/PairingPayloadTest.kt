@@ -88,11 +88,19 @@ class PairingPayloadTest {
     }
 
     @Test
-    fun `只认合同版本 1_1`() {
-        for (version in listOf("1.0", "1.2", "2.0", "")) {
+    fun `只认合同版本 1_2：别的版本号、数字形式的版本都拒绝`() {
+        for (version in listOf("1.3", "2.0", "", "1.2.0")) {
             assertEquals(version, PayloadProblem.WRONG_SCHEMA_VERSION, problemOf(validJson.set("schema_version", JsonPrimitive(version))))
         }
+        assertEquals(PayloadProblem.WRONG_SCHEMA_VERSION, problemOf(validJson.set("schema_version", JsonPrimitive(1.2))))
         assertEquals(PayloadProblem.WRONG_SCHEMA_VERSION, problemOf(validJson.set("schema_version", JsonPrimitive(1.1))))
+    }
+
+    @Test
+    fun `更旧的合同版本（1_0、1_1）是网关太旧而不是二维码坏了：配对之前就能说清要先更新网关（评审 R7）`() {
+        for (version in listOf("1.0", "1.1")) {
+            assertEquals(version, PayloadProblem.GATEWAY_TOO_OLD, problemOf(validJson.set("schema_version", JsonPrimitive(version))))
+        }
     }
 
     @Test

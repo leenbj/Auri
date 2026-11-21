@@ -27,6 +27,21 @@ class GatewayClient(private val http: HttpExchange) {
     suspend fun health(address: GatewayAddress): GatewayResult<Unit> =
         call(address, HttpRequest("GET", "/health")) { if (it.string("status") != "ok") throw Unreadable("status") }
 
+    /**
+     * GET /v1/capabilities：网关会说哪些合同版本（评审 R7）。手机只和说合同 1.2 的网关说话，每个数据请求之前先问这一个只读的问题。
+     * 只读 supported_schema_versions，不要求整个响应符合 1.2：旧网关的响应里 schema_version 是它自己的旧版本，
+     * 严格读取只会得到“读不懂”，说不清是“网关太旧”。字段缺失或类型不对仍是读不懂（[GatewayResult.Garbled]）。
+     */
+    suspend fun contractVerdict(address: GatewayAddress, token: DeviceToken): GatewayResult<ContractVerdict> =
+        call(address, HttpRequest("GET", "/v1/capabilities", authorization(token))) { reply ->
+            val advertised = reply.strings("supported_schema_versions")
+            when {
+                Wire.SCHEMA_VERSION in advertised -> ContractVerdict.COMPATIBLE
+                advertised.isNotEmpty() && advertised.all { it in Wire.OLDER_VERSIONS } -> ContractVerdict.TOO_OLD
+                else -> ContractVerdict.UNCONFIRMED
+            }
+        }
+
     suspend fun redeem(address: GatewayAddress, pairingCode: String, device: DeviceInfo): GatewayResult<RedeemResponse> {
         require(pairingCode.isNotBlank()) { "配对码不能为空" }
         val body = buildJsonObject {
@@ -198,7 +213,7 @@ class GatewayClient(private val http: HttpExchange) {
             createdByDeviceId = reply.uuid("created_by_device_id"),
             credentialIssued = issued,
             revokedAt = reply.timestampOrNull("revoked_at"),
-            // 合同 1.1 里后加的可选字段（评审 B3）：旧网关没有它，按“签发过就有效”算，不会把没暂停的目的地误判成暂停
+            // 合同 1.2 新增的可选字段（评审 B3）：回答里没有它就按“签发过就有效”算，不会把没暂停的目的地误判成暂停
             credentialActive = reply.booleanOrNull("credential_active") ?: issued,
         )
     }

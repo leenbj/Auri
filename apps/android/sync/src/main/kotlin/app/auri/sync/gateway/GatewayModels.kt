@@ -16,7 +16,7 @@ sealed interface GatewayResult<out T> {
     data class Rejected(val status: Int, val code: ErrorCode?, val rawCode: String?, val retryable: Boolean) : GatewayResult<Nothing>
 
     /**
-     * 网关回了 2xx，但内容不符合合同（缺字段、类型不对、版本不是 1.1、回答的不是我们问的那个 Record）。
+     * 网关回了 2xx，但内容不符合合同（缺字段、类型不对、版本不是 1.2、回答的不是我们问的那个 Record）。
      * 对“提交”来说这等于结果不确定：请求确实送到了，网关可能已经入库。
      */
     data class Garbled(val status: Int, val reason: String) : GatewayResult<Nothing>
@@ -84,3 +84,15 @@ data class RecordStatus(
     val revisions: List<RevisionOnGateway>,
     val destinations: List<DeliveryOnGateway> = emptyList(),
 )
+
+/** 网关通告的合同版本对手机意味着什么（GET /v1/capabilities 的 supported_schema_versions；评审 R7）。 */
+enum class ContractVerdict {
+    /** 通告里有手机要的版本：可以说话。 */
+    COMPATIBLE,
+
+    /** 通告的全是更旧的版本：要先更新网关，一个数据请求都不能发。 */
+    TOO_OLD,
+
+    /** 无法判断（只有更新的版本、新旧都有但没有手机要的、读不懂的版本号、空列表）：不放行，也不冤枉网关“太旧”。 */
+    UNCONFIRMED,
+}

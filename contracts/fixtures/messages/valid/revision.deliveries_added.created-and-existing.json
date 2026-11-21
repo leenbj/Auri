@@ -3,7 +3,7 @@
   "expect": "valid",
   "description": "追加的回答：按请求里的顺序，新建的（PENDING）与已经有的（重复请求，已被领走的 LEASED）都在里面。",
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
     "revision": 1,
     "deliveries": [

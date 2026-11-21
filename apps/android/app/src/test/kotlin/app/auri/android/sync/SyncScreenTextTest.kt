@@ -69,6 +69,15 @@ class SyncScreenTextTest {
     }
 
     @Test
+    fun `网关太旧（评审 R7）：说清是网关版本太旧、没有发送任何内容、先更新网关、更新后自己恢复不用重新配对；配对时同样说先更新网关`() {
+        val cause = describeCause(UserCause.GATEWAY_TOO_OLD)
+        for (needle in listOf("版本太旧", "没有发送", "更新网关", "不需要重新配对")) assertTrue("缺“$needle”：$cause", needle in cause)
+
+        val pairing = describeProblem(PairingProblem.GATEWAY_TOO_OLD)
+        assertTrue(pairing, "版本太旧" in pairing && "更新网关" in pairing)
+    }
+
+    @Test
     fun `每种配对失败的话两两不同，需要在网关上重新生成的几种都这么说`() {
         val texts = PairingProblem.entries.map { describeProblem(it) }
 

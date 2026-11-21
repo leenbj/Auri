@@ -14,6 +14,7 @@ import app.auri.sync.discovery.GatewayLocator
 import app.auri.sync.engine.RecordLibrarySubmissionSource
 import app.auri.sync.engine.SyncEngine
 import app.auri.sync.engine.dueUpdates
+import app.auri.sync.gateway.ContractGuard
 import app.auri.sync.gateway.DeviceInfo
 import app.auri.sync.gateway.SubmissionBuilder
 import app.auri.sync.http.HttpExchangeFactory
@@ -104,6 +105,9 @@ class SyncRuntime(
 
     private val pairingService = PairingService(pairing, http, discovery, clock, device, log)
     private val locator = GatewayLocator(http, discovery, log)
+
+    /** 手机只和说合同 1.2 的网关说话（评审 R7）：同步引擎与目的地管理共用，同一份配对在一个进程里只问一次网关的版本。 */
+    private val contract = ContractGuard()
     private val engine = SyncEngine(
         jobs = jobs,
         pairing = pairing,
@@ -114,6 +118,7 @@ class SyncRuntime(
         policy = policy,
         additions = dispatch,
         log = log,
+        contract = contract,
     )
     private val loop = SyncLoop(engine, jobs, network, clock, log = log, additions = dispatch)
 
@@ -193,7 +198,7 @@ class SyncRuntime(
      * [authenticator] 是界面层给的本机核验（生物识别）：生成或轮换凭证前每次都要过它。
      */
     fun destinationService(authenticator: LocalAuthenticator): DestinationService =
-        DestinationService(pairing, http, locator, dispatch, jobs, authenticator, clock, log)
+        DestinationService(pairing, http, locator, dispatch, jobs, authenticator, clock, log, contract)
 
     companion object {
         private const val PAIRING_KEY_ALIAS = "auri.sync.pairing.v1"

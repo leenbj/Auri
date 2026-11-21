@@ -42,7 +42,7 @@ object SyncSamples {
     fun submission(recordId: String = RECORD_ID, revision: Int = 1, text: String = "你好，这是一条测试口述"): RevisionSubmission {
         val sha = sha256Hex(text)
         val body = buildJsonObject {
-            put("schema_version", "1.1")
+            put("schema_version", "1.2")
             put("record_id", recordId)
             put("revision", revision)
             putJsonObject("content") {

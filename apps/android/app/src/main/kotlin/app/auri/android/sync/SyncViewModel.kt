@@ -6,6 +6,7 @@ import app.auri.sync.SyncLog
 import app.auri.sync.engine.RetryPolicy
 import app.auri.sync.pairing.PairingOutcome
 import app.auri.sync.pairing.PayloadParse
+import app.auri.sync.pairing.PayloadProblem
 import app.auri.sync.pairing.PairingPayload
 import app.auri.sync.status.SyncStatus
 import kotlinx.coroutines.CancellationException
@@ -85,6 +86,9 @@ enum class PairingProblem {
     /** 读到的二维码不是合规的 Auri 配对载荷。 */
     INVALID_QR,
 
+    /** 二维码是合同 1.2 之前的网关出的（评审 R7）：不是二维码坏了，是网关要先更新；没有向它发任何请求。 */
+    GATEWAY_TOO_OLD,
+
     /** 二维码已过期（按手机时钟判断）：在网关上重新生成。 */
     EXPIRED,
 
@@ -160,7 +164,8 @@ class SyncViewModel(
         val payload = when (val parsed = PairingPayload.parse(text)) {
             is PayloadParse.Valid -> parsed.payload
             is PayloadParse.Invalid -> {
-                progress.compareAndSet(current, PairingProgress.Failed(PairingProblem.INVALID_QR))
+                val problem = if (parsed.problem == PayloadProblem.GATEWAY_TOO_OLD) PairingProblem.GATEWAY_TOO_OLD else PairingProblem.INVALID_QR
+                progress.compareAndSet(current, PairingProgress.Failed(problem))
                 return
             }
         }

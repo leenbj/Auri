@@ -6,6 +6,8 @@ import app.auri.capture.machine.Outcome
 import app.auri.sync.SyncLog
 import app.auri.sync.discovery.GatewayLocator
 import app.auri.sync.discovery.Located
+import app.auri.sync.gateway.ContractAnswer
+import app.auri.sync.gateway.ContractGuard
 import app.auri.sync.gateway.GatewayClient
 import app.auri.sync.gateway.GatewayResult
 import app.auri.sync.gateway.RecordStatus
@@ -19,6 +21,8 @@ import app.auri.sync.pairing.NeedsUser
 import app.auri.sync.pairing.PairedGateway
 import app.auri.sync.pairing.PairingState
 import app.auri.sync.pairing.PairingStore
+import app.auri.sync.pairing.clearGatewayTooOld
+import app.auri.sync.pairing.markGatewayTooOld
 import app.auri.sync.policy.DataFlowPolicy
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
@@ -71,6 +75,9 @@ enum class SendResult {
  * - **文字入库与 Delivery 各管各的**（评审 B2）：同步任务只管把 Revision 送进网关，不等任何人的决定；预览确认的 Destination 在用户确认之后才有 Delivery，
  *   由每一轮同步的最后一步 [addDeliveries] 向网关给这个**已入库的** Revision 追加（网关上幂等）。追加不改任务的状态：失败只影响它自己，按有界退避重来
  *   （[additionsRetryAt] 给 SyncLoop 排计时）；永久拒绝的记进发送账、不再重试。网关回答“有了”才记下，进程在任何一步被杀，下一轮都能从账里重新算出还欠哪些。
+ * - **只和说合同 1.2 的网关说话**（评审 R7）：联系网关传任何东西之前，先问它会哪些合同版本（[ContractGuard]）。太旧就一个数据请求都不发，
+ *   配对记录打上“网关太旧”、任务退回等待（不是永久拒绝）；更新网关之后这一轮的开头自己问出来、清掉标记，不需要重新配对。
+ *   没问成（连不上、网关出错、读不懂）同样什么都不发，也不冤枉网关“太旧”。
  * - **结果跟着配对走**：请求发出时是哪份配对，结果就只对那份有效。途中用户重新配对、改配别的网关，晚到的结果（被拒、
  *   公钥不符、甚至“已入库”）全部作废，任务回到排队、对新配对重新来过；一轮同步里缓存的网关地址也只对同一份配对有效。
  *
@@ -88,6 +95,7 @@ class SyncEngine(
     private val retry: RetryPolicy = RetryPolicy(),
     private val log: SyncLog = SyncLog.None,
     private val onDecision: (SyncDecision) -> Unit = {},
+    private val contract: ContractGuard = ContractGuard(),
 ) {
     private val passLock = Mutex()
     private val jobLocks = ConcurrentHashMap<JobKey, Mutex>()
@@ -116,8 +124,9 @@ class SyncEngine(
                     log.event("pass.held-by-policy")
                     return
                 }
-                if (usableGateway() == null) return // 没配对、记录丢失或连接要用户处理：什么都不能发
                 val location = Location()
+                healContract(location) // 配对记录上有“网关太旧”的标记：先问一次网关现在会不会说 1.2，会了就清掉，下面照常发
+                if (usableGateway() == null) return // 没配对、记录丢失或连接要用户处理：什么都不能发
                 probe(location)
                 for (job in jobs.all()) {
                     if (job.state != SyncState.PENDING) continue
@@ -269,6 +278,16 @@ class SyncEngine(
         }
         rememberAddress(gateway, address)
 
+        // 请求要离开手机了：先确认这台网关说的是手机说的合同版本（评审 R7）。放在构造提交之前——旧网关不该冻结意图标签（评审 M3）
+        val client = GatewayClient(http.forPin(gateway.pin))
+        when (contract.check(gateway, address, client)) {
+            ContractAnswer.COMPATIBLE -> Unit
+            ContractAnswer.TOO_OLD -> return tooOld(key, gateway, wasUncertain)
+            ContractAnswer.UNCONFIRMED -> return waiting(key, wasUncertain)
+            ContractAnswer.AUTH_REJECTED -> return connectionBlocked(key, gateway, NeedsUser.AUTH_REJECTED, BlockedReason.AUTH_REJECTED, wasUncertain)
+            ContractAnswer.KEY_MISMATCH -> return connectionBlocked(key, gateway, NeedsUser.KEY_MISMATCH, BlockedReason.KEY_MISMATCH, wasUncertain)
+        }
+
         // 网关找到了，请求马上要离开手机：到这一刻才为它构造提交——构造提交就是冻结意图标签（评审 M3）。
         // 没网、等网关、排队的时候标签都还能改；构造出来的提交带的是冻结的那个值。
         // 换了网关的话，按旧网关规划的目标在这里（构造之前）先作废：旧网关的 Destination 编号不许进新网关的请求（评审 H2）
@@ -277,7 +296,6 @@ class SyncEngine(
         // 请求离开手机之前的最后一问：刚才被收回的，什么都没发出去，退回等待（“不确定”还原成发送之前的样子）
         if (!mayTransmit()) return waiting(key, wasUncertain)
 
-        val client = GatewayClient(http.forPin(gateway.pin))
         if (wasUncertain) {
             // 上一次可能已经送到：先问网关。只有网关明确说“已入库”才确认，明确说“没有”才往下重发；问不到就不重发。
             val answer = client.recordStatus(address, gateway.token, key.recordId)
@@ -378,6 +396,16 @@ class SyncEngine(
         return SendResult.CONNECTION_BLOCKED
     }
 
+    /**
+     * 网关太旧（评审 R7）：什么都没发。先记进配对记录（之后不再发带令牌的请求，直到更新之后自动恢复），再把任务退回等待网关——
+     * 不是永久拒绝：用户更新网关之后，同一条文字照常发出去，没有一条会被永久拒绝。
+     */
+    private suspend fun tooOld(key: JobKey, gateway: PairedGateway, wasUncertain: Boolean): SendResult {
+        log.event("contract.gateway-too-old")
+        if (!pairing.markGatewayTooOld(gateway)) return stale(key) // 途中重新配对了：这是旧配对的结论，作废
+        return waiting(key, wasUncertain)
+    }
+
     /** 把连接问题记进配对记录（之后不再发任何带令牌的请求）。配对记录已经不是 [gateway] 那份时什么也不写，返回 false。 */
     private suspend fun recordConnectionProblem(gateway: PairedGateway, needs: NeedsUser): Boolean =
         pairing.update { current -> if (current.isSamePairing(gateway)) current.copy(needsUser = needs) else null }
@@ -430,6 +458,25 @@ class SyncEngine(
         }
         rememberAddress(gateway, address)
         val client = GatewayClient(http.forPin(gateway.pin))
+        // 追加也是联系网关：先确认版本（旧网关没有这个端点，发过去只会被当成永久拒绝，评审 R7）
+        when (contract.check(gateway, address, client)) {
+            ContractAnswer.COMPATIBLE -> Unit
+            ContractAnswer.TOO_OLD -> {
+                pairing.markGatewayTooOld(gateway)
+                return additionsRetryLater() // 追加没有任务表的计时器：排下一次重问，更新网关之后 runOnce 开头自己恢复
+            }
+
+            ContractAnswer.UNCONFIRMED -> return additionsRetryLater()
+            ContractAnswer.AUTH_REJECTED -> {
+                recordConnectionProblem(gateway, NeedsUser.AUTH_REJECTED)
+                return
+            }
+
+            ContractAnswer.KEY_MISMATCH -> {
+                recordConnectionProblem(gateway, NeedsUser.KEY_MISMATCH)
+                return
+            }
+        }
         for (addition in due) {
             if (!mayTransmit()) return // 请求离开手机之前再问一次放行
             val result = client.addDeliveries(address, gateway.token, addition.key.recordId, addition.key.revision, addition.intent, listOf(addition.destinationId))
@@ -471,6 +518,25 @@ class SyncEngine(
     }
 
     // ---- 其余 ----
+
+    /**
+     * 配对记录上有“网关太旧”的标记（评审 R7）：问一次网关现在会哪些版本。已经更新了就清掉标记（不需要重新配对），这一轮照常发；
+     * 还是旧的、或这会儿问不成，保持原样，欠着追加的话给它排下一次重问（任务那边有 SyncLoop 对等待网关的探测退避）。
+     */
+    private suspend fun healContract(location: Location) {
+        val gateway = (pairing.load() as? PairingState.Paired)?.gateway?.takeIf { it.needsUser == NeedsUser.GATEWAY_TOO_OLD } ?: return
+        val answer = when (val located = location.get(gateway)) {
+            is Located.Reachable -> contract.check(gateway, located.address, GatewayClient(http.forPin(gateway.pin)))
+            Located.Unreachable -> ContractAnswer.UNCONFIRMED
+            Located.KeyMismatch -> ContractAnswer.KEY_MISMATCH
+        }
+        when (answer) {
+            ContractAnswer.COMPATIBLE -> pairing.clearGatewayTooOld(gateway)
+            ContractAnswer.TOO_OLD, ContractAnswer.UNCONFIRMED -> if (additions.due().isNotEmpty()) additionsRetryLater()
+            ContractAnswer.AUTH_REJECTED -> recordConnectionProblem(gateway, NeedsUser.AUTH_REJECTED)
+            ContractAnswer.KEY_MISMATCH -> recordConnectionProblem(gateway, NeedsUser.KEY_MISMATCH)
+        }
+    }
 
     private suspend fun probe(location: Location) {
         if (!mayTransmit()) return // 探测本身就是一次联系
@@ -543,8 +609,6 @@ class SyncEngine(
             else -> Standing.CONFLICTING
         }
     }
-
-    private fun PairedGateway.isSamePairing(other: PairedGateway) = deviceId == other.deviceId && pairedAt == other.pairedAt && pin == other.pin
 
     private companion object {
         val NO_REQUEST_IN_FLIGHT = setOf(SyncState.PENDING, SyncState.RETRY_SCHEDULED, SyncState.WAITING_GATEWAY)

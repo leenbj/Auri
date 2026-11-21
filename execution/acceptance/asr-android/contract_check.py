@@ -27,7 +27,7 @@ import semantic_rules  # noqa: E402
 
 SCHEMA_DIR = REPO_ROOT / "contracts" / "schemas"
 MACHINE_FILE = REPO_ROOT / "contracts" / "fixtures" / "state-machines" / "transcription.machine.json"
-BASE_URI = "https://contracts.auri.invalid/1.1/"
+BASE_URI = "https://contracts.auri.invalid/1.2/"
 
 # 文件名 → 它必须满足的 schema
 FILE_SCHEMAS = {
@@ -80,7 +80,7 @@ PRESETS = {
 }
 
 # 终态 → (是否必须有修订内容, 允许的错误码；None 表示可以没有 error.json)
-# FAILED 允许没有错误文件：合同 1.1 没有“引擎内部失败”的错误码，不硬套一个（README 的合同缺口）。
+# FAILED 允许没有错误文件：合同 1.2（1.1 同样）没有“引擎内部失败”的错误码，不硬套一个（README 的合同缺口）。
 STATE_RULES = {
     "SUCCEEDED": (True, set()),
     "NO_SPEECH": (False, {"ASR_NO_SPEECH"}),

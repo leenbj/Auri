@@ -3,7 +3,7 @@
   "expect": "valid",
   "description": "已撤销的 Destination。",
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "destination_id": "65ea2953-505c-5c6f-9474-7cd5b8474104",
     "display_name": "写作助手",
     "send_mode": "auto_send",

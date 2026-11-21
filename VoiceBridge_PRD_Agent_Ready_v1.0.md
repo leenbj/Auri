@@ -1569,5 +1569,6 @@ T-017 的声音对照不能单独取代系统路由证据。物理测试应分�
 | 1.2 | 2026-11-15 | 同步产品负责人的新要求：Handy 只作流程参考（ADR-0015）；VAD 只在会话内过滤静音（ADR-0016）；qwen3-asr-1.7b 列为默认本地模型候选（ADR-0017）；网关只在局域网、自签证书加指纹绑定、V1 不做手机直连 MCP（ADR-0018，取代 ADR-008 的公网域名部分）；V1 只做本地转录，DEV-011/012 推迟（ADR-0019）；第 28 章补登 ADR-0014 至 0019。 |
 | 1.3 | 2026-11-15 | DEV-002 合同冻结：新增 `contracts/schemas/`、`contracts/fixtures/` 与 `tests/contract/`；投递状态 `ACKED`→`ACKNOWLEDGED`；Revision 状态去掉 `DELETED`；同步状态新增 `WAITING_GATEWAY`；补 `BLOCKED` 的离开规则；请求体 `transcript`→`content`、`transcript_hash`→`text_sha256`，新增 `end_reason`、两个时长与 `speech_segments`；新增错误码 `GATEWAY_KEY_MISMATCH`、`RECORD_NOT_ORIGIN_DEVICE`、`RECORD_DELETED`；新增 ADR-0020，修订 ADR-009、ADR-0018；第 17.1 节八个原生适配器类型随后补齐（`adapter.schema.json`）。 |
 | 1.4 | 2026-11-16 | 数据合同由 `1.0` 升至 `1.1`（产品负责人 2026-11-16 批准）：在 `common.schema.json#/$defs/error_code` 与第 14 章新增 `GATEWAY_AUTH_INVALID`、`REQUEST_INVALID`、`PAIRING_CODE_INVALID` 三个错误码，同步提升 `schema_version` 至 `1.1` 并补齐有效错误样本。 |
+| 1.5 | 2026-11-21 | 数据合同由 `1.1` 升至 `1.2`（Ticket 22 再评审 R7，由协调者决定）：Destination 资源新增可选字段 `credential_active`、新增给已入库 Revision 追加 Delivery 的端点与两条消息；网关规则补充撤销暂停、撤销截止点、每个 Tenant 至多 50 个有效 Destination；`GET /v1/capabilities` 只通告 `1.2`，手机要求 1.2 的网关。没有新增错误码，没有改状态机、已有字段或枚举；详见 `contracts/README.md` 的版本记录。 |
 
 **最终原则：优先证明“耳机真的能控制、声音真的来自耳机、文字真的被正确交付”，再扩展界面和智能功能。平台不允许的能力必须诚实呈现，不能靠隐蔽录音或虚假成功补齐。**

@@ -3,7 +3,7 @@
   "expect": "valid",
   "description": "配对码未知、已过期或已被使用。",
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "code": "PAIRING_CODE_INVALID",
     "message": "配对码无效、已过期或已被使用，请重新生成配对码。",
     "retryable": false,

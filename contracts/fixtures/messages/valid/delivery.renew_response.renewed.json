@@ -3,7 +3,7 @@
   "expect": "valid",
   "description": "续租成功。",
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "delivery_id": "f2902603-449e-5ad9-beee-8c3c48c0f1f7",
     "lease_token": "fixture-lease-token-not-a-real-secret-2",
     "lease_expires_at": "2026-11-15T03:04:00Z"

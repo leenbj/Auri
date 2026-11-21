@@ -7,6 +7,8 @@ import app.auri.sync.discovery.GatewayLocator
 import app.auri.sync.discovery.Located
 import app.auri.sync.engine.Refusal
 import app.auri.sync.engine.SyncJobStore
+import app.auri.sync.gateway.ContractAnswer
+import app.auri.sync.gateway.ContractGuard
 import app.auri.sync.gateway.CreateDestinationRequest
 import app.auri.sync.gateway.DeliveryOnGateway
 import app.auri.sync.gateway.Destination
@@ -21,6 +23,8 @@ import app.auri.sync.pairing.NeedsUser
 import app.auri.sync.pairing.PairedGateway
 import app.auri.sync.pairing.PairingState
 import app.auri.sync.pairing.PairingStore
+import app.auri.sync.pairing.clearGatewayTooOld
+import app.auri.sync.pairing.markGatewayTooOld
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
@@ -32,7 +36,7 @@ sealed interface ServiceFailure {
     /** 还没配对（或配对记录丢了）：先去配对。 */
     data object NotPaired : ServiceFailure
 
-    /** 连接本身要用户处理：公钥不符（要重新配对）或令牌被拒。和同步页是同一件事。 */
+    /** 连接本身要用户处理：公钥不符（要重新配对）、令牌被拒，或网关太旧（要先更新网关，不用重新配对；评审 R7）。和同步页是同一件事。 */
     data class NeedsRepair(val needs: NeedsUser) : ServiceFailure
 
     /** 这会儿连不上网关（不在同一网络、网关没开）。请求一定没有发出。 */
@@ -110,6 +114,8 @@ interface DestinationController {
  * - 生成/轮换凭证：**每次**现场核验（[LocalAuthenticator]），通过才联网；核验没过则零请求。凭证不进缓存、不进日志、不落盘。
  * - 缓存（[DispatchStore]）里只有 Destination 的公开信息（名字、模式、意图、是否已签发过凭证）。
  * - 连接问题（公钥不符、令牌被拒）只回报给调用方，不改写配对记录：那是同步引擎的职责，它下一次尝试会自己发现并记下。
+ * - 唯一的例外是“网关太旧”（评审 R7）：每个管理请求之前先问网关会哪些合同版本（[ContractGuard]，与同步引擎共用），太旧就一个请求都不发；
+ *   这个结论是这里问出来的，也是这里确认好了的，所以由这里打上与清掉配对记录上的标记，同步页与管理页说的是同一件事。
  */
 class DestinationService(
     private val pairing: PairingStore,
@@ -120,6 +126,7 @@ class DestinationService(
     private val authenticator: LocalAuthenticator,
     private val clock: Clock,
     private val log: SyncLog = SyncLog.None,
+    private val contract: ContractGuard = ContractGuard(),
 ) : DestinationController {
     private val issuing = Mutex()
 
@@ -166,7 +173,8 @@ class DestinationService(
                 is PairingState.Paired -> state.gateway
                 else -> return CredentialOutcome.Failed(ServiceFailure.NotPaired)
             }
-            gateway.needsUser?.let { return CredentialOutcome.Failed(ServiceFailure.NeedsRepair(it)) }
+            // 要重新配对的在弹指纹之前就说；“网关太旧”的标记可能已经过时（用户刚更新完网关），留给通过核验之后的 connect() 去问一次
+            gateway.needsUser?.takeIf { it != NeedsUser.GATEWAY_TOO_OLD }?.let { return CredentialOutcome.Failed(ServiceFailure.NeedsRepair(it)) }
             val known = dispatch.destinations().firstOrNull { it.destinationId == destinationId }
             if (known == null || !known.active) return CredentialOutcome.Failed(ServiceFailure.DestinationUnavailable)
 
@@ -289,11 +297,32 @@ class DestinationService(
             is PairingState.Paired -> state.gateway
             else -> return Connect.Blocked(ServiceFailure.NotPaired)
         }
-        gateway.needsUser?.let { return Connect.Blocked(ServiceFailure.NeedsRepair(it)) }
+        // “网关太旧”不是要重新配对的问题，更新网关之后自己会好：带着这个标记也再问一次版本；别的连接问题照旧直接拦
+        gateway.needsUser?.takeIf { it != NeedsUser.GATEWAY_TOO_OLD }?.let { return Connect.Blocked(ServiceFailure.NeedsRepair(it)) }
         return when (val located = locator.locate(gateway)) {
-            is Located.Reachable -> Connect.Ready(Session(gateway, located.address, GatewayClient(http.forPin(gateway.pin))))
+            is Located.Reachable -> verified(gateway, located.address)
             Located.Unreachable -> Connect.Blocked(ServiceFailure.Unreachable)
             Located.KeyMismatch -> Connect.Blocked(ServiceFailure.NeedsRepair(NeedsUser.KEY_MISMATCH))
+        }
+    }
+
+    /** 连上之后、第一个管理请求之前：确认这台网关说的是手机说的合同版本（评审 R7）。太旧、没问成，一个管理请求都不发。 */
+    private suspend fun verified(gateway: PairedGateway, address: GatewayAddress): Connect {
+        val client = GatewayClient(http.forPin(gateway.pin))
+        return when (contract.check(gateway, address, client)) {
+            ContractAnswer.COMPATIBLE -> {
+                if (gateway.needsUser == NeedsUser.GATEWAY_TOO_OLD) pairing.clearGatewayTooOld(gateway) // 网关已经更新：同步页一起恢复
+                Connect.Ready(Session(gateway, address, client))
+            }
+
+            ContractAnswer.TOO_OLD -> {
+                pairing.markGatewayTooOld(gateway)
+                Connect.Blocked(ServiceFailure.NeedsRepair(NeedsUser.GATEWAY_TOO_OLD))
+            }
+
+            ContractAnswer.AUTH_REJECTED -> Connect.Blocked(ServiceFailure.NeedsRepair(NeedsUser.AUTH_REJECTED))
+            ContractAnswer.KEY_MISMATCH -> Connect.Blocked(ServiceFailure.NeedsRepair(NeedsUser.KEY_MISMATCH))
+            ContractAnswer.UNCONFIRMED -> Connect.Blocked(ServiceFailure.Unreachable) // 没问成不是“太旧”：按连不上处理，请求一个都没发
         }
     }
 

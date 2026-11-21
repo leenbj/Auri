@@ -41,11 +41,14 @@ enum class SyncHeadline {
     UP_TO_DATE,
 }
 
-/** 需要用户处理的原因：前三项是连接层面的（对所有任务都成立），其余与 [BlockedReason] 一一对应。顺序即显示顺序。 */
+/** 需要用户处理的原因：前四项是连接层面的（对所有任务都成立），其余与 [BlockedReason] 一一对应。顺序即显示顺序。 */
 enum class UserCause {
     KEY_MISMATCH,
     AUTH_REJECTED,
     PAIRING_LOST,
+
+    /** 网关说的合同版本比手机要的旧（评审 R7）：处置是更新网关，不用重新配对；没有任何一条文字被拒绝。 */
+    GATEWAY_TOO_OLD,
     VERSION_CONFLICT,
     RECORD_DELETED,
     NOT_ORIGIN_DEVICE,
@@ -107,6 +110,7 @@ data class SyncStatus(
                 is PairingState.Paired -> when (pairing.gateway.needsUser) {
                     NeedsUser.KEY_MISMATCH -> causes += UserCause.KEY_MISMATCH
                     NeedsUser.AUTH_REJECTED -> causes += UserCause.AUTH_REJECTED
+                    NeedsUser.GATEWAY_TOO_OLD -> causes += UserCause.GATEWAY_TOO_OLD
                     null -> Unit
                 }
             }

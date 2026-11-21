@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.auri.invalid/1.1/revision.schema.json",
+  "$id": "https://contracts.auri.invalid/1.2/revision.schema.json",
   "title": "Revision 的提交、入库结果与 Record 删除",
   "description": "手机与网关之间的 HTTP 请求体和响应体。tenant_id 不出现在任何请求体里，只由认证结果得出（ADR-0013）。",
   "$defs": {
@@ -245,7 +245,7 @@
     },
     "delivery_additions": {
       "title": "POST /v1/records/{record_id}/revisions/{revision}/deliveries 的请求体",
-      "description": "给一个已经入库的 Revision 追加 Delivery（1.1 的兼容新增，Ticket 22 评审 B2）：预览确认的 Destination 在用户确认之后才有 Delivery，自动发送的不必等它。Revision 的正文、哈希、入库结果都不变；每个 (Revision, Destination) 只会有一份 Delivery，重复请求回答现有的那份。intent 是这批 Delivery 自己的标签（Agent 看到的就是它），目的地必须允许它。",
+      "description": "给一个已经入库的 Revision 追加 Delivery（合同 1.2 新增，Ticket 22 评审 B2）：预览确认的 Destination 在用户确认之后才有 Delivery，自动发送的不必等它。Revision 的正文、哈希、入库结果都不变；每个 (Revision, Destination) 只会有一份 Delivery，重复请求回答现有的那份。intent 是这批 Delivery 自己的标签（Agent 看到的就是它），目的地必须允许它。",
       "type": "object",
       "additionalProperties": false,
       "required": ["schema_version", "intent", "destination_ids"],

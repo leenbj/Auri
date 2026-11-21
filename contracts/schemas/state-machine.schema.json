@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.auri.invalid/1.1/state-machine.schema.json",
+  "$id": "https://contracts.auri.invalid/1.2/state-machine.schema.json",
   "title": "状态机定义与事件序列样本的文件格式",
   "description": "与语言无关。三端和网关读同一批文件做测试。转移表里没有列出的（状态，事件）组合一律视为被拒绝：状态不变，并返回错误。",
   "$defs": {

@@ -1,5 +1,6 @@
 package app.auri.sync.pairing
 
+import app.auri.sync.gateway.Wire
 import app.auri.sync.tls.SpkiPin
 import java.time.Instant
 import java.time.OffsetDateTime
@@ -34,6 +35,9 @@ enum class PayloadProblem {
     MISSING_FIELD,
     UNKNOWN_FIELD,
     WRONG_SCHEMA_VERSION,
+
+    /** 二维码是合同 1.2 之前的网关出的（评审 R7）：不是二维码坏了，是网关要先更新；这时一个请求都不该发。 */
+    GATEWAY_TOO_OLD,
     BAD_GATEWAY_ID,
     BAD_ADDRESSES,
     BAD_HOST,
@@ -51,9 +55,9 @@ sealed interface PayloadParse {
 }
 
 /**
- * 网关命令行生成、二维码里携带的配对载荷（pairing.schema.json#/$defs/payload，合同 1.1）。
+ * 网关命令行生成、二维码里携带的配对载荷（pairing.schema.json#/$defs/payload，合同 1.2）。
  *
- * 载荷来自“摄像头看到的任何东西”，所以按合同逐项严格校验：字段不多不少（additionalProperties 为 false）、版本只认 1.1、
+ * 载荷来自“摄像头看到的任何东西”，所以按合同逐项严格校验：字段不多不少（additionalProperties 为 false）、版本只认 1.2、
  * 地址里不能夹带换行（我们自己拼 Host 头）。校验不过就拒绝，不猜、不容忍。
  * 过期是另一回事（取决于现在的时间）：用 [isExpired] 判断。
  */
@@ -73,7 +77,7 @@ class PairingPayload(
 
     companion object {
         const val SERVICE_TYPE = "_auri-gateway._tcp"
-        const val SCHEMA_VERSION = "1.1"
+        const val SCHEMA_VERSION = "1.2"
 
         // 一份合法载荷（8 个地址）不到 1 KiB；留足余量但不允许把任意大的东西喂给解析器
         private const val MAX_INPUT_CHARS = 4096
@@ -99,7 +103,8 @@ class PairingPayload(
             if (!root.keys.all { it in TOP_LEVEL_KEYS }) return invalid(PayloadProblem.UNKNOWN_FIELD)
             if (!root.keys.containsAll(TOP_LEVEL_KEYS)) return invalid(PayloadProblem.MISSING_FIELD)
 
-            if (root.string("schema_version") != SCHEMA_VERSION) return invalid(PayloadProblem.WRONG_SCHEMA_VERSION)
+            val version = root.string("schema_version")
+            if (version != SCHEMA_VERSION) return invalid(if (version in Wire.OLDER_VERSIONS) PayloadProblem.GATEWAY_TOO_OLD else PayloadProblem.WRONG_SCHEMA_VERSION)
             val gatewayId = root.string("gateway_id")?.takeIf { UUID.matches(it) } ?: return invalid(PayloadProblem.BAD_GATEWAY_ID)
 
             val rawAddresses = root.getValue("addresses") as? JsonArray

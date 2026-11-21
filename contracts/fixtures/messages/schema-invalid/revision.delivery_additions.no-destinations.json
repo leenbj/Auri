@@ -7,7 +7,7 @@
     "keyword": "minItems"
   },
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "intent": "context",
     "destination_ids": []
   }

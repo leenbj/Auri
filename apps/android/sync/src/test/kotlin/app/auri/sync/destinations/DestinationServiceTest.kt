@@ -85,7 +85,7 @@ class DestinationServiceTest {
     fun `网关别的拒绝（比如请求不合规的 422）不会被当成上限：界面仍按网关给的状态与错误码如实说`() = run { rig ->
         rig.lan.hosts.getValue(SyncSamples.LAN_ADDRESS).handler = { request ->
             if (request.method == "POST") {
-                app.auri.sync.testing.ScriptedExchange.json(422, """{"schema_version":"1.1","code":"REQUEST_INVALID","message":"x","retryable":false,"required_action":null,"operation_id":null}""")
+                app.auri.sync.testing.ScriptedExchange.json(422, """{"schema_version":"1.2","code":"REQUEST_INVALID","message":"x","retryable":false,"required_action":null,"operation_id":null}""")
             } else {
                 rig.server.handle(request)
             }
@@ -119,7 +119,7 @@ class DestinationServiceTest {
     @Test
     fun `网关回答读不懂或请求中途断了：报“结果不确定”，不是“失败”也不是“成功”，缓存不动`() = run { rig ->
         rig.lan.hosts.getValue(SyncSamples.LAN_ADDRESS).handler = { request ->
-            if (request.method == "POST") app.auri.sync.testing.ScriptedExchange.json(200, """{"schema_version":"1.1"}""") else rig.server.handle(request)
+            if (request.method == "POST") app.auri.sync.testing.ScriptedExchange.json(200, """{"schema_version":"1.2"}""") else rig.server.handle(request)
         }
 
         val result = rig.service.create(CreateDestinationRequest("写作助手", SendMode.AUTO_SEND, setOf(Intent.CONTEXT)))
@@ -131,7 +131,7 @@ class DestinationServiceTest {
     @Test
     fun `令牌被网关拒绝：要用户处理（重新配对），和同步页是同一个说法`() = run { rig ->
         rig.lan.hosts.getValue(SyncSamples.LAN_ADDRESS).handler = { request ->
-            if (request.path.startsWith("/v1/destinations")) app.auri.sync.testing.ScriptedExchange.json(401, """{"schema_version":"1.1","code":"GATEWAY_AUTH_REVOKED","message":"x","retryable":false,"required_action":null,"operation_id":null}""") else rig.server.handle(request)
+            if (request.path.startsWith("/v1/destinations")) app.auri.sync.testing.ScriptedExchange.json(401, """{"schema_version":"1.2","code":"GATEWAY_AUTH_REVOKED","message":"x","retryable":false,"required_action":null,"operation_id":null}""") else rig.server.handle(request)
         }
 
         assertEquals(ServiceFailure.NeedsRepair(NeedsUser.AUTH_REJECTED), rig.service.refresh().failure())

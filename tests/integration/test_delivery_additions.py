@@ -36,7 +36,7 @@ def add_deliveries(
     intent: str = "context",
     **overrides: Any,
 ) -> httpx.Response:
-    body: dict[str, Any] = {"schema_version": "1.1", "intent": intent, "destination_ids": destination_ids}
+    body: dict[str, Any] = {"schema_version": "1.2", "intent": intent, "destination_ids": destination_ids}
     body.update(overrides)
     return httpx.post(
         f"{gateway_process.base_url}/v1/records/{record_id}/revisions/{revision}/deliveries",
@@ -203,7 +203,7 @@ def test_addition_requests_are_refused_for_unknown_deleted_foreign_and_malformed
     no_auth = httpx.post(
         f"{world.gw.base_url}/v1/records/{record_id}/revisions/1/deliveries",
         trust_env=False,
-        json={"schema_version": "1.1", "intent": "context", "destination_ids": [destination.destination_id]},
+        json={"schema_version": "1.2", "intent": "context", "destination_ids": [destination.destination_id]},
         timeout=5.0,
     )
     assert no_auth.status_code == 401
@@ -237,7 +237,7 @@ def test_malformed_addition_bodies_are_rejected_by_the_contract(world: World) ->
         "目的地不是 UUID": {"destination_ids": ["nope"]},
     }
     for name, overrides in bodies.items():
-        body = {"schema_version": "1.1", "intent": "context", "destination_ids": [ok], **overrides}
+        body = {"schema_version": "1.2", "intent": "context", "destination_ids": [ok], **overrides}
         if body["intent"] is None:
             del body["intent"]
         response = httpx.post(
@@ -264,5 +264,5 @@ def test_exactly_fifty_destinations_can_be_added_in_one_request(world: World) ->
 
 
 def test_a_valid_request_body_matches_the_contract_it_is_documented_by(world: World) -> None:
-    body = {"schema_version": "1.1", "intent": "context", "destination_ids": [str(uuid.uuid4())]}
+    body = {"schema_version": "1.2", "intent": "context", "destination_ids": [str(uuid.uuid4())]}
     assert_valid_contract(DELIVERY_ADDITIONS, body)

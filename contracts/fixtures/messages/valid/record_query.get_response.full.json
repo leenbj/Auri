@@ -3,7 +3,7 @@
   "expect": "valid",
   "description": "完整返回指定 Revision 正文与内容信任标记。",
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
     "revision": 3,
     "supersedes_revisions": [1],

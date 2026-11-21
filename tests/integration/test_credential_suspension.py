@@ -82,7 +82,7 @@ def add_deliveries(world: World, record_id: str, destination_ids: list[str]) -> 
     return httpx.post(
         f"{world.gw.base_url}/v1/records/{record_id}/revisions/1/deliveries",
         trust_env=False,
-        json={"schema_version": "1.1", "intent": "context", "destination_ids": destination_ids},
+        json={"schema_version": "1.2", "intent": "context", "destination_ids": destination_ids},
         headers={"Authorization": f"Bearer {world.device_token}"},
         timeout=5.0,
     )
@@ -150,7 +150,7 @@ def test_the_destination_resource_says_whether_a_credential_is_active(world: Wor
     created = httpx.post(
         f"{world.gw.base_url}/v1/destinations",
         trust_env=False,
-        json={"schema_version": "1.1", "display_name": "刚创建的", "send_mode": "preview_confirm", "allowed_intents": ["context"]},
+        json={"schema_version": "1.2", "display_name": "刚创建的", "send_mode": "preview_confirm", "allowed_intents": ["context"]},
         headers={"Authorization": f"Bearer {world.device_token}"},
         timeout=5.0,
     )
@@ -217,7 +217,7 @@ def test_a_destination_that_never_had_a_credential_is_not_suspended_it_keeps_col
     created = httpx.post(
         f"{world.gw.base_url}/v1/destinations",
         trust_env=False,
-        json={"schema_version": "1.1", "display_name": "还没有凭证的", "send_mode": "auto_send", "allowed_intents": ["context"]},
+        json={"schema_version": "1.2", "display_name": "还没有凭证的", "send_mode": "auto_send", "allowed_intents": ["context"]},
         headers={"Authorization": f"Bearer {world.device_token}"},
         timeout=5.0,
     )

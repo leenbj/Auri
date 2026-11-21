@@ -4,7 +4,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
-// 本文件是 contracts/schemas/adapter.schema.json（合同 1.1）八个类型的 Kotlin 镜像：字段名、取值、约束一一对应。
+// 本文件是 contracts/schemas/adapter.schema.json（合同 1.2）八个类型的 Kotlin 镜像：字段名、取值、约束一一对应。
 // 这些类型在进程内传递，不带 schema_version，也不是网络消息；序列化只用于样本对表与验收输出。
 // “原生层与共享层都要校验，不信任另一端已经检查”：约束写在构造函数里，构造不出非法值；
 // JSON Schema 表达不了的规则（SR-02/03/04）在 ContractRules 里，和 tests/contract/semantic_rules.py 同一套规则。

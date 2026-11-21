@@ -1,7 +1,7 @@
 """Black-box security & contract rejection tests (Checklist items 2, 6, 7).
 
 All rejection responses are validated strictly against contracts/schemas/error.schema.json
-(contracts v1.1) and verified through the HTTP interface to leave no stored side effects.
+(contracts v1.2) and verified through the HTTP interface to leave no stored side effects.
 """
 from __future__ import annotations
 

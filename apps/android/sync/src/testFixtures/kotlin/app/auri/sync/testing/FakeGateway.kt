@@ -7,6 +7,7 @@ import app.auri.sync.http.TransportFailure
 import java.time.Instant
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -90,6 +91,26 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
     /** 追加时网关“答复成功却没有为它建”的 Destination（真网关不会这样；用来验证手机不假设追加一定建成）。 */
     val dropFromAdditions = HashSet<String>()
 
+    /**
+     * 这台网关说哪些合同版本（GET /v1/capabilities 通告它们，评审 R7）。默认只说手机要的 1.2。改成 ["1.1"] 就是一台没升级的网关：
+     * 它的回答带的是旧版本（手机严格读取会读不懂），带着 1.2 的请求被它拒绝（422，和真网关按 schema 校验的结果一样）。
+     */
+    @Volatile
+    var supportedVersions: List<String> = listOf("1.2")
+
+    private val wireVersion: String get() = supportedVersions.first()
+
+    /** 收到的版本询问次数（不进 [calls]：和健康检查一样不是数据请求，已有测试对 [calls] 的断言不受影响）。 */
+    val capabilityCalls = AtomicInteger()
+
+    /** 下一次版本询问的故障（只用一次）：连接层失败，或网关回错误。 */
+    @Volatile
+    var capabilitiesFault: Fault? = null
+
+    /** 非 null 时，版本询问回答这段原文（模拟读不懂、或通告了无法判断的版本）。 */
+    @Volatile
+    var capabilitiesRaw: String? = null
+
     /** 到达服务器逻辑的 PUT / 追加 / 状态查询，按顺序："PUT <record>#<n>"、"POST deliveries <record>#<n>"、"GET status <record>"（健康检查不记）。 */
     val calls = CopyOnWriteArrayList<String>()
 
@@ -142,6 +163,7 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
 
     suspend fun handle(request: HttpRequest): HttpReply = when {
         request.method == "GET" && request.path == "/health" -> ScriptedExchange.json(200, """{"status":"ok"}""")
+        request.method == "GET" && request.path == "/v1/capabilities" -> capabilities()
         request.method == "PUT" && PUT_PATH.matches(request.path) -> put(request)
         request.method == "POST" && ADDITION_PATH.matches(request.path) -> addDeliveries(request)
         request.method == "GET" && STATUS_PATH.matches(request.path) -> status(request)
@@ -151,6 +173,29 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
         request.method == "POST" && CREDENTIAL_PATH.matches(request.path) -> issueCredential(request, CREDENTIAL_PATH.matchEntire(request.path)!!.groupValues[1])
         else -> error(404, "REQUEST_INVALID", false)
     }
+
+    private fun capabilities(): HttpReply {
+        capabilityCalls.incrementAndGet()
+        val fault = capabilitiesFault
+        capabilitiesFault = null
+        when (fault) {
+            is Fault.Transport -> throw fault.failure
+            Fault.LoseRequest, Fault.StoreThenLoseResponse -> throw TransportFailure.Interrupted()
+            is Fault.Reject -> return error(fault.status, fault.code, fault.retryable)
+            null -> Unit
+        }
+        capabilitiesRaw?.let { return ScriptedExchange.json(200, it) }
+        val versions = supportedVersions.joinToString(",") { "\"$it\"" }
+        return ScriptedExchange.json(
+            200,
+            """{"schema_version":"$wireVersion","gateway_version":"fake","supported_schema_versions":[$versions],""" +
+                """"features":{"cloud_asr":false,"record_read_tools":true,"delivery_tools":true,"mdns_discovery":true,"lan_only_tls":true},"limits":{}}""",
+        )
+    }
+
+    /** 真网关按 schema 校验请求体：版本不是它支持的，整个请求 422，什么也不做。 */
+    private fun versionRefused(body: JsonObject): HttpReply? =
+        if ((body["schema_version"] as? JsonPrimitive)?.takeIf { it.isString }?.content in supportedVersions) null else error(422, "REQUEST_INVALID", false)
 
     private suspend fun nextFault(): Fault? {
         val gate = holdNext
@@ -166,6 +211,7 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
         val key = JobKey(recordId, revision.toInt())
         calls += "PUT $recordId#$revision"
         val body = Json.parseToJsonElement(request.body!!.toString(Charsets.UTF_8)).jsonObject
+        versionRefused(body)?.let { return it }
         val sha = body.getValue("content").jsonObject.getValue("text_sha256").jsonPrimitive.content
         val publication = body["publication"]?.jsonObject
         val intent = publication?.get("intent")?.jsonPrimitive?.content ?: "context"
@@ -188,7 +234,7 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
         operations += 1
         return ScriptedExchange.json(
             200,
-            """{"schema_version":"1.1","operation_id":"${operationId()}","record_id":"$recordId","revision":$revision,"text_sha256":"$sha",""" +
+            """{"schema_version":"$wireVersion","operation_id":"${operationId()}","record_id":"$recordId","revision":$revision,"text_sha256":"$sha",""" +
                 """"stored_at":"${iso(now())}","duplicate":${existing != null},"superseded_revisions":[],"deliveries":${deliveriesOn(key)}}""",
         )
     }
@@ -214,6 +260,7 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
         val key = JobKey(recordId, revision.toInt())
         calls += "POST deliveries $recordId#$revision"
         val body = Json.parseToJsonElement(request.body!!.toString(Charsets.UTF_8)).jsonObject
+        versionRefused(body)?.let { return it }
         additionBodies += body
         val intent = body.getValue("intent").jsonPrimitive.content
         val ids = body.getValue("destination_ids").jsonArray.map { it.jsonPrimitive.content }
@@ -234,7 +281,7 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
         operations += 1
         return ScriptedExchange.json(
             200,
-            """{"schema_version":"1.1","record_id":"$recordId","revision":$revision,"deliveries":${deliveriesOn(key, ids)}}""",
+            """{"schema_version":"$wireVersion","record_id":"$recordId","revision":$revision,"deliveries":${deliveriesOn(key, ids)}}""",
         )
     }
 
@@ -285,7 +332,7 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
         }
         return ScriptedExchange.json(
             200,
-            """{"schema_version":"1.1","record_id":"$recordId","origin_device_id":"$originDeviceId","deleted":$deleted,"deleted_at":${if (deleted) "\"2026-11-18T08:30:00Z\"" else "null"},""" +
+            """{"schema_version":"$wireVersion","record_id":"$recordId","origin_device_id":"$originDeviceId","deleted":$deleted,"deleted_at":${if (deleted) "\"2026-11-18T08:30:00Z\"" else "null"},""" +
                 """"latest_revision":${revisions.keys.maxOf { it.revision }},"revisions":[$list],"destinations":${JsonArray(delivered)}}""",
         )
     }
@@ -295,7 +342,7 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
     private fun listDestinations(): HttpReply {
         adminCalls += "GET destinations"
         val body = buildJsonObject {
-            put("schema_version", "1.1")
+            put("schema_version", wireVersion)
             put("destinations", buildJsonArray { destinations.values.forEach { add(resource(it)) } })
         }
         return ScriptedExchange.json(200, body.toString())
@@ -304,6 +351,7 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
     private fun createDestination(request: HttpRequest): HttpReply {
         adminCalls += "POST destinations"
         val body = runCatching { Json.parseToJsonElement(request.body!!.toString(Charsets.UTF_8)).jsonObject }.getOrNull() ?: return error(422, "REQUEST_INVALID", false)
+        versionRefused(body)?.let { return it }
         createBodies += body
         val name = (body["display_name"] as? JsonPrimitive)?.takeIf { it.isString }?.content
         val mode = (body["send_mode"] as? JsonPrimitive)?.takeIf { it.isString }?.content
@@ -347,7 +395,7 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
         destination.credentialIssued = true
         destination.credentialActive = true
         val body = buildJsonObject {
-            put("schema_version", "1.1")
+            put("schema_version", wireVersion)
             put("destination_id", id)
             put("credential", destination.credential)
             put("issued_at", iso(now()))
@@ -357,7 +405,7 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
     }
 
     private fun resource(destination: FakeDestination) = buildJsonObject {
-        put("schema_version", "1.1")
+        put("schema_version", wireVersion)
         put("destination_id", destination.id)
         put("display_name", destination.displayName)
         put("send_mode", destination.sendMode)
@@ -375,7 +423,7 @@ class FakeGateway(private val now: () -> Instant, originDeviceId: String = SyncS
 
     private fun error(status: Int, code: String, retryable: Boolean) = ScriptedExchange.json(
         status,
-        """{"schema_version":"1.1","code":"$code","message":"x","retryable":$retryable,"required_action":null,"operation_id":null}""",
+        """{"schema_version":"$wireVersion","code":"$code","message":"x","retryable":$retryable,"required_action":null,"operation_id":null}""",
     )
 
     private fun operationId() = "00000000-0000-4000-8000-%012x".format(operations)

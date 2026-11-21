@@ -42,7 +42,7 @@ class DestinationClientTest {
     private fun reply(status: Int, body: JsonObject) = ScriptedExchange.json(status, body.toString())
 
     private fun errorBody(code: String, retryable: Boolean = false) =
-        """{"schema_version":"1.1","code":"$code","message":"x","retryable":$retryable,"required_action":null,"operation_id":null}"""
+        """{"schema_version":"1.2","code":"$code","message":"x","retryable":$retryable,"required_action":null,"operation_id":null}"""
 
     private fun <T> GatewayResult<T>.success(): T = (this as? GatewayResult.Success<T>)?.value ?: error("期望 Success，实际 $this")
 
@@ -178,7 +178,7 @@ class DestinationClientTest {
     fun `列表：GET 并带令牌，包含已撤销的，按合同解析 revoked_at`() = runBlocking {
         val body = JsonObject(
             mapOf(
-                "schema_version" to JsonPrimitive("1.1"),
+                "schema_version" to JsonPrimitive("1.2"),
                 "destinations" to JsonArray(listOf(sample("destination.resource.active.json"), sample("destination.resource.revoked.json").with("destination_id" to JsonPrimitive("9b1a23f8-5241-4e78-9d21-15c4c720c2c9")))),
             ),
         )
@@ -197,7 +197,7 @@ class DestinationClientTest {
     @Test
     fun `列表里有一项读不懂，整个列表都不采信：缓存里不能混进半条记录`() = runBlocking {
         val broken = sample("destination.resource.active.json").with("send_mode" to JsonPrimitive("send_whenever"))
-        val body = JsonObject(mapOf("schema_version" to JsonPrimitive("1.1"), "destinations" to JsonArray(listOf(sample("destination.resource.active.json"), broken))))
+        val body = JsonObject(mapOf("schema_version" to JsonPrimitive("1.2"), "destinations" to JsonArray(listOf(sample("destination.resource.active.json"), broken))))
 
         assertTrue(client { reply(200, body) }.first.listDestinations(address, token) is GatewayResult.Garbled)
     }

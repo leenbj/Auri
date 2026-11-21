@@ -47,7 +47,7 @@ class MdnsAdvertiser:
             port=self.port,
             properties={
                 "gateway_id": self.gateway_id,
-                "schema_version": "1.1",
+                "schema_version": "1.2",
             },
             server=server_name,
         )

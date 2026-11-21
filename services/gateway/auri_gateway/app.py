@@ -115,9 +115,9 @@ def create_app(data_dir: pathlib.Path) -> Starlette:
         authenticate_device(db_path, request.headers.get("authorization"))
         return JSONResponse(
             {
-                "schema_version": "1.1",
+                "schema_version": "1.2",
                 "gateway_version": __version__,
-                "supported_schema_versions": ["1.1"],
+                "supported_schema_versions": ["1.2"],
                 "features": {
                     "cloud_asr": False,
                     "record_read_tools": True,

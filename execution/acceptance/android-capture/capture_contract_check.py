@@ -1,4 +1,4 @@
-"""校验 Android 采集 → 转录样本输出是否满足合同 1.1（Ticket 16）。
+"""校验 Android 采集 → 转录样本输出是否满足合同 1.2（Ticket 16）。
 
 沿用 Ticket 14 的 execution/acceptance/asr-android/contract_check.py 的做法（真实 contracts/schemas/*.json、注册方式与
 tests/contract/conftest.py 相同、报错不回显来自输出文件的值），但检查的是另一组文件：Kotlin 测试（:capture 的 ContractOutputTest）
@@ -39,7 +39,7 @@ sys.path.insert(0, str(REPO_ROOT / "tests" / "contract"))
 import semantic_rules  # noqa: E402
 
 SCHEMA_DIR = REPO_ROOT / "contracts" / "schemas"
-BASE_URI = "https://contracts.auri.invalid/1.1/"
+BASE_URI = "https://contracts.auri.invalid/1.2/"
 
 FILE_SCHEMAS = {
     "recording-result.json": "adapter.schema.json#/$defs/recording_result",

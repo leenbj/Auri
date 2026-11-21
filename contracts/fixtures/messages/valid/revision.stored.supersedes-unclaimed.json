@@ -3,7 +3,7 @@
   "expect": "valid",
   "description": "第 3 版入库：第 1 版未被领取的 Delivery 变为 CANCELLED。",
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "operation_id": "433119c6-813d-5f81-be96-f6356ff6ce2e",
     "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
     "revision": 3,

@@ -160,17 +160,17 @@ MUTATIONS += (
     ),
     Mutation(
         "response-schema-version-unchecked",
-        "响应的 schema_version 必须是 1.1",
+        "响应的 schema_version 必须是 1.2",
         (Edit(WIRE, 'if (string("schema_version") != Wire.SCHEMA_VERSION) throw Unreadable("schema_version")', "Unit"),),
         CLIENT_TESTS, "sync/build/test-results/test",
-        ("令牌太短、含空白或版本不是 1_1", "读不懂"),
+        ("令牌太短、含空白或版本不是 1_2", "读不懂"),
     ),
     Mutation(
         "device-token-format-unchecked",
         "令牌必须是 32..512 个可见 ASCII（不含空白与换行），否则不存",
         (Edit(TOKEN, r'private val FORMAT = Regex("^[\\x21-\\x7e]{32,512}$")', r'private val FORMAT = Regex("^.*$", RegexOption.DOT_MATCHES_ALL)'),),
         CLIENT_TESTS, "sync/build/test-results/test",
-        ("令牌太短、含空白或版本不是 1_1",),
+        ("令牌太短、含空白或版本不是 1_2",),
     ),
     Mutation(
         "device-token-printed-by-toString",
