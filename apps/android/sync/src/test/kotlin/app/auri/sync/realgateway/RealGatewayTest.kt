@@ -411,7 +411,7 @@ class RealGatewayTest {
         val id = key.recordId
         assertEquals(
             "不确定时必须先问网关（GET status），问到已入库就确认，不能再 PUT 一次",
-            listOf("PUT /v1/records/$id/revisions/1", "GET /v1/records/$id/status"),
+            listOf("GET /v1/capabilities", "PUT /v1/records/$id/revisions/1", "GET /v1/records/$id/status"), // 开头那一次是合同版本探测（评审 R7：每份配对问一次，之后缓存）
             lab.phone.requests().filter { !it.startsWith("POST ") },
         )
         assertEquals("网关里仍然只有一条", 1, lab.gateway.count("SELECT COUNT(*) FROM revisions"))
@@ -440,7 +440,7 @@ class RealGatewayTest {
         val id = key.recordId
         assertEquals(
             "先问（网关说没有这条），确认没有之后才重新提交",
-            listOf("PUT /v1/records/$id/revisions/1", "GET /v1/records/$id/status", "PUT /v1/records/$id/revisions/1"),
+            listOf("GET /v1/capabilities", "PUT /v1/records/$id/revisions/1", "GET /v1/records/$id/status", "PUT /v1/records/$id/revisions/1"), // 开头一次是合同版本探测（评审 R7）
             lab.phone.requests().filter { !it.startsWith("POST ") },
         )
         assertEquals("真正到过网关的 PUT 只有一次", 1, lab.gateway.count("SELECT COUNT(*) FROM revisions"))
