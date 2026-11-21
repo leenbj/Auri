@@ -330,14 +330,16 @@ MUTATIONS += (
         "PUT 在途中用户换了配对：旧配对得到的结果（哪怕是已入库）必须作废（F6）",
         (Edit(ENGINE, "        if (!stillPaired(gateway)) return stale(key)\n        return when (put) {", "        return when (put) {"),),
         ENGINE_TESTS, SYNC_TEST[0],
-        ("旧网关回的已入库不能算新网关的送达", "这一轮缓存的旧网关地址不能拿给新网关的指纹用"),
+        # 复评 R5 之后“已入库”的结果另有围栏（记账在 fenced 里）挡着，这一行专门挡旧配对的非成功结论：永久拒绝不能停下新配对的任务
+        ("旧网关对 PUT 的永久拒绝是旧配对的结论",),
     ),
     Mutation(
         "engine-accepts-stale-status-answer",
         "问结果的途中用户换了配对：旧网关的回答必须作废（F6）",
         (Edit(ENGINE, "            if (!stillPaired(gateway)) return stale(key)\n            when (answer) {", "            when (answer) {"),),
         ENGINE_TESTS, SYNC_TEST[0],
-        ("问结果的途中改配了另一个网关",),
+        # 复评 R5 之后“已入库”的回答另有围栏挡着，这一行专门挡旧配对的其余结论：已删除不能停下新配对的任务，“没有这一版”不能让旧令牌再发一个 PUT
+        ("旧网关说这条 Record 已被删除，那是旧配对的结论", "旧网关说没有这一版，也不能再拿旧令牌把正文发过去"),
     ),
     Mutation(
         "engine-blocks-on-stale-connection-verdict",
