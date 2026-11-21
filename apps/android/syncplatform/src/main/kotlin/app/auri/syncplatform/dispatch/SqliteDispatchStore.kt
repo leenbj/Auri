@@ -14,6 +14,7 @@ import app.auri.sync.engine.Refusal
 import app.auri.sync.gateway.Destination
 import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.Publication
+import app.auri.sync.pairing.GatewayIdentity
 import java.time.Instant
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -40,14 +41,14 @@ class SqliteDispatchStore(private val library: SqliteRecordLibrary) : DispatchSt
 
     override suspend fun destinations(): List<Destination> = read { destinations() }
 
-    override suspend fun applyDestinations(gatewayId: String, destinations: List<Destination>, authoritative: Boolean, now: Instant) =
-        write { applyDestinations(gatewayId, destinations, authoritative, now) }
+    override suspend fun applyDestinations(gateway: GatewayIdentity, destinations: List<Destination>, authoritative: Boolean, now: Instant) =
+        write { applyDestinations(gateway, destinations, authoritative, now) }
 
     override suspend fun forgetDestinations(now: Instant) = write { forgetDestinations(now) }
 
     /** 引擎每次发请求前都会调用：没换网关时什么都没改，不发变化信号。 */
-    override suspend fun useGateway(gatewayId: String) {
-        if (read { useGateway(gatewayId) }) ownChanges.value += 1
+    override suspend fun useGateway(gateway: GatewayIdentity) {
+        if (read { useGateway(gateway) }) ownChanges.value += 1
     }
 
     override suspend fun item(key: JobKey): DispatchItem? = read { item(key) }

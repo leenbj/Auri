@@ -10,6 +10,7 @@ import app.auri.sync.engine.Refusal
 import app.auri.sync.gateway.Destination
 import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.SendMode
+import app.auri.sync.pairing.GatewayIdentity
 import app.auri.syncplatform.jobs.SqliteSyncJobStore
 import java.sql.Connection
 import java.sql.DriverManager
@@ -29,7 +30,7 @@ import org.junit.Test
  */
 class DispatchSqlTest {
     private val t0 = Instant.parse("2026-11-20T08:00:00.123456789Z")
-    private val gateway = "fa1b98ec-1bfb-53b3-85a3-4d36b680fe6e"
+    private val gateway = GatewayIdentity("fa1b98ec-1bfb-53b3-85a3-4d36b680fe6e", "11".repeat(32))
     private val auto = "65ea2953-505c-5c6f-9474-7cd5b8474104"
     private val preview = "9b1a23f8-5241-4e78-9d21-15c4c720c2c9"
     private val recordA = "a4a7c08d-2767-50d6-9238-6fa277033a49"
@@ -304,7 +305,7 @@ class DispatchSqlTest {
 
         val meta = fixture.db.query("SELECT name, value FROM dispatch_meta ORDER BY name") { it.string(0) to it.string(1) }
 
-        assertEquals(listOf("default_intent" to "action_request", "gateway_id" to gateway), meta)
+        assertEquals("缓存记着的是完整身份（编号加公钥指纹），不只是编号（复评三 S4）", listOf("default_intent" to "action_request", "gateway_id" to gateway.ledgerKey), meta)
     }
 
     @Test

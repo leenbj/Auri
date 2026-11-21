@@ -5,6 +5,7 @@ package app.auri.sync.destinations
 import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.SendMode
 import app.auri.sync.machine.SyncState
+import app.auri.sync.pairing.GatewayIdentity
 import app.auri.sync.testing.DispatchRig
 import app.auri.sync.testing.FakeGateway
 import app.auri.sync.testing.SyncSamples
@@ -356,8 +357,8 @@ class DispatchEngineTest {
             private set
 
         fun wrap(ledger: DispatchStore): DispatchStore = object : DispatchStore by ledger {
-            override suspend fun useGateway(gatewayId: String) {
-                ledger.useGateway(gatewayId)
+            override suspend fun useGateway(gateway: GatewayIdentity) {
+                ledger.useGateway(gateway)
                 armed = true
             }
         }

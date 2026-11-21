@@ -1,6 +1,7 @@
 package app.auri.sync.engine
 
 import app.auri.sync.gateway.Intent
+import app.auri.sync.pairing.GatewayIdentity
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emptyFlow
@@ -46,12 +47,13 @@ interface DeliveryAdditions {
     suspend fun refused(key: JobKey, destinationIds: Collection<String>, reason: Refusal)
 
     /**
-     * 引擎要向 [gatewayId] 这个网关发请求了（构造提交之前、追加之前）：账上的 Destination 缓存和每条文字的目标都是按“上一个网关”的
+     * 引擎要向 [gateway] 这个网关发请求了（构造提交之前、追加之前）：账上的 Destination 缓存和每条文字的目标都是按“上一个网关”的
      * Destination 规划的，那些编号只在那个网关上有意义（评审 H2）。换了网关就在这里、一个事务里一起作废：缓存清掉，网关上还没有 Delivery 的目标撤回，
      * 之后这些文字照常入库到新网关，但不带旧网关的任何 Destination 编号。已经发生的（网关上有 Delivery、网关拒绝建）是历史，保留。
+     * “换了”按完整身份（编号 + 公钥指纹，[GatewayIdentity.ledgerKey]）判断：同一个编号换了公钥也是另一台网关（复评三 S4）。
      * 同一个网关再调用什么也不做（也不发变化信号）。
      */
-    suspend fun useGateway(gatewayId: String)
+    suspend fun useGateway(gateway: GatewayIdentity)
 
     /** 任何可能改变 [due] 的变化（决定、入库、目的地缓存）之后发出一个递增的数。 */
     fun changes(): Flow<Long>
@@ -61,7 +63,7 @@ interface DeliveryAdditions {
         val None: DeliveryAdditions = object : DeliveryAdditions {
             override suspend fun due(): List<DeliveryAddition> = emptyList()
 
-            override suspend fun useGateway(gatewayId: String) = Unit
+            override suspend fun useGateway(gateway: GatewayIdentity) = Unit
 
             override suspend fun gatewayHas(key: JobKey, destinationIds: Collection<String>) = Unit
 

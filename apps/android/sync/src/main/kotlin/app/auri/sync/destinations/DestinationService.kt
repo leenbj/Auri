@@ -141,7 +141,7 @@ class DestinationService(
     override suspend fun refresh(): ServiceResult<List<Destination>> = gatewayCall(
         "refresh",
         request = { it.client.listDestinations(it.address, it.gateway.token) },
-        apply = { session, list -> dispatch.applyDestinations(session.gateway.gatewayId, list, authoritative = true, now = clock.now()) },
+        apply = { session, list -> dispatch.applyDestinations(session.gateway.identity, list, authoritative = true, now = clock.now()) },
     )
 
     override suspend fun create(request: CreateDestinationRequest): ServiceResult<Destination> {
@@ -156,13 +156,13 @@ class DestinationService(
     private suspend fun createOnGateway(request: CreateDestinationRequest): ServiceResult<Destination> = gatewayCall(
         "create",
         request = { it.client.createDestination(it.address, it.gateway.token, request) },
-        apply = { session, created -> dispatch.applyDestinations(session.gateway.gatewayId, listOf(created), authoritative = false, now = clock.now()) },
+        apply = { session, created -> dispatch.applyDestinations(session.gateway.identity, listOf(created), authoritative = false, now = clock.now()) },
     )
 
     override suspend fun revoke(destinationId: String): ServiceResult<Destination> = gatewayCall(
         "revoke",
         request = { it.client.revokeDestination(it.address, it.gateway.token, destinationId) },
-        apply = { session, revoked -> dispatch.applyDestinations(session.gateway.gatewayId, listOf(revoked), authoritative = false, now = clock.now()) },
+        apply = { session, revoked -> dispatch.applyDestinations(session.gateway.identity, listOf(revoked), authoritative = false, now = clock.now()) },
     )
 
     override suspend fun issueCredential(destinationId: String): CredentialOutcome {
@@ -197,7 +197,7 @@ class DestinationService(
                     is GatewayResult.Success -> {
                         // 确认还是这一份配对与写缓存在同一把锁里（复评 R5）
                         pairing.whileCurrent(session.gateway) {
-                            dispatch.applyDestinations(session.gateway.gatewayId, listOf(known.copy(credentialIssued = true, credentialActive = true)), authoritative = false, now = clock.now())
+                            dispatch.applyDestinations(session.gateway.identity, listOf(known.copy(credentialIssued = true, credentialActive = true)), authoritative = false, now = clock.now())
                         } ?: return@withLock CredentialOutcome.Failed(ServiceFailure.NotPaired)
                         log.event("credential.issued replaced=${result.value.replacedPrevious}")
                         CredentialOutcome.Issued(result.value)

@@ -125,6 +125,20 @@ class DispatchRig(
         return other
     }
 
+    /**
+     * 对着“编号相同、公钥不同”的网关重新配对（再评 S4）：编号一样不代表是同一台，认人要编号加公钥（见 GatewayIdentity）。
+     * 新网关上一个 Destination 也没有，手机缓存里（按旧公钥那台规划的）Destination 在它上面都不存在。[grant] 同 [repairWithAnotherGateway]。
+     */
+    suspend fun repairWithSameIdAndAnotherKey(grant: Boolean = true): FakeGateway {
+        val other = FakeGateway(now = clock::now)
+        lan.host(ADDRESS_B, TlsFixtures.gatewayB) { other.handle(it) }
+        val original = checkNotNull(pairing.gateway) { "还没有配对" }
+        val repaired = SyncSamples.pairedGateway(pin = TlsFixtures.gatewayB.pin, addresses = listOf(ADDRESS_B)).copy(gatewayId = original.gatewayId)
+        pairing.save(repaired)
+        if (grant) policy.grantTo(repaired.identity)
+        return other
+    }
+
     /** 在网关上创建一个 Destination（经真实的服务，所以本机缓存也跟着更新）。 */
     suspend fun createDestination(name: String, mode: SendMode, intents: Set<Intent> = setOf(Intent.CONTEXT)): Destination {
         val result = service.create(CreateDestinationRequest(name, mode, intents))

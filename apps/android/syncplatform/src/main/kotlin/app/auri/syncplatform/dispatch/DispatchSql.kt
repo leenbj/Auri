@@ -16,6 +16,7 @@ import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.Publication
 import app.auri.sync.gateway.SendMode
 import app.auri.sync.machine.SyncState
+import app.auri.sync.pairing.GatewayIdentity
 import app.auri.syncplatform.jobs.SqliteSyncJobStore
 import java.time.Instant
 
@@ -45,8 +46,8 @@ class DispatchSql(private val sql: SqlDb) {
         """.trimIndent(),
     ) { it.toDestination() }
 
-    fun applyDestinations(gatewayId: String, destinations: List<Destination>, authoritative: Boolean, now: Instant) = sql.transaction<Unit> {
-        if (meta(GATEWAY_ID) != gatewayId) switchGateway(gatewayId)
+    fun applyDestinations(gateway: GatewayIdentity, destinations: List<Destination>, authoritative: Boolean, now: Instant) = sql.transaction<Unit> {
+        if (meta(GATEWAY_ID) != gateway.ledgerKey) switchGateway(gateway)
         if (authoritative) {
             val keep = destinations.map { it.destinationId }.toSet()
             sql.query("SELECT destination_id FROM dispatch_destinations") { it.string(0) }
@@ -69,21 +70,25 @@ class DispatchSql(private val sql: SqlDb) {
 
     fun forgetDestinations(now: Instant) = sql.transaction<Unit> { switchGateway(null) }
 
-    /** 向 [gatewayId] 发请求之前对账（评审 H2）：缓存记着的不是这个网关，就一起作废。返回有没有换。 */
-    fun useGateway(gatewayId: String): Boolean = sql.transaction {
-        if (meta(GATEWAY_ID) == gatewayId) return@transaction false
-        switchGateway(gatewayId)
+    /**
+     * 向 [gateway] 发请求之前对账（评审 H2）：缓存记着的不是这个网关，就一起作废。返回有没有换。
+     * 认的是完整身份（[GatewayIdentity.ledgerKey]：编号加公钥指纹，复评三 S4）：同一个编号换了公钥是另一台网关。
+     * 升级前写下的只有编号的旧记法永远对不上：升级后第一次对账整个作废一次（保守；缓存重读，排着的目标撤回，历史不动）。
+     */
+    fun useGateway(gateway: GatewayIdentity): Boolean = sql.transaction {
+        if (meta(GATEWAY_ID) == gateway.ledgerKey) return@transaction false
+        switchGateway(gateway)
         true
     }
 
     /**
      * 缓存与按它规划的、网关上还没有 Delivery 的目标一起作废：编号只在那个网关上有意义，拿着它们去别的网关只会被整个拒绝。
-     * 已经发生的（有 Delivery、被拒绝建）是历史，不动。[gatewayId] 为 null = 忘掉缓存、不属于任何网关。调用方已经在事务里。
+     * 已经发生的（有 Delivery、被拒绝建）是历史，不动。[gateway] 为 null = 忘掉缓存、不属于任何网关。调用方已经在事务里。
      */
-    private fun switchGateway(gatewayId: String?) {
+    private fun switchGateway(gateway: GatewayIdentity?) {
         sql.update("DELETE FROM dispatch_destinations")
         sql.update("DELETE FROM dispatch_targets WHERE delivery = ?", GatewayDelivery.NOT_YET.name)
-        if (gatewayId == null) sql.update("DELETE FROM dispatch_meta WHERE name = ?", GATEWAY_ID) else setMeta(GATEWAY_ID, gatewayId)
+        if (gateway == null) sql.update("DELETE FROM dispatch_meta WHERE name = ?", GATEWAY_ID) else setMeta(GATEWAY_ID, gateway.ledgerKey)
     }
 
     // ---- 读 ----
@@ -321,6 +326,7 @@ class DispatchSql(private val sql: SqlDb) {
     )
 
     companion object {
+        /** 行名沿用旧的；值是 [GatewayIdentity.ledgerKey]（编号加公钥指纹，复评三 S4），旧版只存编号，对不上就整个作废一次。 */
         private const val GATEWAY_ID = "gateway_id"
         private const val DEFAULT_INTENT = "default_intent"
         private const val MAX_LIMIT = 10_000

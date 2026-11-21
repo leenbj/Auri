@@ -8,6 +8,7 @@ import app.auri.sync.gateway.CreateDestinationRequest
 import app.auri.sync.gateway.Destination
 import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.SendMode
+import app.auri.sync.pairing.GatewayIdentity
 import app.auri.sync.testing.DispatchRig
 import java.time.Instant
 import java.util.concurrent.CopyOnWriteArrayList
@@ -44,14 +45,14 @@ class PairingFenceAtomicityTest {
             }
         }
 
-        override suspend fun useGateway(gatewayId: String) = held("useGateway") { inner.useGateway(gatewayId) }
+        override suspend fun useGateway(gateway: GatewayIdentity) = held("useGateway") { inner.useGateway(gateway) }
 
         override suspend fun gatewayHas(key: JobKey, destinationIds: Collection<String>) = held("gatewayHas") { inner.gatewayHas(key, destinationIds) }
 
         override suspend fun refused(key: JobKey, destinationIds: Collection<String>, reason: Refusal) = held("refused") { inner.refused(key, destinationIds, reason) }
 
-        override suspend fun applyDestinations(gatewayId: String, destinations: List<Destination>, authoritative: Boolean, now: Instant) =
-            held("applyDestinations") { inner.applyDestinations(gatewayId, destinations, authoritative, now) }
+        override suspend fun applyDestinations(gateway: GatewayIdentity, destinations: List<Destination>, authoritative: Boolean, now: Instant) =
+            held("applyDestinations") { inner.applyDestinations(gateway, destinations, authoritative, now) }
     }
 
     private class Held(val rig: DispatchRig, val ledger: HoldingLedger, val events: MutableList<String>)

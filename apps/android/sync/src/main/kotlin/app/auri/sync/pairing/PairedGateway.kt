@@ -16,7 +16,13 @@ enum class NeedsUser { KEY_MISMATCH, AUTH_REJECTED, GATEWAY_TOO_OLD }
  * 用户同意把文字发给的那台网关：网关编号加公钥指纹（复评 R3，SEC-002 把同意限定在“指定的网关”上）。
  * 两样都得对：同一个编号换了公钥、同一把公钥换了编号，都是另一台网关，原来的同意对它不算数。
  */
-data class GatewayIdentity(val gatewayId: String, val keySha256: String)
+data class GatewayIdentity(val gatewayId: String, val keySha256: String) {
+    /**
+     * 发送账认“Destination 缓存与排着的目标属于哪台网关”的写法（复评三 S4）：编号加公钥指纹，缺一不可。
+     * 同一个编号换了公钥是另一台网关（它那里没有 A 的 Destination），缓存与排着的目标都不能沿用。
+     */
+    val ledgerKey: String get() = "$gatewayId $keySha256"
+}
 
 /** 配对的结果：手机认识的那台网关。整个记录（含令牌、公钥指纹、地址）只以密文落盘，见 FilePairingStore。 */
 data class PairedGateway(

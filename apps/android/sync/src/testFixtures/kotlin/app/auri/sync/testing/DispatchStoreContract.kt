@@ -16,6 +16,7 @@ import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.Publication
 import app.auri.sync.gateway.SendMode
 import app.auri.sync.machine.SyncState
+import app.auri.sync.pairing.GatewayIdentity
 import java.time.Instant
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -49,8 +50,11 @@ abstract class DispatchStoreContract {
     abstract fun newFixture(): DispatchFixture
 
     private val t0 = Instant.parse("2026-11-20T08:00:00.123Z")
-    private val gateway = "fa1b98ec-1bfb-53b3-85a3-4d36b680fe6e"
-    private val otherGateway = "0f0f0f0f-1bfb-53b3-85a3-4d36b680fe6e"
+    private val gateway = GatewayIdentity("fa1b98ec-1bfb-53b3-85a3-4d36b680fe6e", "11".repeat(32))
+    private val otherGateway = GatewayIdentity("0f0f0f0f-1bfb-53b3-85a3-4d36b680fe6e", "22".repeat(32))
+
+    /** 同一个编号、另一把公钥（复评三 S4）：另一台网关，A 的 Destination 编号在它那里没有意义。 */
+    private val sameIdOtherKey = gateway.copy(keySha256 = "33".repeat(32))
     private val auto = "65ea2953-505c-5c6f-9474-7cd5b8474104"
     private val preview = "9b1a23f8-5241-4e78-9d21-15c4c720c2c9"
     private val preview2 = "d214122a-4c32-4469-a0cc-24df2a128725"
@@ -76,8 +80,8 @@ abstract class DispatchStoreContract {
         credentialIssued = credential != Cred.NEVER, revokedAt = revokedAt, credentialActive = credential == Cred.ACTIVE,
     )
 
-    private suspend fun DispatchFixture.know(vararg destinations: Destination, authoritative: Boolean = true, gatewayId: String = gateway) =
-        store.applyDestinations(gatewayId, destinations.toList(), authoritative, t0)
+    private suspend fun DispatchFixture.know(vararg destinations: Destination, authoritative: Boolean = true, from: GatewayIdentity = gateway) =
+        store.applyDestinations(from, destinations.toList(), authoritative, t0)
 
     private suspend fun DispatchFixture.hasJob(key: JobKey) = jobs.get(key) != null
 
@@ -514,7 +518,7 @@ abstract class DispatchStoreContract {
         val fixture = newFixture()
         fixture.know(destination(auto, SendMode.AUTO_SEND))
 
-        fixture.know(destination(preview, SendMode.PREVIEW_CONFIRM), authoritative = false, gatewayId = otherGateway)
+        fixture.know(destination(preview, SendMode.PREVIEW_CONFIRM), authoritative = false, from = otherGateway)
 
         assertEquals("换了网关，旧网关的 Destination 不能留在缓存里（增量更新也一样）", listOf(preview), fixture.store.destinations().map { it.destinationId })
     }
@@ -587,11 +591,55 @@ abstract class DispatchStoreContract {
         fixture.know(destination(auto, SendMode.AUTO_SEND))
         fixture.publish(keyA, RevisionSource.ASR, t0)
 
-        fixture.know(destination(preview2, SendMode.PREVIEW_CONFIRM), authoritative = true, gatewayId = otherGateway) // 用户先去发送页，读到了新网关的名单
+        fixture.know(destination(preview2, SendMode.PREVIEW_CONFIRM), authoritative = true, from = otherGateway) // 用户先去发送页，读到了新网关的名单
         fixture.publish(keyB, RevisionSource.ASR, t0.plusSeconds(1))
 
         assertEquals("旧文字：旧网关的目标撤回", emptyList<String>(), fixture.store.item(keyA)!!.targets.map { it.destinationId })
         assertEquals("之后的新文字按新网关的名单规划", listOf(preview2), fixture.store.item(keyB)!!.targets.map { it.destinationId })
+    }
+
+    // ---- 认的是完整身份：同一个编号换了公钥、同一把公钥换了编号，都是另一台网关（复评三 S4）----
+
+    @Test
+    fun the_same_gateway_id_with_another_key_is_another_gateway_when_using_it() = runBlocking {
+        val fixture = newFixture()
+        fixture.know(destination(auto, SendMode.AUTO_SEND), destination(autoBoth, SendMode.AUTO_SEND))
+        fixture.publish(keyA, RevisionSource.ASR, t0)
+        fixture.markStored(keyA)
+        fixture.store.gatewayHas(keyA, listOf(autoBoth)) // 旧网关上已经有它的 Delivery：这是历史
+        fixture.publish(keyB, RevisionSource.ASR, t0.plusSeconds(1)) // 排着，还没入库
+        assertEquals("前提：B 按旧网关的名单排了两个目标", setOf(auto, autoBoth), fixture.store.item(keyB)!!.targets.map { it.destinationId }.toSet())
+
+        fixture.store.useGateway(sameIdOtherKey)
+
+        assertEquals("编号相同、公钥不同：缓存整个作废", emptyList<Destination>(), fixture.store.destinations())
+        assertEquals("已经发生的是历史、保留", listOf(autoBoth), fixture.store.item(keyA)!!.targets.map { it.destinationId })
+        assertEquals("排着的目标撤回", emptyList<String>(), fixture.store.item(keyB)!!.targets.map { it.destinationId })
+        assertEquals("构造提交不带任何旧网关的编号", Publication(Intent.CONTEXT, emptyList()), fixture.store.publicationFor(keyB))
+    }
+
+    @Test
+    fun the_same_gateway_id_with_another_key_is_another_gateway_when_hearing_from_it() = runBlocking {
+        val fixture = newFixture()
+        fixture.know(destination(auto, SendMode.AUTO_SEND))
+        fixture.publish(keyA, RevisionSource.ASR, t0)
+
+        fixture.know(destination(preview2, SendMode.PREVIEW_CONFIRM), authoritative = false, from = sameIdOtherKey)
+
+        assertEquals("增量更新也一样：旧名单不留", listOf(preview2), fixture.store.destinations().map { it.destinationId })
+        assertEquals(emptyList<String>(), fixture.store.item(keyA)!!.targets.map { it.destinationId })
+    }
+
+    @Test
+    fun the_same_key_under_another_gateway_id_is_another_gateway_too() = runBlocking {
+        val fixture = newFixture()
+        fixture.know(destination(auto, SendMode.AUTO_SEND))
+        fixture.publish(keyA, RevisionSource.ASR, t0)
+
+        fixture.store.useGateway(gateway.copy(gatewayId = otherGateway.gatewayId))
+
+        assertEquals(emptyList<Destination>(), fixture.store.destinations())
+        assertEquals(emptyList<String>(), fixture.store.item(keyA)!!.targets.map { it.destinationId })
     }
 
     @Test

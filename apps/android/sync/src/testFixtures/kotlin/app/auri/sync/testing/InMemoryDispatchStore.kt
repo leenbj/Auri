@@ -17,6 +17,7 @@ import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.Publication
 import app.auri.sync.gateway.SendMode
 import app.auri.sync.machine.SyncState
+import app.auri.sync.pairing.GatewayIdentity
 import java.time.Instant
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,7 +33,9 @@ class InMemoryDispatchDisk(val jobs: InMemorySyncJobStore = InMemorySyncJobStore
     }
 
     val lock = Mutex()
-    var gatewayId: String? = null
+
+    /** 缓存属于哪台网关：[GatewayIdentity.ledgerKey]（编号加公钥指纹，复评三 S4）。 */
+    var gatewayKey: String? = null
     val cache = LinkedHashMap<String, Destination>()
     val items = LinkedHashMap<JobKey, Item>()
     var defaultIntent: Intent = Intent.CONTEXT
@@ -49,8 +52,8 @@ class InMemoryDispatchStore(private val disk: InMemoryDispatchDisk) : DispatchSt
 
     override suspend fun destinations(): List<Destination> = disk.lock.withLock { sortedCache() }
 
-    override suspend fun applyDestinations(gatewayId: String, destinations: List<Destination>, authoritative: Boolean, now: Instant) = disk.lock.withLock {
-        if (disk.gatewayId != gatewayId) switchGateway(gatewayId)
+    override suspend fun applyDestinations(gateway: GatewayIdentity, destinations: List<Destination>, authoritative: Boolean, now: Instant) = disk.lock.withLock {
+        if (disk.gatewayKey != gateway.ledgerKey) switchGateway(gateway)
         if (authoritative) disk.cache.keys.retainAll(destinations.map { it.destinationId }.toSet())
         // 撤销只进不退（评审 H3）：缓存里已经是撤销的，较早算好的回答再说它有效也不算
         destinations.forEach { incoming -> disk.cache[incoming.destinationId] = incoming.copy(revokedAt = incoming.revokedAt ?: disk.cache[incoming.destinationId]?.revokedAt) }
@@ -73,9 +76,9 @@ class InMemoryDispatchStore(private val disk: InMemoryDispatchDisk) : DispatchSt
         bump()
     }
 
-    override suspend fun useGateway(gatewayId: String) = disk.lock.withLock {
-        if (disk.gatewayId != gatewayId) {
-            switchGateway(gatewayId)
+    override suspend fun useGateway(gateway: GatewayIdentity) = disk.lock.withLock {
+        if (disk.gatewayKey != gateway.ledgerKey) {
+            switchGateway(gateway)
             bump()
         }
     }
@@ -196,9 +199,9 @@ class InMemoryDispatchStore(private val disk: InMemoryDispatchDisk) : DispatchSt
     // ---- 内部（都在锁里）----
 
     /** 缓存与按它规划的、网关上还没有 Delivery 的目标一起作废（评审 H2）：编号只在那个网关上有意义。null = 忘掉缓存、不属于任何网关。 */
-    private fun switchGateway(gatewayId: String?) {
+    private fun switchGateway(gateway: GatewayIdentity?) {
         disk.cache.clear()
-        disk.gatewayId = gatewayId
+        disk.gatewayKey = gateway?.ledgerKey
         disk.items.values.forEach { item -> item.rows.values.removeAll { it.delivery == GatewayDelivery.NOT_YET } }
     }
 

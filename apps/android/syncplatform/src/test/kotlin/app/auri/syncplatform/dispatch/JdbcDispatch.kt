@@ -18,6 +18,7 @@ import app.auri.sync.gateway.Destination
 import app.auri.sync.gateway.Intent
 import app.auri.sync.gateway.Publication
 import app.auri.sync.machine.SyncState
+import app.auri.sync.pairing.GatewayIdentity
 import app.auri.sync.testing.DispatchFixture
 import app.auri.syncplatform.jobs.SqliteSyncJobStore
 import java.sql.Connection
@@ -37,13 +38,13 @@ class JdbcDispatchStore(private val sql: JdbcSqlDb, private val signal: MutableS
 
     override suspend fun destinations(): List<Destination> = logic.destinations()
 
-    override suspend fun applyDestinations(gatewayId: String, destinations: List<Destination>, authoritative: Boolean, now: Instant) =
-        write { applyDestinations(gatewayId, destinations, authoritative, now) }
+    override suspend fun applyDestinations(gateway: GatewayIdentity, destinations: List<Destination>, authoritative: Boolean, now: Instant) =
+        write { applyDestinations(gateway, destinations, authoritative, now) }
 
     override suspend fun forgetDestinations(now: Instant) = write { forgetDestinations(now) }
 
-    override suspend fun useGateway(gatewayId: String) {
-        if (logic.useGateway(gatewayId)) signal.value += 1
+    override suspend fun useGateway(gateway: GatewayIdentity) {
+        if (logic.useGateway(gateway)) signal.value += 1
     }
 
     override suspend fun item(key: JobKey): DispatchItem? = logic.item(key)

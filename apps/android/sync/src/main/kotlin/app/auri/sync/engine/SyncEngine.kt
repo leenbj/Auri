@@ -303,7 +303,7 @@ class SyncEngine(
 
         // 换了网关的话，按旧网关规划的目标在这里（构造提交之前）先作废：旧网关的 Destination 编号不许进新网关的请求（评审 H2）。
         // 改账要先确认配对着的仍是这一份（复评 R5）：这一轮在网络上等的时候用户若换了网关，它是旧配对的残余，对新配对的账一个字也不许碰
-        if (!fenced(gateway) { additions.useGateway(gateway.gatewayId) }) return stale(key)
+        if (!fenced(gateway) { additions.useGateway(gateway.identity) }) return stale(key)
         // 请求会不会发还没定：这里只看这条文字在不在、哈希是什么。**不构造提交**——构造提交就是冻结意图标签（评审 M3），
         // 而下面任何一步（问网关、最后一道放行、配对被换）都可能让这次尝试什么也没发就结束，那时用户还想改标签（复评 R13）
         val textSha256 = source.textSha256For(key) ?: return blocked(gateway, key, BlockedReason.LOCAL_DATA_MISSING)
@@ -479,7 +479,7 @@ class SyncEngine(
     private suspend fun addDeliveries(location: Location) {
         // 这一遍从头到尾对同一个网关说话：先定下它，再对账（换了网关，按旧网关规划的目标作废，评审 H2），再看欠什么
         val gateway = usableGateway()
-        if (gateway != null && !fenced(gateway) { additions.useGateway(gateway.gatewayId) }) return // 读到配对之后又换了：旧配对的残余不碰新配对的账（复评 R5）
+        if (gateway != null && !fenced(gateway) { additions.useGateway(gateway.identity) }) return // 读到配对之后又换了：旧配对的残余不碰新配对的账（复评 R5）
         val due = additions.due()
         if (due.isEmpty()) {
             resetAdditionsBackoff()
