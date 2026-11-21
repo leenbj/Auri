@@ -15,7 +15,9 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import pathlib
+import subprocess
 import sys
 import tempfile
 
@@ -73,6 +75,10 @@ SEND_REVIEW_SCREEN = APP_UI + "SendReviewScreen.kt"
 DESTINATIONS_SCREEN = APP_UI + "DestinationsScreen.kt"
 DETAIL_SCREEN = APP_UI + "DestinationDetailScreen.kt"
 GATEWAY_STORE = "services/gateway/auri_gateway/store.py"
+GATEWAY_DELIVERIES = "services/gateway/auri_gateway/deliveries.py"
+GATEWAY_QUERIES = "services/gateway/auri_gateway/queries.py"
+GATEWAY_MIGRATION_0005 = "services/gateway/auri_gateway/migrations/0005_destination_revocation_cutoff.sql"
+CONTRACT_GUARD = SYNC_GATEWAY + "ContractGuard.kt"
 
 APP_RESULTS, SYNC_RESULTS, REAL_RESULTS, PLATFORM_RESULTS = (
     "app/build/test-results/testDebugUnitTest",
@@ -95,6 +101,56 @@ def platform_tests(*classes: str) -> tuple[str, ...]:
 
 
 REAL = (":sync:realGatewayTest",)
+
+# 网关自己的 Python 集成测试（tests/integration）：撤销截止点（复评 R1/R2）是 Agent 经 MCP 才看得到的网关行为，Kotlin 客户端的真网关测试够不着。
+# 这类条目的 gradle 字段第一项是 PYTEST、其余是 pytest 的参数；结果写成 JUnit XML 放在快照里的 GATEWAY_RESULTS（build 目录不进快照同步）。
+PYTEST = "pytest"
+GATEWAY_RESULTS = "build/gateway-pytest-results"
+REVOCATION_CUTOFF_TESTS = "tests/integration/test_revocation_cutoff.py"
+
+
+def gateway_tests(*pytest_args: str) -> tuple[str, ...]:
+    return (PYTEST, *pytest_args)
+
+
+_BASE_RUN_MUTATION = base.run_mutation
+
+
+def _run_mutation(mutation):
+    """Gradle 条目照旧；pytest 条目：应用 → 在快照里用 AURI_GATEWAY_PYTHON 跑 pytest → 还原。"""
+    if not mutation.gradle or mutation.gradle[0] != PYTEST:
+        return _BASE_RUN_MUTATION(mutation)
+    results = base.ANDROID / mutation.results_dir
+    originals = base.apply_edits(mutation)
+    try:
+        for edit in mutation.edits:  # 变异成了语法错误，整个网关起不来、所有测试都红：那不是“被测试抓住”，是变异无效
+            if edit.path.endswith(".py"):
+                try:
+                    compile((base.REPO / edit.path).read_text(encoding="utf-8"), edit.path, "exec")
+                except SyntaxError as error:
+                    return "INVALID", f"变异后的 {edit.path} 不是合法的 Python：{error}"
+        subprocess.run(["rm", "-rf", str(results)], check=True)
+        results.mkdir(parents=True)
+        python = os.environ.get("AURI_GATEWAY_PYTHON") or str(base.REPO / ".venv" / "bin" / "python")
+        env = {**os.environ, "NO_PROXY": "localhost,127.0.0.1,::1", "no_proxy": "localhost,127.0.0.1,::1"}
+        proc = subprocess.run(
+            [python, "-m", "pytest", *mutation.gradle[1:], "-q", "-p", "no:cacheprovider", f"--junitxml={results / 'TEST-gateway.xml'}"],
+            cwd=base.REPO, env=env, capture_output=True, text=True, timeout=1800,
+        )
+        total, failed = base.failed_tests(results)
+    finally:
+        base.restore(originals)
+    if total == 0:
+        return "INVALID", f"没有跑出任何测试：\n{proc.stdout[-1500:]}\n{proc.stderr[-500:]}"
+    if proc.returncode == 0 or not failed:
+        return "SURVIVED", f"变异后 {total} 个测试全部通过：测试拦不住这个破坏"
+    missing = [needle for needle in mutation.must_fail if not any(needle in name for name in failed)]
+    if missing:
+        return "SURVIVED", f"有测试失败，但预期会失败的这些没有失败：{missing}；实际失败：{failed}"
+    return "CAUGHT", f"{len(failed)}/{total} 个测试变红：{failed}"
+
+
+base.run_mutation = _run_mutation
 
 # 同一处破坏，在不同的测试层再跑一遍（单测 / 真实网关）：用同一份编辑
 SKIP_AUTH = Edit(SERVICE, "            if (auth != AuthResult.Authenticated) {", "            if (false && auth != AuthResult.Authenticated) {")
@@ -981,6 +1037,179 @@ MUTATIONS: tuple = (
         (Edit(ENGINE, "        val submission = source.submissionFor(key) ?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)\n        val put = client.putRevision(address, gateway.token, submission)\n", "        val submission = source.submissionFor(key) ?: return retryLater(key)\n        val put = client.putRevision(address, gateway.token, submission)\n"),),
         sync_tests("SyncEngineTest"), SYNC_RESULTS,
         ("复评 R13：看过哈希之后、构造提交之前本机把这条文字删了",),
+    ),
+    # ---- 再评审 R1：撤销截止点——替换凭证看不到撤销之前入库的文字（网关侧，pytest 集成测试） ----
+    Mutation(
+        "r1-gw-claim-ignores-cutoff",
+        "再评审 R1（网关）：领取这一层也要过撤销截止点（纵深防御）：不过，升级前就留在旧库里、入库时间不晚于截止点的排队 Delivery 会被替换凭证领走"
+        "（正常路径里撤销已把排着的取消了，只有旧库的数据走得到这里，所以抓住它的是升级用例；真跑发现我原先把预期写成了全路径用例）",
+        (Edit(GATEWAY_DELIVERIES, '      AND {AFTER_REVOCATION_CUTOFF}\n    ORDER BY d.created_at, d.delivery_id\n', '    ORDER BY d.created_at, d.delivery_id\n'),),
+        gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
+        ('test_a_suspension_that_ended_before_the_upgrade_gets_its_cutoff_from_the_credential_history',),
+    ),
+    Mutation(
+        "r1-gw-lease-paths-ignore-cutoff",
+        "再评审 R1（网关）：确认、续租、拒收也要过截止点：不过，旧租约在替换凭证面前仍然有效",
+        (Edit(GATEWAY_DELIVERIES, '          AND {AFTER_REVOCATION_CUTOFF}\n        """,\n        (destination.tenant_id, destination.destination_id, delivery_id),\n', '        """,\n        (destination.tenant_id, destination.destination_id, delivery_id),\n'),),
+        gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
+        ('test_the_replacement_credential_reads_nothing_from_before_the_revocation_on_any_path',),
+    ),
+    Mutation(
+        "r1-gw-list-search-ignore-cutoff",
+        "再评审 R1（网关）：列表与搜索要过截止点：不过，搜得到撤销之前的全文片段就是泄露",
+        (Edit(GATEWAY_QUERIES, '                  AND {AFTER_REVOCATION_CUTOFF}\n            )\n', '            )\n'),),
+        gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
+        ('test_the_replacement_credential_reads_nothing_from_before_the_revocation_on_any_path',),
+    ),
+    Mutation(
+        "r1-gw-get-ignores-cutoff",
+        "再评审 R1（网关）：按编号读取也要过截止点：不过，知道编号的 Agent 能直接读到撤销之前的文字",
+        (Edit(GATEWAY_QUERIES, '              AND {AFTER_REVOCATION_CUTOFF}\n              {rev_filter}\n', '              {rev_filter}\n'),),
+        gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
+        ('test_the_replacement_credential_reads_nothing_from_before_the_revocation_on_any_path',),
+    ),
+    Mutation(
+        "r1-gw-cutoff-never-recorded",
+        "再评审 R1（网关）：暂停结束（签发替换凭证）的那一刻要记下截止点：不记，上面所有的过滤都形同虚设",
+        (Edit(GATEWAY_STORE, '            if destination_id in _suspended_destination_ids(conn, auth.tenant_id, [destination_id]):\n', '            if False and destination_id in _suspended_destination_ids(conn, auth.tenant_id, [destination_id]):\n'),),
+        gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
+        ('test_the_replacement_credential_reads_nothing_from_before_the_revocation_on_any_path', 'test_each_new_suspension_moves_the_cutoff_forward'),
+    ),
+    Mutation(
+        "r1-gw-cutoff-ignores-clock-ahead",
+        "再评审 R1（网关）：截止点要与已有文字的最晚入库时间取较大者：只取当前时间，网关时钟曾经跑快过的话，旧文字会落到截止点之后而重新可见",
+        (Edit(GATEWAY_STORE, "COALESCE((SELECT MAX(stored_at) FROM revisions WHERE tenant_id = ?), '')", "COALESCE((SELECT MAX(stored_at) FROM revisions WHERE tenant_id = ? AND 0), '')"),),
+        gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
+        ('test_a_text_stored_while_the_gateway_clock_ran_ahead_is_still_older_than_the_cutoff',),
+    ),
+    Mutation(
+        "r1-gw-rotation-sets-cutoff",
+        "再评审 R1（网关）：只有“暂停之后恢复”才设截止点：轮换（总留着一条有效凭证）也设，轮换时还排着的文字就被藏起来",
+        (Edit(GATEWAY_STORE, '            if destination_id in _suspended_destination_ids(conn, auth.tenant_id, [destination_id]):\n', '            if True or destination_id in _suspended_destination_ids(conn, auth.tenant_id, [destination_id]):\n'),),
+        gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
+        ('test_rotating_without_a_suspension_hides_nothing',),
+    ),
+    Mutation(
+        "r1-gw-migration-no-backfill",
+        "再评审 R1（网关）：升级迁移要按凭证历史给已经发生过的暂停补上截止点：不补，升级前就暂停过的 Destination 的旧文字对替换凭证照样可见",
+        (Edit(GATEWAY_MIGRATION_0005, '    SELECT MAX(c.issued_at)\n', '    SELECT NULL\n'),),
+        gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
+        ('test_a_suspension_that_ended_before_the_upgrade_gets_its_cutoff_from_the_credential_history',),
+    ),
+    Mutation(
+        "r1-gw-migration-backfills-rotations",
+        "再评审 R1（网关）：迁移只给“旧凭证全部先于新凭证被撤销”的暂停补截止点：连轮换也补，升级后轮换过的 Destination 排着的文字就被藏起来",
+        (Edit(GATEWAY_MIGRATION_0005, '            AND (p.revoked_at IS NULL OR p.revoked_at >= c.issued_at)\n', '            AND (p.revoked_at IS NULL AND 0)\n'),),
+        gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
+        ('test_a_suspension_that_ended_before_the_upgrade_gets_its_cutoff_from_the_credential_history',),
+    ),
+    # ---- 再评审 R2：延迟的追加与首次入库不为截止点之前的文字建 Delivery ----
+    Mutation(
+        "r2-gw-addition-ignores-cutoff",
+        "再评审 R2（网关）：延迟到达的追加要看这条文字的入库时间：不看，替换凭证之后才到的追加照样为撤销之前入库的文字建一条永远领不到的 PENDING",
+        (Edit(GATEWAY_STORE, '            suspended |= _past_cutoff_destination_ids(conn, tenant_id, missing, stored["stored_at"])\n', ""),),
+        gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
+        ('test_a_delayed_addition_after_the_replacement_credential_creates_nothing_for_an_older_revision',),
+    ),
+    Mutation(
+        "r2-gw-first-store-ignores-cutoff",
+        "再评审 R2（网关）：首次入库的 publication 也要过截止点：不过，时钟回拨后入库的文字（入库时间不晚于截止点）照样建一条永远领不到的 PENDING",
+        (Edit(GATEWAY_STORE, '            suspended |= _past_cutoff_destination_ids(conn, tenant_id, destination_ids, now_iso)\n', ""),),
+        gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
+        ('test_a_first_store_that_is_not_later_than_the_cutoff_creates_no_delivery_either',),
+    ),
+    Mutation(
+        "r2-gw-cutoff-ignores-revision-age",
+        "再评审 R2（网关）：只跳过入库时间不晚于截止点的文字：有截止点就一律跳过，恢复之后入库的新文字也建不出 Delivery",
+        (Edit(GATEWAY_STORE, '          AND revocation_cutoff IS NOT NULL AND revocation_cutoff >= ?\n', '          AND revocation_cutoff IS NOT NULL AND ? IS NOT NULL\n'),),
+        gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
+        ('test_an_addition_for_a_text_stored_after_the_replacement_credential_works', 'test_text_stored_after_the_replacement_credential_is_visible_on_every_path'),
+    ),
+    # ---- 评审 R7：手机只和说合同 1.2 的网关说话（联系网关传任何东西之前先问版本） ----
+    Mutation(
+        "r7-verdict-accepts-older-versions",
+        "评审 R7：通告里没有 1.2、只有更旧的版本，就是“网关太旧”：把更旧的也算兼容，手机照发，网关回 422，每条文字都被当成“请求不合规”永久拒绝",
+        (Edit(GATEWAY_CLIENT, "                Wire.SCHEMA_VERSION in advertised -> ContractVerdict.COMPATIBLE\n", "                Wire.SCHEMA_VERSION in advertised || advertised.any { it in Wire.OLDER_VERSIONS } -> ContractVerdict.COMPATIBLE\n"),),
+        sync_tests("ContractVerdictTest"), SYNC_RESULTS,
+        ("通告的全是更旧的版本才是太旧",),
+    ),
+    Mutation(
+        "r7-verdict-unknown-is-too-old",
+        "评审 R7：看不懂的通告（只有更新的版本、读不懂的版本号）不能冤枉网关“太旧”：把一切不兼容的都当太旧，用户会白白去升级一个其实更新的网关",
+        (Edit(GATEWAY_CLIENT, "                advertised.isNotEmpty() && advertised.all { it in Wire.OLDER_VERSIONS } -> ContractVerdict.TOO_OLD\n", "                advertised.isNotEmpty() -> ContractVerdict.TOO_OLD\n"),),
+        sync_tests("ContractVerdictTest"), SYNC_RESULTS,
+        ("无法判断的不放行也不冤枉",),
+    ),
+    Mutation(
+        "r7-guard-too-old-passes",
+        "评审 R7：太旧的网关一个数据请求都不能发：把“太旧”当兼容放行，旧网关会把每条文字都当成不合规永久拒绝",
+        (Edit(CONTRACT_GUARD, "                ContractVerdict.TOO_OLD -> ContractAnswer.TOO_OLD\n", "                ContractVerdict.TOO_OLD -> ContractAnswer.COMPATIBLE\n"),),
+        sync_tests("SyncEngineContractTest", "DestinationContractTest"), SYNC_RESULTS,
+        ("网关太旧：一个数据请求都不发", "网关太旧：列表、创建、撤销、签发都不发请求"),
+    ),
+    Mutation(
+        "r7-guard-unconfirmed-reads-as-too-old",
+        "评审 R7：没问成（网关出错、通告无法判断）不是“太旧”：当成太旧会给配对记录打上网关太旧的标记，用户被指向错误的处置",
+        (Edit(CONTRACT_GUARD, "                ContractVerdict.UNCONFIRMED -> ContractAnswer.UNCONFIRMED\n", "                ContractVerdict.UNCONFIRMED -> ContractAnswer.TOO_OLD\n"),),
+        sync_tests("SyncEngineContractTest", "DestinationContractTest"), SYNC_RESULTS,
+        ("问不到版本（网关出错", "问不到版本不是太旧"),
+    ),
+    Mutation(
+        "r7-guard-trusts-any-earlier-pairing",
+        "评审 R7：兼容的结论只对确认过的那份配对有效：只要确认过一次就一直信，重新配对（也许配到了另一台旧网关）之后不再问",
+        (Edit(CONTRACT_GUARD, "if (synchronized(lock) { verified?.isSamePairing(gateway) == true }) return ContractAnswer.COMPATIBLE", "if (synchronized(lock) { verified != null }) return ContractAnswer.COMPATIBLE"),),
+        sync_tests("SyncEngineContractTest", "DestinationContractTest"), SYNC_RESULTS,
+        ("重新配对之后：旧配对确认过的不算数",),
+    ),
+    Mutation(
+        "r7-guard-never-remembers",
+        "评审 R7：兼容的结论在同一份配对、同一个进程里只问一次：不记，每个管理操作、每次同步都多一次询问",
+        (Edit(CONTRACT_GUARD, "        if (answer == ContractAnswer.COMPATIBLE) synchronized(lock) { verified = gateway }\n", ""),),
+        sync_tests("SyncEngineContractTest", "DestinationContractTest"), SYNC_RESULTS,
+        ("兼容的网关：同一份配对在同一个进程里只问一次版本", "兼容的网关：管理操作之间只问一次版本"),
+    ),
+    Mutation(
+        "r7-guard-remembers-too-old",
+        "评审 R7：只有“兼容”才记成这份配对已确认：把“太旧”（以及被拒、公钥不符）也记成已确认，之后同一份配对的请求一律当兼容放行——旧网关挨过第一次拦，往后什么数据请求都收得到"
+        "（真跑发现我原先把这条的后果想成“更新后恢复不了”，那是下一条的事；这一条红的是“旧网关一个请求都不发”的那几个）",
+        (Edit(CONTRACT_GUARD, "        if (answer == ContractAnswer.COMPATIBLE) synchronized(lock) { verified = gateway }\n", "        if (answer != ContractAnswer.UNCONFIRMED) synchronized(lock) { verified = gateway }\n"),),
+        sync_tests("SyncEngineContractTest", "DestinationContractTest"), SYNC_RESULTS,
+        ("网关还是旧的：再来多少轮也不发", "网关太旧：列表、创建、撤销、签发都不发请求", "生成凭证：“网关太旧”的标记可能已经过时"),
+    ),
+    Mutation(
+        "r7-guard-caches-too-old-verdict",
+        "评审 R7：“太旧”不记：把它也记在内存里（单独的“太旧”记忆），用户更新了网关之后手机还拿着旧结论，要重启才恢复；评审要求的是更新后自己恢复、不用重新配对",
+        (
+            Edit(CONTRACT_GUARD, "    private var verified: PairedGateway? = null\n", "    private var verified: PairedGateway? = null\n    private var tooOld: PairedGateway? = null\n"),
+            Edit(
+                CONTRACT_GUARD,
+                "        if (synchronized(lock) { verified?.isSamePairing(gateway) == true }) return ContractAnswer.COMPATIBLE\n",
+                "        if (synchronized(lock) { verified?.isSamePairing(gateway) == true }) return ContractAnswer.COMPATIBLE\n"
+                "        if (synchronized(lock) { tooOld?.isSamePairing(gateway) == true }) return ContractAnswer.TOO_OLD\n",
+            ),
+            Edit(
+                CONTRACT_GUARD,
+                "        if (answer == ContractAnswer.COMPATIBLE) synchronized(lock) { verified = gateway }\n",
+                "        if (answer == ContractAnswer.COMPATIBLE) synchronized(lock) { verified = gateway }\n"
+                "        if (answer == ContractAnswer.TOO_OLD) synchronized(lock) { tooOld = gateway }\n",
+            ),
+        ),
+        sync_tests("SyncEngineContractTest", "DestinationContractTest"), SYNC_RESULTS,
+        ("更新网关之后自动恢复：不需要重新配对", "更新网关之后管理页自动恢复"),
+    ),
+    Mutation(
+        "r7-engine-additions-skip-version-check",
+        "评审 R7：追加 Delivery 也是联系网关，也要先问版本：不问，旧网关没有这个端点，追加会被当成永久拒绝",
+        (Edit(ENGINE, "        // 追加也是联系网关：先确认版本（旧网关没有这个端点，发过去只会被当成永久拒绝，评审 R7）\n        when (contract.check(gateway, address, client)) {\n", "        // 追加也是联系网关：先确认版本（旧网关没有这个端点，发过去只会被当成永久拒绝，评审 R7）\n        when (ContractAnswer.COMPATIBLE) {\n"),),
+        sync_tests("DestinationContractTest"), SYNC_RESULTS,
+        ("追加 Delivery 之前也问版本",),
+    ),
+    Mutation(
+        "r7-service-too-old-lets-requests-through",
+        "评审 R7：管理页遇到太旧的网关一个管理请求都不发：照常连上去，列表、创建、撤销、签发都会撞上旧网关的 422",
+        (Edit(SERVICE, "            ContractAnswer.TOO_OLD -> {\n                pairing.markGatewayTooOld(gateway)\n                Connect.Blocked(ServiceFailure.NeedsRepair(NeedsUser.GATEWAY_TOO_OLD))\n            }\n", "            ContractAnswer.TOO_OLD -> Connect.Ready(Session(gateway, address, client))\n"),),
+        sync_tests("DestinationContractTest"), SYNC_RESULTS,
+        ("网关太旧：列表、创建、撤销、签发都不发请求",),
     ),
     Mutation(
         "policy-strict-local-ignored",

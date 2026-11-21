@@ -147,6 +147,9 @@ def test_a_suspension_that_ended_before_the_upgrade_gets_its_cutoff_from_the_cre
         conn.execute("UPDATE destination_credentials SET issued_at = '2025-12-31T00:00:00.000000Z'")  # 原凭证签发在一切之前
         # 暂停：旧凭证 01-02 被撤销，替换凭证 01-03 才签发；暂停之前的文字入库于 01-01，之后那条留在真实时间
         conn.execute("UPDATE revisions SET stored_at = '2026-01-01T00:00:00.000000Z' WHERE record_id = ?", (before["record_id"],))
+        # 只轮换过的那条文字也要入库在轮换（01-03）之前，和真实的故事一致：用真实时间入库的话它晚于迁移可能补出的任何截止点，
+        # “只轮换过的不补截止点”就测不出来（变异 r1-gw-migration-backfills-rotations 暴露过这个缺口）
+        conn.execute("UPDATE revisions SET stored_at = '2026-01-02T12:00:00.000000Z' WHERE record_id = ?", (kept["record_id"],))
         conn.execute("UPDATE destination_credentials SET revoked_at = '2026-01-02T00:00:00.000000Z' WHERE destination_id = ?", (suspended.destination_id,))
         add_credential(suspended.destination_id, "replacement-after-suspension", "2026-01-03T00:00:00.000000Z")
         # 轮换：旧凭证在新凭证签发的同一刻被撤销，不是暂停

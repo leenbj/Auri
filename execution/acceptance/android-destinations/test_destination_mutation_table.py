@@ -7,6 +7,7 @@ destination_mutation_check.py 里每条变异都要“恰好改一处生产代�
 import pathlib
 import re
 import shutil
+import sqlite3
 
 import pytest
 
@@ -27,7 +28,11 @@ def test_mutation_edits_apply_exactly_once_and_only_touch_production_code(mutati
         assert not edit.path.endswith("Test.kt") and "/androidTest/" not in edit.path and "/testFixtures/" not in edit.path
 
 
-@pytest.mark.parametrize("mutation", dm.MUTATIONS, ids=lambda m: m.id)
+GATEWAY_MUTATIONS = [m for m in dm.MUTATIONS if m.gradle and m.gradle[0] == dm.PYTEST]
+KOTLIN_MUTATIONS = [m for m in dm.MUTATIONS if m not in GATEWAY_MUTATIONS]
+
+
+@pytest.mark.parametrize("mutation", KOTLIN_MUTATIONS, ids=lambda m: m.id)
 def test_every_expected_failing_test_exists_in_the_sources(mutation):
     assert mutation.must_fail, "一条变异必须指明哪些测试会因此变红"
     sources = "\n".join(
@@ -37,6 +42,43 @@ def test_every_expected_failing_test_exists_in_the_sources(mutation):
     )
     for needle in mutation.must_fail:
         assert re.search(re.escape(needle), sources), f"{mutation.id}: 找不到预期变红的测试 {needle!r}"
+
+
+@pytest.mark.parametrize("mutation", GATEWAY_MUTATIONS, ids=lambda m: m.id)
+def test_a_gateway_mutation_names_pytest_files_that_exist_and_failing_tests_that_are_in_them(mutation):
+    assert mutation.results_dir == dm.GATEWAY_RESULTS
+    files = [REPO / arg for arg in mutation.gradle[1:]]
+    assert files and all(f.is_file() and f.suffix == ".py" and f.relative_to(REPO).parts[0] == "tests" for f in files), mutation.gradle
+    source = "\n".join(f.read_text(encoding="utf-8") for f in files)
+    assert mutation.must_fail, "一条变异必须指明哪些测试会因此变红"
+    for needle in mutation.must_fail:
+        assert re.search(rf"^(async )?def {re.escape(needle)}\(", source, re.MULTILINE), f"{mutation.id}: 找不到预期变红的测试 {needle!r}"
+
+
+@pytest.mark.parametrize("mutation", GATEWAY_MUTATIONS, ids=lambda m: m.id)
+def test_a_gateway_mutation_is_still_valid_python_or_sql_after_it_is_applied(mutation):
+    # 变异成了语法错误：网关起不来、所有测试都红，会被误当成“测试抓住了它”。运行器里有同样的拦截（INVALID），这里提前证明表里没有这种条目
+    migrations = REPO / "services" / "gateway" / "auri_gateway" / "migrations"
+    for edit in mutation.edits:
+        mutated = (REPO / edit.path).read_text(encoding="utf-8").replace(edit.old, edit.new)
+        if edit.path.endswith(".py"):
+            compile(mutated, edit.path, "exec")
+        else:
+            assert edit.path.endswith(".sql"), edit.path
+            conn = sqlite3.connect(":memory:")
+            try:  # 真实的前面几个迁移之上执行变异后的这一个：列名、表名、子查询写错会在这里报错
+                for path in sorted(migrations.glob("*.sql")):
+                    if path.name < pathlib.Path(edit.path).name:
+                        conn.executescript(path.read_text(encoding="utf-8"))
+                conn.executescript(mutated)
+            finally:
+                conn.close()
+
+
+def test_the_gateway_runner_is_installed_and_gradle_entries_still_go_to_the_base_runner():
+    assert dm.base.run_mutation is dm._run_mutation
+    assert dm._BASE_RUN_MUTATION is not dm._run_mutation
+    assert GATEWAY_MUTATIONS and KOTLIN_MUTATIONS
 
 
 def test_mutation_ids_are_unique_and_documented():
