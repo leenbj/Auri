@@ -314,7 +314,8 @@ MUTATIONS += (
     Mutation(
         "engine-confirms-missing-revision",
         "网关没有这一版就是没入库，必须重新提交，不能当成已入库（F10 的对照）",
-        (Edit(ENGINE, "Standing.MISSING -> Unit // 网关没有这一版：往下重新提交", "Standing.MISSING -> return stored(key)"),),
+        # 再评 S2 之后 stored 要带网关与它在网关上已有的 Delivery 清单（落账经 settle）：旧写法 stored(key) 编译不过，变异成了无效
+        (Edit(ENGINE, "Standing.MISSING -> Unit // 网关没有这一版：往下重新提交", "Standing.MISSING -> return stored(gateway, key, emptyList())"),),
         ENGINE_TESTS, SYNC_TEST[0],
         ("网关上有这条 Record 的别的版本、唯独没有这一版",),
     ),
@@ -346,8 +347,13 @@ MUTATIONS += (
     ),
     Mutation(
         "engine-blocks-on-stale-connection-verdict",
-        "旧配对的公钥不符/令牌被拒结论到得太晚：配对记录已经不是同一份，就作废而不是停下任务（F6）",
-        (Edit(ENGINE, "if (!recordConnectionProblem(gateway, needs)) return stale(key)", "recordConnectionProblem(gateway, needs)"),),
+        "旧配对的公钥不符/令牌被拒结论到得太晚：配对记录已经不是同一份，就作废而不是停下任务（F6）。再评 S2 之后挡它的有两层互相独立的检查"
+        "（落账前对记录的比对、落账围栏 settle），只拆其中一层是等价变异（另一层照样挡住），所以两层一起拆才看得见",
+        # 再评 S2：只拆第一处，settle 的围栏照样让它作废，这条在真跑里存活（等价变异）；两处一起拆，旧配对的结论才真的停下新配对的任务
+        (
+            Edit(ENGINE, "if (!recordConnectionProblem(gateway, needs)) return stale(key)", "recordConnectionProblem(gateway, needs)"),
+            Edit(ENGINE, "        pairing.whileCurrent(gateway, outcome) ?: stale(key)\n", "        outcome()\n"),
+        ),
         ENGINE_TESTS, SYNC_TEST[0],
         ("旧公钥的探测这时才报公钥不符",),
     ),

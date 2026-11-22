@@ -1918,7 +1918,14 @@ MUTATIONS: tuple = (
         "第三轮 S3：每个请求交出去的前一刻要再比一次授权世代：不比，问放行之后（构造提交、换账本、记地址这些本地操作挂着的时候）收回授权，请求照发",
         (Edit(ENGINE, "        suspend fun <T : Any> gated(request: suspend () -> T): T? = if (policy.generation == generation) request() else null\n", "        suspend fun <T : Any> gated(request: suspend () -> T): T? = request()\n"),),
         sync_tests("PolicyGateRaceTest"), SYNC_RESULTS,
-        ("构造提交挂在本地数据库里时授权被收回", "结果不确定的任务：构造提交挂着时授权被收回", "合同版本自愈：定位网关的回答在路上时授权被收回", "问网关结果之前的本地步骤做完时授权被收回"),
+        ("构造提交挂在本地数据库里时授权被收回", "结果不确定的任务：构造提交挂着时授权被收回", "问网关结果之前的本地步骤做完时授权被收回"),
+    ),
+    Mutation(
+        "s3-heal-contract-skips-the-second-ask",
+        "第三轮 S3：合同版本自愈里，定位的回答回来之后要再问一次放行（探能力也是联系）：不问（换一张新盖的章、不看授权），定位回答在路上时收回授权，能力探测照发。注意：只删这一问、沿用定位之前的旧章不行——gated 的世代比较仍会拦住它，那是等价变异，所以这里换新章",
+        (Edit(ENGINE, "                permit = permitFor(gateway) ?: return // 定位是一次网络往返：回来再问一次放行\n", "                permit = Permit(policy.generation)\n"),),
+        sync_tests("PolicyGateRaceTest"), SYNC_RESULTS,
+        ("合同版本自愈：定位网关的回答在路上时授权被收回",),
     ),
     Mutation(
         "s3-generation-not-moved-before-the-write",

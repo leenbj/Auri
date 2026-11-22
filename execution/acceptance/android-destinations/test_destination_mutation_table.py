@@ -156,3 +156,57 @@ CHECKLIST = {
 def test_every_checklist_item_has_mutations_in_the_table(item):
     ids = {m.id for m in dm.MUTATIONS}
     assert set(CHECKLIST[item]) <= ids, set(CHECKLIST[item]) - ids
+
+
+# 第三轮再评（S1–S11）：每一项修复在表里至少有一条对应的变异（README 15.5 引用这些 id）；
+# 任何人删掉某条修复的全部变异，这里会红，而不是让那项修复悄悄失去变异检查的保护。
+ROUND3 = {
+    "S1 升级补撤销截止点不信网关时钟的先后": [
+        "s1-gw-migration-ignores-revision-times", "s1-gw-migration-trusts-time-order", "s1-gw-migration-treats-every-later-credential-as-suspension",
+    ],
+    "S2 网关结果的判断与落账在配对存储的同一把锁里": ["s2-settle-without-the-pairing-lock", "s2-freeze-outside-the-pairing-lock"],
+    "S3 放行与请求交出去之间不留缝（授权世代）": [
+        "s3-permit-never-compares-the-generation", "s3-heal-contract-skips-the-second-ask", "s3-generation-not-moved-before-the-write",
+        "s3-generation-not-moved-after-settling", "s3-sqlite-policy-write-skips-the-generation", "s3-first-attempt-keeps-the-freeze-when-gated",
+        "s3-uncertain-attempt-releases-the-freeze", "s3-sql-unfreeze-does-nothing",
+    ],
+    "S4 缓存与排着的目标按完整网关身份认": [
+        "s4-ledger-key-is-the-gateway-id-only", "s4-ledger-key-is-the-gateway-id-only-on-sqlite", "s4-sql-use-gateway-compares-the-id-only",
+    ],
+    "S5 授权带配对世代，清理失败不让旧同意复活": [
+        "s5-epoch-always-inherited", "s5-epoch-always-fresh", "s5-consent-ignores-the-pairing-epoch", "s5-consent-ignores-the-pairing-epoch-on-sqlite",
+        "s5-grant-epoch-not-validated", "s5-pairing-store-drops-the-epoch",
+    ],
+    "S6 兼容结论作废并重新问版本": [
+        "s6-422-permanent-without-rechecking", "s6-platform-network-events-keep-the-verdict", "s6-unreachable-location-keeps-the-verdict",
+        "s6-guard-invalidate-keeps-the-memory", "s6-guard-remembers-an-answer-asked-before-an-invalidation", "s6-service-keeps-the-verdict-after-a-failed-call",
+        "s6-service-unreachable-keeps-the-verdict", "s6-additions-permanent-rejection-without-rechecking",
+    ],
+    "S7 网关太旧不取消系统叫醒": ["s7-too-old-cancels-the-wake", "s7-any-connection-problem-keeps-the-wake"],
+    "S8 收尾不带走叫醒；登记不上叫醒就不落账确认": [
+        "s8-finishing-outside-the-lock", "s8-finishing-never-cancels-the-wake", "s8-finishing-trusts-what-the-gate-told", "s8-prewake-failure-still-commits",
+        "s8-wake-unavailable-commits-anyway", "s8-runtime-finishing-skips-the-gate", "s8-review-ignores-wake-unavailable", "s8-review-screen-never-shows-the-retry-notice",
+    ],
+    "S9 第一次发送连接就失败时放开意图标签": [
+        "s9-unreachable-first-attempt-keeps-the-freeze", "s9-key-mismatch-first-attempt-keeps-the-freeze", "s9-interrupted-request-releases-the-freeze",
+        "s9-uncertain-attempt-releases-the-freeze",
+    ],
+    "S10 失去焦点也按离开处理": ["s10-focus-loss-does-not-clear-the-clipboard"],
+    "S11 剪贴板归属按内容证明": [
+        "s11-ownership-trusts-any-content", "s11-ownership-compares-loosely", "s11-ownership-keeps-the-secret-text", "s11-ownership-keeps-reading-after-being-replaced",
+        "s11-ownership-forget-keeps-the-digest", "s11-port-does-not-remember-what-it-copied", "s11-port-clear-keeps-the-digest",
+    ],
+}
+
+
+@pytest.mark.parametrize("item", list(ROUND3))
+def test_every_round3_fix_has_mutations_in_the_table(item):
+    ids = {m.id for m in dm.MUTATIONS}
+    assert set(ROUND3[item]) <= ids, set(ROUND3[item]) - ids
+
+
+def test_every_round3_mutation_in_the_table_is_attributed_to_a_fix():
+    # 反过来：以 s<数字>- 开头的条目都属于上面某一项修复，表里不留“不知道为谁而写”的条目
+    attributed = {i for ids in ROUND3.values() for i in ids}
+    round3_ids = {m.id for m in dm.MUTATIONS if re.match(r"s\d+-", m.id)}
+    assert round3_ids == attributed, (round3_ids - attributed, attributed - round3_ids)
