@@ -346,6 +346,13 @@ MUTATIONS += (
         ("旧网关说这条 Record 已被删除，那是旧配对的结论", "旧网关说没有这一版，也不能再拿旧令牌把正文发过去"),
     ),
     Mutation(
+        "engine-accepts-stale-status-answer-resend",
+        "问结果的途中用户换了配对：旧网关说“没有这一版”不能让旧令牌再发一个 PUT（只拆构造提交的那道围栏；上一条是两道一起拆，这一条单拆它，第三轮 1d：两道各有自己盯着的测试）",
+        (Edit(ENGINE, "        val built = pairing.whileCurrent(gateway) { Built(source.submissionFor(key)) } ?: return stale(key)\n", "        val built = Built(source.submissionFor(key))\n"),),
+        ENGINE_TESTS, SYNC_TEST[0],
+        ("旧网关说没有这一版，也不能再拿旧令牌把正文发过去",),
+    ),
+    Mutation(
         "engine-blocks-on-stale-connection-verdict",
         "旧配对的公钥不符/令牌被拒结论到得太晚：配对记录已经不是同一份，就作废而不是停下任务（F6）。再评 S2 之后挡它的有两层互相独立的检查"
         "（落账前对记录的比对、落账围栏 settle），只拆其中一层是等价变异（另一层照样挡住），所以两层一起拆才看得见",

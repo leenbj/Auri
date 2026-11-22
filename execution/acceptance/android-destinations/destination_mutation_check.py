@@ -81,6 +81,7 @@ GATEWAY_MIGRATION_0005 = "services/gateway/auri_gateway/migrations/0005_destinat
 CONTRACT_GUARD = SYNC_GATEWAY + "ContractGuard.kt"
 PAIRED_GATEWAY = ANDROID + "sync/src/main/kotlin/app/auri/sync/pairing/PairedGateway.kt"
 POLICY_GENERATION = ANDROID + "sync/src/main/kotlin/app/auri/sync/policy/PolicyGeneration.kt"
+PINNED_CLIENT = ANDROID + "sync/src/main/kotlin/app/auri/sync/http/PinnedHttpsClient.kt"
 REQUEST_GATE = ANDROID + "sync/src/main/kotlin/app/auri/sync/policy/RequestGate.kt"
 DISCOVERY = ANDROID + "sync/src/main/kotlin/app/auri/sync/discovery/GatewayDiscovery.kt"
 LOCATOR = ANDROID + "sync/src/main/kotlin/app/auri/sync/discovery/GatewayLocator.kt"
@@ -494,42 +495,42 @@ MUTATIONS: tuple = (
     ),
     Mutation(
         "policy-before-contact-gate-missing",
-        "评审 B1：落盘之后、联系网关之前还要再问一次放行（中间用户可能收回了授权）：少这一道，收回之后还会去连网关（再评 S3 之后每个请求前还有世代比较，只删“问放行”是等价变异；这里的变异是不问、直接按此刻的世代盖章）",
+        "评审 B1：落盘之后、联系网关之前还要再问一次放行（中间用户可能收回了授权）：少这一道，收回之后还会去连网关。这一行同时是盖章（记下问之前的世代），没有“只删问、沿用旧章”的形式；变异是不问、直接按此刻的世代盖章",
         (Edit(ENGINE, "        var permit = permitFor(gateway) ?: return waiting(gateway, key, wasUncertain)\n", "        var permit = Permit(policy.generation)\n"),),
         sync_tests("DataFlowGateTest"), SYNC_RESULTS,
         ("问过之后、请求发出之前授权被收回",),
     ),
     Mutation(
         "policy-second-gate-missing",
-        "评审 B1 / 复评 R4：紧挨着 PUT 的最后一问（状态查询的回答在路上时用户可能收回了授权）：少这一道，收回之后还会发出一个 PUT（再评 S3 之后每个请求前还有世代比较，只删“问放行”是等价变异；这里的变异是不问、直接按此刻的世代盖章）",
+        "评审 B1 / 复评 R4：紧挨着 PUT 的最后一问（状态查询的回答在路上时用户可能收回了授权）：少这一道，收回之后还会发出一个 PUT。变异是不问、直接按此刻的世代盖章；只删这一行、沿用上一张章的形式不等价，另列为 s3-last-ask-deleted-keeps-the-old-permit",
         (Edit(ENGINE, "        // 刚才被收回的，什么都没发出去，退回等待（“不确定”还原成发送之前的样子）\n        permit = permitFor(gateway) ?: return waiting(gateway, key, wasUncertain)\n", "        // 刚才被收回的，什么都没发出去，退回等待（“不确定”还原成发送之前的样子）\n        permit = Permit(policy.generation)\n"),),
         sync_tests("DataFlowGateTest", "PolicyAfterResponseTest"), SYNC_RESULTS,
         ("联系过网关、合同版本探测之后、紧挨着请求发出的最后一道", "问网关结果的回答在路上时授权被收回"),
     ),
     Mutation(
         "r4-no-gate-after-locating",
-        "复评 R4：定位网关是一次网络往返，回来之后要再问一次放行：少这一道，往返期间收回授权之后，合同版本探测照发（再评 S3 之后每个请求前还有世代比较，只删“问放行”是等价变异；这里的变异是不问、直接按此刻的世代盖章）",
+        "复评 R4：定位网关是一次网络往返，回来之后要再问一次放行：少这一道，往返期间收回授权之后，合同版本探测照发。只删这一行、沿用上一张章：整个 :sync:test 真跑全部通过（第三轮 1d，581 个），收回授权之后行为相同（请求被每个请求前的世代比较拦下），只差收回后多记一次本地地址、设置动了但没收回授权时这一轮多等一轮，对这条规则是等价变异；这里的变异是不问、直接按此刻的世代盖章",
         (Edit(ENGINE, "        permit = permitFor(gateway) ?: return waiting(gateway, key, wasUncertain)\n        rememberAddress(gateway, address)\n", "        permit = Permit(policy.generation)\n        rememberAddress(gateway, address)\n"),),
         sync_tests("PolicyAfterResponseTest"), SYNC_RESULTS,
         ("定位网关的回答在路上时授权被收回：不再发合同版本探测",),
     ),
     Mutation(
         "r4-no-gate-after-contract-probe",
-        "复评 R4：合同版本探测也是网络往返，回来之后要再问一次放行：少这一道，往返期间收回授权之后，结果不确定的任务照样去问状态（再评 S3 之后每个请求前还有世代比较，只删“问放行”是等价变异；这里的变异是不问、直接按此刻的世代盖章）",
+        "复评 R4：合同版本探测也是网络往返，回来之后要再问一次放行：少这一道，往返期间收回授权之后，结果不确定的任务照样去问状态。变异是不问、直接按此刻的世代盖章；只删这一行、沿用探测之前的章的形式不等价，另列为 s3-contract-probe-ask-deleted-keeps-the-old-permit",
         (Edit(ENGINE, "        permit = permitFor(gateway) ?: return waiting(gateway, key, wasUncertain)\n\n        // 换了网关的话，", "        permit = Permit(policy.generation)\n\n        // 换了网关的话，"),),
         sync_tests("PolicyAfterResponseTest"), SYNC_RESULTS,
         ("合同版本探测的回答在路上时授权被收回",),
     ),
     Mutation(
         "r4-additions-no-gate-after-locating",
-        "复评 R4：追加那一遍里定位网关回来之后也要再问一次放行：少这一道，收回授权之后合同版本探测照发（再评 S3 之后每个请求前还有世代比较，只删“问放行”是等价变异；这里的变异是不问、直接按此刻的世代盖章）",
+        "复评 R4：追加那一遍里定位网关回来之后也要再问一次放行：少这一道，收回授权之后合同版本探测照发。只删这一行、沿用上一张章：整个 :sync:test 真跑全部通过（第三轮 1d，581 个），收回授权之后行为相同（请求被每个请求前的世代比较拦下），只差收回后多记一次本地地址、设置动了但没收回授权时这一轮多等一轮，对这条规则是等价变异；这里的变异是不问、直接按此刻的世代盖章",
         (Edit(ENGINE, "        permit = permitFor(gateway) ?: return // 定位网关是一次网络往返：回来再问一次放行（复评 R4）\n", "        permit = Permit(policy.generation)\n"),),
         sync_tests("PolicyAfterResponseTest"), SYNC_RESULTS,
         ("追加：定位网关的回答在路上时授权被收回",),
     ),
     Mutation(
         "r4-additions-no-gate-before-each-request",
-        "复评 R4：每一个追加请求之前都要问一次放行（前一个的回答在路上时用户可能收回了授权）：少这一道，收回之后后面的追加照发（再评 S3 之后每个请求前还有世代比较，只删“问放行”是等价变异；这里的变异是不问、直接按此刻的世代盖章）",
+        "复评 R4：每一个追加请求之前都要问一次放行（前一个的回答在路上时用户可能收回了授权）：少这一道，收回之后后面的追加照发。只删这一行、沿用上一张章：整个 :sync:test 真跑全部通过（第三轮 1d，581 个），收回授权之后行为相同（请求被每个请求前的世代比较拦下），只差设置动了但没收回授权时，这一遍追加多等一轮，对这条规则是等价变异；这里的变异是不问、直接按此刻的世代盖章",
         (Edit(ENGINE, "            permit = permitFor(gateway) ?: return // 请求离开手机之前再问一次放行\n", "            permit = Permit(policy.generation)\n"),),
         sync_tests("PolicyAfterResponseTest"), SYNC_RESULTS,
         ("追加：第一个追加请求的回答在路上时授权被收回",),
@@ -1918,7 +1919,7 @@ MUTATIONS: tuple = (
     ),
     Mutation(
         "s3-permit-never-compares-the-generation",
-        "第三轮 S3：每个请求交出去的前一刻要再比一次授权世代：不比，问放行之后（构造提交、换账本、记地址这些本地操作挂着的时候）收回授权，请求照发",
+        "第三轮 S3：每个请求交出去的前一刻要再比一次授权世代：不比，问放行之后（构造提交、换账本、记地址这些本地操作挂着的时候）收回授权，请求照发。“合同版本自愈：定位网关的回答在路上时授权被收回”那条测试盯的是定位之后的第二问、不是这里的世代比较，删了世代比较它照样绿，所以不在必红清单里（第三轮 1d 真跑确认：同一个类里 6 个测试变红 4 个，绿的两个正是它和只数构造提交次数的那条；它由 s3-heal-contract-skips-the-second-ask 盯着）",
         (Edit(ENGINE, "        override suspend fun <T : Any> gated(request: suspend () -> T): T? = PolicyGeneration.handoff({ policy.generation == generation }, request)\n", "        override suspend fun <T : Any> gated(request: suspend () -> T): T? = request()\n"),),
         sync_tests("PolicyGateRaceTest"), SYNC_RESULTS,
         ("构造提交挂在本地数据库里时授权被收回", "结果不确定的任务：构造提交挂着时授权被收回", "问网关结果之前的本地步骤做完时授权被收回"),
@@ -1932,10 +1933,24 @@ MUTATIONS: tuple = (
     ),
     Mutation(
         "s3-heal-contract-skips-the-second-ask",
-        "第三轮 S3：合同版本自愈里，定位的回答回来之后要再问一次放行（探能力也是联系）：不问（换一张新盖的章、不看授权），定位回答在路上时收回授权，能力探测照发。注意：只删这一问、沿用定位之前的旧章不行——gated 的世代比较仍会拦住它，那是等价变异，所以这里换新章",
+        "第三轮 S3：合同版本自愈里，定位的回答回来之后要再问一次放行（探能力也是联系）：不问（换一张新盖的章、不看授权），定位回答在路上时收回授权，能力探测照发。只删这一行、沿用上一张章：整个 :sync:test 真跑全部通过（第三轮 1d，581 个），收回授权之后行为相同（请求被每个请求前的世代比较拦下），只差设置动了但没收回授权时，这一轮自愈多等一轮，对这条规则是等价变异；这里的变异是不问、直接按此刻的世代盖章",
         (Edit(ENGINE, "                permit = permitFor(gateway) ?: return // 定位是一次网络往返：回来再问一次放行\n", "                permit = Permit(policy.generation)\n"),),
         sync_tests("PolicyGateRaceTest"), SYNC_RESULTS,
         ("合同版本自愈：定位网关的回答在路上时授权被收回",),
+    ),
+    Mutation(
+        "s3-last-ask-deleted-keeps-the-old-permit",
+        "第三轮 1d（还原严格形式）：紧挨着请求的最后一问只删这一行、沿用上一张章：不是等价变异——最后一问还管着“要不要构造提交（冻结意图标签）”：少了它，被拦下的尝试也先构造了提交再放开；DataFlowGateTest 数最后一问的次数、PolicyGateRaceTest 数构造提交的次数都会变红",
+        (Edit(ENGINE, "        // 刚才被收回的，什么都没发出去，退回等待（“不确定”还原成发送之前的样子）\n        permit = permitFor(gateway) ?: return waiting(gateway, key, wasUncertain)\n", "        // 刚才被收回的，什么都没发出去，退回等待（“不确定”还原成发送之前的样子）\n"),),
+        sync_tests("DataFlowGateTest", "PolicyGateRaceTest"), SYNC_RESULTS,
+        ("联系过网关、合同版本探测之后、紧挨着请求发出的最后一道", "第一次尝试：换账本之后授权被收回，请求之前的最后一问就拦下它"),
+    ),
+    Mutation(
+        "s3-contract-probe-ask-deleted-keeps-the-old-permit",
+        "第三轮 1d（还原严格形式）：合同版本探测之后的那一问只删这一行、沿用探测之前的章：不是等价变异——两个已有的测试会变红（真跑确认）",
+        (Edit(ENGINE, "        permit = permitFor(gateway) ?: return waiting(gateway, key, wasUncertain)\n\n        // 换了网关的话，", "\n        // 换了网关的话，"),),
+        sync_tests("SyncEngineTest", "DataFlowGateTest"), SYNC_RESULTS,
+        ("复评 R13：看过哈希之后、构造提交之前本机把这条文字删了", "联系过网关、合同版本探测之后、紧挨着请求发出的最后一道"),
     ),
     Mutation(
         "s3-generation-not-moved-before-the-write",
@@ -2257,6 +2272,55 @@ MUTATIONS: tuple = (
         (Edit(CLIPBOARD_PORT, "        ownership.forget()\n", ""),),
         app_tests("ClipboardWiringTest"), APP_RESULTS,
         ("再评 S11：真机端口按内容认归属",),
+    ),
+    # ---- 第三轮续作：交接（bd93376 的锁）在真实客户端上的性质（1b）与“不能空洞通过”（1c）。ID 仍归 S3（授权世代与交接）----
+    Mutation(
+        "s3-real-client-runs-blocking-work-in-the-callers-prefix",
+        "第三轮续作 1b：真实客户端的阻塞工作（解析主机名、连接、握手）必须在 IO 线程上，调用方这一侧只有“派发后挂起”：挪到调用方线程上，交接的锁就握在请求的网络等待之上，用户点开关（授权设置的改动要拿同一把锁）会被卡住",
+        (Edit(PINNED_CLIENT, "val work = async(Dispatchers.IO) { runCatching { connection.run() } }", "val work = async(Dispatchers.Unconfined) { runCatching { connection.run() } }"),),
+        sync_tests("PolicyHandoffRealClientTest"), SYNC_RESULTS,
+        ("主机名解析卡住：在途的请求不挡授权设置的改动", "握手卡住：在途的请求不挡授权设置的改动"),
+    ),
+    Mutation(
+        "s3-handoff-holds-the-lock-for-the-whole-request",
+        "第三轮续作 1b：交接只在“比对 + 启动到第一次挂起”这一小段持锁，请求之后的网络等待不持锁：整段请求都握着锁，授权设置的改动要等网络回答才能做完",
+        (Edit(POLICY_GENERATION, "async(start = CoroutineStart.UNDISPATCHED) { request() } else null", "async(start = CoroutineStart.UNDISPATCHED) { request() }.also { kotlinx.coroutines.runBlocking { it.join() } } else null"),),
+        # 只挑请求跑在 Default/IO 线程上的测试：runTest 里的别的测试把请求放在测试线程上，持锁等请求会把唯一的测试线程卡死（真跑过：整个变异要等满 30 分钟的上限）。
+        # 这条变异还要求 Default 线程池至少 3 个线程（一个等请求、一个被锁挡住、一个跑请求的后半截）
+        sync_tests("PolicyHandoffRealClientTest", "PolicyHandoffRaceTest.aSuspendedRequestDoesNotHoldUpPolicyChanges"), SYNC_RESULTS,
+        ("aSuspendedRequestDoesNotHoldUpPolicyChanges", "主机名解析卡住：在途的请求不挡授权设置的改动"),
+    ),
+    Mutation(
+        "s3-handoff-shields-the-request-from-cancellation",
+        "第三轮续作 1b：取消调用方要穿过交接传到在途的请求（关掉它的套接字）：交接把请求包在不可取消的上下文里，调用方被取消了请求还要等到单步超时才结束",
+        (
+            Edit(POLICY_GENERATION, "suspend fun <T : Any> handoff(permitted: () -> Boolean, request: suspend () -> T): T? = coroutineScope {", "suspend fun <T : Any> handoff(permitted: () -> Boolean, request: suspend () -> T): T? = withContext(NonCancellable) {"),
+            Edit(POLICY_GENERATION, "import kotlinx.coroutines.coroutineScope\n", "import kotlinx.coroutines.NonCancellable\nimport kotlinx.coroutines.coroutineScope\nimport kotlinx.coroutines.withContext\n"),
+        ),
+        sync_tests("PolicyHandoffRealClientTest"), SYNC_RESULTS,
+        ("取消调用方：取消穿过交接传到卡在握手里的请求",),
+    ),
+    Mutation(
+        "s3-handoff-reports-a-failed-request-as-withheld",
+        "第三轮续作 1b：请求抛出的异常要原样交给调用方：被吞掉、当成“没放行”（null），调用方以为什么都没发，可请求其实已经开始了",
+        (Edit(POLICY_GENERATION, "async(start = CoroutineStart.UNDISPATCHED) { request() } else null", "async(start = CoroutineStart.UNDISPATCHED) { runCatching { request() }.getOrNull() } else null"),),
+        sync_tests("PolicyHandoffRealClientTest"), SYNC_RESULTS,
+        ("请求抛出的异常原样交给调用方",),
+    ),
+    Mutation(
+        "s3-handoff-checks-then-never-sends",
+        "第三轮续作 1c：比对放行了就要把请求真的跑起来、结果原样交回：放行了却一个请求也没跑（引擎看到的是“没放行”），交接测试与真实客户端测试都要变红",
+        (Edit(POLICY_GENERATION, "if (permitted()) async(", "if (permitted() && false) async("),),
+        # 只挑两个要变红的测试：别的测试在这个变异下会等满 runTest 的超时才失败（整类要跑 4 分钟）
+        sync_tests("PolicyHandoffRaceTest.revokedBetweenGenerationReadAndClientHandoffMustNotSendText", "PolicyHandoffRealClientTest.放行并运行完的请求把结果原样交回"), SYNC_RESULTS,
+        ("revokedBetweenGenerationReadAndClientHandoffMustNotSendText", "放行并运行完的请求把结果原样交回"),
+    ),
+    Mutation(
+        "s3-put-handed-over-with-a-stale-permit",
+        "第三轮续作 1c：撤销要等交接的那一支，必须看到 PUT 真的发出去了一次：PUT 拿着过期的章（交接一定拦下它），旧版测试在这一支不数发出的请求、照样绿；现在放行的那一支要求恰好一个 PUT",
+        (Edit(ENGINE, "        val put = permit.gated { client.putRevision(address, gateway.token, submission) }\n", "        val put = Permit(-1).gated { client.putRevision(address, gateway.token, submission) }\n"),),
+        sync_tests("PolicyHandoffRaceTest.revokedBetweenGenerationReadAndClientHandoffMustNotSendText"), SYNC_RESULTS,
+        ("revokedBetweenGenerationReadAndClientHandoffMustNotSendText",),
     ),
     # ---- 第三轮续作 S12：找网关是一串请求（逐个地址探测、再问 mDNS），每一个各过一次门；整串只在第一个之前过一次，第一个请求在路上时收回授权，后面的探测照发 ----
     Mutation(

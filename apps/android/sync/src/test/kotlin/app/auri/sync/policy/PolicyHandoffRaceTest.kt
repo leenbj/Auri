@@ -175,18 +175,31 @@ class PolicyHandoffRaceTest {
         val send = async(Dispatchers.Default) { engine.send(key) }
         try {
             assertTrue(withContext(Dispatchers.IO) { generationRead.await(10, TimeUnit.SECONDS) })
+            val revokerThread = CompletableDeferred<Thread>()
             val revoke = async(Dispatchers.IO) {
+                revokerThread.complete(Thread.currentThread())
                 rig.policy.revokeGrant()
                 revocationDone.countDown()
             }
-            val revokedBeforeHandoff = withContext(Dispatchers.IO) { revocationDone.await(1, TimeUnit.SECONDS) }
+            // Two definite states, no fixed sleep: either the revocation finished while the handoff was still deciding
+            // (no mutual exclusion), or it is parked on the handoff's monitor (BLOCKED) because the handoff holds it.
+            val revoker = revokerThread.await()
+            val patience = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+            while (revocationDone.count > 0 && revoker.state != Thread.State.BLOCKED) {
+                check(System.nanoTime() < patience) { "the revocation neither finished nor waited for the handoff: ${revoker.state}" }
+                withContext(Dispatchers.IO) { Thread.sleep(1) }
+            }
+            val revokedBeforeHandoff = revocationDone.count == 0L
             continueHandoff.countDown()
             revoke.await()
             send.await()
+            val puts = rig.lan.delivered.count { it.second.method == "PUT" }
             assertTrue("a PUT must not be handed to the client after revocation", !sentAfterRevocation.get())
             if (revokedBeforeHandoff) {
-                assertEquals("revocation completed before handoff; the PUT must not leave", 0,
-                    rig.lan.delivered.count { it.second.method == "PUT" })
+                assertEquals("revocation completed before handoff; the PUT must not leave", 0, puts)
+            } else {
+                // Not vacuous: the handoff really did reach the client. It won the lock, so the PUT left once, before the revocation finished.
+                assertEquals("the revocation waited for the handoff, so the PUT left exactly once", 1, puts)
             }
         } finally {
             continueHandoff.countDown()

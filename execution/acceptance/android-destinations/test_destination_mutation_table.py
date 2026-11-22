@@ -169,6 +169,12 @@ ROUND3 = {
         "s3-permit-never-compares-the-generation", "s3-handoff-without-the-policy-lock", "s3-heal-contract-skips-the-second-ask", "s3-generation-not-moved-before-the-write",
         "s3-generation-not-moved-after-settling", "s3-sqlite-policy-write-skips-the-generation", "s3-first-attempt-keeps-the-freeze-when-gated",
         "s3-uncertain-attempt-releases-the-freeze", "s3-sql-unfreeze-does-nothing",
+        # 续作：交接在真实客户端上的性质（1b）、撤销测试不能空洞通过（1c）
+        "s3-real-client-runs-blocking-work-in-the-callers-prefix", "s3-handoff-holds-the-lock-for-the-whole-request",
+        "s3-handoff-shields-the-request-from-cancellation", "s3-handoff-reports-a-failed-request-as-withheld", "s3-handoff-checks-then-never-sends",
+        "s3-put-handed-over-with-a-stale-permit",
+        # 续作 1d：被说成“等价变异”的严格形式（只删一问、沿用旧章）其实有已有的测试盯着，还原成独立条目
+        "s3-last-ask-deleted-keeps-the-old-permit", "s3-contract-probe-ask-deleted-keeps-the-old-permit",
     ],
     "S4 缓存与排着的目标按完整网关身份认": [
         "s4-ledger-key-is-the-gateway-id-only", "s4-ledger-key-is-the-gateway-id-only-on-sqlite", "s4-sql-use-gateway-compares-the-id-only",

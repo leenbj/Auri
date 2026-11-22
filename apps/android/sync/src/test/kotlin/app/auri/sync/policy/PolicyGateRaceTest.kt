@@ -15,6 +15,7 @@ import app.auri.sync.testing.DispatchRig
 import app.auri.sync.testing.FakeGateway.Fault
 import app.auri.sync.testing.SyncRig
 import java.time.Duration
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
@@ -74,6 +75,16 @@ class PolicyGateRaceTest {
                 armed = false
                 then()
             }
+        }
+    }
+
+    /** 发送账：数一数构造提交（冻结意图标签）被叫了几次。 */
+    private class CountingFreeze(private val inner: DispatchStore) : DispatchStore by inner {
+        val built = AtomicInteger()
+
+        override suspend fun publicationFor(key: JobKey): Publication {
+            built.incrementAndGet()
+            return inner.publicationFor(key)
         }
     }
 
@@ -150,6 +161,29 @@ class PolicyGateRaceTest {
         assertEquals(SyncState.WAITING_GATEWAY, job.state)
         assertTrue("上一次可能已经送到的事实没有变：仍然不确定", job.uncertain)
         assertEquals("上一次也许已经把这个标签送到了网关：冻结不能放开", IntentResult.Locked, rig.dispatch.setIntent(key, Intent.ACTION_REQUEST, rig.clock.now()))
+    }
+
+    @Test
+    fun `第一次尝试：换账本之后授权被收回，请求之前的最后一问就拦下它：提交一次也没构造，标签从头到尾没冻结过`() = runTest {
+        lateinit var hook: AfterUseGateway
+        lateinit var counted: CountingFreeze
+        lateinit var rig: DispatchRig
+        rig = DispatchRig(this, wrapLedger = { inner ->
+            CountingFreeze(AfterUseGateway(inner) { rig.policy.setGatewayTextGranted(false) }.also { hook = it }).also { counted = it }
+        })
+        val key = rig.transcribed()
+        val builtBefore = counted.built.get()
+        hook.armed = true
+
+        rig.engine.runOnce()
+
+        assertEquals(
+            "构造提交就是冻结标签：被最后一问拦下的尝试没走到这里，连构造都不该有（构造出来再放开，中间进程被杀标签就冻着了）",
+            builtBefore, counted.built.get(),
+        )
+        assertEquals(0, rig.putsSent())
+        assertEquals(SyncState.WAITING_GATEWAY, rig.jobs.get(key)!!.state)
+        assertEquals("没冻结过：用户还能改", IntentResult.Changed, rig.dispatch.setIntent(key, Intent.ACTION_REQUEST, rig.clock.now()))
     }
 
     @Test
