@@ -10,6 +10,8 @@
 
 **评审修复轮（2026-11-21）**：独立评审提出 B1–B6、H1–H4、M1–M4 共 14 条发现，每条一个提交、先红后绿、推送一次，见**第 13 节**（发现表、变异、要在设备上核对的、最新验证结果、假设）。第 1–3、5–10 节里被它们取代的说法已就地改正（第 8 节的 30 条变异表是原始实现时的历史记录，其中 3 条已随 B2 删除，见 13.4）；第 12 节的数字是修复之前的历史记录，最新结果在 13.5。
 
+**第三轮再评（2026-11-22 至 11-23）**：第 14 节是第二轮（R1–R13）；第三轮的 S1–S12、假设、残余风险、设备上要核对的、变异表整表真跑与**最新验证结果**在**第 15 节**（15.6 里有一个由本机 TUN 代理造成的 `repo` 套件失败，没有被藏起来）。第 4、6、10、13 节里被 S11 取代的几处剪贴板说法（归属标记、杀进程后补清）已就地加了指针。
+
 ## 1. 这里有什么
 
 | 文件 | 作用 |
@@ -67,7 +69,7 @@ export AURI_GATEWAY_URL='https://<电脑的局域网地址>:8443/mcp' AURI_GATEW
    - **核验只认强生物识别（评审 B4）**：① 一部只设了锁屏 PIN、没登记指纹和人脸的手机：点“生成凭证”→ 不应弹出任何系统框（更不能输入 PIN 通过），页面说明没法核验、锁屏密码不能代替；`sqlite3 /tmp/auri-gateway-data/gateway.db 'select count(*) from destination_credentials'` 不变。② 登记一枚指纹后再点：系统框只有指纹/人脸与系统自带的“取消”按钮，**没有“使用 PIN”**；点“取消”→ 页面说已取消、没有生成凭证（这个按钮的回调不经 `onAuthenticationError`，已按“取消”交回，只能在真机上核对）；指纹错误 / 锁定 → 同样没有凭证。③ 通过后才生成，网关库里恰好多一行凭证。
    - 显示凭证时按 Home（或锁屏）再回来：面板必须是空的（退到后台就抹掉）。显示凭证时杀掉进程（`adb shell am force-stop app.auri.android`）再进来：同样是空的。
    - 生成凭证的过程中（评审 B6）：核验框弹着期间页面**不应**收到 `ON_STOP`（`adb logcat -d | grep -i 'ActivityTaskManager.*stop'` 里没有本应用的 stop 记录；若有，生成凭证会一直落到“已丢掉”）。核验通过后、网关回答之前立刻按 Home（`adb shell input keyevent KEYCODE_HOME`）再回来：页面是空的，随后出现“已丢掉，请轮换”，**不会**蹦出凭证；照提示轮换后网关里只认新的（`real_gateway_agent.py probe`：旧凭证 `GATEWAY_AUTH_REVOKED`）。
-   - 剪贴板（评审 B5；**离开应用就清的部分已被 R6 取代，现在的步骤与期望见 14.4**）：点“复制并关闭”后马上退到另一个应用，在那里粘贴：应当粘得出凭证（复制那一下没有把它当场删掉）；**65 秒后**再粘贴：应当是空的，`adb logcat -d -s AuriSync:I | grep clipboard` 应有 `clipboard.copied` 与 `clipboard.cleared`。再来一次：复制后在别的应用里复制一句别的话，**回到本应用的前台**待到 60 秒——别的话应当还在，日志是 `clipboard.kept-other`。又一次：复制后 `adb shell am force-stop app.auri.android`，65 秒后重新打开应用：凭证应被清掉（回到前台补查）。
+   - 剪贴板（评审 B5；**离开应用就清的部分已被 R6 取代，现在的步骤与期望见 14.4**）：点“复制并关闭”后马上退到另一个应用，在那里粘贴：应当粘得出凭证（复制那一下没有把它当场删掉）；**65 秒后**再粘贴：应当是空的，`adb logcat -d -s AuriSync:I | grep clipboard` 应有 `clipboard.copied` 与 `clipboard.cleared`。再来一次：复制后在别的应用里复制一句别的话，**回到本应用的前台**待到 60 秒——别的话应当还在，日志是 `clipboard.kept-other`。又一次：复制后 `adb shell am force-stop app.auri.android`，65 秒后重新打开应用：凭证应被清掉（回到前台补查）。**【这一条已被第三轮 S11 取代：归属改按内存里的内容摘要认，进程被杀后摘要没了、认不出归属就不清，这一次凭证应当仍在剪贴板里；现在的步骤与期望见 15.4】**
    - 凭证不在设备上：`adb shell run-as app.auri.android sh -c "grep -rl '<凭证前 12 个字符>' . ; echo done"` 只应打印 `done`；`adb logcat -d | grep -c '<凭证前 12 个字符>'` 应为 0（连同别的应用的日志一起查）。
    - 再点“轮换凭证”：先说清旧凭证立刻失效、要你确认，确认后**再次**核验；轮换后 `real_gateway_agent.py probe`：旧凭证 `{"status": 401, "code": "GATEWAY_AUTH_REVOKED"}`，新凭证 `{"status": 200, "code": null}`。
 3. **自动发送与 Agent 领取（清单 3、7）**：先在“同步与配对”页打开“允许把文字发送到我配对的网关”（评审 B1：默认关，配对不等于同意；“严格仅本地”开着时什么也发不出去）。用耳机录一句话，等转录完成（Ticket 14/16/20 的流程）。期望：不用再点任何东西；电脑上
@@ -107,7 +109,7 @@ cd apps/android && ./gradlew :syncplatform:connectedDebugAndroidTest -Pandroid.t
 
 1. **预览确认放行的仍是未审核的初稿**：用户点“确认发送”不等于他审阅并改过正文，请求里 `review_state` 仍是 `not_reviewed`（合同也没有办法在“确认发送”时标成已审核，见 G14）。
 2. **退到后台（`ON_STOP`）与离开页面一样“换一代”**（评审 B6）：正在显示的凭证抹掉，还在路上的请求作废——之后才到的凭证不显示、不留，只告诉用户“已丢掉，请轮换”（网关那边已经签发了，所以要轮换）。这推翻了原先“在途的不抹”的假设（它会让凭证在退到后台之后又蹦出来）。代价：如果某个机型在核验框弹出时会让页面收到 `ON_STOP`，用户每次生成凭证都会落到“已丢掉”——这只能在真机上核对（第 4 节）；框架自带的 `BiometricPrompt` 是系统窗口，按设计不会让宿主 Activity 停掉。
-3. **复制出去的凭证 60 秒后从剪贴板清掉，只清自己放的那一份**（评审 B5，`SecretClipboardGuard`）。评审要求“面板关闭、退到后台、到时间”三个时刻都清；我只做了“到时间”，**没有**在后台那一刻清：凭证复制出去的唯一用处是粘贴到别处，几乎总要退出本应用（而且复制的那一下面板本来就关了），一退后台就清，等于把刚复制的东西当场删掉，用户只能再轮换一次。要不要在那两个时刻也清是产品决定（改法：在退后台的回调里调 `clear()`）。后台时 Android 不让读剪贴板，认不出归属就照清（宁可多清一次，也不让凭证留着）；读得到时按标记认，别的应用后来复制的东西不动。**【“认不出归属就照清”与“离开时不清”已被 R6 取代：现在认不出归属绝不清、离开本应用（读得到的最后一刻）清；见 14.1 R6 与 14.2 第 1 条】**
+3. **复制出去的凭证 60 秒后从剪贴板清掉，只清自己放的那一份**（评审 B5，`SecretClipboardGuard`）。评审要求“面板关闭、退到后台、到时间”三个时刻都清；我只做了“到时间”，**没有**在后台那一刻清：凭证复制出去的唯一用处是粘贴到别处，几乎总要退出本应用（而且复制的那一下面板本来就关了），一退后台就清，等于把刚复制的东西当场删掉，用户只能再轮换一次。要不要在那两个时刻也清是产品决定（改法：在退后台的回调里调 `clear()`）。后台时 Android 不让读剪贴板，认不出归属就照清（宁可多清一次，也不让凭证留着）；读得到时按标记认，别的应用后来复制的东西不动。**【“认不出归属就照清”与“离开时不清”已被 R6 取代：现在认不出归属绝不清、离开本应用（读得到的最后一刻）清；见 14.1 R6 与 14.2 第 1 条】**【“读得到时按标记认”又被第三轮 S11 取代：归属改按内存里记的内容摘要认，描述里的标记整个删除；见 15.1】**
 4. **界面上“未审核”是常量**：V1 里没有任何代码能产生 `review_state=reviewed` 的初稿（只有枚举值），所以发送账里的每一条都是未审核初稿，常量是如实的。将来有审阅功能时，必须改成从 Revision 的 `review_state` 派生。
 5. **核验只认强生物识别**（`BIOMETRIC_STRONG`；评审 B4 去掉了原先的 `DEVICE_CREDENTIAL` 后备），用框架自带的 `android.hardware.biometrics.BiometricPrompt`，没有新增依赖（minSdk 够用）。没登记指纹或人脸 → 不弹提示、不生成凭证并明说，锁屏密码不能代替（知道 PIN 的人不一定是用户本人）。因为不再允许设备凭据，系统要求自己给“取消”按钮，已加上（它的回调不经 `onAuthenticationError`，已按“取消”交回；这一处只能在真机上核对）。
 6. **只有 ASR 初稿（第 1 版）走自动发送 / 预览确认**：用户修订、重新转录出的新版本只入库（ADR-009 授权的是“转录出来的文字发给这个 Agent”；修订要不要自动重发是单独的决定）。
@@ -196,7 +198,7 @@ cd apps/android && ./gradlew :syncplatform:connectedDebugAndroidTest -Pandroid.t
 ## 10. 已知限制（没做、做不到或需要产品决定的）
 
 - **真机行为全是 `NOT_RUN`**：真实 `BiometricPrompt` 的弹出与各种结果、`FLAG_SECURE` 对截图与最近任务的效果、剪贴板敏感标记、`ON_STOP` 在真实 Activity 生命周期里的触发、Android 自带 SQLite 上的发送账合同（`SqliteDispatchStoreOnDeviceTest`）、进程被系统杀掉后的发送接力、整条链在局域网真机上的样子。JVM 测试证明了逻辑，不证明这些平台行为。
-- **剪贴板里的凭证只有 60 秒，且有三处认不全**（评审 B5）：① 进程在 60 秒内被系统杀掉，定时器随之没了，下次窗口拿到焦点时才补查（标记里带着放进去的时刻），在那之前凭证还留在剪贴板里（Android 13 起系统自己约一小时后清，更早的版本只等被覆盖）；② 后台到点时 Android 不让读，认不出归属就照清，所以用户在那 60 秒里于别处复制的东西可能被一并清掉；③ 敏感标记（预览里不显示）是 API 33 才有的常量，旧系统忽略它。`clearPrimaryClip` 是 API 28 才有的，应用 minSdk 31，没有缺它的系统（`ClipboardWiringTest` 钉着 minSdk ≥ 28，谁调低它这条先红）。后台能否写与清剪贴板、描述里的标记能否读回，都没在真机上看过，`NOT_RUN`（第 4 节）。
+- **剪贴板里的凭证只有 60 秒，且有三处认不全**（评审 B5）：① 进程在 60 秒内被系统杀掉，定时器随之没了，下次窗口拿到焦点时才补查（标记里带着放进去的时刻；**第三轮 S11 取代：标记整个删除，进程被杀后内存里的摘要没了，不再补查，见 15.3**），在那之前凭证还留在剪贴板里（Android 13 起系统自己约一小时后清，更早的版本只等被覆盖）；② 后台到点时 Android 不让读，认不出归属就照清，所以用户在那 60 秒里于别处复制的东西可能被一并清掉；③ 敏感标记（预览里不显示）是 API 33 才有的常量，旧系统忽略它。`clearPrimaryClip` 是 API 28 才有的，应用 minSdk 31，没有缺它的系统（`ClipboardWiringTest` 钉着 minSdk ≥ 28，谁调低它这条先红）。后台能否写与清剪贴板、描述里的标记能否读回，都没在真机上看过，`NOT_RUN`（第 4 节）。
 - **“核验”不是“机主确认”的全部**：通过的是系统的强生物识别（指纹 / 人脸）；手机若被人解锁着递给别人，核验拦不住。这是系统核验的边界，不是本票能解决的。
 - **本机缓存可能比网关旧**（缺口 G16）：别的设备撤销了某个 Destination 后，本机在下次“刷新”或同步前不知道；手机在发送那一刻只排除**本机已知**已撤销的。网关会把含已撤销目标的整条 422 拒收，那条文字会停在“需要用户处理”，刷新缓存后重新规划才能发。
 - **文字在用户确认之前就已经在用户自己的网关里**（评审 B2 的取舍）：预览确认只保证“确认之前没有任何 Agent 读得到”（没有 Delivery，Agent 领不到），不再保证“确认之前网关上什么也没有”。网关是单用户自托管；要严格做到“确认之前不出手机”，用“严格仅本地”（评审 B1）。手机不会把已入库的文字事后补发给**之后才创建**的 Destination（目标在发布时按当时的目的地定下，评审 B2/H2）。
@@ -300,7 +302,7 @@ cd apps/android && ./gradlew :syncplatform:connectedDebugAndroidTest -Pandroid.t
 | B2 阻断：预览拦住自动发送 | `9e9ee03` | 网关新增 `POST /v1/records/{id}/revisions/{n}/deliveries`（给已入库的不可变 Revision 追加 Delivery，幂等，来源设备专用）；手机：同步任务在发布 Revision 的事务里一定创建、不等任何决定，自动目标随第一次 PUT 建 Delivery，预览目标在确认后由引擎追加（每个目标一本账 `NOT_YET/CREATED/REFUSED`，失败有界退避，重启后补做）。合同当时仍是 1.1（只加可选端点与两个消息，既有样本一个字没动，细节见 13.6；R7 之后是 1.2） | 网关 `test_delivery_additions.py`（11 个，红时 11/11）；真网关 2 个（自动与预览并存、预览确认后追加）红时失败；`DispatchEngineTest`、`DispatchStoreContract`、`DispatchSqlTest`、`DeliveryAdditionsLoopTest`、`ResumePlannerTest`、`SendReviewViewModelTest` 按新语义重写 | 11 条新增（含 M3 的 3 条）；原 30 条里 3 条因旧语义消失而删除，见 13.4 | E2 |
 | B3 阻断：撤销凭证不停投递 | `e6bebd6` | 撤销**最后一条有效凭证** = 该 Destination “暂停”：撤销那一刻 `PENDING`/`LEASED` 的 Delivery 取消（沿用状态机的 `DESTINATION_REVOKED`，不新增状态）；暂停期间提交里点名它不报错、只是不建 Delivery；签发新凭证才恢复，且只对之后入库的文字生效，之前和暂停期间的文字永远不会补给新凭证。Destination 资源多一个可选字段 `credential_active`（合同当时仍是 1.1；严格校验的旧客户端会拒收带它的响应，所以 R7 把版本升到 1.2）。手机读它、不为暂停的目的地规划新文字、列表和详情页显示“已暂停” | 网关 `test_credential_suspension.py`（7）、`DestinationClientTest`、`DestinationServiceTest`（4）、`DispatchStoreContract`（6，内存与 SQLite 共用）、`DispatchSqlTest`、应用的列表/详情/文案测试、两条真网关用例（经网关命令行撤销凭证）；Ticket 07 的一条断言被**有意翻转**（见 13.2 第 2 条） | 14 条新增 | E2 |
 | B4 阻断：PIN 能通过核验 | `248c882` | 只要 `BIOMETRIC_STRONG`，去掉 `DEVICE_CREDENTIAL`；没登记生物识别就不弹框、不生成凭证并明说。策略搬进 `BiometricGate`（接缝是小接口 `BiometricFramework`），`BiometricLocalAuthenticator` 只剩 Android 适配；没有设备凭据后系统要求自带“取消”按钮，已加并映射成“已取消” | `BiometricGateTest`（“只有 PIN 的手机”只在请求里带 `DEVICE_CREDENTIAL` 时才通过，所以应用请求什么决定测试结果；红于旧的掩码）、`DestinationTextTest` | 3 条新增 | E2；真实弹框与取消按钮 `NOT_RUN`（第 4 节第 2 步，13.3） |
-| B5 阻断：复制的凭证不清 | `404504b` | `SecretClipboardGuard`：复制时标记为敏感并在描述里记下标记与时刻（不含凭证）；60 秒到点只清自己放的那一份，别的应用后来复制的东西不动；再复制重新计时；后台读不到时照清（**R6 之后改成读不到绝不清**）；进程被杀靠窗口拿到焦点时补查；面板写真实的秒数 | `SecretClipboardGuardTest`（8 个，红时 6 个；假剪贴板按 Android 规则：后台读不到、写与清仍可）、`ClipboardWiringTest`（钉住 minSdk ≥ 28） | 9 条新增 | E2；剪贴板适配器 `NOT_RUN`（第 4 节） |
+| B5 阻断：复制的凭证不清 | `404504b` | `SecretClipboardGuard`：复制时标记为敏感并在描述里记下标记与时刻（不含凭证）；60 秒到点只清自己放的那一份，别的应用后来复制的东西不动；再复制重新计时；后台读不到时照清（**R6 之后改成读不到绝不清**）；进程被杀靠窗口拿到焦点时补查（**第三轮 S11 取代：描述里的标记整个删除，归属改按内存里的内容摘要认，进程被杀后不再补查，见 15.1**）；面板写真实的秒数 | `SecretClipboardGuardTest`（8 个，红时 6 个；假剪贴板按 Android 规则：后台读不到、写与清仍可）、`ClipboardWiringTest`（钉住 minSdk ≥ 28） | 9 条新增 | E2；剪贴板适配器 `NOT_RUN`（第 4 节） |
 | B6 阻断：凭证面板的竞态 | `ea766a0` | 面板状态与“第几代”合成一个值 `Panel(generation, ui)`，所有改动都是一次 `MutableStateFlow.update`（比较并交换），不存在“比完代数、赋值之前页面离开了”的缝；离开、退到后台（正在显示或等待时）、`onCleared` 都换一代，旧一代的结果不显示、不留；若那是已签发的凭证就记“已丢掉，请轮换” | `DestinationDetailViewModelTest`（受控调度器决定“离开”与“结果到达”谁先，两种次序都测；第二个请求遇到第一个在途；旧结果到达时新请求在进行）、`CredentialSurfaceGuardTest`（没有单独的代数变量、面板只经 `update` 写） | 5 条新增，另有 4 条旧条目按新语义重述 | E2；“检查与赋值之间”是线程抢占窗口，协作式测试调度器复现不了，这半边由源码守卫钉住，不是红→绿的行为测试 |
 | H1 高：确认后被杀没人叫醒 | `3b96dcf` | `ResumePlanner` 不再把“欠的追加”当独立的流，在配对、任务表、策略、发送账任一输入变化的那一刻一起重新算，不会比任务表晚一拍；重启的进程只从持久化的表推出同一个答案 | `ResumeRecoveryTest`：确认发生在入库之前时唤醒保持到追加做完（红时 `[ensure, cancel]`）；提交之后、唤醒之前被杀与确认之后、唤醒之前被杀两个用例（回归守卫，起初就绿，因为启动时的评估读持久化的账）；`ResumeWiringGuardTest` | 4 条新增 | E2；真实 `JobScheduler` 与系统叫醒被杀的进程 `NOT_RUN`（13.3） |
 | H2 高：重新配对后旧网关的目的地 | `808081e` | `DeliveryAdditions.useGateway(gatewayId)`：引擎在构造提交前、读欠的追加前调用；网关不同就在一个事务里清空目的地缓存，并**撤回**所有还没有 Delivery 的目标（已发生、已拒收的当历史留着）；`applyDestinations` 与 `forgetDestinations` 走同一个例程；同一网关再调用不改变也不发信号 | `GatewaySwitchTest`（待发文字、欠的追加、先开发送页三个次序；红时 422 与错发给 B 的追加）、`DispatchStoreContract` 5 个新用例（内存与真 SQLite） | 6 条新增 | E2 |
@@ -336,7 +338,7 @@ cd apps/android && ./gradlew :syncplatform:connectedDebugAndroidTest -Pandroid.t
 | B2 自动与预览并存 | 建一个“自动发送”和一个“预览确认”的目的地，录一句话 | 自动目的地的凭证 `claim` 马上领到；预览目的地的 `claim` 为空；点“确认发送”后才领到；`select destination_id, state from deliveries` 各一行 |
 | B3 撤销凭证 | 电脑上 `PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway revoke-credential --data-dir /tmp/auri-gateway-data --credential-id <id>`；手机“刷新”；再录一句；在手机上“轮换凭证” | 手机显示“已暂停”；暂停期间新文字没有为它建 Delivery；轮换后新凭证 `claim` 领不到撤销前的文字，只领得到之后的 |
 | B4 强生物识别 | 第 4 节第 2 步“核验只认强生物识别”的 ①②③ | 只有 PIN 的手机不弹框、没有凭证；登记指纹后框里只有指纹/人脸与“取消”，取消 = 已取消、没有凭证 |
-| B5 剪贴板 | 第 4 节第 2 步“剪贴板”那一条的四种做法 | 65 秒后空；别的应用复制的东西不被清；杀进程后重进补清 |
+| B5 剪贴板 | 第 4 节第 2 步“剪贴板”那一条的四种做法 | 65 秒后空；别的应用复制的东西不被清；杀进程后重进补清（**第三轮 S11 取代：杀进程后认不出归属，凭证应仍在剪贴板里，见 15.4**） |
 | B6 面板代数 | 第 4 节第 2 步“生成凭证的过程中”那一条 | 核验框弹着期间页面不收到 `ON_STOP`；网关回答前按 Home 再回来：面板空，随后“已丢掉，请轮换” |
 | H1 唤醒 | 关掉耳机控制模式；预览确认后按 Home，再 `adb shell am kill app.auri.android`（**不要用 `force-stop`**：它会连应用自己登记的 `JobScheduler` 任务一起取消，等于没测；这一行原先写的是 `force-stop`，R12 时改正）；`adb shell dumpsys jobscheduler \| grep -B2 -A6 app.auri.android` | 欠着追加时有已登记的任务；系统叫醒后 `claim` 领到确认过的那条。自动化版本是 `ResumeSchedulingTest`（`androidTest`，要设备） |
 | H2 换网关 | 另起一个网关（另一个数据目录与端口）并重新配对，再录一句 | 新网关 `select count(*) from revisions` 为 1，没有 422；`adb logcat -d -s AuriSync:I` 里没有旧网关的目的地编号 |
@@ -578,3 +580,159 @@ cd apps/android && ./gradlew :syncplatform:connectedDebugAndroidTest -Pandroid.t
 - **一次过程失误**：启动 Ticket 21 整表时，我把驱动脚本放进“子 shell + nohup”启动，工具会话一结束就把它连同进程组杀了，只留下**我自己的一把共享锁**（`~/.cache/auri/gradle.lock`，所有者是我的分支）和一个空日志，没有任何变异被应用、工作树没动。我没有当场确认它真在跑，白等了约半小时才发现；确认没有任何 Gradle 进程之后清掉这把失效的锁，改用受监控的后台任务重新启动，之后每次启动长任务都先确认它真的在跑。**这把失效的锁大约占了 33 分钟**（18:47–19:20），期间别的工作树若要跑 Gradle 会被它挡住；我没有看到别人排队的迹象，但没有办法确认。
 - **临时文件**：本轮建过 `/tmp/auri-t22r2`（109 项、1.6 MB：脚本、运行日志、读数日志、各批变异日志）、仓库外的两个变异快照 `$TMPDIR/auri-ticket21-mutation-snapshot`（125 MB）与 `auri-ticket22-mutation-snapshot`（127 MB）、`$TMPDIR` 里落在我运行窗口内（11-21 09:50 之后）的测试副产物 323 个目录（`auri-tls-fixtures*` 309、`auri-cfg*` 14）与 `pytest-of-ethan`，以及工作树里 `.venv` 之外的 14 处 `.pytest_cache` / `__pycache__`；收尾时**全部删除**（交付报告里有删除前后的核对）。**保留**：41 个更早的 `$TMPDIR/auri-tls-fixtures*`（27）与 `auri-cfg*`（14），目录修改时间在 11-20 22:27 至 11-21 00:09，早于本轮第一次运行（09:54），不是这一轮产生的，没有动（第一轮 13.8 记的保留项就是这一批）；git 忽略的 `apps/android/**/build`、`.gradle` 与 `.venv`（增量构建与测试要用）；未跟踪的 `.serena/`（开工前就在，不是我建的，没有提交）。
 - **和使用者规则对不上的地方**（没有绕过，也没有假装做了）：没有 Codex 评审、没有调用 superpowers 技能——派发说明要求单一 agent、禁止子 agent 与辅助 worker，TDD 按“先写会红的测试、看它真的红、再修、再看它绿”手工执行，评审只靠红→绿测试与变异检查（14.2 第 13 条）；“每任务 4000、每会话 30000 token”的预算对这份工作量不可能满足，靠检查点摘要续作；mcp-feedback-enhanced 工具在本环境没有加载，没有调用；AOCI 在本仓库未启用（没有 `aoci*.txt`，不擅自启用，也没有写任何 MCP 配置）；GitNexus 索引只覆盖另一个检出（`/Users/ethan/Desktop/CODE/auri`，过期、没有 Ticket 22 的代码），调查与改动影响核对靠 `rg`、读源码与真跑的测试。
+
+## 15. 复评修复第三轮（S1–S12）
+
+第二轮（第 14 节）之后又来了第三轮再评：S1–S11 共 11 条。上一个 worker（codex）先做了 S1–S11、两张变异表的重新锚定和授权交接的收口（`bd93376`），随后因它所用供应商的内容过滤中止；本轮由我接手，没有重做已提交的部分，只做三件事：**补完**（它留下的一个未提交的红测试，查明是真缺陷，即 S12）、**批判地复查**（交接补丁的锁、测试会不会空洞通过、变异表里“等价变异”的说法是否站得住）、**在最终代码上整表重跑两张变异表并跑完全部验证**。做法同前：每条修复一个提交、先写会红的测试、提交完立刻推送（`git push origin ticket/22-destinations-and-sending`），提交信息以 `Ticket 22 round 3 S<编号>:` 开头；之后是几个变异表与续作提交（15.1 末）。证据等级同 14：JVM 单测、真实 Python 网关进程的测试（`:sync:realGatewayTest`、`tests/integration`）、Python 校验工具都是 E2；没有设备或模拟器（派发禁止启动），凡是只有设备才能证明的一律 `NOT_RUN`，步骤在 15.4。
+
+### 15.1 发现与修复
+
+| 编号 | 提交 | 做了什么 | 先红后绿的测试（主要的） | 变异 | 证据 |
+|---|---|---|---|---|---|
+| S1 网关升级时撤销截止点的回填信墙钟的先后 | `445441a` | 迁移 `0005` 原来用替换凭证的签发时间当截止点；网关时钟回拨之后它可以早于撤销之前文字的入库时间，甚至早于被它替换的那条凭证的撤销时间（已结束的暂停根本认不出来），替换凭证就读得到撤销之前的文字。现在“已结束的暂停”用旧的墙钟特征**或**不依赖时钟的特征认（不是该 Destination 的第一条凭证，且没有哪条凭证在签发的同一时刻被撤销：轮换才是同一时刻）；截止点取该 Destination 全部凭证的签发/撤销时间与其 Tenant 下每个 Revision 入库时间中最晚的；只轮换过的仍不设。**有意翻转了一条旧升级用例的预期**：撤销之后、升级之前入库的文字，与“墙钟跑快、暂停之前入库的文字”无法区分，所以升级前入库的一律藏起来，升级之后入库的可见 | `tests/integration/test_revocation_cutoff.py`：3 个升级用例对着旧迁移红（时钟跑快；时钟拨回到替换之前；原升级用例翻转后的预期）+ 1 个守卫（回拨之后的轮换不能被当成暂停） | 3（`s1-gw-*`，网关一侧，pytest 运行器） | E2 |
+| S2 网关结果的判断与落账不在同一把锁里 | `2b2ac84` | 引擎里每个由请求结果驱动的任务转移（已入库、被拒绝、公钥不符、令牌被拒、等网关、重试）、发送账改动和冻结意图标签的 `submissionFor`，改成 `pairing.whileCurrent` 内的单一原子步骤（`settle`）：不是发请求时的那份配对就整个丢弃，任务回到排队、对新配对重新来过（仍记“结果不确定”）。以前是先 `stillPaired` 看一眼再写，刚看完用户改配，A 网关的结果就会记到 B 的任务上 | `ResultFenceAtomicityTest`（9 个，写钩子在每个写入点确定性地插入改配；8 个在修复前红）、`PairingFenceWiringTest`（结果驱动的转移只许出现在 `settle` 里、`submissionFor` 只在围栏里） | 2 | E2 |
+| S3 放行与请求交出去之间有缝 | `4a87b45`，收口 `bd93376`，续作 `ce9671c` | 询问放行（读存档）到请求交给 HTTP 客户端之间还隔着构造提交（冻结意图）、换账本、记地址，授权随时可能在这中间被收回。授权设置有世代（`PolicyGeneration`：改设置前与落定后各加一）；引擎每次问放行得到一张 `Permit`（记着问之前的世代），定位、合同版本、状态查询、PUT、追加的每个请求交出去的前一刻再比一次，变过就不发、退回等待；放行拦下的第一次尝试放开冻结的标签（`unfreezeUnsent`；上一次可能已送出的不放开）。`bd93376`：比较与“交给客户端”收进同一把进程级锁（`PolicyGeneration.handoff`，与 `changing()` / `changed()` 共用），原来比较之后、交出之前还有一道缝。**续作 `ce9671c`（1b/1c）**：复查这把锁里到底跑什么——读真实的 `PinnedHttpsClient`（DNS 在独立线程池，连接与握手在 IO 线程，第一个挂起点是 `work.await()`）、`ContractGuard`（自己的锁、只读内存）、SQLite 写授权设置、mDNS 查询：锁内没有阻塞工作，也没有第二把锁（无锁序颠倒）；取消与异常原样外抛，异常之后锁是空的。**没有发现产品缺陷，所以没有改产品代码**，只加测试与变异 | `PolicyGateRaceTest`（5 个确定的交错，修复前全红；续作加 1 个：换账本之后授权被收回，请求之前的最后一问就拦下它，提交一次也没构造、标签从头到尾没冻结过）、`PolicyGenerationTest`、`DispatchStoreContract` 的 `unfreezeUnsent`（内存与 SQLite 两份）、`PolicyGateWiringTest`、`PolicyHandoffRaceTest`（撤销落在“比较之后、交出之前”）、续作 `PolicyHandoffRealClientTest`（6 个，用真实客户端：停住的解析器、握手永不回答的服务器——策略变更不被拖住；取消穿过交接、请求或检查抛的异常原样外抛且锁随后可用）；续作还让 `revokedBetweenGenerationReadAndClientHandoffMustNotSendText` 不再空洞通过（15.2 第 5 条） | 17（9 条原有 + 续作 8 条） | E2 |
+| S4 Destination 缓存与排着的目标只按网关编号认 | `a4bea23` | 同一个网关编号、另一把公钥是另一台网关：旧缓存与按它规划的、网关上还没有 Delivery 的目标都要作废，否则之后的文字带着 A 的 Destination 编号入库，新网关以未知 Destination 整个拒收，任务被永久拒绝。`GatewayIdentity.ledgerKey` = 编号 + 公钥指纹，`DeliveryAdditions.useGateway` / `DispatchStore.applyDestinations` 改收 `GatewayIdentity`，发送账按它对账（旧格式只有编号，升级后第一次对账整个作废一次，保守） | `SameIdOtherKeyTest`（2，引擎层：永久 BLOCKED / 旧目标不撤回）+ 契约 3 个（内存与真 SQLite 共用） | 3 | E2 |
+| S5 清理失败时旧同意在配回原网关时复活 | `6777eb4` | 换配对时的授权清理失败被吞掉（令牌只出现一次，不能拦配对）；A→B→A 之后 A 的旧授权记录还在，配回 A 时“授权给的就是它”又成立，同意在用户没有动作的情况下复活。`GatewayIdentity` 多一项 `pairingEpoch`（这一段配对的世代，默认 legacy），随配对记录一次原子写入落盘；`PairingService.remember`：现在配对着的恰好是同一台网关（编号与公钥都同）才沿用世代，其余（换网关、没配对、取消过、记录读不出来）一律新世代——拿不准就当换了；授权行升到 v3：`granted v3 <编号> <指纹> <世代> <时间>`，v2 读成没授权 | 配到 B 再配回 A（两次清理都失败）与取消配对后重配，旧同意不复活；同一台网关重新配对仍保留同意（回归守卫）：`DataFlowPolicySqlTest`、`FilePairingStoreTest`、`PairingServiceTest` | 6 | E2 |
+| S6 兼容结论永久有效 | `238f7d1` | `ContractGuard.invalidate()`（世代保证作废之前发出的询问不会把记忆写回去）；同步引擎里定位连不上、请求传输失败、`networkLost` / `networkChanged` 都作废；“请求不合规”的拒绝在判成永久之前先重新问一次版本（太旧 = 可重试并打“网关太旧”标记，没问成 = 只是等，网关刚确认还说 1.2 才是永久拒绝），追加 Delivery 同样；目的地管理页共用同一个 `ContractGuard`。降级后的网关让文字等待，而不是永久拒绝 | `ContractRevalidationTest`（9：引擎 6 + 在途询问 1 + 管理页 2）；`PolicyGateWiringTest` 的计数随新增的版本重问 10 → 11 | 8 | E2 |
+| S7 “网关太旧”取消了系统叫醒 | `ca3a02b` | `needsResume`：`GATEWAY_TOO_OLD` 与“没有停下”一样算要叫醒（用户不用重新配对，只要更新网关）；其余需要用户处理的状态（公钥不符、令牌被拒）仍然取消。重新探测的频率有界：叫醒是 `JobScheduler` 的持久任务，每次被叫醒后还有活就请系统稍后再叫（初始 30 秒、指数增长、系统上限 5 小时），没活才取消；这个节奏由平台保证，JVM 断言不了（15.4） | `ResumePlannerTest` +2 与决策表补两行；`ResumeRecoveryTest` +1 端到端（网关太旧 → 进程被杀 → 重启后叫醒仍登记 → 升级网关后被叫醒的一轮自己恢复并发完） | 2 | E2；真 `JobScheduler` `NOT_RUN` |
+| S8 收尾把叫醒带走 / 登记不上叫醒仍落账确认 | `88071b1` | `WakeGate.finishing`：被叫醒的那一轮收尾时在门的锁里现算还有没有活，没活就同步取消系统里的叫醒（`JobScheduler.cancel` 立刻生效，`jobFinished` 是异步的），确认的预先登记因此不会在“正在收尾的任务还看得见”的缝里什么也不做；`SyncRuntime` 里运行器的 `stillNeeded` 经过 `wakes.finishing`。`WakeGate.ahead`：登记不上（异常）就不提交、返回 null，`WakeAheadDispatchStore` 映射成新的 `DecideResult.WakeUnavailable`；“不发送”不登记、不受影响；待发送页对 `WakeUnavailable` 说“没有记下、什么都没有改变、请稍后再点一次”，用户再点就作废这句话。**有意反转了一条旧测试**：`ResumeRecoveryTest` 里“预先登记被系统拒绝：用户的确认照样提交”——规划器补登记要的是同一个系统调用，系统多半仍然拒绝，用户却看到已确认；现在不落账 | `ResumeRecoveryTest` +7（含更像 `JobScheduler` 的假系统 `JobOs`：已有就不登记、`cancel` 同步、`jobFinished` 异步且对被摘掉的执行无效；旧接线对照证明假系统与测试抓得住这条缝）、`:app` 3 个（`SendReviewViewModelTest`、`ResumeWiringGuardTest`） | 8 | E2；真 `JobScheduler` `NOT_RUN` |
+| S9 第一次发送连接/握手就失败时意图标签仍被锁住 | `7091323` | `PinnedHttpsClient` 把“连接或握手没完成”分成 `Unreachable`、公钥对不上分成 `KeyMismatch`：这两种都证明请求没有发出去。引擎只在“第一次尝试”（此前没有不确定的发送）遇到这两种失败时放开意图冻结（`unfreezeUnsent`，与 S3 同一个入口、同一个配对围栏事务）；此前就不确定的作业与 `Interrupted`（请求可能已经出去）一律保持冻结，因为网关上也许已经存了带着旧意图的 Revision | `UnsentIntentReleaseTest`（4） | 4 | E2 |
+| S10 失去焦点（分屏点了别的窗口、系统对话框、下拉通知栏）时凭证仍留在剪贴板 | `b47badf` | `MainActivity.onWindowFocusChanged(false)` 现在叫守卫的 `onLeaving()`，与 `onPause` 同一个核实归属的入口：刚失焦的这一刻通常还读得到，认得出是自己放的就当场清；读不到（保留“读不了就不盲清”的回退）或是别人的，不动；`onPause` 随后再叫一次无害 | `ClipboardWiringTest`（`hasFocus` 为 false 时叫 `onLeaving`）、`SecretClipboardGuardTest`（失焦清一次、随后 `onPause` 不重复清也不碰别人复制的） | 1 | E2；剪贴板适配器 `NOT_RUN` |
+| S11 剪贴板归属凭描述里的标记，别的应用抄得走、伪造得出 | `d68b4d8` | 旧做法在剪贴板描述里放 `COPIED_AT` 额外字段当归属标记：别的应用复制了别的东西、再把这个字段抄上去，我们就会当成自己的清掉。新增 `ClipOwnership`：放进去时只在内存里记下这段文字的 SHA-256 与时刻（不记文字本身，不落盘），之后当前剪贴板文字的摘要相同才算我们的；描述里任何字段都不看，`COPIED_AT` 整个删除；手里没有东西要核实（没放过、清了、已发现被顶掉）时一次也不读剪贴板；读不了时摘要保留。进程重启后摘要没了：认不出归属，不清（残余风险，15.3）。**有意改了三条旧测试的名字与注释**（断言一字未动）：它们的前提“上一个进程放的、带我们标记”（标记跨进程证明归属）被本条撤回 | `ClipOwnershipTest`（11，含伪造额外字段的外来剪贴板在离开 / 到点 / 回前台三条路上都不被清）、`ClipboardWiringTest`（读源码钉住端口接线） | 7 | E2；剪贴板适配器 `NOT_RUN` |
+| S12 找网关是一串请求，只过一次门（续作 1a） | `78c1e96` | 上一个 worker 留下一个**未提交**的测试 `revocationDuringTheFirstProbeStopsTheNextProbe`：我跑了它，确实是红的（期望 1 个请求，实际 2 个；mDNS 查询同样）。找网关要对每个已存的地址各探测一次健康、再问 mDNS、再对每个发现的地址各探测一次，引擎却用一个 `permit.gated { … }` 包住整个查找，授权世代只在**第一个**探测之前比较，第一个探测在路上时撤销，后面的探测与 mDNS 查询照样发出去。修复：`RequestGate`（`Permit` 实现它）交给 `GatewayLocator`，每个探测与 mDNS 查询各过一次门；被拦下就停（`Walk.Withheld`、`locate()` 返回 null、不缓存、不当成“连不上”报给用户）；配对与目的地管理不带门（`RequestGate.Open`），行为不变。`PolicyGateWiringTest` 的守卫：被门包住的请求块 11 → 7（4 处查找移进了定位器），并要求 4 处查找都把 `permit` 交给定位器、`GatewayDiscovery.kt` 里恰好有 2 处 `gate.gated {` | `PolicyHandoffRaceTest`（探测与 mDNS 各一个）、`GatewayLocatorTest`（门的语义）、`PolicyGateWiringTest` | 11 | E2 |
+| S6 的真网关跟进 | `1f51aed` | 最终验证里 `:sync:realGatewayTest` 红了 2 个（共 25 个）：`RealGatewayTest` 里两个用例按精确顺序断言“PUT 传输失败之后”的请求序列，仍是 S6 之前的顺序——S6 让每次传输失败都作废“兼容”的记忆，所以状态查询之前多一次 `GET /v1/capabilities`（期望 `[caps, PUT, status]`，实际 `[caps, PUT, caps, status]`；第二个用例同理，末尾多一个重新提交的 PUT）。S6 提交时只跑了 JVM 套件，没有人重跑真网关套件，和第 14 节 R7 的跟进是同一种遗漏。**改的是预期，不是产品代码**：重新探测是 S6 的设计（提交信息写明传输失败要作废），断言仍是整个序列精确相等、状态查询仍要排在第二个 PUT 之前——只是把这次重新探测显式列出，没有放宽任何东西 | 这两个用例本身（红在 `ce9671c`，绿在 `1f51aed`）；`:sync:realGatewayTest` 25 个全过 | 无新增；影响见 15.5：两条真网关变异在 `ce9671c` 上是**空洞地** CAUGHT | E2 |
+
+其余提交：`bb73b69`（两张变异表重新锚定，并为每条修复写变异）、`420075f`（变异表跟进）、`bd93376`（S3 的收口，见上）、`78c1e96`（S12）、`ce9671c`（S3 续作 1b/1c/1d，见 15.2 与 15.5）、`1f51aed`（S6 的真网关跟进，见上）、README 与 `CLAUDE.md` 的文档提交（15.7）。
+
+### 15.2 假设与取舍（做决定时没有人可问；每一条都可以推翻）
+
+1. **接手的范围**：不重做 S1–S11 与 `bd93376`；上一个 worker 留下的变异证据早于 `bd93376`，**不算数**，两张变异表在最终代码上整表重跑（15.5）。15.1 里 S1–S11 的“先红后绿”照上一个 worker 的提交信息转述，**我没有在修复之前的代码上逐条重放**；我自己做的独立证据是整表变异重跑——每一处修复都有变异被测试抓住，也就是撤掉修复测试会红（S12 是我先看到那个测试红、再修的；续作 1b/1c/1d 新写的测试都对着变异证明过会红）。前任留在 `/tmp` 的临时目录与本工作树里的 GitNexus 索引按派发删除，只动这两处。
+2. **TDD 的“接缝”**：规范要求先与用户确认接缝，这里没有人可问，我用已有的公共接缝代替：`PolicyGeneration.handoff` / `Permit.gated` / `RequestGate` / 引擎的公开行为 / `GatewayLocator.locate` / 网关的请求与响应；没有为测试新开私有口子。
+3. **S12 逐步过门，而不是给整个查找过一次门**：撤销之后一个请求都不该出去，所以每个探测、每次 mDNS 查询各过一次门。代价是撤销时找网关的一轮停在半路（`locate()` 返回 null，什么也不缓存），下一轮重新问放行；配对与目的地管理保持原样（不带门）。
+4. **1b 的结论是“没有缺陷”，不是“没有查”**：依据是读源码与真实客户端的测试，不是一句断言；证明不到的是**将来**的客户端实现，所以有变异守着（`s3-real-client-runs-blocking-work-in-the-callers-prefix`、`s3-handoff-holds-the-lock-for-the-whole-request`、`s3-handoff-shields-the-request-from-cancellation`、`s3-handoff-reports-a-failed-request-as-withheld`）。
+5. **1c：`revokedBetweenGenerationReadAndClientHandoffMustNotSendText` 原来可以空洞通过**：它只等撤销最多 1 秒（`revocationDone.await(1, SECONDS)`），撤销先完成才断言“PUT 数为 0”；没有先完成（撤销排在锁后面）就什么也不断言，所以“PUT 用一张过期的章交出”这类缺陷照样绿。现在没有固定等待：观察撤销线程处于 `BLOCKED`（卡在监视器上）或已经完成，二选一各有断言——撤销不得不等交接完成时，PUT 恰好发出一次；撤销先完成时，PUT 不能发出。旧版本对着新变异 `s3-put-handed-over-with-a-stale-permit`（PUT 用一张过期的 `Permit(-1)` 交出）**存活**，新版本抓住它（旧版是在已提交的版本上真跑出来的）。
+6. **1d：对“等价变异”的说法逐条核实**，规则是：只删一行后整个 `:sync:test`（581 个）仍全绿，才算等价；否则恢复成严格形式、作为独立条目。结果：
+   - **假的**：紧挨着请求的最后一问“只删这一行、沿用旧章”（`policy-second-gate-missing` 的严格形式）——最后一问还管着“要不要构造提交（冻结意图标签）”，少了它被拦下的尝试也先构造了提交再放开，`DataFlowGateTest` 数最后一问的次数、新增的 `PolicyGateRaceTest` 用例数构造提交的次数都会红；合同探测之后那一问“只删这一行”（`r4-no-gate-after-contract-probe` 的严格形式）——`SyncEngineTest` 的 R13 用例与 `DataFlowGateTest` 的“最后一道”用例会红。两条严格形式恢复为独立条目（`s3-last-ask-deleted-keeps-the-old-permit`、`s3-contract-probe-ask-deleted-keeps-the-old-permit`），并新增 `PolicyGateRaceTest` 的一个测试（换账本之后授权被收回，请求之前的最后一问就拦下它：提交一次也没构造、标签从头到尾没冻结过）。
+   - **真的**：发送路径定位之后的那一问（`r4-no-gate-after-locating`）、追加路径定位之后的那一问（`r4-additions-no-gate-after-locating`）、追加每个请求之前的那一问（`r4-additions-no-gate-before-each-request`）、合同自愈里定位之后的第二问（`s3-heal-contract-skips-the-second-ask`）——只删这一行，整个 `:sync:test`（581 个）都绿，对规则等价（撤销之后什么都发不出去：请求被每个请求前的世代比较拦下），差别只在收回后多记一次本地地址、以及“设置变了但没撤销授权”时这一轮多等一轮；这几条保留“换成新章”的变异（引擎不再问策略），描述已改成精确的说法。
+   - `s3-permit-never-compares-the-generation`：它丢掉的那个自愈用例，盯的是第二次询问而不是比较，所以本来就不该红（真跑 6 个里红 4 个、自愈用例仍绿）——说法成立。
+   - `engine-blocks-on-stale-connection-verdict`（Ticket 21 表）：只删第一层 `connectionBlocked` 里的 `recordConnectionProblem` 检查，581 个全绿——`settle` 的围栏用同一个判断（`isSamePairing` = deviceId && pairedAt && 公钥，一次配对的身份唯一）再查一遍，真的等价；只删围栏那一层则被围栏测试（`ResultFenceAtomicityTest`、`PairingFenceAtomicityTest`）抓住。两处同时删的两编辑形式保留。
+   - `engine-accepts-stale-status-answer`（Ticket 21 表）：它的两处编辑各自被各自的测试抓住（只删 `settle` 里的检查：5/51 红；只删构造之前的围栏：1/51 红），所以另加一条单编辑条目 `engine-accepts-stale-status-answer-resend`。
+7. **变异条目的编号**：新条目一律以 `s<数字>-` 开头，`test_every_round3_mutation_in_the_table_is_attributed_to_a_fix` 反向要求它们都归属于某项修复，所以 1d 恢复的严格条目用 `s3-` 前缀，不用 `policy-` / `r4-`。
+8. **工具方面**：没有 Codex 评审、没有调用 superpowers 技能（派发要求单一 agent、禁止子 agent 与辅助 worker；TDD 按“先写会红的测试、看它真的红、再修、再看它绿”手工执行）；“每任务 4000、每会话 30000 token”的预算对这份工作量不可能满足，已超出，靠检查点摘要续作；mcp-feedback-enhanced 工具在本环境没有加载，没有调用；AOCI 在本仓库未启用（没有 `aoci*.txt`，不擅自启用）；GitNexus 索引只覆盖另一个检出（`/Users/ethan/Desktop/CODE/auri`，没有 Ticket 22 的代码），调查靠 `rg` 与读源码。
+9. **`tests/security/**` 的范围**：派发没有把它列进可改范围，也没有列进禁止范围；我按保守的一边处理——不改。所以 `repo` 套件里那个由本机 TUN 代理引起的失败（15.6），我没有碰那个测试，只记录了证据。
+
+### 15.3 残余风险（如实）
+
+- **交接之后收不回**：授权比较与“把请求交给客户端”在同一把锁里，但请求一旦交出就收不回；撤销那一刻已经在路上的请求会继续（至多一个，与第 14 节同类，没有扩大）。
+- **锁是进程内的**：`handoffLock` 是进程级监视器；V1 单进程部署下够用（口径同 14.3 的 R5）。锁内目前只有“比较 + 请求到第一个挂起点之前的前缀”，**没有阻塞工作**，这是对**现在的**`PinnedHttpsClient` 等实现读源码并用真实客户端测试证明的；将来换一个在前缀里阻塞的客户端实现，会拖住所有策略变更——`PolicyHandoffRealClientTest` 与对应变异会红，但前提是有人把新实现也接进这组测试。
+- **S11**：进程重启之后内存里的摘要没了，认不出归属，不清——凭证可能留在剪贴板里，直到被覆盖或系统自己清（Android 13 起约一小时，真机 `NOT_RUN`）。这是为“绝不误清别人的东西”付的代价。
+- **S7**：重新探测的节奏由 `JobScheduler` 的退避（初始 30 秒、指数增长、系统上限 5 小时）决定，JVM 无法断言；升级网关之后最长可能等几个小时才被叫醒（用户打开应用会立刻重新评估）。
+- **S1**：升级之前入库的文字对替换凭证一律不可见（宁可多藏；用户想让新凭证读到，只能再录一次）。**S5**：升级前的 v2 授权行读成没授权，用户要重新同意一次。**S4**：升级后第一次对账会把旧格式（只有编号）的缓存整个作废一次（保守）。
+- **变异表**：每条 CAUGHT 只证明那一处改动有测试盯着，不证明所有行为都被测到；15.2 第 6 条列出的等价变异按规则等价，不是漏测。没有设备，所有设备相关的结论 `NOT_RUN`。
+- **变异检查不对照未变异的基线**：它只问“变异后有没有红的、名字对不对”，所以“必红”的那个测试若本来就是红的，CAUGHT 是空洞的（15.5 的 `real-gw-*` 两条就是这样漏过整表真跑的，靠最终验证才发现）。本轮用一次性的只读审计补了这道核对，**没有改检查本身**（不在派发范围内，也会让每个结果目录多跑一遍基线）；建议负责人把基线对照做进 `destination_mutation_check.py` 与 `android-sync/mutation_check.py`，否则以后每次“整表全 CAUGHT”都要另外做这一遍。
+- **附带观察（不属于本票，没有处理）**：网关的 `network.py` 把 `fc00::/7`（IPv6 唯一本地地址）都当作局域网，所以默认的 `serve` 也监听本机 Tailscale 与 TUN 代理接口上的 ULA 地址（`lsof` 里看到两个）。这与 ADR-0018“只在局域网、不经 VPN / 隧道”的意图是否冲突，由网关与产品负责人判断；TLS 指纹绑定与令牌仍然要过，但“网关只在局域网可达”在装了 Tailscale 的机器上不严格成立。`services/gateway/**` 不在本轮允许改的范围，只记录。
+
+### 15.4 要在设备上核对的（`NOT_RUN`，原因：派发禁止启动模拟器与仪器测试，没有连着的设备）
+
+前提与变量同第 4 节、13.3、14.4（调试版已装、电脑上网关在跑并已配对、`AURI_GATEWAY_URL` / `AURI_GATEWAY_SPKI_SHA256` / `AURI_DESTINATION_CREDENTIAL` 三个环境变量）。
+
+| 项 | 做什么 | 期望 |
+|---|---|---|
+| S6 / S7 网关太旧，升级后自己恢复，进程被杀也有人叫醒 | 同 14.4 的 R7：`git worktree add /tmp/auri-old-gateway origin/integration/auri-v2`，用本仓库的解释器起上一版网关：`PYTHONPATH=/tmp/auri-old-gateway/services/gateway .venv/bin/python -m auri_gateway serve --data-dir /tmp/auri-old-gw-data --port 8445`，`… pair --data-dir /tmp/auri-old-gw-data`，扫码并录一句；同步页出现“请先更新网关”后：`adb shell dumpsys jobscheduler \| grep -B2 -A8 app.auri.android`（作业号 2101），`adb shell am kill app.auri.android`（**不要用 `force-stop`**）；停掉上一版网关，对**同一个数据目录**执行 `PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway migrate --data-dir /tmp/auri-old-gw-data`，再用当前网关在同一端口起它；等叫醒（或强制：`adb shell cmd jobscheduler run -f app.auri.android 2101`）；收尾 `git worktree remove /tmp/auri-old-gateway`。**反过来（S6，降级）没有验证过**：当前网关上发过一句之后换回上一版网关，要求文字在手机上排着、不是“已拒收”；上一版网关未必肯打开已迁移的数据目录，不行就只能靠 JVM 的 `ContractRevalidationTest` | 叫起之后文字送到、同步页的提示自己消失，不需要重新配对；叫醒在进程被杀之后仍在 `dumpsys` 里 |
+| S8 登记不上叫醒就不落账确认 | 设备上无法注入“系统拒绝登记”；只确认正常路径：在预览目的地点“确认发送”之后 `adb shell dumpsys jobscheduler \| grep -A6 app.auri.android` 有作业 2101；追加发完（没活）之后作业消失 | 正常路径与 JVM 一致；“登记不上就不落账、提示再点一次”只有 JVM 证据（`ResumeRecoveryTest`、`SendReviewViewModelTest`） |
+| S10 失去焦点也清凭证 | 生成凭证 →“复制并关闭”；① 进入分屏并点另一个应用的窗口；② 下拉通知栏；③ 弹出系统对话框；然后在别的应用里粘贴，`adb logcat -d -s AuriSync:I \| grep clipboard` | 粘不出凭证（失焦的那一刻已清；日志有 `clipboard.copied`、`clipboard.cleared`）；读不到时只有 `clipboard.unverifiable`、没有清 |
+| S11 归属按内容证明 | 复制凭证后在另一个应用里复制一句**别的话**，回到本应用；再复制凭证并 `adb shell am kill app.auri.android`，重新打开应用 | 前者：别人的话还在（`clipboard.kept-other`）；后者：凭证仍在剪贴板里、没有 `clipboard.cleared`（进程重启之后认不出归属，15.3 第 3 条） |
+| S1 / S2 / S3 / S4 / S5 / S9 / S12 | 纯逻辑（S1 是网关一侧，由真网关进程的测试覆盖），没有设备相关的部分；S3 / S12 的窗口是微秒级，设备上无法确定性复现 | JVM 与真网关测试为准 |
+
+设备上的自动化测试（`NOT_RUN`）同第 4 节末尾与 14.4：`AURI_ALSO_ASR_ACCEPTANCE=1 execution/acceptance/android-sync/run_emulator_acceptance.sh`（一次性无头模拟器，先取共享锁），或已连设备时 `cd apps/android && ./gradlew :syncplatform:connectedDebugAndroidTest`。
+
+### 15.5 变异检查
+
+- **表的规模**：Ticket 22 的表 221 → **293 条**：第三轮新增 72 条（S1 3、S2 2、S3 17、S4 3、S5 6、S6 8、S7 2、S8 8、S9 4、S10 1、S11 7、S12 11，逐条见下表）；`test_destination_mutation_table.py` 的 `ROUND3` 把每个 `s<数字>-` 条目归到某项修复，并反向要求表里没有无主条目。其中 15 条在网关一侧（R1/R2 的 12 条加 S1 的 3 条，由 pytest 运行器真跑）。`bb73b69` / `420075f` 还重新锚定了既有条目（被改的源码挪了位置或换了写法，只换锚点，破坏的含义不变）。Ticket 21 的表 253 → **254 条**（新增 `engine-accepts-stale-status-answer-resend`，见 15.2 第 6 条）。
+
+| 修复 | 条数 | 条目（`destination_mutation_check.py --only <id>`） |
+|---|---|---|
+| S1 升级补撤销截止点不信网关时钟的先后 | 3 | `s1-gw-migration-ignores-revision-times`、`s1-gw-migration-trusts-time-order`、`s1-gw-migration-treats-every-later-credential-as-suspension` |
+| S2 网关结果的判断与落账在配对存储的同一把锁里 | 2 | `s2-settle-without-the-pairing-lock`、`s2-freeze-outside-the-pairing-lock` |
+| S3 放行与请求交出去之间不留缝（授权世代） | 17 | `s3-permit-never-compares-the-generation`、`s3-handoff-without-the-policy-lock`、`s3-heal-contract-skips-the-second-ask`、`s3-generation-not-moved-before-the-write`、`s3-generation-not-moved-after-settling`、`s3-sqlite-policy-write-skips-the-generation`、`s3-first-attempt-keeps-the-freeze-when-gated`、`s3-uncertain-attempt-releases-the-freeze`、`s3-sql-unfreeze-does-nothing`、`s3-real-client-runs-blocking-work-in-the-callers-prefix`、`s3-handoff-holds-the-lock-for-the-whole-request`、`s3-handoff-shields-the-request-from-cancellation`、`s3-handoff-reports-a-failed-request-as-withheld`、`s3-handoff-checks-then-never-sends`、`s3-put-handed-over-with-a-stale-permit`、`s3-last-ask-deleted-keeps-the-old-permit`、`s3-contract-probe-ask-deleted-keeps-the-old-permit` |
+| S4 缓存与排着的目标按完整网关身份认 | 3 | `s4-ledger-key-is-the-gateway-id-only`、`s4-ledger-key-is-the-gateway-id-only-on-sqlite`、`s4-sql-use-gateway-compares-the-id-only` |
+| S5 授权带配对世代，清理失败不让旧同意复活 | 6 | `s5-epoch-always-inherited`、`s5-epoch-always-fresh`、`s5-consent-ignores-the-pairing-epoch`、`s5-consent-ignores-the-pairing-epoch-on-sqlite`、`s5-grant-epoch-not-validated`、`s5-pairing-store-drops-the-epoch` |
+| S6 兼容结论作废并重新问版本 | 8 | `s6-422-permanent-without-rechecking`、`s6-platform-network-events-keep-the-verdict`、`s6-unreachable-location-keeps-the-verdict`、`s6-guard-invalidate-keeps-the-memory`、`s6-guard-remembers-an-answer-asked-before-an-invalidation`、`s6-service-keeps-the-verdict-after-a-failed-call`、`s6-service-unreachable-keeps-the-verdict`、`s6-additions-permanent-rejection-without-rechecking` |
+| S7 网关太旧不取消系统叫醒 | 2 | `s7-too-old-cancels-the-wake`、`s7-any-connection-problem-keeps-the-wake` |
+| S8 收尾不带走叫醒；登记不上叫醒就不落账确认 | 8 | `s8-finishing-outside-the-lock`、`s8-finishing-never-cancels-the-wake`、`s8-finishing-trusts-what-the-gate-told`、`s8-prewake-failure-still-commits`、`s8-wake-unavailable-commits-anyway`、`s8-runtime-finishing-skips-the-gate`、`s8-review-ignores-wake-unavailable`、`s8-review-screen-never-shows-the-retry-notice` |
+| S9 第一次发送连接就失败时放开意图标签 | 4 | `s9-unreachable-first-attempt-keeps-the-freeze`、`s9-key-mismatch-first-attempt-keeps-the-freeze`、`s9-interrupted-request-releases-the-freeze`、`s9-uncertain-attempt-releases-the-freeze` |
+| S10 失去焦点也按离开处理 | 1 | `s10-focus-loss-does-not-clear-the-clipboard` |
+| S11 剪贴板归属按内容证明 | 7 | `s11-ownership-trusts-any-content`、`s11-ownership-compares-loosely`、`s11-ownership-keeps-the-secret-text`、`s11-ownership-keeps-reading-after-being-replaced`、`s11-ownership-forget-keeps-the-digest`、`s11-port-does-not-remember-what-it-copied`、`s11-port-clear-keeps-the-digest` |
+| S12 找网关是一串请求：逐个探测、问 mDNS 各过一次门（续作 1a） | 11 | `s12-walk-skips-the-gate-for-probes`、`s12-walk-skips-the-gate-for-mdns`、`s12-walk-keeps-asking-after-the-gate-withholds`、`s12-withheld-walk-reported-as-unreachable`、`s12-locator-hands-an-open-gate-to-the-walk`、`s12-engine-locates-without-the-permit`、`s12-open-gate-withholds`、`s12-attempt-locates-with-a-fresh-permit`、`s12-probe-locates-with-a-fresh-permit`、`s12-heal-contract-locates-with-a-fresh-permit`、`s12-additions-locate-with-a-fresh-permit` |
+| 合计 | 72 | |
+
+- **整表从零重跑**：上一个 worker 留下的变异结果早于 `bd93376`，不算数，所以两张表都在最终代码上从头真跑。代码 = `ce9671c`（S12 与 1b/1c/1d 之后；到最终提交 `1f51aed` 只改了 `RealGatewayTest.kt` 里两个用例的预期，见下一条）。用仓库外的驱动脚本分片：每片 `--only <至多 10 个编号>`，每片各自过内存关卡并取共享锁、片与片之间放锁；每片之后核对工作树只剩 `?? .serena/`、没有残留网关进程，遇到第一片出现非 CAUGHT 就停（这次没有停过）。
+  - **Ticket 22，293 条**：30 片，11-23 00:53–03:35，共 2 小时 42 分。结果：**293 条全部 CAUGHT，SURVIVED 0，INVALID 0**（其中 15 条网关一侧的由 pytest 运行器真跑，其余走 Gradle）。读数：每片开始前空闲最低 48%，片内最低 27%（高于 25% 的等待线），交换区 2526 → 3406 MB（片内最高 3478 MB；这段时间 macOS 自己把交换区总量从 3072 MB 扩到了 4096 MB，没有追查原因），关卡一次也没有触发等待；每片前后 `auri_gateway` 残留进程 0。
+  - **Ticket 21，254 条**：26 片，03:35–05:43，共 2 小时 8 分。结果：**254 条全部 CAUGHT，SURVIVED 0，INVALID 0**。片内空闲最低 41%，交换区 3406 → 3278 MB，没有等待，没有残留进程。
+  - 没有存活者，所以派发里“存活的补测试”这一步没有发生；但下一条说明，“全部 CAUGHT”还要加一道基线核对才算数。
+- **整表之后发现的一处空洞（`real-gw-resends-without-asking`、`real-gw-send-started-not-recorded`）**：变异检查只核对“变异后有没有红的、红的测试名里有没有每个必红的名字”，**不拿未变异的基线对照**。最终验证时 `:sync:realGatewayTest` 红了 2 个（15.1 末行），这两个用例恰好是上面两条 Ticket 21 变异唯一的“必红”测试（“响应在路上丢了”与“请求没送到网关”）。也就是说它们在 `ce9671c` 上的 CAUGHT 是**空洞的**：测试没有变异也是红的，变不变异都一样。预期修好之后（`1f51aed`），我在 `1f51aed` 上重跑了这两条（各 2/25 个测试红，恰好是这两个用例，这回红是变异造成的），以及两张表里**全部**的 `real-gw-*` 条目（Ticket 21 的 11 条、Ticket 22 的 10 条；只有它们会跑这份被改动的测试）：21 条全部 CAUGHT。
+- **基线审计（防空洞，一次性）**：只读脚本（在仓库外，没有提交）读两张表，对每个 Gradle 条目的每个“必红”测试名，在**未变异的基线**的 JUnit XML 里找至少一个同名且通过的测试；pytest 条目同理（15 条，对着 `test_revocation_cutoff.py` 在基线上全过的 14 个）。基线 XML 在 `1f51aed` 上用 `--rerun` 新跑出来——Python 验收套件会带过滤器重跑 Gradle、覆盖结果目录，所以审计前必须重新生成，沿用旧 XML 会得出一堆假问题（我第一次就是这样得到 398 个“问题”的）。结果：Gradle 条目的 713 个（条目, 必红测试名）对与 15 条 pytest 条目，**0 个问题**。
+- **表的离线自检**：`test_destination_mutation_table.py` 918 个、`android-sync/test_mutation_table.py` 770 个（`--collect-only` 数得）；两者都在 15.6 的整个验收套件里再跑一遍（`android-destinations` 969 个、`android-sync` 817 个，全过）。离线自检只能证明原文可替换、测试名存在，变异能否编译、预期红的测试名对不对，要真跑才知道——上面的整表真跑就是这一步。
+
+### 15.6 最终验证（最新结果）
+
+在 `1f51aed`（本轮最后一个代码提交；之后只有文档）上，**一次一个套件**，每个套件前后都读内存与交换区、查 `auri_gateway` 残留进程。Gradle 命令都带 `--no-daemon -Pkotlin.compiler.execution.strategy=in-process -Dorg.gradle.workers.max=2`（下表省略），先 `source ~/.config/auri/android-env.sh`、取共享锁；测试任务带 `--rerun`，避免被判 UP-TO-DATE 而没有真跑；pytest 用仓库 `.venv`，带 `NO_PROXY=localhost,127.0.0.1,::1`，涉及 Gradle 的另带 `AURI_GRADLE_ARGS`（同上参数）。
+
+#### Gradle（`apps/android`）
+
+| 套件 | 命令 | 结果 | 起止（本机时间） | 内存空闲（前 → 后）与交换区已用 |
+|---|---|---|---|---|
+| `assemble-debug` | `./gradlew :app:assembleDebug` | exit 0：构建成功 | 06:21:35–06:21:43 | 66% → 67%；交换区 3254 → 3254 MB |
+| `capture` | `./gradlew :capture:test --rerun` | exit 0：369 个，失败 0、出错 0、跳过 0 | 06:21:43–06:21:55 | 67% → 66%；交换区 3254 → 3254 MB |
+| `modelmgmt` | `./gradlew :modelmgmt:testDebugUnitTest --rerun` | exit 0：84 个，失败 0、出错 0、跳过 0 | 06:21:56–06:22:38 | 66% → 66%；交换区 3254 → 3254 MB |
+| `platform` | `./gradlew :platform:testDebugUnitTest --rerun` | exit 0：257 个，失败 0、出错 0、跳过 0 | 06:22:38–06:22:52 | 66% → 65%；交换区 3254 → 3254 MB |
+| `app` | `./gradlew :app:testDebugUnitTest --rerun` | exit 0：342 个，失败 0、出错 0、跳过 0 | 06:22:52–06:23:04 | 65% → 65%；交换区 3254 → 3254 MB |
+| `asr` | `./gradlew :asr:testDebugUnitTest --rerun` | exit 0：112 个，失败 0、出错 0、跳过 0 | 06:23:04–06:23:12 | 65% → 65%；交换区 3254 → 3254 MB |
+| `sync` | `./gradlew :sync:test --rerun` | exit 0：581 个，失败 0、出错 0、跳过 0 | 06:23:12–06:23:28 | 65% → 64%；交换区 3254 → 3254 MB |
+| `syncplatform` | `./gradlew :syncplatform:testDebugUnitTest --rerun` | exit 0：119 个，失败 0、出错 0、跳过 0 | 06:23:28–06:23:38 | 64% → 65%；交换区 3254 → 3254 MB |
+| `realgateway` | `./gradlew :sync:realGatewayTest --rerun` | exit 0：25 个，失败 0、出错 0、跳过 0 | 06:23:39–06:24:31 | 65% → 53%；交换区 3254 → 3254 MB |
+| `androidtest-apks` | `./gradlew :app:assembleDebugAndroidTest :syncplatform:assembleDebugAndroidTest :platform:assembleDebugAndroidTest` | exit 0：构建成功 | 06:24:31–06:24:53 | 53% → 59%；交换区 3254 → 3254 MB |
+
+#### Python 验收与仓库套件（每个都是单独一次 pytest）
+
+| 套件 | 命令 | 结果 | 起止（本机时间） | 内存空闲（前 → 后）与交换区已用 |
+|---|---|---|---|---|
+| `android-capture` | `pytest execution/acceptance/android-capture` | exit 0：59 passed in 52.19s | 06:24:53–06:25:47 | 59% → 66%；交换区 3254 → 3254 MB；残留网关进程 0 |
+| `android-control` | `pytest execution/acceptance/android-control` | exit 0：106 passed in 54.25s | 06:25:47–06:26:44 | 66% → 66%；交换区 3254 → 3254 MB；残留网关进程 0 |
+| `android-silence` | `pytest execution/acceptance/android-silence` | exit 0：3 passed in 0.06s | 06:26:44–06:26:46 | 66% → 66%；交换区 3254 → 3254 MB；残留网关进程 0 |
+| `android-models` | `pytest execution/acceptance/android-models` | exit 0：2 passed in 0.02s | 06:26:46–06:26:48 | 65% → 66%；交换区 3254 → 3254 MB；残留网关进程 0 |
+| `android-sync` | `pytest execution/acceptance/android-sync` | exit 0：817 passed in 182.39s (0:03:02) | 06:26:48–06:29:52 | 66% → 68%；交换区 3254 → 3254 MB；残留网关进程 0 |
+| `android-destinations` | `pytest execution/acceptance/android-destinations` | exit 0：969 passed in 44.14s | 06:29:52–06:30:39 | 68% → 68%；交换区 3254 → 3254 MB；残留网关进程 0 |
+| `android-interruptions` | `pytest execution/acceptance/android-interruptions` | exit 5：no tests ran in 0.01s | 06:30:39–06:30:41 | 68% → 69%；交换区 3254 → 3254 MB；残留网关进程 0 |
+| `asr-android` | `pytest execution/acceptance/asr-android` | exit 0：131 passed in 55.62s | 06:30:41–06:31:37 | 69% → 66%；交换区 3254 → 3254 MB；残留网关进程 0 |
+| `repo` | `pytest tests/contract tests/integration tests/security` | exit 1：1 failed, 545 passed in 293.96s (0:04:53) | 06:31:37–06:36:32 | 66% → 65%；交换区 3254 → 3198 MB；残留网关进程 0 |
+
+- 运行 20 次（表里 19 次，第 20 次是 `repo` 里那个失败测试的单独复跑，见下），关卡等待 0 次，运行中空闲最低 44%，交换区最高 3254 MB；每次运行之后工作树都只剩 `?? .serena/`，残留网关进程 0。除 `repo`（含它的复跑）与 `android-interruptions`（exit 5：它没有测试，一直如此）之外全部 exit 0，没有任何失败、出错或跳过。
+- **`repo` 套件有 1 个失败，是本机环境造成的，不是代码问题；但按派发的规则（任何套件红 = 任务没做完），我没有把这一轮报成全绿。** 失败的是 `tests/security/test_lan_transport.py::test_default_serve_binds_loopback_and_lan_only_never_vpn_or_public`（`DID NOT RAISE OSError`，第 143 行）。这个测试起一个默认的网关，再对本机每一个“既不是回环、也不是局域网”的地址发起连接，要求都被拒绝（网关不得绑 VPN / 公网地址，ADR-0018）。本机现在有一个 mihomo 的 TUN 代理接口（`utun12`，`198.18.0.1`，默认路由都接走）：**连 `198.18.0.1` 上没有任何进程监听的端口，TCP 连接也会成功**（对照实验：随机挑一个没人监听的端口，同样连得上），所以测试里“被拒绝”的前提在这台机器上不成立，与网关无关。证据：① 同一个测试单独重跑（06:38，2 秒）同样红，是确定性的；② 网关进程实际监听的套接字（`lsof`）只有 `127.0.0.1`、本机局域网地址和两个 IPv6 唯一本地地址（见 15.3 附带观察），没有 `198.18.0.1`；③ 第二轮（11-21 21:48）同一台机器上这个套件 543 个全绿；那时这个 TUN 是否在运行我不知道。**我没有改这个测试**：`tests/security/**` 不在派发允许改的范围里（15.2 第 9 条），改它等于动一条安全负例；正确的改法是让测试先用“没有监听的端口”做对照，对照也连得上的地址就不参与断言，由测试的归属人决定。我也没有去动本机的代理接口。关掉那个 TUN 之后重跑这一个套件（`NO_PROXY=localhost,127.0.0.1,::1 no_proxy=localhost,127.0.0.1,::1 .venv/bin/pytest tests/contract tests/integration tests/security`，约 5 分钟）应当是 546 个全过——这是推断，我没有关它，所以**没有验证过**。
+- 测得的数字（E2，本机 macOS 上量的，没有设备）：网关与合同套件 546 个（545 过、1 个环境失败）/ 4 分 53 秒（第二轮 543 个 / 4 分 18 秒；多出的 3 个是 `test_revocation_cutoff.py` 里 S1 新增的用例）；真网关 25 个（`:sync:realGatewayTest`）；`:sync:test` 581 个（第二轮 511）、`:syncplatform` 119（111）、`:app` 342（320）、`:capture` 369、`:platform` 257、`:modelmgmt` 84、`:asr` 112（这四个与第二轮相同）；`android-destinations` 969（737）、`android-sync` 817（814）。没有任何性能或设备数字，因为没有设备。
+- 变异表（15.5）：Ticket 22 的 293 条、Ticket 21 的 254 条，整表真跑全部 CAUGHT；最终代码上另对 21 条真网关条目重跑，全部 CAUGHT。
+- 没有做、也没法做的：所有设备或模拟器才能证明的（15.4 列了命令与期望），状态都是 `NOT_RUN`，原因：派发禁止启动模拟器与仪器测试、没有连着的设备。
+
+### 15.7 对共享文件的改动
+
+第三轮共 17 个提交（`ac39320..1f51aed`），68 个文件，+4128/−410，其中 `apps/android` 62 个文件（+3243/−265）。
+
+| 文件 | 改动 | 为什么 |
+|---|---|---|
+| `services/gateway/auri_gateway/migrations/0005_destination_revocation_cutoff.sql`、`tests/integration/test_revocation_cutoff.py`、`services/gateway/OPERATIONS.md`（1 行） | S1（`445441a`，上一个 worker 的提交；本轮没有再改网关一侧的任何文件）：迁移的回填规则、3 个升级用例与 1 个守卫、`OPERATIONS.md` 里撤销截止点那一段的说法 | 网关一侧的修复 |
+| `apps/android/{sync,syncplatform,app}` 的产品代码与测试 | S2–S12 的修复，每处都带新测试与变异（先红后绿的情况见 15.2 第 1 条）；1b / 1c / 1d 没有改产品代码，只加了测试 | 15.1 |
+| `apps/android/sync/src/test/kotlin/app/auri/sync/realgateway/RealGatewayTest.kt`（Ticket 21 的真网关测试） | `1f51aed`：两个用例的预期里显式列出 S6 的重新探测，断言仍是整个请求序列精确相等，没有放宽 | S6 的设计（15.1 末行） |
+| `execution/acceptance/android-sync/mutation_check.py`（Ticket 21 的变异表） | 54 行：重新锚定若干条（本轮改了它们的目标源码）、新增 1 条 `engine-accepts-stale-status-answer-resend` | 15.5 |
+| `execution/acceptance/android-destinations/destination_mutation_check.py`、`test_destination_mutation_table.py` | 72 条新条目、`ROUND3` 归属表与反向守卫；既有条目重新锚定；1d 改了几条的说明、恢复了两条严格形式 | 15.5 |
+| `CLAUDE.md` | 只改“命令”一节里 Ticket 21 与 Ticket 22 两段的数字、Ticket 22 那段加一句第三轮的行为（授权世代与交接锁、逐步过门、兼容结论作废、剪贴板归属按内容摘要），以及仓库套件个数（546） | 数字改成 15.6 的最新值 |
+| 本 README | 新增第 15 节；第 4、6、10、13 节里被 S11 取代的几处说法（剪贴板归属标记、杀进程后补清）就地加了指针，没有改写历史 | 避免旧步骤误导设备验收 |
+
+没有动：`contracts/`、`tests/contract/`、`.github/`、`tests/security/`，以及 `services/gateway/**`（S1 的改动是上一个 worker 提交的）。
+
+### 15.8 收尾：运行环境读数、临时文件与过程说明
+
+- **内存读数**：我的运行器每次 Gradle / pytest 运行前后与运行中都读了空闲内存百分比与交换区，共 118 次运行、1840 次读数（11-22 23:47–11-23 06:42，读数日志在仓库外，已随收尾删除）：空闲 27%–70%（最低的 27% 出现在 Ticket 22 整表真跑的某一片里，高于 25% 的等待线），交换区 2497–3478 MB；**没有一次触发“等内存”**；同一时刻只有一个 Gradle 或 pytest 进程；每次运行前后的 `auri_gateway` 残留进程都是 0；没有执行 `./gradlew --stop`，没有启动任何模拟器、AVD、IDE 或仪器测试。118 次运行里 13 次退出码非 0：先写会红的测试的红阶段（2 次，S12 的两个测试）、边写变异条目边跑离线自检时当场修掉的失败（2 次）、1c / 1d 里的对照与变异实验（5 次，红是预期结果之一）、最终验证里真网关套件红的那一次（15.1 末行）、`android-interruptions` 的 exit 5（没有测试，一直如此）、`repo` 套件的 1 次环境失败与它的单测复跑（15.6）。
+- **过程失误（三处，都没有影响结果）**：① 启动 Ticket 22 整表驱动脚本时，我又用了“子 shell + nohup”（14.8 记过同样的失误），工具会话一结束进程就被杀；我一分钟内查进程发现它没在跑（输出只有一行），没有任何变异被应用、没有占着共享锁，改成受监控的后台任务重新启动，之后每次启动长任务都先确认它真在跑。② 做 1b / 1c 的变异实验时，我用 `pkill -f` 按路径匹配想结束卡住的测试 JVM，**匹配到了我自己的运行器**（它的命令行里有那个路径），把它连同子进程一起结束，在 `~/.cache/auri/gradle.lock` 留下一个空的锁目录；确认没有任何 Gradle 进程之后 `rmdir` 掉它。它短暂地挡过别的工作树（我没有看到别人排队的迹象，但无法确认）；工作树没受影响，因为变异只在仓库外的快照里。③ 一次基线审计里，我在 zsh 里把命令存进未加引号的变量再展开，zsh 不拆词，命令根本没跑，输出又被重定向吞了；读审计结果时看到缺口才发现，改成函数后重跑。审计从没用过那次空跑的数据。
+- **临时文件**：本轮建过：`/tmp/auri-t22r3b.Z23GhTB9`（运行器、各次运行的日志与读数、各片变异日志、基线审计脚本，以及两个变异快照 `auri-ticket21-mutation-snapshot` 与 `auri-ticket22-mutation-snapshot`，共约 262 MB）、`/tmp/auri-t22r3b-*.out`（5 个）、`/tmp/.auri-t22r3b-current`；以及系统临时目录里我的运行留下的测试副产物：按目录创建时间对照 118 次运行的起止时间（前后各放宽 3 秒）归到我名下的 340 个目录（`auri-tls-fixtures*` 326、`auri-cfg*` 14）与 `pytest-of-ethan`（3 份基目录，创建时间与我最后三次 pytest 运行吻合）。收尾时**全部删除**。另按派发删除了上一个 worker 留下的 `/tmp/auri-t22r3.Z3elJTT7`（135 MB）与本工作树的 `.gitnexus/` 及它在 GitNexus 注册表里的条目（主检出的索引没有动）。**保留**：34 个**不在我任何一次运行区间内**的 `auri-tls-fixtures*`——31 个创建于 11-22 23:12–23:35，早于我第一次记录的运行（23:47），应是上一个 worker 的；3 个创建于 11-23 00:16–00:17，落在两次记录的运行之间，无法确认是不是我的，都没有动；git 忽略的 `apps/android/**/build`、`.gradle` 与 `.venv`（增量构建与测试要用）；未跟踪的 `.serena/`（开工前就在，不是我建的，没有提交）。
+- **和使用者规则对不上的地方**（没有绕过，也没有假装做了）：见 15.2 第 8 条（没有 Codex 评审、没有调用 superpowers 技能、token 预算超出、mcp-feedback-enhanced 未加载、AOCI 未启用、GitNexus 索引覆盖另一个检出）。

@@ -158,7 +158,7 @@ def test_every_checklist_item_has_mutations_in_the_table(item):
     assert set(CHECKLIST[item]) <= ids, set(CHECKLIST[item]) - ids
 
 
-# 第三轮再评（S1–S11）：每一项修复在表里至少有一条对应的变异（README 15.5 引用这些 id）；
+# 第三轮再评（S1–S12）：每一项修复在表里至少有一条对应的变异（README 15.5 引用这些 id）；
 # 任何人删掉某条修复的全部变异，这里会红，而不是让那项修复悄悄失去变异检查的保护。
 ROUND3 = {
     "S1 升级补撤销截止点不信网关时钟的先后": [
