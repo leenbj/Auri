@@ -421,7 +421,8 @@ class RealGatewayTest {
         val id = key.recordId
         assertEquals(
             "不确定时必须先问网关（GET status），问到已入库就确认，不能再 PUT 一次",
-            listOf("GET /v1/capabilities", "PUT /v1/records/$id/revisions/1", "GET /v1/records/$id/status"), // 开头那一次是合同版本探测（评审 R7：每份配对问一次，之后缓存）
+            // 开头那一次是合同版本探测（评审 R7：每份配对问一次）；PUT 的传输失败（响应丢了）会作废“兼容”的记忆（再评 S6），所以状态查询之前再探测一次，顺序仍是先问版本、再问状态、不再 PUT
+            listOf("GET /v1/capabilities", "PUT /v1/records/$id/revisions/1", "GET /v1/capabilities", "GET /v1/records/$id/status"),
             lab.phone.requests().filter { !it.startsWith("POST ") },
         )
         assertEquals("网关里仍然只有一条", 1, lab.gateway.count("SELECT COUNT(*) FROM revisions"))
@@ -450,7 +451,8 @@ class RealGatewayTest {
         val id = key.recordId
         assertEquals(
             "先问（网关说没有这条），确认没有之后才重新提交",
-            listOf("GET /v1/capabilities", "PUT /v1/records/$id/revisions/1", "GET /v1/records/$id/status", "PUT /v1/records/$id/revisions/1"), // 开头一次是合同版本探测（评审 R7）
+            // 开头一次是合同版本探测（评审 R7）；PUT 的传输失败（请求没送到）会作废“兼容”的记忆（再评 S6），所以状态查询之前再探测一次，确认没有之后才重新提交
+            listOf("GET /v1/capabilities", "PUT /v1/records/$id/revisions/1", "GET /v1/capabilities", "GET /v1/records/$id/status", "PUT /v1/records/$id/revisions/1"),
             lab.phone.requests().filter { !it.startsWith("POST ") },
         )
         assertEquals("真正到过网关的 PUT 只有一次", 1, lab.gateway.count("SELECT COUNT(*) FROM revisions"))
