@@ -25,6 +25,7 @@ import app.auri.sync.pairing.PairingStore
 import app.auri.sync.pairing.clearGatewayTooOld
 import app.auri.sync.pairing.markGatewayTooOld
 import app.auri.sync.policy.DataFlowPolicy
+import app.auri.sync.policy.PolicyGeneration
 import app.auri.sync.policy.current
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
@@ -691,7 +692,7 @@ class SyncEngine(
      * 世代只管“还没交出去”的请求：已经交给客户端的（连接、握手在路上），收回授权召不回来。
      */
     private inner class Permit(private val generation: Long) {
-        suspend fun <T : Any> gated(request: suspend () -> T): T? = if (policy.generation == generation) request() else null
+        suspend fun <T : Any> gated(request: suspend () -> T): T? = PolicyGeneration.handoff({ policy.generation == generation }, request)
     }
 
     /** 文字可以进 [gateway] 吗？可以就给一张 [Permit]，不可以是 null。世代在问之前记下：问的过程中有人改了设置，世代就与这一张不同。 */

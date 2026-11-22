@@ -166,7 +166,7 @@ ROUND3 = {
     ],
     "S2 网关结果的判断与落账在配对存储的同一把锁里": ["s2-settle-without-the-pairing-lock", "s2-freeze-outside-the-pairing-lock"],
     "S3 放行与请求交出去之间不留缝（授权世代）": [
-        "s3-permit-never-compares-the-generation", "s3-heal-contract-skips-the-second-ask", "s3-generation-not-moved-before-the-write",
+        "s3-permit-never-compares-the-generation", "s3-handoff-without-the-policy-lock", "s3-heal-contract-skips-the-second-ask", "s3-generation-not-moved-before-the-write",
         "s3-generation-not-moved-after-settling", "s3-sqlite-policy-write-skips-the-generation", "s3-first-attempt-keeps-the-freeze-when-gated",
         "s3-uncertain-attempt-releases-the-freeze", "s3-sql-unfreeze-does-nothing",
     ],

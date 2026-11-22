@@ -1916,9 +1916,16 @@ MUTATIONS: tuple = (
     Mutation(
         "s3-permit-never-compares-the-generation",
         "第三轮 S3：每个请求交出去的前一刻要再比一次授权世代：不比，问放行之后（构造提交、换账本、记地址这些本地操作挂着的时候）收回授权，请求照发",
-        (Edit(ENGINE, "        suspend fun <T : Any> gated(request: suspend () -> T): T? = if (policy.generation == generation) request() else null\n", "        suspend fun <T : Any> gated(request: suspend () -> T): T? = request()\n"),),
+        (Edit(ENGINE, "        suspend fun <T : Any> gated(request: suspend () -> T): T? = PolicyGeneration.handoff({ policy.generation == generation }, request)\n", "        suspend fun <T : Any> gated(request: suspend () -> T): T? = request()\n"),),
         sync_tests("PolicyGateRaceTest"), SYNC_RESULTS,
         ("构造提交挂在本地数据库里时授权被收回", "结果不确定的任务：构造提交挂着时授权被收回", "问网关结果之前的本地步骤做完时授权被收回"),
+    ),
+    Mutation(
+        "s3-handoff-without-the-policy-lock",
+        "第三轮 S3：世代比对与请求交给客户端必须和授权变更互斥；不加锁，另一个线程可以在比对之后、请求之前完成收回",
+        (Edit(POLICY_GENERATION, "            val started = synchronized(handoffLock) {\n", "            val started = run {\n"),),
+        sync_tests("PolicyHandoffRaceTest"), SYNC_RESULTS,
+        ("revokedBetweenGenerationReadAndClientHandoffMustNotSendText",),
     ),
     Mutation(
         "s3-heal-contract-skips-the-second-ask",
@@ -1930,14 +1937,14 @@ MUTATIONS: tuple = (
     Mutation(
         "s3-generation-not-moved-before-the-write",
         "第三轮 S3：改设置开始前世代就要变：不变，“已经开始改、还没落定”的那段时间里请求前的比对会放过",
-        (Edit(POLICY_GENERATION, "    fun changing() {\n        counter.incrementAndGet()\n    }\n", "    fun changing() {\n    }\n"),),
+        (Edit(POLICY_GENERATION, "    fun changing() {\n        synchronized(handoffLock) { counter.incrementAndGet() }\n    }\n", "    fun changing() {\n        synchronized(handoffLock) { }\n    }\n"),),
         sync_tests("PolicyGenerationTest", "PolicyGateRaceTest"), SYNC_RESULTS,
         ("开始改设置的那一刻世代就变了",),
     ),
     Mutation(
         "s3-generation-not-moved-after-settling",
         "第三轮 S3：设置落定之后世代要再变一次：不变，改的途中开始问放行的（读到的可能还是旧值）事后比对照样通过",
-        (Edit(POLICY_GENERATION, "    fun changed() {\n        counter.incrementAndGet()\n    }\n", "    fun changed() {\n    }\n"),),
+        (Edit(POLICY_GENERATION, "    fun changed() {\n        synchronized(handoffLock) { counter.incrementAndGet() }\n    }\n", "    fun changed() {\n        synchronized(handoffLock) { }\n    }\n"),),
         sync_tests("PolicyGenerationTest", "PolicyGateRaceTest"), SYNC_RESULTS,
         ("落定之后世代又变一次",),
     ),
