@@ -196,6 +196,12 @@ ROUND3 = {
         "s11-ownership-trusts-any-content", "s11-ownership-compares-loosely", "s11-ownership-keeps-the-secret-text", "s11-ownership-keeps-reading-after-being-replaced",
         "s11-ownership-forget-keeps-the-digest", "s11-port-does-not-remember-what-it-copied", "s11-port-clear-keeps-the-digest",
     ],
+    "S12 找网关是一串请求：逐个探测、问 mDNS 各过一次门（续作 1a）": [
+        "s12-walk-skips-the-gate-for-probes", "s12-walk-skips-the-gate-for-mdns", "s12-walk-keeps-asking-after-the-gate-withholds",
+        "s12-withheld-walk-reported-as-unreachable", "s12-locator-hands-an-open-gate-to-the-walk", "s12-engine-locates-without-the-permit",
+        "s12-open-gate-withholds", "s12-attempt-locates-with-a-fresh-permit", "s12-probe-locates-with-a-fresh-permit",
+        "s12-heal-contract-locates-with-a-fresh-permit", "s12-additions-locate-with-a-fresh-permit",
+    ],
 }
 
 

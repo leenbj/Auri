@@ -26,6 +26,7 @@ import app.auri.sync.pairing.clearGatewayTooOld
 import app.auri.sync.pairing.markGatewayTooOld
 import app.auri.sync.policy.DataFlowPolicy
 import app.auri.sync.policy.PolicyGeneration
+import app.auri.sync.policy.RequestGate
 import app.auri.sync.policy.current
 import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
@@ -282,7 +283,7 @@ class SyncEngine(
         // 落盘之后、联系网关之前再问一次放行：刚才被收回的，连网关都不去碰，退回等待（“不确定”还原成发送之前的样子）。
         // 每次问放行得到一张 Permit（记着问之前的世代，再评 S3）；每个请求交出去的前一刻 gated 再比一次，问与发之间有人动过设置就不发
         var permit = permitFor(gateway) ?: return waiting(gateway, key, wasUncertain)
-        val located = permit.gated { location.get(gateway) } ?: return waiting(gateway, key, wasUncertain)
+        val located = location.get(gateway, permit) ?: return waiting(gateway, key, wasUncertain)
         val address = when (located) {
             is Located.Reachable -> located.address
             Located.Unreachable -> return waiting(gateway, key, wasUncertain)
@@ -542,7 +543,7 @@ class SyncEngine(
         if (offline) return // 断网期间不探测：网络回来时 SyncLoop 会再跑一轮
         var permit = permitFor(gateway) ?: return
         if (gateway == null) return
-        val located = permit.gated { location.get(gateway) } ?: return
+        val located = location.get(gateway, permit) ?: return
         val address = when (located) {
             is Located.Reachable -> located.address
             Located.Unreachable -> return additionsRetryLater()
@@ -644,7 +645,7 @@ class SyncEngine(
         // 探一次也是联系网关（定位、问能力各一个请求）：和发送一样，每个请求之前问放行并在交出去的前一刻比世代（再评 S3）；
         // 没放行就不探，标记原样留着，下一轮再来
         var permit = permitFor(gateway) ?: return
-        val located = permit.gated { location.get(gateway) } ?: return
+        val located = location.get(gateway, permit) ?: return
         val answer = when (located) {
             is Located.Reachable -> {
                 permit = permitFor(gateway) ?: return // 定位是一次网络往返：回来再问一次放行
@@ -667,7 +668,7 @@ class SyncEngine(
         val permit = permitFor(gateway) ?: return // 探测本身就是一次联系
         val waiting = jobs.all().filter { it.state == SyncState.WAITING_GATEWAY }
         if (waiting.isEmpty()) return
-        when (permit.gated { location.get(gateway) } ?: return) {
+        when (location.get(gateway, permit) ?: return) {
             // 公钥不符也算“有人应答”：让下一次发送在“发送中”撞上它，按状态机报 KEY_MISMATCH（此时没有任何带令牌的请求发出）
             is Located.Reachable, Located.KeyMismatch -> waiting.forEach { deliver(it.key, SyncEvent.GATEWAY_REACHABLE) }
             Located.Unreachable -> Unit
@@ -691,8 +692,8 @@ class SyncEngine(
      * [gated] 在请求交出去的前一刻再比一次世代：变过就一个请求也不发（返回 null），调用方退回等待，下一轮重新问。
      * 世代只管“还没交出去”的请求：已经交给客户端的（连接、握手在路上），收回授权召不回来。
      */
-    private inner class Permit(private val generation: Long) {
-        suspend fun <T : Any> gated(request: suspend () -> T): T? = PolicyGeneration.handoff({ policy.generation == generation }, request)
+    private inner class Permit(private val generation: Long) : RequestGate {
+        override suspend fun <T : Any> gated(request: suspend () -> T): T? = PolicyGeneration.handoff({ policy.generation == generation }, request)
     }
 
     /** 文字可以进 [gateway] 吗？可以就给一张 [Permit]，不可以是 null。世代在问之前记下：问的过程中有人改了设置，世代就与这一张不同。 */
@@ -740,10 +741,14 @@ class SyncEngine(
         private var forPairing: PairedGateway? = null
         private var value: Located? = null
 
-        suspend fun get(gateway: PairedGateway): Located {
+        /**
+         * 找网关是一串请求（逐个地址探测、再问 mDNS）：[permit] 交给定位器，每个请求各过一次门（第三轮 S12）。
+         * null = 门中途不放行（授权被收回），之后一个请求也没发；这样的半截结论不记下来，也不当作“连不上”。
+         */
+        suspend fun get(gateway: PairedGateway, permit: Permit): Located? {
             val cached = value
             if (cached != null && forPairing?.isSamePairing(gateway) == true) return cached
-            return locator.locate(gateway).also {
+            return locator.locate(gateway, permit)?.also {
                 value = it
                 forPairing = gateway
                 if (it == Located.Unreachable) contract.invalidate() // 连不上过：回来时网关可能已不是原来的版本，下一次联系前重新问（再评 S6）

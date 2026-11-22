@@ -101,7 +101,7 @@ class PairingService(
         return finish(
             when (walk) {
                 Walk.Mismatched -> PairingOutcome.KeyMismatch
-                Walk.NothingReachable -> PairingOutcome.NotFound
+                Walk.NothingReachable, Walk.Withheld -> PairingOutcome.NotFound // 配对不过门（没传门），Withheld 走不到
                 is Walk.Found -> when (val attempt = walk.value) {
                     is Attempt.Ended -> attempt.outcome
                     is Attempt.Redeemed -> remember(payload, attempt.address, attempt.response)

@@ -2,6 +2,7 @@ package app.auri.sync.policy
 
 import app.auri.sync.discovery.GatewayLocator
 import app.auri.sync.engine.JobKey
+import app.auri.sync.engine.SendResult
 import app.auri.sync.engine.SubmissionSource
 import app.auri.sync.engine.SyncEngine
 import app.auri.sync.gateway.RevisionSubmission
@@ -9,11 +10,14 @@ import app.auri.sync.http.HttpExchange
 import app.auri.sync.http.HttpExchangeFactory
 import app.auri.sync.http.HttpReply
 import app.auri.sync.http.HttpRequest
+import app.auri.sync.http.TransportFailure
 import app.auri.sync.pairing.GatewayAddress
 import app.auri.sync.testing.SyncRig
+import app.auri.sync.testing.SyncSamples
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -24,6 +28,81 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PolicyHandoffRaceTest {
+    @Test
+    fun revocationDuringTheFirstProbeStopsTheNextProbe() = runTest {
+        val rig = SyncRig(this)
+        val key = rig.publish()
+        val firstProbe = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val attempts = AtomicInteger()
+        val http = HttpExchangeFactory { pin ->
+            val inner = rig.lan.factory.forPin(pin)
+            object : HttpExchange {
+                override suspend fun execute(address: GatewayAddress, request: HttpRequest): HttpReply {
+                    attempts.incrementAndGet()
+                    if (address == SyncSamples.NAS_ADDRESS) {
+                        firstProbe.complete(Unit)
+                        release.await()
+                        throw TransportFailure.Unreachable()
+                    }
+                    return inner.execute(address, request)
+                }
+            }
+        }
+        val engine = SyncEngine(
+            jobs = rig.jobs,
+            pairing = rig.pairing,
+            source = { rig.submissions[it] },
+            http = http,
+            locator = GatewayLocator(http, rig.discovery, rig.log),
+            clock = rig.clock,
+            policy = rig.policy,
+        )
+        val send = async { engine.send(key) }
+        firstProbe.await()
+        rig.policy.revokeGrant()
+        release.complete(Unit)
+        assertEquals("the job waits; nothing else was sent", SendResult.WAITING_GATEWAY, send.await())
+        assertEquals("a revoked policy must prevent the second health request", 1, attempts.get())
+        assertTrue("no request may reach the LAN after revocation", rig.lan.delivered.isEmpty())
+    }
+
+    /** Finding the gateway is several requests (one probe per address, then an mDNS query): each is its own handoff. */
+    @Test
+    fun revocationDuringTheLastStoredProbeStopsTheMdnsQuery() = runTest {
+        val rig = SyncRig(this, gateway = SyncSamples.pairedGateway(addresses = listOf(SyncSamples.NAS_ADDRESS)))
+        val key = rig.publish()
+        val probing = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val attempts = AtomicInteger()
+        val http = HttpExchangeFactory { _ ->
+            object : HttpExchange {
+                override suspend fun execute(address: GatewayAddress, request: HttpRequest): HttpReply {
+                    attempts.incrementAndGet()
+                    probing.complete(Unit)
+                    release.await()
+                    throw TransportFailure.Unreachable()
+                }
+            }
+        }
+        val engine = SyncEngine(
+            jobs = rig.jobs,
+            pairing = rig.pairing,
+            source = { rig.submissions[it] },
+            http = http,
+            locator = GatewayLocator(http, rig.discovery, rig.log),
+            clock = rig.clock,
+            policy = rig.policy,
+        )
+        val send = async { engine.send(key) }
+        probing.await()
+        rig.policy.revokeGrant()
+        release.complete(Unit)
+        assertEquals("the job waits; nothing else was sent", SendResult.WAITING_GATEWAY, send.await())
+        assertEquals(1, attempts.get())
+        assertTrue("a revoked policy must prevent the mDNS query", rig.discovery.asked.isEmpty())
+    }
+
     @Test
     fun aSuspendedRequestDoesNotHoldUpPolicyChanges() = runTest {
         val generation = PolicyGeneration()

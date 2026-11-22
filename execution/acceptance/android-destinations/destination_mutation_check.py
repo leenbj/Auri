@@ -81,6 +81,9 @@ GATEWAY_MIGRATION_0005 = "services/gateway/auri_gateway/migrations/0005_destinat
 CONTRACT_GUARD = SYNC_GATEWAY + "ContractGuard.kt"
 PAIRED_GATEWAY = ANDROID + "sync/src/main/kotlin/app/auri/sync/pairing/PairedGateway.kt"
 POLICY_GENERATION = ANDROID + "sync/src/main/kotlin/app/auri/sync/policy/PolicyGeneration.kt"
+REQUEST_GATE = ANDROID + "sync/src/main/kotlin/app/auri/sync/policy/RequestGate.kt"
+DISCOVERY = ANDROID + "sync/src/main/kotlin/app/auri/sync/discovery/GatewayDiscovery.kt"
+LOCATOR = ANDROID + "sync/src/main/kotlin/app/auri/sync/discovery/GatewayLocator.kt"
 CLIP_OWNERSHIP = APP_DEST + "ClipOwnership.kt"
 
 APP_RESULTS, SYNC_RESULTS, REAL_RESULTS, PLATFORM_RESULTS = (
@@ -1916,7 +1919,7 @@ MUTATIONS: tuple = (
     Mutation(
         "s3-permit-never-compares-the-generation",
         "第三轮 S3：每个请求交出去的前一刻要再比一次授权世代：不比，问放行之后（构造提交、换账本、记地址这些本地操作挂着的时候）收回授权，请求照发",
-        (Edit(ENGINE, "        suspend fun <T : Any> gated(request: suspend () -> T): T? = PolicyGeneration.handoff({ policy.generation == generation }, request)\n", "        suspend fun <T : Any> gated(request: suspend () -> T): T? = request()\n"),),
+        (Edit(ENGINE, "        override suspend fun <T : Any> gated(request: suspend () -> T): T? = PolicyGeneration.handoff({ policy.generation == generation }, request)\n", "        override suspend fun <T : Any> gated(request: suspend () -> T): T? = request()\n"),),
         sync_tests("PolicyGateRaceTest"), SYNC_RESULTS,
         ("构造提交挂在本地数据库里时授权被收回", "结果不确定的任务：构造提交挂着时授权被收回", "问网关结果之前的本地步骤做完时授权被收回"),
     ),
@@ -2254,6 +2257,85 @@ MUTATIONS: tuple = (
         (Edit(CLIPBOARD_PORT, "        ownership.forget()\n", ""),),
         app_tests("ClipboardWiringTest"), APP_RESULTS,
         ("再评 S11：真机端口按内容认归属",),
+    ),
+    # ---- 第三轮续作 S12：找网关是一串请求（逐个地址探测、再问 mDNS），每一个各过一次门；整串只在第一个之前过一次，第一个请求在路上时收回授权，后面的探测照发 ----
+    Mutation(
+        "s12-walk-skips-the-gate-for-probes",
+        "第三轮 S12：逐个地址探测，每个探测交出去之前都要过门：不过，第一个探测在路上时收回授权，下一个地址的探测照发（一次发给网关的请求，在授权已被收回之后）",
+        (Edit(DISCOVERY, "            when (val step = gate.gated { attempt(address) } ?: return Walk.Withheld) {\n", "            when (val step = attempt(address)) {\n"),),
+        sync_tests("PolicyHandoffRaceTest", "GatewayLocatorTest"), SYNC_RESULTS,
+        ("revocationDuringTheFirstProbeStopsTheNextProbe", "第一个探测放行之后门不放行"),
+    ),
+    Mutation(
+        "s12-walk-skips-the-gate-for-mdns",
+        "第三轮 S12：问 mDNS 也是一次联系（组播查询），交出去之前要过门：不过，记下的地址探测在路上时收回授权，mDNS 查询照发",
+        (Edit(DISCOVERY, "        gate.gated { discovery.find(gatewayId) } ?: return Walk.Withheld\n", "        discovery.find(gatewayId)\n"),),
+        sync_tests("PolicyHandoffRaceTest", "GatewayLocatorTest"), SYNC_RESULTS,
+        ("revocationDuringTheLastStoredProbeStopsTheMdnsQuery", "记下的地址都试过之后门不放行：不问 mDNS"),
+    ),
+    Mutation(
+        "s12-walk-keeps-asking-after-the-gate-withholds",
+        "第三轮 S12：门一旦不放行，整个找网关就停在那一步：不停（跳过这个地址接着试后面的），门的回答就成了每个地址各自的，之后还会一个一个再问",
+        (Edit(DISCOVERY, "            when (val step = gate.gated { attempt(address) } ?: return Walk.Withheld) {\n", "            when (val step = gate.gated { attempt(address) } ?: continue) {\n"),),
+        sync_tests("GatewayLocatorTest"), SYNC_RESULTS,
+        ("第一个探测放行之后门不放行",),
+    ),
+    Mutation(
+        "s12-withheld-walk-reported-as-unreachable",
+        "第三轮 S12：被门拦下的找网关要说“被拦下”（null），不能说成“连不上”：说成连不上，引擎会把它记成这一轮的结论（并作废兼容记忆），可它其实什么都没试完",
+        (Edit(LOCATOR, "            Walk.Withheld -> null\n", "            Walk.Withheld -> Located.Unreachable\n"),),
+        sync_tests("GatewayLocatorTest"), SYNC_RESULTS,
+        ("第一个探测放行之后门不放行", "记下的地址都试过之后门不放行：不问 mDNS", "mDNS 问过之后门不放行"),
+    ),
+    Mutation(
+        "s12-locator-hands-an-open-gate-to-the-walk",
+        "第三轮 S12：定位器必须把门交给逐个探测的那一步：不交（用默认的不设防的门），带门的定位退化成没有门",
+        (Edit(LOCATOR, "walkAddresses(stored, discovery, gateway.gatewayId, log, gate) { address ->", "walkAddresses(stored, discovery, gateway.gatewayId, log) { address ->"),),
+        sync_tests("PolicyHandoffRaceTest", "GatewayLocatorTest"), SYNC_RESULTS,
+        ("revocationDuringTheFirstProbeStopsTheNextProbe", "revocationDuringTheLastStoredProbeStopsTheMdnsQuery", "第一个探测放行之后门不放行"),
+    ),
+    Mutation(
+        "s12-engine-locates-without-the-permit",
+        "第三轮 S12：引擎定位要把这一次的 permit 交给定位器：交不进去（用不设防的那一扇），问放行之后到逐个探测之间授权被收回，后面的探测照发",
+        (Edit(ENGINE, "            return locator.locate(gateway, permit)?.also {\n", "            return locator.locate(gateway)?.also {\n"),),
+        sync_tests("PolicyHandoffRaceTest"), SYNC_RESULTS,
+        ("revocationDuringTheFirstProbeStopsTheNextProbe", "revocationDuringTheLastStoredProbeStopsTheMdnsQuery"),
+    ),
+    Mutation(
+        "s12-open-gate-withholds",
+        "第三轮 S12：不设防的门原样运行请求：它拦下请求，配对与目的地管理（不过授权）就再也连不上网关",
+        (Edit(REQUEST_GATE, "        override suspend fun <T : Any> gated(request: suspend () -> T): T? = request()\n", "        override suspend fun <T : Any> gated(request: suspend () -> T): T? = null\n"),),
+        sync_tests("GatewayLocatorTest"), SYNC_RESULTS,
+        ("先连最近一次连上的地址；它通就不再试别的，也不去问 mDNS",),
+    ),
+    # 下面四条（接线守卫）：每一处定位都要用“问放行时盖的那一张” permit；现盖一张新的（世代取现在的）等于把“问完到交出去之间”的缝又打开——行为测试只摆了发送那一条路径，其余三处靠守卫
+    Mutation(
+        "s12-attempt-locates-with-a-fresh-permit",
+        "第三轮 S12（接线守卫）：发送路径的定位用的是问放行时盖的章：现盖一张新的，问放行与定位之间收回授权就看不出来",
+        (Edit(ENGINE, "        val located = location.get(gateway, permit) ?: return waiting(gateway, key, wasUncertain)\n", "        val located = location.get(gateway, Permit(policy.generation)) ?: return waiting(gateway, key, wasUncertain)\n"),),
+        app_tests("PolicyGateWiringTest"), APP_RESULTS,
+        ("引擎里每一个会发往网关的调用都包在 permit gated 里",),
+    ),
+    Mutation(
+        "s12-probe-locates-with-a-fresh-permit",
+        "第三轮 S12（接线守卫）：等待网关的探测用问放行时盖的章去定位：现盖一张新的，同上",
+        (Edit(ENGINE, "        when (location.get(gateway, permit) ?: return) {\n", "        when (location.get(gateway, Permit(policy.generation)) ?: return) {\n"),),
+        app_tests("PolicyGateWiringTest"), APP_RESULTS,
+        ("引擎里每一个会发往网关的调用都包在 permit gated 里",),
+    ),
+    Mutation(
+        "s12-heal-contract-locates-with-a-fresh-permit",
+        "第三轮 S12（接线守卫）：合同版本自愈的定位用问放行时盖的章：现盖一张新的，同上",
+        (Edit(ENGINE, "        val located = location.get(gateway, permit) ?: return\n        val answer = when (located) {\n", "        val located = location.get(gateway, Permit(policy.generation)) ?: return\n        val answer = when (located) {\n"),),
+        app_tests("PolicyGateWiringTest"), APP_RESULTS,
+        ("引擎里每一个会发往网关的调用都包在 permit gated 里",),
+    ),
+    Mutation(
+        "s12-additions-locate-with-a-fresh-permit",
+        "第三轮 S12（接线守卫）：追加 Delivery 的定位用问放行时盖的章：现盖一张新的，同上",
+        (Edit(ENGINE, "        if (gateway == null) return\n        val located = location.get(gateway, permit) ?: return\n", "        if (gateway == null) return\n        val located = location.get(gateway, Permit(policy.generation)) ?: return\n"),),
+        app_tests("PolicyGateWiringTest"), APP_RESULTS,
+        ("引擎里每一个会发往网关的调用都包在 permit gated 里",),
     ),
 )
 
