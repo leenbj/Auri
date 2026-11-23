@@ -52,7 +52,11 @@ def test_a_gateway_mutation_names_pytest_files_that_exist_and_failing_tests_that
     source = "\n".join(f.read_text(encoding="utf-8") for f in files)
     assert mutation.must_fail, "一条变异必须指明哪些测试会因此变红"
     for needle in mutation.must_fail:
-        assert re.search(rf"^(async )?def {re.escape(needle)}\(", source, re.MULTILINE), f"{mutation.id}: 找不到预期变红的测试 {needle!r}"
+        # 参数化的用例写成 `函数名[编号]`：函数要在文件里（与以前一样严格），编号要是文件里的一个字符串字面量（防止写错编号而永远匹配不上）
+        function, _, param = needle.partition("[")
+        assert re.search(rf"^(async )?def {re.escape(function)}\(", source, re.MULTILINE), f"{mutation.id}: 找不到预期变红的测试 {needle!r}"
+        if param:
+            assert param.endswith("]") and re.search(rf"""["']{re.escape(param[:-1])}["']""", source), f"{mutation.id}: 找不到参数化用例的编号 {needle!r}"
 
 
 @pytest.mark.parametrize("mutation", GATEWAY_MUTATIONS, ids=lambda m: m.id)
@@ -231,6 +235,11 @@ ROUND4 = {
         "r4f1-window-reads-return-the-counter", "r4f1-window-reads-repeat", "r4f1-window-never-opens", "r4f1-first-settle-closes-every-window",
         "r4f1-ticket-settles-twice", "r4f1-ticket-opens-after-settling", "r4f1-sqlite-write-without-the-outer-settle",
         "r4f1-sqlite-write-settles-off-the-database-thread", "r4f1-sqlite-write-touches-the-window-directly",
+    ],
+    "F2 升级补撤销截止点：凭证历史含糊（撤销与重新签发同一时间戳等）一律补，只有数据能证明的原子轮换才不补": [
+        "r4f2-gw-predecessor-rule-accepts-any-credential", "r4f2-gw-predecessor-lookup-crosses-destinations", "r4f2-gw-same-instant-issues-not-detected",
+        "r4f2-gw-cancel-trace-ignored", "r4f2-gw-cancel-trace-without-a-later-credential", "r4f2-gw-cancel-trace-from-another-destination",
+        "r4f2-gw-cancel-trace-needs-no-matching-instant", "r4f2-gw-cutoff-takes-other-tenants-texts",
     ],
 }
 

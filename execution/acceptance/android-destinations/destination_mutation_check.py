@@ -114,6 +114,8 @@ REAL = (":sync:realGatewayTest",)
 PYTEST = "pytest"
 GATEWAY_RESULTS = "build/gateway-pytest-results"
 REVOCATION_CUTOFF_TESTS = "tests/integration/test_revocation_cutoff.py"
+BACKFILL_TESTS = "tests/integration/test_revocation_cutoff_backfill.py"
+BACKFILL_CASE = "test_the_backfill_only_leaves_a_destination_uncut_when_its_history_proves_an_atomic_rotation"  # 参数化：BACKFILL_CASE[编号]
 
 
 def gateway_tests(*pytest_args: str) -> tuple[str, ...]:
@@ -1068,7 +1070,7 @@ MUTATIONS: tuple = (
     Mutation(
         "r1-gw-migration-backfills-rotations",
         "再评审 R1（网关）：迁移只给“旧凭证全部先于新凭证被撤销”的暂停补截止点：连轮换也补，升级后轮换过的 Destination 排着的文字就被藏起来",
-        (Edit(GATEWAY_MIGRATION_0005, '                    AND (p.revoked_at IS NULL OR p.revoked_at >= c.issued_at)\n', '                    AND (p.revoked_at IS NULL AND 0)\n'),),
+        (Edit(GATEWAY_MIGRATION_0005, '                AND (p.revoked_at IS NULL OR p.revoked_at >= c.issued_at)\n', '                AND (p.revoked_at IS NULL AND 0)\n'),),
         gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
         ('test_a_suspension_that_ended_before_the_upgrade_gets_its_cutoff_from_the_credential_history',),
     ),
@@ -1083,14 +1085,14 @@ MUTATIONS: tuple = (
     Mutation(
         "s1-gw-migration-trusts-time-order",
         "第三轮 S1（网关）：认出“结束过的暂停”不能只靠时间先后：时钟调回去之后，替换凭证的签发时间比旧凭证的签发、撤销时间还早，按时间先后认不出这是暂停，不补截止点，替换凭证什么都读得到（还要看插入顺序与“轮换在签发的同一瞬间撤销旧凭证”）",
-        (Edit(GATEWAY_MIGRATION_0005, "                  WHERE p.tenant_id = c.tenant_id AND p.destination_id = c.destination_id AND p.rowid < c.rowid\n", "                  WHERE p.tenant_id = c.tenant_id AND p.destination_id = c.destination_id AND p.rowid < c.rowid AND 0\n"),),
-        gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
-        ('test_an_upgrade_recognises_a_finished_suspension_even_when_the_clock_was_set_back_before_the_replacement',),
+        (Edit(GATEWAY_MIGRATION_0005, "              WHERE p.tenant_id = c.tenant_id AND p.destination_id = c.destination_id AND p.rowid < c.rowid\n", "              WHERE p.tenant_id = c.tenant_id AND p.destination_id = c.destination_id AND p.rowid < c.rowid AND 0\n"),),
+        gateway_tests(REVOCATION_CUTOFF_TESTS, BACKFILL_TESTS), GATEWAY_RESULTS,
+        (f'{BACKFILL_CASE}[suspension-after-rollback]',),
     ),
     Mutation(
         "s1-gw-migration-treats-every-later-credential-as-suspension",
         "第三轮 S1（网关）：不看时间先后的识别不能把轮换也当成暂停：不排除“旧凭证在新凭证签发的同一瞬间被撤销”，每个签发过第二条凭证的 Destination 都被补上截止点，排着的文字就被悄悄藏起来",
-        (Edit(GATEWAY_MIGRATION_0005, "                    AND q.credential_id <> c.credential_id AND q.revoked_at = c.issued_at\n", "                    AND q.credential_id <> c.credential_id AND q.revoked_at = c.issued_at AND 0\n"),),
+        (Edit(GATEWAY_MIGRATION_0005, "                AND p.revoked_at = c.issued_at\n", "                AND p.revoked_at = c.issued_at AND 0\n"),),
         gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
         ('test_an_upgrade_does_not_mistake_a_rotation_after_a_clock_rollback_for_a_suspension', 'test_a_suspension_that_ended_before_the_upgrade_gets_its_cutoff_from_the_credential_history'),
     ),
@@ -2464,6 +2466,63 @@ MUTATIONS: tuple = (
         (Edit(SQLITE_POLICY, "    override suspend fun setStrictLocal(on: Boolean) = write { setStrictLocal(on) }\n", "    override suspend fun setStrictLocal(on: Boolean) = write { setStrictLocal(on) }.also { generations.changed() }\n"),),
         app_tests("PolicyWriteWiringTest"), APP_RESULTS,
         ("世代的开窗口与关窗口只经过 write 里的这张凭据",),
+    ),
+    # ---- 第四轮 F2：升级补截止点失败时关门（网关迁移 0005 的真实 SQL 在真实的更早迁移之后的库上执行；E2 集成测试） ----
+    Mutation(
+        "r4f2-gw-predecessor-rule-accepts-any-credential",
+        "第四轮 F2（网关）：判断“是不是轮换”要看紧挨着的上一条凭证是不是在这一刻被撤销：改回旧规则“有没有哪条凭证在这一刻被撤销”，碰巧相等的时间戳（别的凭证在那一刻被撤销）就被当成轮换，真实的暂停漏补",
+        (Edit(GATEWAY_MIGRATION_0005, "                AND p.rowid = (\n                    SELECT MAX(q.rowid) FROM destination_credentials AS q\n                    WHERE q.tenant_id = c.tenant_id AND q.destination_id = c.destination_id AND q.rowid < c.rowid\n                )\n", "                AND p.credential_id <> c.credential_id\n"),),
+        gateway_tests(BACKFILL_TESTS), GATEWAY_RESULTS,
+        (f"{BACKFILL_CASE}[coincidence-everywhere]",),
+    ),
+    Mutation(
+        "r4f2-gw-predecessor-lookup-crosses-destinations",
+        "第四轮 F2（网关）：“紧挨着的上一条”只在同一个 Destination 里找：不分 Destination 地找，凭证在 rowid 上交错时，轮换过的 Destination 的上一条成了别的 Destination 的凭证，干净的轮换被误判成暂停",
+        (Edit(GATEWAY_MIGRATION_0005, "                    WHERE q.tenant_id = c.tenant_id AND q.destination_id = c.destination_id AND q.rowid < c.rowid\n", "                    WHERE q.tenant_id = c.tenant_id AND q.rowid < c.rowid\n"),),
+        gateway_tests(BACKFILL_TESTS), GATEWAY_RESULTS,
+        ("test_each_destination_is_judged_by_its_own_history_even_when_the_credentials_are_interleaved",),
+    ),
+    Mutation(
+        "r4f2-gw-same-instant-issues-not-detected",
+        "第四轮 F2（网关）：同一个 Destination 里两条凭证签发在同一刻，先后不明，必须当含糊的历史补上截止点：不认这一条，凭那一刻的相等把它当轮换，真实的暂停漏补",
+        (Edit(GATEWAY_MIGRATION_0005, "         AND d.credential_id <> c.credential_id AND d.issued_at = c.issued_at\n", "         AND d.credential_id <> c.credential_id AND d.issued_at = c.issued_at AND 0\n"),),
+        gateway_tests(BACKFILL_TESTS), GATEWAY_RESULTS,
+        (f"{BACKFILL_CASE}[same-issue-instant]",),
+    ),
+    Mutation(
+        "r4f2-gw-cancel-trace-ignored",
+        "第四轮 F2（网关）：撤销的那一瞬间有被取消的投递，是新版网关暂停的痕迹（轮换不取消任何东西）：不认这个痕迹，撤销与重新签发时间戳相同的真实暂停被当成轮换，替换凭证读得到撤销之前已确认的文字",
+        (Edit(GATEWAY_MIGRATION_0005, "         AND d.state = 'CANCELLED' AND d.cancelled_at = p.revoked_at\n", "         AND d.state = 'CANCELLED' AND d.cancelled_at = p.revoked_at AND 0\n"),),
+        gateway_tests(BACKFILL_TESTS), GATEWAY_RESULTS,
+        (f"{BACKFILL_CASE}[cancel-trace]", "test_an_upgrade_hides_the_acknowledged_texts_of_a_suspension_whose_revoke_and_reissue_share_a_timestamp"),
+    ),
+    Mutation(
+        "r4f2-gw-cancel-trace-without-a-later-credential",
+        "第四轮 F2（网关）：取消痕迹只在“之后还签发过凭证”时才说明暂停已经结束：不要求后面还有凭证，正在暂停（最后一条凭证刚被撤销、当场取消了排着的投递）的 Destination 也被补上截止点",
+        (Edit(GATEWAY_MIGRATION_0005, "              WHERE c.tenant_id = p.tenant_id AND c.destination_id = p.destination_id AND c.rowid > p.rowid\n", "              WHERE c.tenant_id = p.tenant_id AND c.destination_id = p.destination_id AND (c.rowid > p.rowid OR 1)\n"),),
+        gateway_tests(BACKFILL_TESTS), GATEWAY_RESULTS,
+        (f"{BACKFILL_CASE}[cancel-without-later-credential]",),
+    ),
+    Mutation(
+        "r4f2-gw-cancel-trace-from-another-destination",
+        "第四轮 F2（网关）：只认本 Destination 的取消痕迹：不分 Destination，别的 Destination 恰好在这一刻取消的投递会把一次干净的轮换认成暂停",
+        (Edit(GATEWAY_MIGRATION_0005, "          ON d.tenant_id = p.tenant_id AND d.destination_id = p.destination_id\n", "          ON d.tenant_id = p.tenant_id\n"),),
+        gateway_tests(BACKFILL_TESTS), GATEWAY_RESULTS,
+        ("test_a_cancelled_delivery_of_another_destination_does_not_make_a_rotation_look_like_a_suspension",),
+    ),
+    Mutation(
+        "r4f2-gw-cancel-trace-needs-no-matching-instant",
+        "第四轮 F2（网关）：取消的时刻必须正好等于撤销的时刻才算痕迹：只要这个 Destination 有被取消的投递就算，普通的取消（例如删除一条 Record）把干净的轮换都补成暂停，排着的文字被悄悄藏起来",
+        (Edit(GATEWAY_MIGRATION_0005, "         AND d.state = 'CANCELLED' AND d.cancelled_at = p.revoked_at\n", "         AND d.state = 'CANCELLED'\n"),),
+        gateway_tests(BACKFILL_TESTS), GATEWAY_RESULTS,
+        (f"{BACKFILL_CASE}[rotation-unrelated-cancel]",),
+    ),
+    Mutation(
+        "r4f2-gw-cutoff-takes-other-tenants-texts",
+        "第四轮 F2（网关）：补出的截止点只取本 Tenant 里已有文字的最晚入库时间：把别的 Tenant 的文字也算进来，一个 Tenant 的时钟异常会让另一个 Tenant 的文字全被藏起来",
+        (Edit(GATEWAY_MIGRATION_0005, "    COALESCE((SELECT MAX(r.stored_at) FROM revisions AS r WHERE r.tenant_id = destinations.tenant_id), '')\n", "    COALESCE((SELECT MAX(r.stored_at) FROM revisions AS r), '')\n"),),
+        gateway_tests(BACKFILL_TESTS), GATEWAY_RESULTS,
+        ("test_the_cutoff_of_an_ambiguous_history_covers_every_text_already_stored_in_the_tenant_and_nothing_from_other_tenants",),
     ),
 )
 
