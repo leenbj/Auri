@@ -1157,7 +1157,7 @@ MUTATIONS: tuple = (
     Mutation(
         "r7-guard-never-remembers",
         "评审 R7：兼容的结论在同一份配对、同一个进程里只问一次：不记，每个管理操作、每次同步都多一次询问",
-        (Edit(CONTRACT_GUARD, "        if (answer == ContractAnswer.COMPATIBLE) synchronized(lock) { if (generation == asked) verified = gateway }\n", ""),),
+        (Edit(CONTRACT_GUARD, "            if (answer == ContractAnswer.COMPATIBLE) verified = gateway\n", ""),),
         sync_tests("SyncEngineContractTest", "DestinationContractTest"), SYNC_RESULTS,
         ("兼容的网关：同一份配对在同一个进程里只问一次版本", "兼容的网关：管理操作之间只问一次版本"),
     ),
@@ -1165,7 +1165,7 @@ MUTATIONS: tuple = (
         "r7-guard-remembers-too-old",
         "评审 R7：只有“兼容”才记成这份配对已确认：把“太旧”（以及被拒、公钥不符）也记成已确认，之后同一份配对的请求一律当兼容放行——旧网关挨过第一次拦，往后什么数据请求都收得到"
         "（真跑发现我原先把这条的后果想成“更新后恢复不了”，那是下一条的事；这一条红的是“旧网关一个请求都不发”的那几个）",
-        (Edit(CONTRACT_GUARD, "        if (answer == ContractAnswer.COMPATIBLE) synchronized(lock) { if (generation == asked) verified = gateway }\n", "        if (answer != ContractAnswer.UNCONFIRMED) synchronized(lock) { if (generation == asked) verified = gateway }\n"),),
+        (Edit(CONTRACT_GUARD, "            if (answer == ContractAnswer.COMPATIBLE) verified = gateway\n", "            if (answer != ContractAnswer.UNCONFIRMED) verified = gateway\n"),),
         sync_tests("SyncEngineContractTest", "DestinationContractTest"), SYNC_RESULTS,
         ("网关还是旧的：再来多少轮也不发", "网关太旧：列表、创建、撤销、签发都不发请求", "生成凭证：“网关太旧”的标记可能已经过时"),
     ),
@@ -1175,7 +1175,7 @@ MUTATIONS: tuple = (
         (
             Edit(CONTRACT_GUARD, "    private var verified: PairedGateway? = null\n", "    private var verified: PairedGateway? = null\n    private var tooOld: PairedGateway? = null\n"),
             Edit(CONTRACT_GUARD, "            if (verified?.isSamePairing(gateway) == true) return ContractAnswer.COMPATIBLE\n", "            if (verified?.isSamePairing(gateway) == true) return ContractAnswer.COMPATIBLE\n            if (tooOld?.isSamePairing(gateway) == true) return ContractAnswer.TOO_OLD\n"),
-            Edit(CONTRACT_GUARD, "        if (answer == ContractAnswer.COMPATIBLE) synchronized(lock) { if (generation == asked) verified = gateway }\n", "        if (answer == ContractAnswer.COMPATIBLE) synchronized(lock) { if (generation == asked) verified = gateway }\n        if (answer == ContractAnswer.TOO_OLD) synchronized(lock) { tooOld = gateway }\n"),
+            Edit(CONTRACT_GUARD, "            if (answer == ContractAnswer.COMPATIBLE) verified = gateway\n", "            if (answer == ContractAnswer.COMPATIBLE) verified = gateway\n            if (answer == ContractAnswer.TOO_OLD) tooOld = gateway\n"),
         ),
         sync_tests("SyncEngineContractTest", "DestinationContractTest"), SYNC_RESULTS,
         ("更新网关之后自动恢复：不需要重新配对", "更新网关之后管理页自动恢复"),
@@ -2093,7 +2093,7 @@ MUTATIONS: tuple = (
     Mutation(
         "s6-guard-remembers-an-answer-asked-before-an-invalidation",
         "第三轮 S6：作废之前发出的询问，它的“兼容”答复回来时不能再被记住：不比世代，作废之前的网关说的话把记忆又写回去",
-        (Edit(CONTRACT_GUARD, "        if (answer == ContractAnswer.COMPATIBLE) synchronized(lock) { if (generation == asked) verified = gateway }\n", "        if (answer == ContractAnswer.COMPATIBLE) synchronized(lock) { verified = gateway }\n"),),
+        (Edit(CONTRACT_GUARD, "            if (generation != asked) return null\n", "            if (generation != asked) {\n                if (answer == ContractAnswer.COMPATIBLE) verified = gateway\n                return null\n            }\n"),),
         sync_tests("ContractRevalidationTest"), SYNC_RESULTS,
         ("已经在路上的版本询问遇到作废",),
     ),
@@ -2731,6 +2731,63 @@ MUTATIONS: tuple = (
         (Edit(SYNC_RUNTIME, "        stillNeeded = { wakes.finishing { resumeNeededNow() } },\n", "        stillNeeded = { wakes.finishing { true } },\n"),),
         app_tests("ResumeCurrentNeedWiringTest"), APP_RESULTS,
         ("被叫醒的那一轮的收尾判断与规划器用同一个现算",),
+    ),
+    # ---- 第四轮 F5：作废时已经在路上的版本询问，答复对谁都不算数（不记、不交），重新问，有上限 ----
+    Mutation(
+        "r4f5-stale-answer-handed-over-and-kept",
+        "第四轮 F5：询问期间世代变了，那份答复是变之前的网关说的：不比世代，答复原样交给提问的人（还被记住），提问的人拿着变之前的“兼容”去发数据请求，网关可能已被换成旧版本",
+        (Edit(CONTRACT_GUARD, "            if (generation != asked) return null\n", ""),),
+        sync_tests("ContractStaleAnswerTest", "ContractRevalidationTest"), SYNC_RESULTS,
+        ("变之前的兼容答复不交给提问的人", "变之前的太旧也不交给提问的人", "拒绝类与没问成的答复同样不算数", "引擎里网络变了的当口", "已经在路上的版本询问遇到作废"),
+    ),
+    Mutation(
+        "r4f5-only-compatible-is-discarded",
+        "第四轮 F5：不论哪种答复都不算数：只丢变之前的“兼容”，变之前的“太旧”、被拒、没问成仍交给提问的人（旧网络上的“太旧”会让用户去更新一台其实已经升级的网关）",
+        (Edit(CONTRACT_GUARD, "            if (generation != asked) return null\n", "            if (generation != asked && answer == ContractAnswer.COMPATIBLE) return null\n"),),
+        sync_tests("ContractStaleAnswerTest"), SYNC_RESULTS,
+        ("变之前的太旧也不交给提问的人", "拒绝类与没问成的答复同样不算数"),
+    ),
+    Mutation(
+        "r4f5-rejections-and-failures-are-handed-over",
+        "第四轮 F5：被拒、公钥对不上、没问成的答复也是变之前的网络说的：只丢“兼容”与“太旧”两种判决，这几种仍交给提问的人（旧网络上的 401 会把配对标成要重新配对）",
+        (Edit(CONTRACT_GUARD, "            if (generation != asked) return null\n", "            if (generation != asked && (answer == ContractAnswer.COMPATIBLE || answer == ContractAnswer.TOO_OLD)) return null\n"),),
+        sync_tests("ContractStaleAnswerTest"), SYNC_RESULTS,
+        ("拒绝类与没问成的答复同样不算数",),
+    ),
+    Mutation(
+        "r4f5-discards-every-compatible-answer",
+        "第四轮 F5：世代没变的答复要照常交出并记住：连没变的“兼容”也丢，永远问不成，回“没问成”，什么数据请求也发不出去",
+        (Edit(CONTRACT_GUARD, "            if (generation != asked) return null\n", "            if (generation != asked || answer == ContractAnswer.COMPATIBLE) return null\n"),),
+        sync_tests("ContractStaleAnswerTest", "SyncEngineContractTest"), SYNC_RESULTS,
+        ("世代没变：一次询问就够",),
+    ),
+    Mutation(
+        "r4f5-never-asks-again",
+        "第四轮 F5：答复作废之后要重新问：问一次就放弃（上限 1），网络一变在路上的询问就回“没问成”，用户的文字白等一轮",
+        (Edit(CONTRACT_GUARD, "        const val MAX_QUESTIONS = 3\n", "        const val MAX_QUESTIONS = 1\n"),),
+        sync_tests("ContractStaleAnswerTest"), SYNC_RESULTS,
+        ("变之前的兼容答复不交给提问的人", "变之前的太旧也不交给提问的人", "拒绝类与没问成的答复同样不算数", "引擎里网络变了的当口"),
+    ),
+    Mutation(
+        "r4f5-asks-without-a-useful-bound",
+        "第四轮 F5：重新问要有上限：上限放到 50，网络一直在变时一次检查问几十遍（上限的意义是“一直在变就回没问成，下一轮再来”）",
+        (Edit(CONTRACT_GUARD, "        const val MAX_QUESTIONS = 3\n", "        const val MAX_QUESTIONS = 50\n"),),
+        sync_tests("ContractStaleAnswerTest"), SYNC_RESULTS,
+        ("问到上限就回没问成",),
+    ),
+    Mutation(
+        "r4f5-gives-up-with-the-stale-answer",
+        "第四轮 F5：问到上限还在变就回“没问成”：改回“兼容”冒充，等于上限一到就放行数据请求",
+        (Edit(CONTRACT_GUARD, "        return ContractAnswer.UNCONFIRMED\n", "        return ContractAnswer.COMPATIBLE\n"),),
+        sync_tests("ContractStaleAnswerTest"), SYNC_RESULTS,
+        ("问到上限就回没问成",),
+    ),
+    Mutation(
+        "r4f5-invalidate-does-not-bump-the-generation",
+        "第四轮 F5：作废要把世代加一，在路上的询问才认得出自己被作废了：不加，答复回来时世代没变，变之前的“兼容”照样交出并记住",
+        (Edit(CONTRACT_GUARD, "            generation += 1\n", ""),),
+        sync_tests("ContractStaleAnswerTest", "ContractRevalidationTest"), SYNC_RESULTS,
+        ("变之前的兼容答复不交给提问的人", "已经在路上的版本询问遇到作废"),
     ),
 )
 

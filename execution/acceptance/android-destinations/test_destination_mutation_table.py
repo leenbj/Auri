@@ -255,6 +255,11 @@ ROUND4 = {
         "r4f4-runtime-planner-without-current-need", "r4f4-runtime-need-skips-the-pairing", "r4f4-runtime-need-skips-the-jobs-table",
         "r4f4-runtime-need-skips-the-policy", "r4f4-runtime-need-skips-the-additions", "r4f4-runtime-runner-uses-another-judgment",
     ],
+    "F5 网络变了时在路上的版本询问：答复对谁都不算数（不记也不交给提问的人），重新问，一直在变就回没问成": [
+        "r4f5-stale-answer-handed-over-and-kept", "r4f5-only-compatible-is-discarded", "r4f5-rejections-and-failures-are-handed-over",
+        "r4f5-discards-every-compatible-answer", "r4f5-never-asks-again", "r4f5-asks-without-a-useful-bound",
+        "r4f5-gives-up-with-the-stale-answer", "r4f5-invalidate-does-not-bump-the-generation",
+    ],
 }
 
 

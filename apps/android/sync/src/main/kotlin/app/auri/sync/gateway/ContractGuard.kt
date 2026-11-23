@@ -32,15 +32,19 @@ enum class ContractAnswer {
  *
  * 兼容的记忆**不是永久的**（再评 S6）：同一个进程里网关可能被换回旧版本，所以任何“网关可能变了”的迹象都要 [invalidate]：
  * 连接断过（连不上、传输中断、平台报告网络变了）、请求被当成“不合规”拒绝（旧网关对 1.2 的请求回的就是 422）。作废之后下一次 [check] 重新问。
+ *
+ * 作废时**已经在路上的询问**（第四轮 F5）：它的答复是作废之前的网关说的，对谁都不算数——不记住，也不交给提问的人（不论答复是兼容、太旧、被拒还是没问成）。
+ * 第三轮 S6 只做到“不记住”，提问的人仍拿着变之前的“兼容”去发数据请求，可网关可能已被换成旧版本，整条文字就被永久拒绝。
+ * 现在 [check] 重新问；世代一直在变，最多问 [MAX_QUESTIONS] 次就回“没问成”（什么数据请求也不发，下一轮再来）。
  */
 class ContractGuard {
     private val lock = Any()
     private var verified: PairedGateway? = null
 
-    /** 作废的世代：[invalidate] 加一。[check] 在发问之前记下世代，回来时世代变了就不把“兼容”记下来——那是作废之前的网关说的。 */
+    /** 作废的世代：[invalidate] 加一。[askOnce] 在发问之前记下世代，回来时世代变了，这份答复就是作废之前的网关说的：不记、不交。 */
     private var generation = 0L
 
-    /** 作废兼容的记忆：下一次 [check] 重新问网关。已经在路上的那一次提问，它的“兼容”答复只交给提问的人、不再被记住。 */
+    /** 作废兼容的记忆：下一次 [check] 重新问网关。已经在路上的那一次提问，它的答复不算数（见类说明），[check] 会重新问。 */
     fun invalidate() {
         synchronized(lock) {
             verified = null
@@ -49,6 +53,14 @@ class ContractGuard {
     }
 
     suspend fun check(gateway: PairedGateway, address: GatewayAddress, client: GatewayClient): ContractAnswer {
+        repeat(MAX_QUESTIONS) {
+            askOnce(gateway, address, client)?.let { return it }
+        }
+        return ContractAnswer.UNCONFIRMED
+    }
+
+    /** 问一次。问的期间世代变了就回 null：这份答复是作废之前的网关说的，不记也不交。 */
+    private suspend fun askOnce(gateway: PairedGateway, address: GatewayAddress, client: GatewayClient): ContractAnswer? {
         val asked = synchronized(lock) {
             if (verified?.isSamePairing(gateway) == true) return ContractAnswer.COMPATIBLE
             generation
@@ -64,9 +76,17 @@ class ContractGuard {
             is GatewayResult.Garbled -> ContractAnswer.UNCONFIRMED
             is GatewayResult.TransportFailed -> if (result.failure is TransportFailure.KeyMismatch) ContractAnswer.KEY_MISMATCH else ContractAnswer.UNCONFIRMED
         }
-        if (answer == ContractAnswer.COMPATIBLE) synchronized(lock) { if (generation == asked) verified = gateway }
-        return answer
+        return synchronized(lock) {
+            if (generation != asked) return null
+            if (answer == ContractAnswer.COMPATIBLE) verified = gateway
+            answer
+        }
     }
 
     private fun GatewayResult.Rejected.rejectsDevice() = status == 401 || code == ErrorCode.GATEWAY_AUTH_REVOKED || code == ErrorCode.GATEWAY_AUTH_INVALID
+
+    private companion object {
+        /** 网络一直在变时，一次 [check] 最多问几次：问到这个数还在变就回“没问成”，不无休止地问。 */
+        const val MAX_QUESTIONS = 3
+    }
 }
