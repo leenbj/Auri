@@ -250,6 +250,11 @@ ROUND4 = {
         "r4f10-ownership-reads-only-the-first-item", "r4f10-ownership-ignores-html", "r4f10-ownership-ignores-uri", "r4f10-ownership-ignores-intent",
         "r4f10-ownership-ignores-the-mime-types", "r4f10-port-reads-only-the-first-item", "r4f10-port-ignores-html-uri-and-intent", "r4f10-port-ignores-the-mime-types",
     ],
+    "F4 叫醒规划器的结论在门的锁里按磁盘上的账现算，不拿流里排队时读到的旧快照": [
+        "r4f4-planner-ignores-the-current-need", "r4f4-planner-reads-the-need-outside-the-gate", "r4f4-planner-trusts-the-current-need-only-when-it-says-yes",
+        "r4f4-runtime-planner-without-current-need", "r4f4-runtime-need-skips-the-pairing", "r4f4-runtime-need-skips-the-jobs-table",
+        "r4f4-runtime-need-skips-the-policy", "r4f4-runtime-need-skips-the-additions", "r4f4-runtime-runner-uses-another-judgment",
+    ],
 }
 
 

@@ -48,8 +48,13 @@ fun needsResume(pairing: PairingState, jobs: List<SyncJob>, policy: DataFlowStat
  * “现算 + 登记或取消”在它的锁里一气呵成——读账与取消之间用户若确认了，手里过时的“没活了”不会把刚登记的叫醒抹掉。
  * “结论不变不重复登记”也记在门里。没传 [gate] 就给自己造一道（没有别人要和它抢）。
  *
- * @param additionsOwed 现在账上还欠不欠要向网关追加的 Delivery（实时读，不缓存）。
+ * 门里现算的“结论”本身也不能是旧的（第四轮 F4）：流发出的配对、任务表、授权是一份快照，规划器带着它去等门，用户的确认正握着锁时它停在门口，
+ * 这段时间里账变了，锁一放开，旧快照与刚读的“欠不欠追加”拼出的“没活了”会把确认刚登记的叫醒取消，此刻进程被杀，确认过的文字就没人再来发。
+ * 所以真正接线时传 [currentNeed]：结论在门的锁里按磁盘上的账整个现算（配对、任务表、授权、发送账各读各的存储），三个输入流只当“有东西变了，再算一次”的提示。
+ *
+ * @param additionsOwed 现在账上还欠不欠要向网关追加的 Delivery（实时读，不缓存）。没传 [currentNeed] 时才用。
  * @param additionsChanged 发送账变了（决定、网关上有没有 Delivery、目的地缓存）：重新评估一次。任务表的变化已经在 [jobs] 里。
+ * @param currentNeed 现在要不要叫醒，**按磁盘上的账现算**（不缓存）；传了它，流里的快照不再参与结论。不传（测试里只有流的拼法）就用快照加 [additionsOwed]。
  */
 class ResumePlanner(
     private val pairing: Flow<PairingState>,
@@ -62,9 +67,12 @@ class ResumePlanner(
     private val additionsOwed: suspend () -> Boolean = { false },
     private val additionsChanged: Flow<*> = emptyFlow<Unit>(),
     private val gate: WakeGate = WakeGate(scheduler, log),
+    private val currentNeed: (suspend () -> Boolean)? = null,
 ) {
     fun start(scope: CoroutineScope): Job = scope.restartingProducer("resume", log, clock, retry) {
         combine(pairing, jobs, policy, additionsChanged.onStart { emit(Unit) }) { pairingState, list, dataFlow, _ -> Triple(pairingState, list, dataFlow) }
-            .collect { (pairingState, list, dataFlow) -> gate.reconcile { needsResume(pairingState, list, dataFlow, additionsOwed()) } }
+            .collect { (pairingState, list, dataFlow) ->
+                gate.reconcile { currentNeed?.invoke() ?: needsResume(pairingState, list, dataFlow, additionsOwed()) }
+            }
     }
 }

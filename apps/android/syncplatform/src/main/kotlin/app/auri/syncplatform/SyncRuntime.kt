@@ -158,19 +158,25 @@ class SyncRuntime(
         additionsOwed = { dispatch.due().isNotEmpty() },
         additionsChanged = dispatch.changes(),
         gate = wakes,
+        // 第四轮 F4：结论在门的锁里按磁盘上的账现算，流只当“有东西变了”的提示（流里的快照可能是在门外排队时读到的旧值）
+        currentNeed = { resumeNeededNow() },
     )
     private val resumeRunner = ResumeRunner(
         ready = { started.await() },
         runPass = engine::runOnce,
         // 收尾判断在门的锁里做（再评 S8）：与“用户确认前先登记叫醒”、规划器的登记与取消串行；没活就同步取消系统里的叫醒，有活就请系统稍后再叫
-        stillNeeded = {
-            wakes.finishing {
-                val paired = pairing.load()
-                needsResume(paired, jobs.all(), policy.current((paired as? PairingState.Paired)?.gateway?.identity), dispatch.due().isNotEmpty())
-            }
-        },
+        stillNeeded = { wakes.finishing { resumeNeededNow() } },
         log = log,
     )
+
+    /**
+     * 现在要不要有叫醒：配对、任务表、授权、发送账各读各的存储，不缓存（第四轮 F4）。规划器在门的锁里用它登记或取消，
+     * 被叫醒那一轮的收尾判断也用它——两处是同一个判断（[needsResume]），读的是同一份实时的账。
+     */
+    private suspend fun resumeNeededNow(): Boolean {
+        val paired = pairing.load()
+        return needsResume(paired, jobs.all(), policy.current((paired as? PairingState.Paired)?.gateway?.identity), dispatch.due().isNotEmpty())
+    }
 
     /** 界面要的同步状态汇总：配对状态、任务表、数据流开关与发送账里等用户确认的文字，任何一边变了都重新汇总（评审 M2）。 */
     override val status: Flow<SyncStatus> = SyncStatus.watch(pairing.states, jobs.observe(), dataFlow, dispatch)
