@@ -16,11 +16,18 @@ sealed interface ClipboardPeek {
 
     /** 读不了：Android 10 起不在前台的应用读到的剪贴板一律是“空”；真的空了也落在这里。 */
     data object Unreadable : ClipboardPeek
+
+    /**
+     * 读不了（没有焦点），但从我们复制到现在，系统没有报告过剪贴板变了（变化监听，见 [ClipOwnership.startWatching]）：
+     * 在我们拿着焦点的那段时间里别人动不了它而不被我们知道，所以那里还是我们放的那一份。
+     * **只在失去焦点的那一刻有效**：没有焦点时系统既不让读、也不发变化回调，之后的沉默什么也证明不了——所以只有 [SecretClipboardGuard.onLeaving] 认它。
+     */
+    data object Untouched : ClipboardPeek
 }
 
 /** 系统剪贴板的三个动作。真机上是 ClipboardManager（`ui/SecretWindow.kt` 的 AndroidClipboardPort），测试里是假的。 */
 interface ClipboardPort {
-    /** 放进去（标成敏感内容），并在内存里记下它的内容摘要与 [at]（不记凭证文字、不落盘），之后凭摘要认出这一份还是不是我们放的。 */
+    /** 放进去（标成敏感内容），并在内存里记下它的内容摘要与 [at]（不记凭证文字、不落盘）、在放进去**之后**登记变化监听，之后凭这两样认出这一份还是不是我们放的。 */
     fun put(secret: String, at: Long)
 
     fun peek(): ClipboardPeek
@@ -32,17 +39,19 @@ interface ClipboardPort {
 /**
  * 凭证复制进剪贴板之后的清理（Ticket 22 评审 B5，复评 R6 收紧）。
  *
- * **铁律：没有证明“剪贴板里现在还是我们放的那一份”，就绝不清。** 证明只有一种：读得到剪贴板，并且当前文字的 SHA-256 与我们放进去时在内存里记下的一致
- * （[ClipOwnership]）。剪贴板描述里的额外字段不算证明：别的应用读得到、抄得走、伪造得出（再评 S11）。
- * Android 10 起，不在前台（没有输入焦点）的应用读剪贴板得到的是“空”，而**写与清却不受限**：后台里的“清”是盲的，
- * 盲清会把用户后来复制的别的东西（会议室门牌、验证码、另一份凭证）一并抹掉——这比凭证多留一会儿更糟，也无法向用户交代。读不了就不动。
+ * **铁律：没有证明“剪贴板里现在还是我们放的那一份”，就绝不清。** 证明有两种（[ClipOwnership]），剪贴板描述里的额外字段都不算：别的应用读得到、抄得走、伪造得出（再评 S11）：
+ * 1. 读得到剪贴板，并且读到的是我们放进去时的原样——一项、只有 `text/plain`、只有文字，整段文字的 SHA-256 与内存里记下的一致（[ClipboardPeek.Ours]；第四轮 F10 起不再只比第 0 项）；
+ * 2. 读不了（窗口已失去焦点），但复制之后登记的变化监听从没收到过“剪贴板变了”（[ClipboardPeek.Untouched]；第四轮 F3）：我们拿着焦点的那段时间里别人动不了它而不被我们知道。
+ *    **这一种只在失去焦点的那一刻有效**：没有焦点时系统既不让读、也不发变化回调，之后的沉默什么也证明不了——所以只有 [onLeaving] 认它，到点的定时器与回到前台都不认。
+ * Android 10 起，不在前台（没有输入焦点）的应用读剪贴板得到的是“空”，而**写与清却不受限**：没有证明的“清”是盲的，
+ * 盲清会把用户后来复制的别的东西（会议室门牌、验证码、另一份凭证）一并抹掉——这比凭证多留一会儿更糟，也无法向用户交代。没有证明就不动。
  *
- * 清的时机，全部要求“读得到且认得出是自己的”：
- * 1. [onLeaving]：面板关闭 / 离开详情页 / 应用即将失去焦点（Activity.onPause：窗口通常还有焦点，是应用最后一次读得到剪贴板的时刻；
- *    窗口失去焦点而 Activity 不暂停——分屏里点了另一个窗口、系统对话框、下拉通知栏——同样走这里，再评 S10）——当场清；
- * 2. 定时器：复制之后满 [TIMEOUT_MS] 应用还在前台——清；
- * 3. [onForeground]：回到前台（窗口拿到焦点）发现自己放的已到期（到点时人在后台没法确认、或进程被冻结过没能按时清）——清。
- * 读不到的时候（应用已在后台）凭证会留在剪贴板里，直到被覆盖或系统自己清（Android 13 起约一小时后）。这是 Android 平台的限制，补不了：
+ * 清的时机，全部要求有上面两种证明之一（第 2 种只限第 1 条）：
+ * 1. [onLeaving]：面板关闭 / 离开详情页 / 应用即将失去焦点（Activity.onPause：窗口通常还有焦点，读得到，按内容认；
+ *    窗口失去焦点而 Activity 不暂停——分屏里点了另一个窗口、系统对话框、下拉通知栏——同样走这里，再评 S10；那一刻已经读不了，靠变化监听认，第四轮 F3）——当场清；
+ * 2. 定时器：复制之后满 [TIMEOUT_MS] 应用还在前台（读得到、按内容认）——清；
+ * 3. [onForeground]：回到前台（窗口拿到焦点）发现自己放的已到期（读得到、按内容认；到点时人在后台没法确认、或进程被冻结过没能按时清）——清。
+ * 两种证明都拿不到的时候（失焦那一刻之外的后台、变化监听登记不上）凭证会留在剪贴板里，直到被覆盖或系统自己清（Android 13 起约一小时后）。这是 Android 平台的限制，补不了：
  * 能做的是放进去时标成敏感内容（EXTRA_IS_SENSITIVE：系统的剪贴板预览与输入法不展示内容）、复制之后明说（[describeClipboardNotice]）、
  * 在验收 README 里如实记录残余风险（真机行为 `NOT_RUN`）。
  *
@@ -90,9 +99,13 @@ class SecretClipboardGuard(
      * 复制那一下本身不算离开（复制之后面板是抹掉的，但刚复制的东西要留着给用户粘贴）。
      */
     fun onLeaving() {
-        if (port.peek() is ClipboardPeek.Ours) {
-            timer?.cancel()
-            clear()
+        when (port.peek()) {
+            // 读得到并按内容认出是自己的；或者失焦的这一刻读不了，但从复制到现在系统没报过变化（第四轮 F3）：当场清
+            is ClipboardPeek.Ours, ClipboardPeek.Untouched -> {
+                timer?.cancel()
+                clear()
+            }
+            ClipboardPeek.Other, ClipboardPeek.Unreadable -> Unit
         }
     }
 
@@ -100,8 +113,9 @@ class SecretClipboardGuard(
         when (port.peek()) {
             is ClipboardPeek.Ours -> clear()
             ClipboardPeek.Other -> log.event("clipboard.kept-other")
-            // 读不了就认不出归属：宁可让凭证多留一会儿，也不盲清（复评 R6）；回到前台时 [onForeground] 再认
-            ClipboardPeek.Unreadable -> log.event("clipboard.unverifiable")
+            // 读不了就认不出归属：宁可让凭证多留一会儿，也不盲清（复评 R6）；回到前台时 [onForeground] 再认。
+            // Untouched 也在这里：到点时多半在后台，没有焦点时系统不发变化回调，“没收到变化”什么也证明不了；这条证明只在失焦的那一刻用（[onLeaving]）
+            ClipboardPeek.Unreadable, ClipboardPeek.Untouched -> log.event("clipboard.unverifiable")
         }
     }
 

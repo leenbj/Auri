@@ -241,6 +241,15 @@ ROUND4 = {
         "r4f2-gw-cancel-trace-ignored", "r4f2-gw-cancel-trace-without-a-later-credential", "r4f2-gw-cancel-trace-from-another-destination",
         "r4f2-gw-cancel-trace-needs-no-matching-instant", "r4f2-gw-cutoff-takes-other-tenants-texts",
     ],
+    "F3 窗口失焦后读不了剪贴板：靠复制之后登记的变化监听证明“没人动过”（只在失焦那一刻有效）才清，收到过任何变化就不清": [
+        "r4f3-leaving-ignores-the-no-change-proof", "r4f3-expiry-trusts-the-no-change-proof", "r4f3-change-event-does-not-void-the-proof",
+        "r4f3-no-listener-registered", "r4f3-listener-never-reports", "r4f3-remember-keeps-the-old-listener", "r4f3-forget-keeps-the-listener",
+        "r4f3-port-registers-before-the-copy", "r4f3-adapter-never-removes-the-listener", "r4f3-adapter-never-registers", "r4f3-port-never-wires-the-events",
+    ],
+    "F10 整份剪贴板的形状（一项、只有 text/plain、只有文字）与摘要都对得上才算我们的": [
+        "r4f10-ownership-reads-only-the-first-item", "r4f10-ownership-ignores-html", "r4f10-ownership-ignores-uri", "r4f10-ownership-ignores-intent",
+        "r4f10-ownership-ignores-the-mime-types", "r4f10-port-reads-only-the-first-item", "r4f10-port-ignores-html-uri-and-intent", "r4f10-port-ignores-the-mime-types",
+    ],
 }
 
 
