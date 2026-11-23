@@ -54,19 +54,30 @@ class SqliteDataFlowPolicy(private val library: SqliteRecordLibrary, private val
     /**
      * 世代（再评 S3）：开始写之前加一；写完（成败都算）在**数据库线程上、紧接着写**再加一——之后任何读（问放行也是读，走同一条连接）都排在它后面，
      * 所以“读到收回之后的设置”与“世代变过”不会错开；不放在回到调用方之后，那里隔着一次调度。
+     * 写开着（开始了、没落定）的整段时间里，读世代每次得到一个新的负数（第四轮 1，见 [PolicyGeneration]）：写还排在队里时问的放行、
+     * 写已提交还没落定时的交接，都因此对不上。
      */
     private val generations = PolicyGeneration()
 
     override val generation: Long get() = generations.value
 
+    /**
+     * 局部的 `generations` 是这一次写的凭据（遮住上面那个属性）：数据库线程上的 finally 关窗口；写块可能根本没跑起来
+     * （在块开始前被取消、拿不到数据库连接、调度器拒绝）——外层 finally 再关一次（幂等），窗口不会永远开着。
+     */
     private suspend fun write(change: DataFlowPolicySql.() -> Unit) {
-        generations.changing()
-        library.withDatabase { db ->
-            try {
-                DataFlowPolicySql(AndroidSqlDb(db)).change()
-            } finally {
-                generations.changed()
+        val generations = this.generations.write()
+        try {
+            generations.changing()
+            library.withDatabase { db ->
+                try {
+                    DataFlowPolicySql(AndroidSqlDb(db)).change()
+                } finally {
+                    generations.changed()
+                }
             }
+        } finally {
+            generations.changed()
         }
         changes.value += 1
     }

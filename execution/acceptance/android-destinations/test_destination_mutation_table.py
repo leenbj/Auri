@@ -222,3 +222,27 @@ def test_every_round3_mutation_in_the_table_is_attributed_to_a_fix():
     attributed = {i for ids in ROUND3.values() for i in ids}
     round3_ids = {m.id for m in dm.MUTATIONS if re.match(r"s\d+-", m.id)}
     assert round3_ids == attributed, (round3_ids - attributed, attributed - round3_ids)
+
+
+# 第四轮（对第三轮再评的修复，F1–F10）：每一项修复在表里至少有一条对应的变异（README 16 节引用这些 id）；
+# 任何人删掉某项修复的全部变异，这里会红，而不是让那项修复悄悄失去变异检查的保护。
+ROUND4 = {
+    "F1 授权设置的写窗口里世代是一次性的章；写块没跑起来也不让窗口永远开着": [
+        "r4f1-window-reads-return-the-counter", "r4f1-window-reads-repeat", "r4f1-window-never-opens", "r4f1-first-settle-closes-every-window",
+        "r4f1-ticket-settles-twice", "r4f1-ticket-opens-after-settling", "r4f1-sqlite-write-without-the-outer-settle",
+        "r4f1-sqlite-write-settles-off-the-database-thread", "r4f1-sqlite-write-touches-the-window-directly",
+    ],
+}
+
+
+@pytest.mark.parametrize("item", list(ROUND4))
+def test_every_round4_fix_has_mutations_in_the_table(item):
+    ids = {m.id for m in dm.MUTATIONS}
+    assert set(ROUND4[item]) <= ids, set(ROUND4[item]) - ids
+
+
+def test_every_round4_mutation_in_the_table_is_attributed_to_a_fix():
+    # 反过来：以 r4f<数字>- 开头的条目都属于上面某一项修复；这个前缀与第三轮的 s<数字>- 不冲突
+    attributed = {i for ids in ROUND4.values() for i in ids}
+    round4_ids = {m.id for m in dm.MUTATIONS if re.match(r"r4f\d+-", m.id)}
+    assert round4_ids == attributed, (round4_ids - attributed, attributed - round4_ids)

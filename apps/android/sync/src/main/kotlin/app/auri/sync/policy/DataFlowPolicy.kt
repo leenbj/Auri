@@ -50,7 +50,9 @@ data class StoredDataFlow(val grantedTo: GatewayIdentity?, val strictLocal: Bool
 interface DataFlowPolicy {
     /**
      * 设置的世代（再评 S3，见 [PolicyGeneration]）：每次改设置开始前与落定后各加一，读它不挂起。
-     * 引擎问放行之前先记下它、请求交给 HTTP 客户端的前一刻再比一次：变过就什么都不发。实现必须保证“改了设置之后再读到的世代一定变过”。
+     * 引擎问放行之前先记下它、请求交给 HTTP 客户端的前一刻再比一次：变过就什么都不发。实现必须保证“改了设置之后再读到的世代一定变过”，
+     * 并且一次改动从开始到落定的整段时间里，每次读到的世代都不同于以后任何一次读到的（第四轮 1：写还排在队里时问的放行读到的是旧授权，
+     * 不能因为“世代恰好没再变”在写提交之后放行）。
      */
     val generation: Long
 

@@ -56,22 +56,30 @@ class InMemoryDataFlowPolicy(
 
     override val generation: Long get() = generations.value
 
-    // 和真实实现一样：每次改动前后世代各加一（见 PolicyGeneration）
-    override suspend fun grantTo(gateway: GatewayIdentity) {
-        generations.around<Unit> { state.value = state.value.copy(grantedTo = gateway) }
+    /** 钩子（第四轮 1）：一次写已经开始（世代动了）、还没提交——真实实现里它还排在数据库线程的队里。测试用它把一次写确定地卡在这里。 */
+    @Volatile
+    var beforeCommit: (suspend () -> Unit)? = null
+
+    /** 钩子（第四轮 1）：一次写已经提交（读到的已是新值）、还没落定——真实实现里在 `changed()` 之前的那一小段。 */
+    @Volatile
+    var afterCommit: (suspend () -> Unit)? = null
+
+    // 和真实实现一样：每次改动前后世代各加一（见 PolicyGeneration）；提交的前后各有一个可卡住的点
+    private suspend fun write(commit: () -> Unit) {
+        generations.around<Unit> {
+            beforeCommit?.invoke()
+            commit()
+            afterCommit?.invoke()
+        }
     }
 
-    override suspend fun revokeGrant() {
-        generations.around<Unit> { state.value = state.value.copy(grantedTo = null) }
-    }
+    override suspend fun grantTo(gateway: GatewayIdentity) = write { state.value = state.value.copy(grantedTo = gateway) }
 
-    override suspend fun forgetGrantExcept(gateway: GatewayIdentity?) {
-        generations.around<Unit> { if (state.value.grantedTo != gateway) state.value = state.value.copy(grantedTo = null) }
-    }
+    override suspend fun revokeGrant() = write { state.value = state.value.copy(grantedTo = null) }
 
-    override suspend fun setStrictLocal(on: Boolean) {
-        generations.around<Unit> { state.value = state.value.copy(strictLocal = on) }
-    }
+    override suspend fun forgetGrantExcept(gateway: GatewayIdentity?) = write { if (state.value.grantedTo != gateway) state.value = state.value.copy(grantedTo = null) }
+
+    override suspend fun setStrictLocal(on: Boolean) = write { state.value = state.value.copy(strictLocal = on) }
 
     /** 方便测试：用户对 [gateway]（开关指的网关）打开或收回授权。 */
     suspend fun setGatewayTextGranted(granted: Boolean) {
