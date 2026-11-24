@@ -42,7 +42,7 @@ class PolicyGateWiringTest {
         }
     }
 
-    private val outboundCalls = Regex("""client\.(putRevision|recordStatus|addDeliveries)\(|contract\.check\(""")
+    private val outboundCalls = Regex("""client\.(putRevision|recordStatus|addDeliveries|deleteRecord)\(|contract\.check\(""")
 
     @Test
     fun `引擎里每一个会发往网关的调用都包在 permit gated 里：交出请求的前一刻比过世代`() {
@@ -50,13 +50,13 @@ class PolicyGateWiringTest {
         val (outside, gated) = withoutBlocks(engine, "permit.gated {")
 
         assertTrue("gated 之外还有直接发往网关的调用：${outboundCalls.find(outside)?.value}", outboundCalls.find(outside) == null)
-        // 定位（attempt、healContract、probe、addDeliveries 各 1）不套 gated，而是把 permit 交给定位器：每个探测、每次 mDNS 查询各过一次门（第三轮 S12）
+        // 定位（attempt、healContract、probe、addDeliveries、syncDeletions 各 1）不套 gated，而是把 permit 交给定位器：每个探测、每次 mDNS 查询各过一次门（第三轮 S12）
         val locations = Regex("""location\.get\(([^)]*)\)""").findAll(outside).map { it.groupValues[1] }.toList()
-        assertEquals("每处定位都要把 permit 交给定位器：裸调或整串只套一次 gated，后面的探测就绕过了授权被收回的检查：$locations", List(4) { "gateway, permit" }, locations)
+        assertEquals("每处定位都要把 permit 交给定位器：裸调或整串只套一次 gated，后面的探测就绕过了授权被收回的检查：$locations", List(5) { "gateway, permit" }, locations)
         assertTrue("Location.get 必须把 permit 交给定位器", "locator.locate(gateway, permit)" in engine)
         // attempt：合同版本、状态查询、PUT 各 1；healContract：合同版本 1；addDeliveries：合同版本、追加各 1；
-        // revalidate（请求被当成“不合规”拒绝后重新问版本，再评 S6）：合同版本 1——attempt 与 addDeliveries 共用
-        assertEquals("gated 块的数量不对（新增请求路径要套 gated，并更新这里的数）", 7, gated)
+        // syncDeletions：合同版本、删除各 1；revalidate：合同版本 1
+        assertEquals("gated 块的数量不对（新增请求路径要套 gated，并更新这里的数）", 9, gated)
         assertTrue("Permit 的比对必须是世代", "policy.generation == generation" in engine)
         assertTrue("世代必须在问放行之前记下：先记再问，问的过程中有人改了才看得出", "val generation = policy.generation return if (mayTransmit(gateway)) Permit(generation) else null" in engine)
     }

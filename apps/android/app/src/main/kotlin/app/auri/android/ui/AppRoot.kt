@@ -18,11 +18,18 @@ import androidx.compose.ui.unit.dp
 
 /** 页面之间的切换，仅此而已（真正的导航由重做界面的人决定）。 */
 @Composable
-fun AppRoot(home: @Composable () -> Unit, control: @Composable () -> Unit, models: @Composable () -> Unit, destinations: (@Composable () -> Unit)? = null) {
+fun AppRoot(
+    home: @Composable () -> Unit,
+    control: @Composable () -> Unit,
+    models: @Composable () -> Unit,
+    destinations: (@Composable () -> Unit)? = null,
+    records: (@Composable () -> Unit)? = null,
+) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = { tab = 0 }, enabled = tab != 0) { Text("录音") }
+            if (records != null) Button(onClick = { tab = 4 }, enabled = tab != 4) { Text("记录") }
             Button(onClick = { tab = 1 }, enabled = tab != 1) { Text("耳机控制") }
             Button(onClick = { tab = 2 }, enabled = tab != 2) { Text("模型与转录") }
             if (destinations != null) Button(onClick = { tab = 3 }, enabled = tab != 3) { Text("发送") }
@@ -32,6 +39,7 @@ fun AppRoot(home: @Composable () -> Unit, control: @Composable () -> Unit, model
                 0 -> home()
                 1 -> control()
                 3 -> destinations?.invoke()
+                4 -> records?.invoke()
                 else -> models()
             }
         }

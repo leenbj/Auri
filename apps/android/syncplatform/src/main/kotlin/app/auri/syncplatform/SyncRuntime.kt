@@ -257,6 +257,21 @@ class SyncRuntime(
     fun destinationService(authenticator: LocalAuthenticator): DestinationService =
         DestinationService(pairing, http, locator, dispatch, jobs, authenticator, policy, clock, log, contract)
 
+    /** 修订、逐个确认重发与删除服务（Ticket 23）：与同步引擎共用配对记录、固定公钥客户端与发送账。 */
+    fun recordRevisionService(deleteFile: (String) -> Boolean): app.auri.sync.revisions.RecordRevisionService =
+        app.auri.sync.revisions.RecordRevisionService(
+            library = library,
+            dispatch = dispatch,
+            pairing = pairing,
+            http = http,
+            locator = locator,
+            policy = policy,
+            clock = clock,
+            log = log,
+            deleteFile = deleteFile,
+            onSyncNeeded = ::syncNow,
+        )
+
     companion object {
         private const val PAIRING_KEY_ALIAS = "auri.sync.pairing.v1"
         private const val PAIRING_FILE = "pairing.sealed"

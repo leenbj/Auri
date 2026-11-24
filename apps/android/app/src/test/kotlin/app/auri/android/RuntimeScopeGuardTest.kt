@@ -22,7 +22,7 @@ class RuntimeScopeGuardTest {
         assertEquals("别处不许再直接 CoroutineScope(...)：漏掉处理器的作用域一出事就是进程退出", 1, Regex("""\bCoroutineScope\(""").findAll(code).count())
         assertTrue("scopeOf 里要有 SupervisorJob（一个子协程失败不连累别的）和异常处理器", code.contains("CoroutineScope(SupervisorJob() + dispatcher + escapedFailureHandler)"))
         assertTrue("运行时自己的作用域也经它", Regex("""\bval scope = scopeOf\(\)""").containsMatchIn(code))
-        assertEquals("运行时自己的一个、六个视图模型、剪贴板守卫，共八处都经它", 8, Regex("""\bscopeOf\(""").findAll(code.substringBefore("companion object")).count())
+        assertEquals("运行时自己的一个、八个视图模型、剪贴板守卫，共十处都经它", 10, Regex("""\bscopeOf\(""").findAll(code.substringBefore("companion object")).count())
     }
 
     @Test
