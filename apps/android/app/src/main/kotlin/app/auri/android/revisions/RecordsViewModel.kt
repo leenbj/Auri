@@ -17,6 +17,7 @@ import app.auri.sync.revisions.RecordQuery
 import app.auri.sync.revisions.SendStatusFilter
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -126,20 +127,35 @@ class RecordsViewModel(
             )
             return
         }
-        try {
-            retentionSetting.save(days)
-            extras.value = extras.value.copy(retentionError = null, notice = "音频保留期已设为 $days 天")
-            purgeExpiredAudioNow()
-        } catch (_: Exception) {
-            extras.value = extras.value.copy(retentionError = "保留期保存失败，请重试")
+        scope.launch {
+            try {
+                retentionSetting.save(days)
+                extras.value = extras.value.copy(retentionError = null, notice = "音频保留期已设为 $days 天")
+                val report = retentionCleaner.purgeExpired(clock.now(), days)
+                if (report.purgedCount > 0 || report.failedCount > 0) {
+                    val msg = if (report.failedCount > 0) {
+                        "已清理 ${report.purgedCount} 条过期音频，另有 ${report.failedCount} 条未能清理（将在下次重试）"
+                    } else {
+                        "已按保留期清理 ${report.purgedCount} 条过期音频，文字均已保留"
+                    }
+                    extras.value = extras.value.copy(notice = msg)
+                }
+            } catch (_: Exception) {
+                extras.value = extras.value.copy(retentionError = "保留期保存失败，请重试")
+            }
         }
     }
 
     fun purgeExpiredAudioNow() {
         scope.launch {
             val report = retentionCleaner.purgeExpired(clock.now(), retentionSetting.days.value)
-            if (report.purgedCount > 0) {
-                extras.value = extras.value.copy(notice = "已按保留期清理 ${report.purgedCount} 条过期音频，文字均已保留")
+            if (report.purgedCount > 0 || report.failedCount > 0) {
+                val msg = if (report.failedCount > 0) {
+                    "已清理 ${report.purgedCount} 条过期音频，另有 ${report.failedCount} 条未能清理（将在下次重试）"
+                } else {
+                    "已按保留期清理 ${report.purgedCount} 条过期音频，文字均已保留"
+                }
+                extras.value = extras.value.copy(notice = msg)
             }
         }
     }
@@ -156,6 +172,10 @@ class RecordsViewModel(
         extras.value = extras.value.copy(pendingExport = null)
     }
 
+    fun reportExportFailed() {
+        extras.value = extras.value.copy(pendingExport = null, notice = "导出文件写入失败，请重试")
+    }
+
     fun dismissNotice() {
         extras.value = extras.value.copy(notice = null)
     }
@@ -167,7 +187,7 @@ class RecordsViewModel(
     private fun buildQuery(inputs: FilterInputs, now: Instant): RecordQuery {
         val from = when (inputs.timePreset) {
             TimeRangePreset.ALL -> null
-            TimeRangePreset.TODAY -> now.minus(Duration.ofDays(1))
+            TimeRangePreset.TODAY -> now.atZone(ZoneId.systemDefault()).toLocalDate().atStartOfDay(ZoneId.systemDefault()).toInstant()
             TimeRangePreset.LAST_7_DAYS -> now.minus(Duration.ofDays(7))
             TimeRangePreset.LAST_30_DAYS -> now.minus(Duration.ofDays(30))
         }

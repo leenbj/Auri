@@ -48,7 +48,14 @@ object RevisionDescriptions {
             GatewayStage.REJECTED -> "Agent 已拒收"
             GatewayStage.CANCELLED -> "已取消"
         }
-        is DeliveryView.Unknown -> "状态未知（离线或未查询）"
+        is DeliveryView.Unknown -> when (view.reason) {
+            app.auri.sync.destinations.UnknownReason.NOT_ASKED -> "未查询网关状态（点刷新状态可查）"
+            app.auri.sync.destinations.UnknownReason.GATEWAY_UNREACHABLE -> "暂时连不上网关，状态未知"
+            app.auri.sync.destinations.UnknownReason.GATEWAY_ANSWER_UNUSABLE -> "网关回答读不懂，状态未知"
+            app.auri.sync.destinations.UnknownReason.NO_DELIVERY_RECORD -> "网关没有这份投递记录"
+            app.auri.sync.destinations.UnknownReason.UNRECOGNIZED_STATE -> "网关返回了不认识的状态"
+            app.auri.sync.destinations.UnknownReason.DELIVERY_REFUSED -> "网关未为该目的地创建投递"
+        }
         DeliveryView.AwaitingYou -> "等待确认"
         DeliveryView.Skipped -> "已跳过"
         DeliveryView.NotTargeted -> "未投递"

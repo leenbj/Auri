@@ -182,4 +182,17 @@ class RevisionsViewModelTest {
         assertTrue(library.isDeleted(entry.recordId))
         assertTrue("日志绝不含正文", log.lines.none { it.contains("初稿正文") || it.contains("未保存的草稿") })
     }
+
+    @Test
+    fun `UnknownReason 逐项给出真实文案，不把拒收或读不懂说成离线`() {
+        val refused = RevisionDescriptions.describeOlderDelivery(
+            app.auri.sync.destinations.DeliveryView.Unknown(app.auri.sync.destinations.UnknownReason.DELIVERY_REFUSED),
+        )
+        val garbled = RevisionDescriptions.describeOlderDelivery(
+            app.auri.sync.destinations.DeliveryView.Unknown(app.auri.sync.destinations.UnknownReason.GATEWAY_ANSWER_UNUSABLE),
+        )
+        assertFalse(refused.contains("离线"))
+        assertFalse(garbled.contains("离线"))
+        assertTrue(refused.contains("未为该目的地创建投递"))
+    }
 }

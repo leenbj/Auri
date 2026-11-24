@@ -31,6 +31,9 @@ import app.auri.android.ui.HomeScreen
 import app.auri.android.ui.ModelsScreen
 import app.auri.android.ui.RecordsPage
 import app.auri.android.ui.SyncPage
+import app.auri.platform.system.SystemClock
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val runtime get() = (application as AuriApplication).runtime
@@ -101,6 +104,10 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         runtime.pipeline.resume() // 模型装好之后回到应用，等模型的 Record 就会被转录
         runtime.sync.syncNow() // 回到前台：立刻同步一轮（没配对时什么也不会发生）
+        // OCR #22：长生命周期进程回到前台时也按保留期清理到期音频
+        runtime.scope.launch(Dispatchers.IO) {
+            runtime.audioRetentionCleaner.purgeExpired(SystemClock.now(), runtime.audioRetentionSetting.days.value)
+        }
     }
 
     override fun onResume() {

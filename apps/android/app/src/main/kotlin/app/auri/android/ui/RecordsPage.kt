@@ -3,6 +3,7 @@ package app.auri.android.ui
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedButton
@@ -20,6 +22,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -36,6 +40,9 @@ import app.auri.capture.contract.ReviewState
 import app.auri.sync.revisions.ExportFormat
 import app.auri.sync.revisions.ResendState
 import app.auri.sync.revisions.SendStatusFilter
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 记录库页面（Ticket 23）：列表筛选、音频保留期设置、TXT/Markdown 导出、以及单条记录的修订/重发/删除详情。
@@ -49,8 +56,9 @@ fun RecordsPage(
     val currentId = selectedRecordId
     if (currentId != null) {
         BackHandler { selectedRecordId = null }
+        val detailViewModel = remember(currentId) { detailFor(currentId) }
         RecordDetailScreen(
-            viewModel = detailFor(currentId),
+            viewModel = detailViewModel,
             onBack = { selectedRecordId = null },
         )
     } else {
@@ -68,7 +76,7 @@ private fun RecordsListScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var retentionInput by rememberSaveable(state.retentionDays) { mutableStateOf(state.retentionDays.toString()) }
-    ExportHandler(state.pendingExport, onConsumed = viewModel::consumeExport)
+    ExportHandler(state.pendingExport, onConsumed = viewModel::consumeExport, onFailed = viewModel::reportExportFailed)
 
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(
@@ -78,7 +86,7 @@ private fun RecordsListScreen(
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             for (preset in TimeRangePreset.entries) {
                 val label = when (preset) {
                     TimeRangePreset.ALL -> "全部时间"
@@ -91,8 +99,8 @@ private fun RecordsListScreen(
                 }
             }
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            for (filter in listOf(SendStatusFilter.ALL, SendStatusFilter.STORED, SendStatusFilter.WAITING_GATEWAY, SendStatusFilter.AWAITING_CONFIRM, SendStatusFilter.NEEDS_USER)) {
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            for (filter in SendStatusFilter.entries) {
                 OutlinedButton(onClick = { viewModel.setSendStatus(filter) }, enabled = state.sendStatus != filter) {
                     Text(RevisionDescriptions.describeSendStatusFilter(filter))
                 }
@@ -141,7 +149,8 @@ private fun RecordDetailScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var confirmingDelete by rememberSaveable { mutableStateOf(false) }
-    ExportHandler(state.pendingExport, onConsumed = viewModel::consumeExport)
+    var confirmingDeleteAudio by rememberSaveable { mutableStateOf(false) }
+    ExportHandler(state.pendingExport, onConsumed = viewModel::consumeExport, onFailed = viewModel::reportExportFailed)
 
     Column(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -156,6 +165,10 @@ private fun RecordDetailScreen(
                 Text(it)
                 OutlinedButton(onClick = viewModel::dismissNotice) { Text("知道了") }
             }
+        }
+        if (!state.loaded && !state.deleted) {
+            Text("正在加载记录…")
+            return
         }
         if (state.deleted || state.record == null) {
             Text("该记录已删除（本地与网关均不可见；Agent 已读走的内容无法收回）。")
@@ -172,7 +185,9 @@ private fun RecordDetailScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 state.editError?.let { Text(RevisionDescriptions.describeEditError(it)) }
-                Button(onClick = viewModel::saveEdit) { Text("保存为新版本") }
+                Button(onClick = viewModel::saveEdit, enabled = !state.saving) {
+                    Text(if (state.saving) "保存中…" else "保存为新版本")
+                }
             }
 
             if (state.revisions.size > 1) {
@@ -212,8 +227,18 @@ private fun RecordDetailScreen(
             item {
                 HorizontalDivider()
                 Text(RevisionDescriptions.DELETE_AUDIO_NOTICE)
-                OutlinedButton(onClick = viewModel::deleteAudioOnly, enabled = state.record?.audio != null) {
-                    Text(if (state.record?.audio != null) "仅删除本地音频（保留文字）" else "本地音频已删除")
+                if (state.record?.audio == null) {
+                    OutlinedButton(onClick = {}, enabled = false) { Text("本地音频已删除") }
+                } else if (!confirmingDeleteAudio) {
+                    OutlinedButton(onClick = { confirmingDeleteAudio = true }) { Text("仅删除本地音频（保留文字）") }
+                } else {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = {
+                            confirmingDeleteAudio = false
+                            viewModel.deleteAudioOnly()
+                        }) { Text("确认仅删除音频") }
+                        OutlinedButton(onClick = { confirmingDeleteAudio = false }) { Text("取消") }
+                    }
                 }
                 HorizontalDivider()
                 Text(state.deleteRecordNotice)
@@ -234,22 +259,34 @@ private fun RecordDetailScreen(
 }
 
 @Composable
-private fun ExportHandler(pending: PreparedExport?, onConsumed: () -> Unit) {
+private fun ExportHandler(pending: PreparedExport?, onConsumed: () -> Unit, onFailed: () -> Unit) {
     val context = LocalContext.current
-    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
+    val scope = rememberCoroutineScope()
+    val writeResult: (android.net.Uri?) -> Unit = { uri ->
         val current = pending
-        if (uri != null && current != null) {
-            try {
-                context.contentResolver.openOutputStream(uri)?.use { out ->
-                    out.write(current.content.toByteArray(Charsets.UTF_8))
+        if (uri == null || current == null) {
+            onConsumed()
+        } else {
+            scope.launch {
+                val ok = withContext(Dispatchers.IO) {
+                    try {
+                        val stream = context.contentResolver.openOutputStream(uri) ?: return@withContext false
+                        stream.use { it.write(current.content.toByteArray(Charsets.UTF_8)) }
+                        true
+                    } catch (_: Exception) {
+                        false
+                    }
                 }
-            } catch (_: Exception) {
-                // 写入失败时不记正文日志
+                if (ok) onConsumed() else onFailed()
             }
         }
-        onConsumed()
     }
+    val txtLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(ExportFormat.TXT.mimeType), writeResult)
+    val mdLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(ExportFormat.MARKDOWN.mimeType), writeResult)
     LaunchedEffect(pending) {
-        if (pending != null) launcher.launch(pending.fileName)
+        if (pending != null) {
+            if (pending.mimeType == ExportFormat.MARKDOWN.mimeType) mdLauncher.launch(pending.fileName)
+            else txtLauncher.launch(pending.fileName)
+        }
     }
 }

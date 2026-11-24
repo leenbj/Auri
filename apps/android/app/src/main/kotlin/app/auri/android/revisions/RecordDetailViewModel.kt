@@ -21,8 +21,10 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 data class RecordDetailUiState(
+    val loaded: Boolean = false,
     val record: RecordEntry? = null,
     val deleted: Boolean = false,
+    val saving: Boolean = false,
     val revisions: List<Revision> = emptyList(),
     val draftText: String = "",
     val editError: EditError? = null,
@@ -44,6 +46,8 @@ class RecordDetailViewModel(
     private val scope: CoroutineScope,
 ) : ViewModel() {
     private data class LocalState(
+        val loaded: Boolean = false,
+        val saving: Boolean = false,
         val draftText: String = "",
         val draftInitialized: Boolean = false,
         val editError: EditError? = null,
@@ -60,8 +64,10 @@ class RecordDetailViewModel(
         val revisions = entry?.revisions.orEmpty()
         val draft = if (ui.draftInitialized) ui.draftText else (revisions.lastOrNull()?.text.orEmpty())
         RecordDetailUiState(
+            loaded = ui.loaded || entry != null,
             record = entry,
             deleted = ui.deleted,
+            saving = ui.saving,
             revisions = revisions,
             draftText = draft,
             editError = ui.editError,
@@ -76,9 +82,12 @@ class RecordDetailViewModel(
             val isDeleted = library.isDeleted(recordId)
             val entry = library.get(recordId)
             val latest = entry?.revisions?.lastOrNull()
-            local.value = local.value.copy(
+            val cur = local.value
+            // OCR #5：若用户在初始化完成前已开始输入草稿，不得用旧正文覆盖用户输入
+            local.value = cur.copy(
+                loaded = true,
                 deleted = isDeleted,
-                draftText = latest?.text.orEmpty(),
+                draftText = if (cur.draftInitialized) cur.draftText else latest?.text.orEmpty(),
                 draftInitialized = true,
             )
             if (latest != null && latest.number > 1) {
@@ -92,32 +101,39 @@ class RecordDetailViewModel(
         local.value = local.value.copy(draftText = text, draftInitialized = true, editError = null)
     }
 
-    /** 保存修订：产生新的不可变 Revision，默认不自动重发，并刷新收到过旧版本的目的地列表。 */
+    /** 保存修订：产生新的不可变 Revision，默认不自动重发，并刷新收到过旧版本的目的地列表。带保存中防重入（OCR #26）。 */
     fun saveEdit() {
+        if (local.value.saving) return
         val text = state.value.draftText
+        local.value = local.value.copy(saving = true, editError = null)
         scope.launch {
-            when (val outcome = service.saveEdit(recordId, text)) {
-                is EditOutcome.Saved -> {
-                    local.value = local.value.copy(
-                        draftText = outcome.revision.text,
-                        draftInitialized = true,
-                        editError = null,
-                        notice = "已保存为第 ${outcome.revision.number} 版（未自动重发）",
-                    )
-                    refreshRecipients(automatic = true)
-                }
+            try {
+                when (val outcome = service.saveEdit(recordId, text)) {
+                    is EditOutcome.Saved -> {
+                        local.value = local.value.copy(
+                            saving = false,
+                            draftText = outcome.revision.text,
+                            draftInitialized = true,
+                            editError = null,
+                            notice = "已保存为第 ${outcome.revision.number} 版（未自动重发）",
+                        )
+                        refreshRecipients(automatic = true)
+                    }
 
-                is EditOutcome.Invalid -> {
-                    local.value = local.value.copy(editError = outcome.error)
-                }
+                    is EditOutcome.Invalid -> {
+                        local.value = local.value.copy(saving = false, editError = outcome.error)
+                    }
 
-                EditOutcome.RecordDeleted -> {
-                    local.value = local.value.copy(deleted = true, notice = "这条记录已被删除，无法保存修订")
-                }
+                    EditOutcome.RecordDeleted -> {
+                        local.value = local.value.copy(saving = false, deleted = true, notice = "这条记录已被删除，无法保存修订")
+                    }
 
-                EditOutcome.RecordNotFound -> {
-                    local.value = local.value.copy(notice = "找不到这条记录")
+                    EditOutcome.RecordNotFound -> {
+                        local.value = local.value.copy(saving = false, notice = "找不到这条记录")
+                    }
                 }
+            } catch (_: Exception) {
+                local.value = local.value.copy(saving = false, notice = "保存失败，请重试")
             }
         }
     }
@@ -170,6 +186,10 @@ class RecordDetailViewModel(
 
     fun consumeExport() {
         local.value = local.value.copy(pendingExport = null)
+    }
+
+    fun reportExportFailed() {
+        local.value = local.value.copy(pendingExport = null, notice = "导出文件写入失败，请重试")
     }
 
     fun dismissNotice() {
