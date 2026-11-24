@@ -4,7 +4,9 @@ import app.auri.sync.SyncLog
 import app.auri.sync.destinations.Choice
 import app.auri.sync.destinations.DecideResult
 import app.auri.sync.destinations.DispatchStore
+import app.auri.sync.destinations.ResendResult
 import app.auri.sync.engine.JobKey
+import app.auri.sync.gateway.Intent
 import java.time.Instant
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -98,4 +100,7 @@ class WakeAheadDispatchStore(private val inner: DispatchStore, private val wakes
         } else {
             inner.decide(key, destinationId, choice, now)
         }
+
+    override suspend fun requestResend(key: JobKey, destinationId: String, intent: Intent, now: Instant): ResendResult =
+        wakes.ahead { inner.requestResend(key, destinationId, intent, now) } ?: ResendResult.WakeUnavailable
 }

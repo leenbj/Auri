@@ -7,6 +7,7 @@ import app.auri.sync.destinations.DispatchItem
 import app.auri.sync.destinations.DispatchTarget
 import app.auri.sync.destinations.GatewayDelivery
 import app.auri.sync.destinations.IntentResult
+import app.auri.sync.destinations.ResendResult
 import app.auri.sync.destinations.TargetDecision
 import app.auri.sync.engine.DeliveryAddition
 import app.auri.sync.engine.JobKey
@@ -207,6 +208,46 @@ class DispatchSql(private val sql: SqlDb) {
             TargetDecision.AWAITING.name,
         )
         DecideResult.Decided
+    }
+
+    fun requestResend(key: JobKey, destinationId: String, intent: Intent, now: Instant): ResendResult = sql.transaction {
+        val destination = destinationsById()[destinationId] ?: return@transaction ResendResult.NotEligible
+        if (!destination.receivesNewText || !destination.allows(intent)) return@transaction ResendResult.NotEligible
+        val existingItem = item(key)
+        if (existingItem == null) {
+            sql.update(
+                "INSERT OR IGNORE INTO dispatch_items (record_id, revision, intent, created_at_s, created_at_nano, intent_locked) VALUES (?, ?, ?, ?, ?, 0)",
+                key.recordId,
+                key.revision,
+                intent.wire,
+                now.epochSecond,
+                now.nano,
+            )
+        }
+        val existingTarget = existingItem?.targets?.firstOrNull { it.destinationId == destinationId }
+        if (existingTarget != null) {
+            if (existingTarget.decision == TargetDecision.AUTO || existingTarget.decision == TargetDecision.CONFIRMED) {
+                return@transaction ResendResult.AlreadyRequested
+            }
+            if (existingTarget.delivery == GatewayDelivery.REFUSED) return@transaction ResendResult.NotEligible
+            sql.update(
+                "UPDATE dispatch_targets SET decision = ? WHERE record_id = ? AND revision = ? AND destination_id = ?",
+                TargetDecision.CONFIRMED.name,
+                key.recordId,
+                key.revision,
+                destinationId,
+            )
+        } else {
+            sql.update(
+                "INSERT INTO dispatch_targets (record_id, revision, destination_id, send_mode, decision) VALUES (?, ?, ?, ?, ?)",
+                key.recordId,
+                key.revision,
+                destinationId,
+                destination.sendMode.wire,
+                TargetDecision.CONFIRMED.name,
+            )
+        }
+        ResendResult.Requested
     }
 
     fun setIntent(key: JobKey, intent: Intent, now: Instant): IntentResult = sql.transaction {

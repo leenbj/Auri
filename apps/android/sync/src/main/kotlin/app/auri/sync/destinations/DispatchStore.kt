@@ -94,6 +94,21 @@ sealed interface DecideResult {
     data object WakeUnavailable : DecideResult
 }
 
+/** 用户显式确认把一个新 Revision 重发给某个 Destination 的结果（FR-TXT-002）。 */
+sealed interface ResendResult {
+    /** 已记下重发请求：该新版本尚未入库时随 PUT 发出，已入库则由同步引擎追加 Delivery。 */
+    data object Requested : ResendResult
+
+    /** 已经为这个 Revision 与 Destination 请求过发送（幂等，不重复建）。 */
+    data object AlreadyRequested : ResendResult
+
+    /** Destination 不在缓存、已撤销、已暂停或不接收该意图。 */
+    data object NotEligible : ResendResult
+
+    /** 系统拒绝登记后台叫醒，未落账（同 [DecideResult.WakeUnavailable]）。 */
+    data object WakeUnavailable : ResendResult
+}
+
 sealed interface IntentResult {
     data object Changed : IntentResult
 
@@ -148,6 +163,12 @@ interface DispatchStore : PublicationSource, DeliveryAdditions {
 
     /** 用户对一个预览确认目标做决定。持久、幂等：见 [DecideResult]。 */
     suspend fun decide(key: JobKey, destinationId: String, choice: Choice, now: Instant): DecideResult
+
+    /**
+     * 用户显式确认把指定 Revision 重发给指定 Destination（FR-TXT-002：新 Revision 默认不自动重发，由用户逐个确认）。
+     * 持久、幂等；写入后该目标成为 [TargetDecision.CONFIRMED]（网关已入库时由追加端点补建 Delivery，并由网关取消更旧的未领取 Delivery）。
+     */
+    suspend fun requestResend(key: JobKey, destinationId: String, intent: Intent, now: Instant): ResendResult
 
     /** 改这条文字的意图标签。只在它还没冻结（引擎还没开始为它构造提交）时可以改。 */
     suspend fun setIntent(key: JobKey, intent: Intent, now: Instant): IntentResult

@@ -241,4 +241,74 @@ class RealGatewayRevisionsAndDeleteTest {
         assertEquals(410, (attempt as GatewayResult.Rejected).status)
         assertEquals(ErrorCode.RECORD_DELETED, attempt.code)
     }
+
+    @Test
+    fun `保存修订产生新 Revision 且不自动重发；逐个确认重发后只给目标建 Delivery 并取消其未领取的旧版本`() = runBlocking {
+        val gateway = RealGateway(folder.newFolder("gw-revisions")).tracked().start()
+        val phone = Phone()
+        phone.pairWith(gateway.pairingPayloadJson())
+
+        // 两个自动发送 Destination：代理 A 与代理 B
+        val destA = (phone.service.create(CreateDestinationRequest("代理A", SendMode.AUTO_SEND, setOf(Intent.CONTEXT))) as ServiceResult.Ok).value
+        val destB = (phone.service.create(CreateDestinationRequest("代理B", SendMode.AUTO_SEND, setOf(Intent.CONTEXT))) as ServiceResult.Ok).value
+        phone.authenticator.next = AuthResult.Authenticated
+        val credA = (phone.service.issueCredential(destA.destinationId) as CredentialOutcome.Issued).credential.credential.reveal()
+        phone.authenticator.next = AuthResult.Authenticated
+        val credB = (phone.service.issueCredential(destB.destinationId) as CredentialOutcome.Issued).credential.credential.reveal()
+
+        // 初稿 rev 1 自动发送给 A 和 B
+        val key1 = phone.transcribed("初稿文字")
+        phone.engine.runOnce()
+
+        val agentA = RealAgent(gateway, credA)
+        val agentB = RealAgent(gateway, credB)
+        // A 领取并确认 rev 1；B 尚未领取 rev 1
+        val claimedA1 = agentA.claim().payload["deliveries"]!!.jsonArray
+        assertEquals(1, claimedA1.size)
+        val delivA1 = claimedA1[0].jsonObject
+        agentA.ack(
+            delivA1["delivery_id"]!!.toString().trim('"'),
+            delivA1["lease_token"]!!.toString().trim('"'),
+        )
+
+        // 用户改字保存产生 rev 2（USER_EDIT / REVIEWED）
+        val revService = app.auri.sync.revisions.RecordRevisionService(
+            library = phone.library,
+            dispatch = phone.fixture.store,
+            pairing = phone.store,
+            http = phone.http,
+            locator = GatewayLocator(phone.http, NoDiscovery, phone.log),
+            policy = phone.policy,
+            clock = RealClock,
+            log = phone.log,
+        )
+        val saved = revService.saveEdit(key1.recordId, "修订后的第二版文字")
+        assertTrue(saved is app.auri.sync.revisions.EditOutcome.Saved)
+        val rev2 = (saved as app.auri.sync.revisions.EditOutcome.Saved).revision
+        assertEquals(2, rev2.number)
+        // 模拟 Android SqliteRecordLibrary 的 publicationStep：新 Revision 入队但不自动规划目标
+        phone.fixture.publish(JobKey(key1.recordId, rev2.number), rev2.source, rev2.createdAt)
+
+        // 同步：rev 2 入库到网关，但绝不自动重发给 A 或 B
+        phone.engine.runOnce()
+        val claimedA2Before = agentA.claim().payload["deliveries"]!!.jsonArray
+        assertTrue("新 Revision 绝不自动重发给 A", claimedA2Before.isEmpty())
+
+        // 查询收到过旧版本的 Destination：A 已确认 rev 1，B 已入库 rev 1
+        val older = revService.olderVersionRecipients(key1.recordId, latestRevision = 2)
+        assertEquals(setOf(destA.destinationId, destB.destinationId), older.map { it.destinationId }.toSet())
+
+        // 用户只确认重发 rev 2 给 B（不重发给 A）
+        assertEquals(
+            app.auri.sync.destinations.ResendResult.Requested,
+            revService.confirmResend(key1.recordId, 2, destB.destinationId),
+        )
+        phone.engine.runOnce()
+
+        // B 领取：只领到 rev 2（B 之前未领取的 rev 1 已被网关自动取消），A 仍然领不到 rev 2
+        val claimedB = agentB.claim().payload["deliveries"]!!.jsonArray
+        assertEquals("B 只应领到重发的 rev 2（旧未领取 rev 1 已被取代取消）", 1, claimedB.size)
+        assertEquals("2", claimedB[0].jsonObject["revision"]!!.toString())
+        assertTrue("A 未经确认，不应收到 rev 2", agentA.claim().payload["deliveries"]!!.jsonArray.isEmpty())
+    }
 }

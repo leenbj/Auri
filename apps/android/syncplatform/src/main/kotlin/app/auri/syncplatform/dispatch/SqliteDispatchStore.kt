@@ -8,6 +8,7 @@ import app.auri.sync.destinations.DecideResult
 import app.auri.sync.destinations.DispatchItem
 import app.auri.sync.destinations.DispatchStore
 import app.auri.sync.destinations.IntentResult
+import app.auri.sync.destinations.ResendResult
 import app.auri.sync.engine.DeliveryAddition
 import app.auri.sync.engine.JobKey
 import app.auri.sync.engine.Refusal
@@ -62,6 +63,9 @@ class SqliteDispatchStore(private val library: SqliteRecordLibrary) : DispatchSt
 
     override suspend fun decide(key: JobKey, destinationId: String, choice: Choice, now: Instant): DecideResult =
         write { decide(key, destinationId, choice, now) }
+
+    override suspend fun requestResend(key: JobKey, destinationId: String, intent: Intent, now: Instant): ResendResult =
+        write { requestResend(key, destinationId, intent, now) }
 
     override suspend fun setIntent(key: JobKey, intent: Intent, now: Instant): IntentResult = write { setIntent(key, intent, now) }
 

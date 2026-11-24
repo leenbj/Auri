@@ -8,6 +8,7 @@ import app.auri.sync.destinations.DispatchStore
 import app.auri.sync.destinations.DispatchTarget
 import app.auri.sync.destinations.GatewayDelivery
 import app.auri.sync.destinations.IntentResult
+import app.auri.sync.destinations.ResendResult
 import app.auri.sync.destinations.TargetDecision
 import app.auri.sync.engine.DeliveryAddition
 import app.auri.sync.engine.JobKey
@@ -105,6 +106,26 @@ class InMemoryDispatchStore(private val disk: InMemoryDispatchDisk) : DispatchSt
         row.decision = if (choice == Choice.CONFIRM) TargetDecision.CONFIRMED else TargetDecision.SKIPPED
         bump()
         DecideResult.Decided
+    }
+
+    override suspend fun requestResend(key: JobKey, destinationId: String, intent: Intent, now: Instant): ResendResult = disk.lock.withLock {
+        val destination = disk.cache[destinationId] ?: return@withLock ResendResult.NotEligible
+        if (!destination.receivesNewText || !destination.allows(intent)) return@withLock ResendResult.NotEligible
+        val item = disk.items.getOrPut(key) {
+            InMemoryDispatchDisk.Item(intent = intent, createdAt = now, order = ++disk.nextOrder, intentLocked = false)
+        }
+        val existing = item.rows[destinationId]
+        if (existing != null) {
+            if (existing.decision == TargetDecision.AUTO || existing.decision == TargetDecision.CONFIRMED) {
+                return@withLock ResendResult.AlreadyRequested
+            }
+            if (existing.delivery == GatewayDelivery.REFUSED) return@withLock ResendResult.NotEligible
+            existing.decision = TargetDecision.CONFIRMED
+        } else {
+            item.rows[destinationId] = InMemoryDispatchDisk.Row(destination.sendMode, TargetDecision.CONFIRMED)
+        }
+        bump()
+        ResendResult.Requested
     }
 
     override suspend fun setIntent(key: JobKey, intent: Intent, now: Instant): IntentResult = disk.lock.withLock {
