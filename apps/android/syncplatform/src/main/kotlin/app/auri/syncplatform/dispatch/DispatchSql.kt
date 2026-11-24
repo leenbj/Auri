@@ -211,25 +211,18 @@ class DispatchSql(private val sql: SqlDb) {
     }
 
     fun requestResend(key: JobKey, destinationId: String, intent: Intent, now: Instant): ResendResult = sql.transaction {
-        val destination = destinationsById()[destinationId] ?: return@transaction ResendResult.NotEligible
-        if (!destination.receivesNewText || !destination.allows(intent)) return@transaction ResendResult.NotEligible
+        val hasJob = sql.query("SELECT 1 FROM sync_jobs WHERE record_id = ? AND revision = ?", key.recordId, key.revision) { 1 }.isNotEmpty()
+        if (!hasJob) return@transaction ResendResult.NotEligible
         val existingItem = item(key)
-        if (existingItem == null) {
-            sql.update(
-                "INSERT OR IGNORE INTO dispatch_items (record_id, revision, intent, created_at_s, created_at_nano, intent_locked) VALUES (?, ?, ?, ?, ?, 0)",
-                key.recordId,
-                key.revision,
-                intent.wire,
-                now.epochSecond,
-                now.nano,
-            )
-        }
+        val effectiveIntent = existingItem?.intent ?: intent
+        val destination = destinationsById()[destinationId] ?: return@transaction ResendResult.NotEligible
+        if (!destination.receivesNewText || !destination.allows(effectiveIntent)) return@transaction ResendResult.NotEligible
         val existingTarget = existingItem?.targets?.firstOrNull { it.destinationId == destinationId }
         if (existingTarget != null) {
+            if (existingTarget.delivery == GatewayDelivery.REFUSED) return@transaction ResendResult.NotEligible
             if (existingTarget.decision == TargetDecision.AUTO || existingTarget.decision == TargetDecision.CONFIRMED) {
                 return@transaction ResendResult.AlreadyRequested
             }
-            if (existingTarget.delivery == GatewayDelivery.REFUSED) return@transaction ResendResult.NotEligible
             sql.update(
                 "UPDATE dispatch_targets SET decision = ? WHERE record_id = ? AND revision = ? AND destination_id = ?",
                 TargetDecision.CONFIRMED.name,
@@ -238,6 +231,16 @@ class DispatchSql(private val sql: SqlDb) {
                 destinationId,
             )
         } else {
+            if (existingItem == null) {
+                sql.update(
+                    "INSERT OR IGNORE INTO dispatch_items (record_id, revision, intent, created_at_s, created_at_nano, intent_locked) VALUES (?, ?, ?, ?, ?, 0)",
+                    key.recordId,
+                    key.revision,
+                    effectiveIntent.wire,
+                    now.epochSecond,
+                    now.nano,
+                )
+            }
             sql.update(
                 "INSERT INTO dispatch_targets (record_id, revision, destination_id, send_mode, decision) VALUES (?, ?, ?, ?, ?)",
                 key.recordId,

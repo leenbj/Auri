@@ -109,19 +109,21 @@ class InMemoryDispatchStore(private val disk: InMemoryDispatchDisk) : DispatchSt
     }
 
     override suspend fun requestResend(key: JobKey, destinationId: String, intent: Intent, now: Instant): ResendResult = disk.lock.withLock {
+        if (jobs.get(key) == null) return@withLock ResendResult.NotEligible
+        val existingItem = disk.items[key]
+        val effectiveIntent = existingItem?.intent ?: intent
         val destination = disk.cache[destinationId] ?: return@withLock ResendResult.NotEligible
-        if (!destination.receivesNewText || !destination.allows(intent)) return@withLock ResendResult.NotEligible
-        val item = disk.items.getOrPut(key) {
-            InMemoryDispatchDisk.Item(intent = intent, createdAt = now, order = ++disk.nextOrder, intentLocked = false)
-        }
-        val existing = item.rows[destinationId]
-        if (existing != null) {
-            if (existing.decision == TargetDecision.AUTO || existing.decision == TargetDecision.CONFIRMED) {
+        if (!destination.receivesNewText || !destination.allows(effectiveIntent)) return@withLock ResendResult.NotEligible
+        val existingTarget = existingItem?.rows?.get(destinationId)
+        if (existingTarget != null) {
+            if (existingTarget.delivery == GatewayDelivery.REFUSED) return@withLock ResendResult.NotEligible
+            if (existingTarget.decision == TargetDecision.AUTO || existingTarget.decision == TargetDecision.CONFIRMED) {
                 return@withLock ResendResult.AlreadyRequested
             }
-            if (existing.delivery == GatewayDelivery.REFUSED) return@withLock ResendResult.NotEligible
-            existing.decision = TargetDecision.CONFIRMED
+            existingTarget.decision = TargetDecision.CONFIRMED
         } else {
+            val item = existingItem ?: InMemoryDispatchDisk.Item(intent = effectiveIntent, createdAt = now, order = ++disk.nextOrder, intentLocked = false)
+                .also { disk.items[key] = it }
             item.rows[destinationId] = InMemoryDispatchDisk.Row(destination.sendMode, TargetDecision.CONFIRMED)
         }
         bump()
