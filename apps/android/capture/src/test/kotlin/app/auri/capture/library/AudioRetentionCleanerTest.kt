@@ -76,4 +76,29 @@ class AudioRetentionCleanerTest {
         assertNull(library.get(entry.recordId)!!.audio)
         assertEquals(2, library.get(entry.recordId)!!.revisions.size)
     }
+
+    @Test
+    fun `单条音频文件删除失败或库清理异常计入 failedCount 且不中断后续过期记录清理`() = runBlocking {
+        val base = Instant.parse("2026-10-01T00:00:00Z")
+        val e1 = Samples.entry(1, startedAt = base)
+        val e2 = Samples.entry(2, startedAt = base)
+        val inner = InMemoryRecordLibrary()
+        inner.addRecord(e1)
+        inner.addRecord(e2)
+        inner.publishRevision(Samples.draft(e1.recordId, text = "一").copy(createdAt = base))
+        inner.publishRevision(Samples.draft(e2.recordId, text = "二").copy(createdAt = base))
+        val flaky = object : RecordLibrary by inner {
+            override suspend fun deleteAudio(recordId: String): Boolean {
+                if (recordId == e1.recordId) throw IllegalStateException("disk busy")
+                return inner.deleteAudio(recordId)
+            }
+        }
+
+        val cleaner = AudioRetentionCleaner(flaky, deleteFile = { true })
+        val report = cleaner.purgeExpired(now = base.plus(Duration.ofDays(31)), retentionDays = 30)
+
+        assertEquals(1, report.purgedCount)
+        assertEquals(1, report.failedCount)
+        assertNull("第二条不受第一条异常影响，正常清理", inner.get(e2.recordId)!!.audio)
+    }
 }

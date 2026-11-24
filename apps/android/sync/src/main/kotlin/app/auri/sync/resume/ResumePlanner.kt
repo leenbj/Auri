@@ -66,13 +66,21 @@ class ResumePlanner(
     private val log: SyncLog = SyncLog.None,
     private val additionsOwed: suspend () -> Boolean = { false },
     private val additionsChanged: Flow<*> = emptyFlow<Unit>(),
+    private val deletionsOwed: suspend () -> Boolean = { false },
+    private val deletionsChanged: Flow<*> = emptyFlow<Unit>(),
     private val gate: WakeGate = WakeGate(scheduler, log),
     private val currentNeed: (suspend () -> Boolean)? = null,
 ) {
     fun start(scope: CoroutineScope): Job = scope.restartingProducer("resume", log, clock, retry) {
-        combine(pairing, jobs, policy, additionsChanged.onStart { emit(Unit) }) { pairingState, list, dataFlow, _ -> Triple(pairingState, list, dataFlow) }
+        combine(
+            pairing,
+            jobs,
+            policy,
+            additionsChanged.onStart { emit(Unit) },
+            deletionsChanged.onStart { emit(Unit) },
+        ) { pairingState, list, dataFlow, _, _ -> Triple(pairingState, list, dataFlow) }
             .collect { (pairingState, list, dataFlow) ->
-                gate.reconcile { currentNeed?.invoke() ?: needsResume(pairingState, list, dataFlow, additionsOwed()) }
+                gate.reconcile { currentNeed?.invoke() ?: needsResume(pairingState, list, dataFlow, additionsOwed(), deletionsOwed()) }
             }
     }
 }

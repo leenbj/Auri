@@ -161,6 +161,8 @@ class SyncRuntime(
         log = log,
         additionsOwed = { dispatch.due().isNotEmpty() },
         additionsChanged = dispatch.changes(),
+        deletionsOwed = { deletions.pending().isNotEmpty() },
+        deletionsChanged = deletions.changes(),
         gate = wakes,
         // 第四轮 F4：结论在门的锁里按磁盘上的账现算，流只当“有东西变了”的提示（流里的快照可能是在门外排队时读到的旧值）
         currentNeed = { resumeNeededNow() },

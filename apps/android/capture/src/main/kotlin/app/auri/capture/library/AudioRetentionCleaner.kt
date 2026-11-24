@@ -40,7 +40,14 @@ class AudioRetentionCleaner(
                 false
             }
             if (fileRemoved) {
-                if (library.deleteAudio(entry.recordId)) purged += 1
+                val cleared = try {
+                    library.deleteAudio(entry.recordId)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (_: Exception) {
+                    false
+                }
+                if (cleared) purged += 1 else failed += 1
             } else {
                 failed += 1
             }
