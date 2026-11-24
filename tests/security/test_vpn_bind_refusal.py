@@ -66,9 +66,9 @@ def test_tailscale_ula_is_never_classified_as_lan_and_explicit_bind_is_refused()
 @pytest.mark.parametrize(
     ("vpn_ip", "expected_iface"),
     [
-        ("fd00:abcd::1", "utun12"),
-        ("10.8.0.2", "wg0"),
-        ("172.16.99.5", "tun0"),
+        pytest.param("fd00:abcd::1", "utun12", id="utun12"),
+        pytest.param("10.8.0.2", "wg0", id="wg0"),
+        pytest.param("172.16.99.5", "tun0", id="tun0"),
     ],
 )
 def test_explicit_bind_refuses_ip_assigned_to_tunnel_or_vpn_interface(

@@ -3001,14 +3001,14 @@ MUTATIONS: tuple = (
         "第四轮 F9（网关）：显式 --host 绑定属于隧道/VPN 接口的 IP 必须被拒绝：跳过接口检查后，显式绑定 utun/wg/tun 的地址会被放行",
         (Edit(GATEWAY_NETWORK, "            tunnel_iface = _tunnel_interface_for_ip(canonical, adapters)\n", "            tunnel_iface = None\n"),),
         gateway_tests(VPN_BIND_TESTS), GATEWAY_RESULTS,
-        ("test_explicit_bind_refuses_ip_assigned_to_tunnel_or_vpn_interface[fd00:abcd::1-utun12]",),
+        ("test_explicit_bind_refuses_ip_assigned_to_tunnel_or_vpn_interface[utun12]",),
     ),
     Mutation(
         "r4f9-gw-tunnel-name-pattern-disabled",
         "第四轮 F9（网关）：隧道/VPN 接口名识别必须生效：恒返回 False 后，自动发现与显式绑定都会放行 VPN 网卡",
         (Edit(GATEWAY_NETWORK, '    return any(_is_tunnel_name(label) for label in (getattr(adapter, "name", ""), getattr(adapter, "nice_name", "")))\n', "    return False\n"),),
         gateway_tests(VPN_BIND_TESTS), GATEWAY_RESULTS,
-        ("test_default_discovery_skips_tunnel_and_vpn_interfaces_even_with_ula_or_rfc1918_ips", "test_explicit_bind_refuses_ip_assigned_to_tunnel_or_vpn_interface[10.8.0.2-wg0]"),
+        ("test_default_discovery_skips_tunnel_and_vpn_interfaces_even_with_ula_or_rfc1918_ips", "test_explicit_bind_refuses_ip_assigned_to_tunnel_or_vpn_interface[wg0]"),
     ),
 )
 
