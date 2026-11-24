@@ -52,16 +52,24 @@ class AndroidClipboardPort(context: Context) : ClipboardPort {
         clip.description.extras = PersistableBundle().apply { putBoolean(EXTRA_IS_SENSITIVE, true) }
         // 先摘旧的监听、记摘要
         ownership.remember(secret, at)
-        clipboard?.setPrimaryClip(clip)
+        try {
+            clipboard?.setPrimaryClip(clip)
+        } catch (_: Exception) {
+            return ownership.forget()
+        }
         // 放进去**之后**才登记：系统在放入那次调用里把变化排给当时已登记的监听者，先登记的话自己放的那一下会回调回来
         ownership.startWatching()
     }
 
-    // 读不了（不在前台）与剪贴板是空的，系统都返回 null：都算读不了；整份剪贴板的形状与内容要与放进去时一样才认
+    // 读不了（不在前台、权限受限抛异常由 ClipOwnership.classifyClip 兜住）与剪贴板是空的，都按读不了处理（绝不误清、绝不崩生命周期回调）
     override fun peek(): ClipboardPeek = ownership.classifyClip { clipboard?.primaryClip?.snapshot() }
 
     override fun clear() {
-        clipboard?.clearPrimaryClip() // API 28 起有；应用 minSdk 31
+        try {
+            clipboard?.clearPrimaryClip() // API 28 起有；应用 minSdk 31
+        } catch (_: Exception) {
+            // 受限设备清剪贴板失败时不得崩在生命周期回调里
+        }
         // 摘监听、忘摘要
         ownership.forget()
     }

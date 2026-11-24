@@ -102,4 +102,14 @@ class ClipboardWiringTest {
 
         assertTrue("minSdk=$minSdk 低于 28：AndroidClipboardPort.clear 要先补上没有 clearPrimaryClip 时的做法（放一段空文字顶掉）", minSdk >= 28)
     }
+
+    @Test
+    fun `OCR M12：真机剪贴板适配器的 put 与 clear 必须兜住平台异常（peek 由 classifyClip 兜住），防止生命周期回调崩溃`() {
+        val port = SourceText.withoutCommentsAndStrings(main("ui/SecretWindow.kt"))
+        val put = port.substringAfter("override fun put(").substringBefore("override fun peek")
+        val clear = port.substringAfter("override fun clear").substringBefore("private class AndroidClipChanges")
+
+        assertTrue("put 里的 setPrimaryClip 必须兜住异常：$put", "try {" in put && "catch (" in put)
+        assertTrue("clear 里的 clearPrimaryClip 必须兜住异常：$clear", "try {" in clear && "catch (" in clear)
+    }
 }

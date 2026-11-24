@@ -3045,6 +3045,36 @@ MUTATIONS: tuple = (
         platform_tests("BiometricGateTest"), PLATFORM_RESULTS,
         ("OCR M21：AndroidBiometricFramework 调 authenticate 必须兜住异常",),
     ),
+    Mutation(
+        "r4ocr-m12-ownership-lets-read-throw",
+        "第四轮 OCR M12：ClipOwnership.classifyClip 必须兜住读剪贴板抛出的异常并回 Unreadable：去掉 catch 后 SecurityException 会从生命周期回调逃逸崩溃",
+        (Edit(
+            CLIP_OWNERSHIP,
+            "        val clip = try {\n"
+            "            read()\n"
+            "        } catch (_: Exception) {\n"
+            "            return ClipboardPeek.Unreadable\n"
+            "        }\n",
+            "        val clip = read()\n",
+        ),),
+        app_tests("ClipOwnershipTest"), APP_RESULTS,
+        ("OCR M12：读剪贴板抛 SecurityException 时不崩溃",),
+    ),
+    Mutation(
+        "r4ocr-m12-clipboard-port-unguarded-clear",
+        "第四轮 OCR M12（接线守卫）：AndroidClipboardPort.clear 必须兜住 ClipboardManager 异常：去掉 try/catch 后受限设备在 onPause/失焦清剪贴板时崩溃",
+        (Edit(
+            CLIPBOARD_PORT,
+            "        try {\n"
+            "            clipboard?.clearPrimaryClip() // API 28 起有；应用 minSdk 31\n"
+            "        } catch (_: Exception) {\n"
+            "            // 受限设备清剪贴板失败时不得崩在生命周期回调里\n"
+            "        }\n",
+            "        clipboard?.clearPrimaryClip() // API 28 起有；应用 minSdk 31\n",
+        ),),
+        app_tests("ClipboardWiringTest"), APP_RESULTS,
+        ("OCR M12：真机剪贴板适配器的 put 与 clear 必须兜住平台异常",),
+    ),
 )
 
 base.MUTATIONS = MUTATIONS

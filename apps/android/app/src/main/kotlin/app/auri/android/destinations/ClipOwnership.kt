@@ -84,7 +84,11 @@ class ClipOwnership(private val events: ClipChangeEvents? = null) {
      */
     fun classifyClip(read: () -> ClipSnapshot?): ClipboardPeek {
         val ours = mine ?: return ClipboardPeek.Other
-        val clip = read()
+        val clip = try {
+            read()
+        } catch (_: Exception) {
+            return ClipboardPeek.Unreadable
+        }
         if (clip == null) {
             if (changed) {
                 forget() // 系统报过剪贴板变了：不是我们放的那一份了

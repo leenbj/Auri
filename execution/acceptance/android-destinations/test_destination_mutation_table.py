@@ -300,6 +300,10 @@ ROUND4_OCR = {
         "r4ocr-m21-biometric-gate-lets-error-escape",
         "r4ocr-m21-biometric-framework-unguarded-authenticate",
     ],
+    "OCR M12 剪贴板读写与清理兜住平台异常，防止生命周期回调崩溃": [
+        "r4ocr-m12-ownership-lets-read-throw",
+        "r4ocr-m12-clipboard-port-unguarded-clear",
+    ],
 }
 
 @pytest.mark.parametrize("item", list(ROUND4_OCR))

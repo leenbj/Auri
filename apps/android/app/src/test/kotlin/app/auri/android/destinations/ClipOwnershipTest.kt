@@ -217,4 +217,14 @@ class ClipOwnershipTest {
 
         assertEquals("凭证文字不许出现在对象里：$leaked", emptyList<String>(), leaked)
     }
+
+    @Test
+    fun `OCR M12：读剪贴板抛 SecurityException 时不崩溃，按读不了处理（绝不误清）`() {
+        val ownership = ClipOwnership()
+        ownership.remember(SECRET, at = 10L)
+
+        val peek = ownership.classifyClip { throw SecurityException("work profile denied") }
+
+        assertEquals(ClipboardPeek.Unreadable, peek)
+    }
 }
