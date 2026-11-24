@@ -7,6 +7,7 @@ import app.auri.sync.destinations.DispatchItem
 import app.auri.sync.destinations.DispatchTarget
 import app.auri.sync.destinations.GatewayDelivery
 import app.auri.sync.destinations.IntentResult
+import app.auri.sync.destinations.ResendResult
 import app.auri.sync.destinations.TargetDecision
 import app.auri.sync.engine.DeliveryAddition
 import app.auri.sync.engine.JobKey
@@ -209,6 +210,49 @@ class DispatchSql(private val sql: SqlDb) {
         DecideResult.Decided
     }
 
+    fun requestResend(key: JobKey, destinationId: String, intent: Intent, now: Instant): ResendResult = sql.transaction {
+        val hasJob = sql.query("SELECT 1 FROM sync_jobs WHERE record_id = ? AND revision = ?", key.recordId, key.revision) { 1 }.isNotEmpty()
+        if (!hasJob) return@transaction ResendResult.NotEligible
+        val existingItem = item(key)
+        val effectiveIntent = existingItem?.intent ?: intent
+        val destination = destinationsById()[destinationId] ?: return@transaction ResendResult.NotEligible
+        if (!destination.receivesNewText || !destination.allows(effectiveIntent)) return@transaction ResendResult.NotEligible
+        val existingTarget = existingItem?.targets?.firstOrNull { it.destinationId == destinationId }
+        if (existingTarget != null) {
+            if (existingTarget.delivery == GatewayDelivery.REFUSED) return@transaction ResendResult.NotEligible
+            if (existingTarget.decision == TargetDecision.AUTO || existingTarget.decision == TargetDecision.CONFIRMED) {
+                return@transaction ResendResult.AlreadyRequested
+            }
+            sql.update(
+                "UPDATE dispatch_targets SET decision = ? WHERE record_id = ? AND revision = ? AND destination_id = ?",
+                TargetDecision.CONFIRMED.name,
+                key.recordId,
+                key.revision,
+                destinationId,
+            )
+        } else {
+            if (existingItem == null) {
+                sql.update(
+                    "INSERT OR IGNORE INTO dispatch_items (record_id, revision, intent, created_at_s, created_at_nano, intent_locked) VALUES (?, ?, ?, ?, ?, 0)",
+                    key.recordId,
+                    key.revision,
+                    effectiveIntent.wire,
+                    now.epochSecond,
+                    now.nano,
+                )
+            }
+            sql.update(
+                "INSERT INTO dispatch_targets (record_id, revision, destination_id, send_mode, decision) VALUES (?, ?, ?, ?, ?)",
+                key.recordId,
+                key.revision,
+                destinationId,
+                destination.sendMode.wire,
+                TargetDecision.CONFIRMED.name,
+            )
+        }
+        ResendResult.Requested
+    }
+
     fun setIntent(key: JobKey, intent: Intent, now: Instant): IntentResult = sql.transaction {
         val item = item(key) ?: return@transaction IntentResult.NotFound
         if (item.intentLocked) return@transaction IntentResult.Locked
@@ -245,6 +289,16 @@ class DispatchSql(private val sql: SqlDb) {
                 )
             }
         }
+    }
+
+    /**
+     * 删除整条 Record 的同一事务里清理其待同步任务与发送账（FR-TXT-005）：
+     * 删除之后不再把该 Record 的旧 Revision 推给网关，也不再追加它的 Delivery。
+     */
+    fun deleteRecord(recordId: String) = sql.transaction<Unit> {
+        sql.update("DELETE FROM sync_jobs WHERE record_id = ?", recordId)
+        sql.update("DELETE FROM dispatch_targets WHERE record_id = ?", recordId)
+        sql.update("DELETE FROM dispatch_items WHERE record_id = ?", recordId)
     }
 
     // ---- 内部 ----

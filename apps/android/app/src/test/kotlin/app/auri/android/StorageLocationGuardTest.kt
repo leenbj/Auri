@@ -20,6 +20,7 @@ class StorageLocationGuardTest {
         Triple("app/src/main/kotlin/app/auri/android/AuriRuntime.kt", "modelsDir: File = File(application.filesDir", "Ticket 14 的调试布局默认值，产品转录不读它（模型权重不敏感）"),
         Triple("app/src/main/kotlin/app/auri/android/AuriRuntime.kt", "modelStoreRoot: File = application.filesDir", "模型管理器的根目录：下载的模型权重（公开文件，不敏感）"),
         Triple("app/src/main/kotlin/app/auri/android/AuriRuntime.kt", "DurationLimitSetting(File(application.filesDir", "Ticket 18 的录音时长上限：一个 1–120 的整数偏好设置，不敏感，随备份恢复无害"),
+        Triple("app/src/main/kotlin/app/auri/android/AuriRuntime.kt", "AudioRetentionSetting(File(application.filesDir", "Ticket 23 的音频保留期：一个 1–365 的整数偏好设置，不敏感，随备份恢复无害"),
         Triple("app/src/main/kotlin/app/auri/android/AuriRuntime.kt", "relocateRecordedAudio(File(application.filesDir", "录音目录的老位置（Ticket 19 评审 H1）：只用来把库里登记的位置改到新目录，不读不写里面的任何东西"),
         Triple("platform/src/main/kotlin/app/auri/platform/system/AndroidResourceMonitor.kt", "context.applicationContext.filesDir", "只量剩余空间，不存任何东西"),
     )

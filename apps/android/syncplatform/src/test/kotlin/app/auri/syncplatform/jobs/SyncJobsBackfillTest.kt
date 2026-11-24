@@ -201,6 +201,17 @@ class SyncJobsBackfillTest {
     }
 
     @Test
+    fun `已有删除墓碑的 Record 不会被回填复活待同步任务`() {
+        publish("record-alive", 1, 100)
+        publish("record-dead", 1, 101)
+        exec("INSERT INTO record_tombstones (record_id, deleted_at_s, deleted_at_nano, gateway_synced) VALUES ('record-dead', 200, 0, 0)")
+
+        open()
+
+        assertEquals(listOf("record-alive/1"), jobs().map { "${it.recordId}/${it.revision}" })
+    }
+
+    @Test
     fun `本机的库里还没有“已删除”与“来源设备”这两个概念：回填因此不排除任何 Revision，哪天加了列这里要变红`() {
         // 评审 F5 要求回填“不含已删除、来源是本机”的 Revision。现在：
         //  - 本库没有墓碑（删除是后续 Ticket 的事），也没有来源设备列：库里的 Record 全部由本机采集（ADR-0020，V1 没有导入路径；

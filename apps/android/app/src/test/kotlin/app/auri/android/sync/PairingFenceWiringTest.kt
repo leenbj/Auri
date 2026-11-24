@@ -38,7 +38,7 @@ class PairingFenceWiringTest {
         }
     }
 
-    private val ledgerWrites = Regex("""additions\.(useGateway|gatewayHas|refused)\(""")
+    private val ledgerWrites = Regex("""additions\.(useGateway|gatewayHas|refused)\(|deletions\.markSynced\(""")
 
     /** 结果驱动的任务转移（再评 S2）：这四个事件都是“网关（或连接）给了结论”才产生的，只许在 settle 的围栏里发。 */
     private val resultDrivenTransitions = Regex("""deliver\(key, (event|SyncEvent\.(STORED_CONFIRMED|VERSION_CONFLICT|KEY_MISMATCH|AUTH_REVOKED))\)""")
@@ -50,7 +50,7 @@ class PairingFenceWiringTest {
         val (outside, settles) = withoutBlocks(outsideFenced, "settle(gateway, key) {")
 
         assertTrue("围栏之外还有改账调用：${ledgerWrites.find(outside)?.value}", ledgerWrites.find(outside) == null)
-        assertEquals("fenced 围栏块数量不对（attempt 里换账本 1 处、追加里 3 处）", 4, fences)
+        assertEquals("fenced 围栏块数量不对（attempt 里换账本 1 处、追加里 3 处、删除同步里 3 处）", 7, fences)
         assertEquals("settle 围栏块数量不对（入库、等待、排重试、永久拒绝、连接问题各 1 处）", 5, settles)
         assertTrue("围栏必须是配对存储的 whileCurrent，不能是先判断后动作的两步", "pairing.whileCurrent(gateway, change) != null" in engine)
         assertTrue("settle 的围栏也必须是配对存储的 whileCurrent", "pairing.whileCurrent(gateway, outcome) ?: stale(key)" in engine)

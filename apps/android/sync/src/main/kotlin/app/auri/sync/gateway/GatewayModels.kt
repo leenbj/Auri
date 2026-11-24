@@ -70,6 +70,9 @@ data class StoredResponse(
 /** 追加 Delivery 成功（revision.schema.json#/$defs/deliveries_added）：请求里每个 Destination 一项（新建的与本来就有的）。 */
 data class DeliveriesAdded(val recordId: String, val revision: Int, val deliveries: List<DeliveryOnRevision>)
 
+/** DELETE /v1/records/{id} 的响应（revision.schema.json#/$defs/record_deleted）。 */
+data class RecordDeletedResponse(val recordId: String, val deletedAt: Instant, val cancelledDeliveryIds: List<String>)
+
 /** 网关上记着的一条 Revision（gateway.schema.json#/$defs/revision_status_summary）。 */
 data class RevisionOnGateway(val revision: Int, val state: String, val textSha256: String)
 

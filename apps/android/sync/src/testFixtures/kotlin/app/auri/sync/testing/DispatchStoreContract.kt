@@ -1004,4 +1004,53 @@ abstract class DispatchStoreContract {
         last = fixture.store.changes().first()
         assertMoved("换了网关") { fixture.store.useGateway(otherGateway) }
     }
+
+    @Test
+    fun requestResend_uses_stored_item_intent_rejects_refused_and_missing_jobs_and_survives_reopen() = runBlocking {
+        val fixture = newFixture()
+        val onlyContext = destination(auto, SendMode.AUTO_SEND, setOf(Intent.CONTEXT))
+        val bothIntents = destination(preview, SendMode.PREVIEW_CONFIRM, setOf(Intent.CONTEXT, Intent.ACTION_REQUEST))
+        fixture.know(onlyContext, bothIntents)
+
+        // 1. 不存在的 sync_job（例如并发删除后）不能落账（OCR #36）
+        val ghostKey = JobKey("00000000-0000-4000-8000-000000000099", 2)
+        assertEquals(
+            app.auri.sync.destinations.ResendResult.NotEligible,
+            fixture.store.requestResend(ghostKey, onlyContext.destinationId, Intent.CONTEXT, t0),
+        )
+        assertEquals(null, fixture.store.item(ghostKey))
+
+        // 2. 已有条目时按条目自身意图校验资格，而非调用方传入的意图（OCR #39 / #33）
+        fixture.publish(keyA, RevisionSource.ASR, t0)
+        fixture.store.setIntent(keyA, Intent.ACTION_REQUEST, t0)
+        fixture.markStored(keyA)
+        assertEquals(
+            "条目意图是 ACTION_REQUEST，onlyContext 不接收，即使调用方传 CONTEXT 也必须返回 NotEligible",
+            app.auri.sync.destinations.ResendResult.NotEligible,
+            fixture.store.requestResend(keyA, onlyContext.destinationId, Intent.CONTEXT, t0),
+        )
+
+        // 3. 已被网关拒收的目标必须返回 NotEligible，而非 AlreadyRequested（OCR #19）
+        fixture.store.decide(keyA, bothIntents.destinationId, Choice.CONFIRM, t0)
+        fixture.store.refused(keyA, listOf(bothIntents.destinationId), Refusal.REJECTED)
+        assertEquals(
+            app.auri.sync.destinations.ResendResult.NotEligible,
+            fixture.store.requestResend(keyA, bothIntents.destinationId, Intent.ACTION_REQUEST, t0),
+        )
+
+        // 4. 新 Revision（USER_EDIT）默认不规划目标，确认重发后幂等且跨重启持久（OCR #17）
+        val rev2 = JobKey(keyA.recordId, 2)
+        fixture.publish(rev2, RevisionSource.USER_EDIT, t0.plusSeconds(5))
+        fixture.markStored(rev2)
+        assertEquals(
+            app.auri.sync.destinations.ResendResult.Requested,
+            fixture.store.requestResend(rev2, onlyContext.destinationId, Intent.CONTEXT, t0.plusSeconds(6)),
+        )
+        assertEquals(
+            app.auri.sync.destinations.ResendResult.AlreadyRequested,
+            fixture.store.requestResend(rev2, onlyContext.destinationId, Intent.CONTEXT, t0.plusSeconds(7)),
+        )
+        val reopened = fixture.reopen()
+        assertEquals(listOf(onlyContext.destinationId), reopened.store.due().map { it.destinationId })
+    }
 }

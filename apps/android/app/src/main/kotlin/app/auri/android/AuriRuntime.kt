@@ -16,6 +16,8 @@ import app.auri.android.home.HomeViewModel
 import app.auri.android.modelui.ManagerModelControls
 import app.auri.android.modelui.ModelsViewModel
 import app.auri.android.modelui.SchedulerControls
+import app.auri.android.revisions.RecordDetailViewModel
+import app.auri.android.revisions.RecordsViewModel
 import app.auri.android.sync.SyncViewModel
 import app.auri.android.ui.AndroidClipboardPort
 import app.auri.asr.engine.SherpaOnnxEngineFactory
@@ -24,6 +26,7 @@ import app.auri.capture.calibration.ProfileStore
 import app.auri.capture.contract.CaptureState
 import app.auri.capture.coordinator.CaptureConfig
 import app.auri.capture.coordinator.CaptureCoordinator
+import app.auri.capture.library.AudioRetentionCleaner
 import app.auri.capture.pipeline.RecordPipeline
 import app.auri.capture.recovery.OrphanRecovery
 import app.auri.capture.recovery.StartupRecovery
@@ -45,6 +48,7 @@ import app.auri.platform.jobs.SqliteTranscriptionJobStore
 import app.auri.platform.library.relocateRecordedAudio
 import app.auri.platform.service.AndroidForegroundServiceController
 import app.auri.platform.service.bindForegroundService
+import app.auri.platform.storage.AudioRetentionSetting
 import app.auri.platform.storage.DurationLimitSetting
 import app.auri.platform.storage.FileProfileStore
 import app.auri.platform.storage.NoBackupStorage
@@ -151,6 +155,8 @@ class AuriRuntime(
 
     val pipeline = RecordPipeline(library, scheduler, scope)
     val durationSetting = DurationLimitSetting(File(application.filesDir, "capture-duration-limit"))
+    val audioRetentionSetting = AudioRetentionSetting(File(application.filesDir, "audio-retention-days"))
+    val audioRetentionCleaner = AudioRetentionCleaner(library) { path -> File(path).let { !it.exists() || it.delete() } }
 
     private val recordingStore = WavRecordingStore(recordingsDir)
 
@@ -174,6 +180,7 @@ class AuriRuntime(
 
     /** 目的地管理（Ticket 22）：每次生成或轮换 Destination 凭证前现场做本机核验（生物识别或设备锁屏凭据）。 */
     val destinations = sync.destinationService(BiometricLocalAuthenticator(application, AndroidSyncLog))
+    val recordRevisions = sync.recordRevisionService { path -> File(path).let { !it.exists() || it.delete() } }
     private val itemTexts = LibraryItemTexts(library)
 
     init {
@@ -186,6 +193,7 @@ class AuriRuntime(
         // 恢复只读磁盘、只写库：不开麦、不起前台服务、不碰采集状态；协调器此刻必然是 DISARMED，之后也只有用户的操作能让它开始录音
         scope.launch(Dispatchers.IO) {
             StartupRecovery(OrphanRecovery(recordingStore, library, pipeline)) { Log.i(CAPTURE_LOG_TAG, it) }.run()
+            audioRetentionCleaner.purgeExpired(SystemClock.now(), audioRetentionSetting.days.value)
         }
     }
 
@@ -234,6 +242,18 @@ class AuriRuntime(
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
             DestinationDetailViewModel(destinationId, destinations, itemTexts, scopeOf(), AndroidSyncLog, sync.status.map { }) as T
+    }
+
+    val recordsViewModelFactory = object : ViewModelProvider.Factory {
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : ViewModel> create(modelClass: Class<T>): T =
+            RecordsViewModel(library, sync.jobs, sync.dispatch, audioRetentionSetting, audioRetentionCleaner, SystemClock, scopeOf()) as T
+    }
+
+    fun recordDetailViewModelFactory(recordId: String) = object : ViewModelProvider.Factory {
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : ViewModel> create(modelClass: Class<T>): T =
+            RecordDetailViewModel(recordId, library, recordRevisions, SystemClock, scopeOf()) as T
     }
 
     companion object {

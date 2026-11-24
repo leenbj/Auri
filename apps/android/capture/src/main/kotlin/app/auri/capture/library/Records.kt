@@ -116,6 +116,9 @@ data class RecordEntry(
 /** 库里没有这个 Record。 */
 class NoSuchRecordException(val recordId: String) : IllegalArgumentException("没有这个 Record：$recordId")
 
+/** 这个 Record 已被删除（墓碑存在，FR-TXT-005）：不得再写入或复活。 */
+class RecordDeletedException(val recordId: String) : IllegalStateException("这个 Record 已被删除：$recordId")
+
 /**
  * 本地 Record 库。实现：测试里的内存库（testFixtures）与 `:platform` 的 SQLite 库；两者通过同一套契约测试（RecordLibraryContract）。
  *
@@ -123,17 +126,32 @@ class NoSuchRecordException(val recordId: String) : IllegalArgumentException("�
  * 要么全部成功要么全部不留痕迹。Ticket 21 的“待同步任务”就在这个事务里的 PublicationStep 中入队，保证“已发布”与“待同步”不会分家。
  */
 interface RecordLibrary {
-    /** 登记一个新 Record。同一个 [RecordEntry.recordId] 已存在时什么都不做，返回 false（幂等）。 */
+    /** 登记一个新 Record。同一个 [RecordEntry.recordId] 已存在或已删除（墓碑）时什么都不做，返回 false（幂等、防复活）。 */
     suspend fun addRecord(entry: RecordEntry): Boolean
 
     /**
-     * 发布 Revision（一个事务）。返回库里实际写下的那条。Record 不存在抛 [NoSuchRecordException]；
+     * 发布 Revision（一个事务）。返回库里实际写下的那条。Record 已被删除抛 [RecordDeletedException]，不存在抛 [NoSuchRecordException]；
      * 发布步骤失败则整个事务回滚，Record 保持原样，number 不会被占用。
      */
     suspend fun publishRevision(draft: RevisionDraft): Revision
 
     /** 更新没有产出 Revision 的转录状态。对已经 [TranscriptionStatus.DONE] 的 Record 不允许（IllegalStateException）。 */
     suspend fun markTranscription(recordId: String, status: TranscriptionStatus, failureCode: ErrorCode? = null)
+
+    /**
+     * 删除整条 Record 并留下删除墓碑（FR-TXT-005）：清除本地正文与 Revision、阻止后续登记或补传复活。
+     * 首次删除返回 true，重复删除幂等返回 false。
+     */
+    suspend fun deleteRecord(recordId: String, deletedAt: Instant): Boolean
+
+    /** 这个 Record 是否已有删除墓碑。 */
+    suspend fun isDeleted(recordId: String): Boolean
+
+    /**
+     * 单独删除一条 Record 的本地音频元数据（FR-TXT-005），保留 Record 与全部 Revision，不产生墓碑。
+     * 原先有音频并被清除返回 true，没有音频或 Record 不存在返回 false。
+     */
+    suspend fun deleteAudio(recordId: String): Boolean
 
     suspend fun get(recordId: String): RecordEntry?
 

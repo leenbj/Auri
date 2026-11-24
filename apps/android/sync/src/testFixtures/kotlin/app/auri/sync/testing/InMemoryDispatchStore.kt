@@ -8,6 +8,7 @@ import app.auri.sync.destinations.DispatchStore
 import app.auri.sync.destinations.DispatchTarget
 import app.auri.sync.destinations.GatewayDelivery
 import app.auri.sync.destinations.IntentResult
+import app.auri.sync.destinations.ResendResult
 import app.auri.sync.destinations.TargetDecision
 import app.auri.sync.engine.DeliveryAddition
 import app.auri.sync.engine.JobKey
@@ -105,6 +106,28 @@ class InMemoryDispatchStore(private val disk: InMemoryDispatchDisk) : DispatchSt
         row.decision = if (choice == Choice.CONFIRM) TargetDecision.CONFIRMED else TargetDecision.SKIPPED
         bump()
         DecideResult.Decided
+    }
+
+    override suspend fun requestResend(key: JobKey, destinationId: String, intent: Intent, now: Instant): ResendResult = disk.lock.withLock {
+        if (jobs.get(key) == null) return@withLock ResendResult.NotEligible
+        val existingItem = disk.items[key]
+        val effectiveIntent = existingItem?.intent ?: intent
+        val destination = disk.cache[destinationId] ?: return@withLock ResendResult.NotEligible
+        if (!destination.receivesNewText || !destination.allows(effectiveIntent)) return@withLock ResendResult.NotEligible
+        val existingTarget = existingItem?.rows?.get(destinationId)
+        if (existingTarget != null) {
+            if (existingTarget.delivery == GatewayDelivery.REFUSED) return@withLock ResendResult.NotEligible
+            if (existingTarget.decision == TargetDecision.AUTO || existingTarget.decision == TargetDecision.CONFIRMED) {
+                return@withLock ResendResult.AlreadyRequested
+            }
+            existingTarget.decision = TargetDecision.CONFIRMED
+        } else {
+            val item = existingItem ?: InMemoryDispatchDisk.Item(intent = effectiveIntent, createdAt = now, order = ++disk.nextOrder, intentLocked = false)
+                .also { disk.items[key] = it }
+            item.rows[destinationId] = InMemoryDispatchDisk.Row(destination.sendMode, TargetDecision.CONFIRMED)
+        }
+        bump()
+        ResendResult.Requested
     }
 
     override suspend fun setIntent(key: JobKey, intent: Intent, now: Instant): IntentResult = disk.lock.withLock {

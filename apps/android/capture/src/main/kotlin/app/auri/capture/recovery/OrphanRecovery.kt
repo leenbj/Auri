@@ -86,7 +86,7 @@ class OrphanRecovery(
     private val output: CaptureOutput,
 ) {
     suspend fun run(): RecoveryReport {
-        val scan = source.recoverOrphans { recordId -> library.get(recordId) != null }
+        val scan = source.recoverOrphans { recordId -> library.get(recordId) != null || library.isDeleted(recordId) }
         var withoutAudio = 0
         for (recovered in scan.recovered) {
             val sealed = recovered.toSealedRecording()

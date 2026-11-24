@@ -21,13 +21,19 @@ import app.auri.android.destinations.DestinationsViewModel
 import app.auri.android.destinations.SendReviewViewModel
 import app.auri.android.home.HomeViewModel
 import app.auri.android.modelui.ModelsViewModel
+import app.auri.android.revisions.RecordDetailViewModel
+import app.auri.android.revisions.RecordsViewModel
 import app.auri.android.sync.SyncViewModel
 import app.auri.android.ui.AppRoot
 import app.auri.android.ui.ControlScreen
 import app.auri.android.ui.DestinationsPage
 import app.auri.android.ui.HomeScreen
 import app.auri.android.ui.ModelsScreen
+import app.auri.android.ui.RecordsPage
 import app.auri.android.ui.SyncPage
+import app.auri.platform.system.SystemClock
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     private val runtime get() = (application as AuriApplication).runtime
@@ -38,10 +44,14 @@ class MainActivity : ComponentActivity() {
     private val modelsViewModel: ModelsViewModel by viewModels { runtime.modelsViewModelFactory }
     private val destinationsViewModel: DestinationsViewModel by viewModels { runtime.destinationsViewModelFactory }
     private val sendReviewViewModel: SendReviewViewModel by viewModels { runtime.sendReviewViewModelFactory }
+    private val recordsViewModel: RecordsViewModel by viewModels { runtime.recordsViewModelFactory }
 
     /** 每个目的地一个详情视图模型，以编号为键（同一个目的地回到详情页拿到的是同一个）。 */
     private fun destinationDetail(id: String): DestinationDetailViewModel =
         ViewModelProvider(this, runtime.destinationDetailViewModelFactory(id))["destination-$id", DestinationDetailViewModel::class.java]
+
+    private fun recordDetail(id: String): RecordDetailViewModel =
+        ViewModelProvider(this, runtime.recordDetailViewModelFactory(id))["record-$id", RecordDetailViewModel::class.java]
 
     // 不管用户给不给权限都继续开始：协调器会按实际情况拒绝并给出原因（PERMISSION_MIC_DENIED 等），界面如实显示
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { viewModel.start() }
@@ -84,6 +94,7 @@ class MainActivity : ComponentActivity() {
                         )
                     },
                     destinations = { DestinationsPage(destinationsViewModel, sendReviewViewModel, ::destinationDetail, runtime.secretClipboard) },
+                    records = { RecordsPage(recordsViewModel, ::recordDetail) },
                 )
             }
         }
@@ -93,6 +104,10 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         runtime.pipeline.resume() // 模型装好之后回到应用，等模型的 Record 就会被转录
         runtime.sync.syncNow() // 回到前台：立刻同步一轮（没配对时什么也不会发生）
+        // OCR #22：长生命周期进程回到前台时也按保留期清理到期音频
+        runtime.scope.launch(Dispatchers.IO) {
+            runtime.audioRetentionCleaner.purgeExpired(SystemClock.now(), runtime.audioRetentionSetting.days.value)
+        }
     }
 
     override fun onResume() {
