@@ -3075,6 +3075,23 @@ MUTATIONS: tuple = (
         app_tests("ClipboardWiringTest"), APP_RESULTS,
         ("OCR M12：真机剪贴板适配器的 put 与 clear 必须兜住平台异常",),
     ),
+    Mutation(
+        "r4ocr-m14-recovery-lets-read-throw",
+        "第四轮 OCR M14：recoveringStoredStates 必须兜住 read() 的非取消异常并按读不出来发 Closed 重试：去掉 catch 后异常会杀死整个收集作用域",
+        (Edit(
+            STORED_STATES,
+            "            val stored = try {\n"
+            "                read()\n"
+            "            } catch (cancelled: CancellationException) {\n"
+            "                throw cancelled\n"
+            "            } catch (_: Exception) {\n"
+            "                null\n"
+            "            }\n",
+            "            val stored = read()\n",
+        ),),
+        sync_tests("StoredStatesRecoveryTest"), SYNC_RESULTS,
+        ("OCR M14：read 抛出非取消异常时不崩作用域",),
+    ),
 )
 
 base.MUTATIONS = MUTATIONS

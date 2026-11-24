@@ -304,7 +304,11 @@ ROUND4_OCR = {
         "r4ocr-m12-ownership-lets-read-throw",
         "r4ocr-m12-clipboard-port-unguarded-clear",
     ],
+    "OCR M14 授权状态恢复算子兜住 read() 非取消异常并按 Closed 退避重试": [
+        "r4ocr-m14-recovery-lets-read-throw",
+    ],
 }
+
 
 @pytest.mark.parametrize("item", list(ROUND4_OCR))
 def test_every_round4_ocr_fix_has_mutations_in_the_table(item):

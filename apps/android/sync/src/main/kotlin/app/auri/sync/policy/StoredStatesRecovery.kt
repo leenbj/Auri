@@ -1,5 +1,6 @@
 package app.auri.sync.policy
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
@@ -20,7 +21,13 @@ fun Flow<*>.recoveringStoredStates(read: suspend () -> StoredDataFlow?): Flow<St
     collectLatest {
         var failures = 0
         while (true) {
-            val stored = read()
+            val stored = try {
+                read()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
+            }
             if (stored != null) {
                 send(stored)
                 return@collectLatest

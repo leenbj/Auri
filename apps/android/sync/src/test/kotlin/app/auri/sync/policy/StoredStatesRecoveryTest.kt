@@ -123,4 +123,24 @@ class StoredStatesRecoveryTest {
 
         assertEquals(listOf(0L, 2_000L, 6_000L), reads.readAt)
     }
+
+    @Test
+    fun `OCR M14：read 抛出非取消异常时不崩作用域，立刻发 Closed 并按退避重试直到恢复`() = runTest {
+        var calls = 0
+        val seen = mutableListOf<StoredDataFlow>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            MutableStateFlow(0L).recoveringStoredStates {
+                calls += 1
+                if (calls == 1) throw IllegalStateException("database hiccup") else granted
+            }.toList(seen)
+        }
+        runCurrent()
+        assertEquals("抛异常的当下立刻关门", listOf(StoredDataFlow.Closed), seen)
+
+        advanceTimeBy(3_000)
+        runCurrent()
+
+        assertEquals("退避重试后恢复真实值", listOf(StoredDataFlow.Closed, granted), seen)
+        assertEquals(2, calls)
+    }
 }
