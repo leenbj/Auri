@@ -770,32 +770,49 @@ cd apps/android && ./gradlew :syncplatform:connectedDebugAndroidTest -Pandroid.t
 | H1（High）`SyncStatus.kt:121` | `PairingState.Lost` 被 `!textMayEnterGateway` 遮盖为 `HELD_BY_POLICY` | **FIXED（`fbbc971`）**：在 `HELD_BY_POLICY` 之前显式返回 `SyncHeadline.NEEDS_USER`，先红后绿补 `SyncStatusTest` 用例 |
 | H2（High）`WakeGate.kt:64` / `SyncResumeService.kt:45` | 自取消 `JobScheduler.cancel(JOB_ID)` 后 `onStopJob` 返回 `true` 是否导致重排循环 | **REJECTED / 记为设备端核对项**：按 Android AOSP `JobServiceContext.cancelExecutingJobLocked` / `JobSchedulerService.onJobCompletedLocked`，应用显式 `JobScheduler.cancel()` 产生的 `STOP_REASON_CANCELLED_BY_APP` 在回调 `onStopJob` 之前已把作业移出 `JobStore`，系统忽略 `onStopJob` 的返回值、不会重排。设备端 `JobScheduler` 仍标 `NOT_RUN`，真机验收时按 15.4 核对 `dumpsys jobscheduler` |
 | H3（High）+ M23（Medium）`SqliteDispatchStoreOnDeviceTest.kt:39,60` | `newFixture()` 复用同一数据库文件名导致多夹具测试串库；`repeat()` 负计数风险 | **FIXED（`fbbc971`）**：每个 `newFixture()` 生成独立数据库名、在 `cleanUp()` 全部删除，并对 `repeat` 计数 `coerceAtLeast(0)`；`:syncplatform:assembleDebugAndroidTest` 编译通过 |
+| M1（Medium）`PairingService.kt:127` | 注入的 `newEpoch` 未经 `GatewayIdentity.isValidEpoch` 校验就持久化，可能导致下次 `load()` 返回 `Lost` | **REJECTED**：生产装配（`PairingService.kt:34`、`SyncRuntime.kt:120`）固定使用默认 `UUID.randomUUID().toString()`，恒满足 `GatewayIdentity.isValidEpoch`（`PairedGateway.kt:62`）；`newEpoch` 仅用于单测注入，已有 `PairingEpochTest` 覆盖持久化与重读 |
 | M2（Medium）`GatewayDiscovery.kt:76` | mDNS 发现因关门提前停且返回空列表时，`walkAddresses` 落到 `Walk.NothingReachable` 而非 `Walk.Withheld` | **FIXED（`fbbc971`）**：`tryAll(discovered)` 后复核门（`if (gate.gated { Unit } == null) return Walk.Withheld`），先红后绿补 `DiscoveryGateHandoffTest` 用例，并更新 `PolicyGateWiringTest` 门计数 2 → 3 |
+| M3（Medium）`GatewayClient.kt:80` | `putRevision` 对 `deliveries` 严格解析早于身份校验，坏条目会把已入库响应判为 `Garbled` | **REJECTED**：`deliveries` 是冻结的 `revision.schema.json#/$defs/stored_response` 必填字段；网关答复不合规时判 `Garbled` → 不确定 → 下一轮走宽松解析的 `recordStatus`（`GatewayClient.kt:134`）核实，正是防静默丢账的保守策略 |
 | M4（Medium）`DestinationsViewModel.kt:167` | 自动刷新被拦置 `cacheOnly = true` 后，手动点“刷新”失败未清 `cacheOnly` | **FIXED（`fbbc971`）**：手动刷新失败时清 `cacheOnly = false`，先红后绿补 `AutomaticReadsViewModelTest` 用例 |
+| M5（Medium）`DestinationDetailViewModel.kt:210` | `leave()` 仅换凭证世代，未暂停后台详情刷新循环 | **REJECTED（非安全/隐私缺陷，留作优化）**：未授权或严格仅本地时 F8（`DestinationService.kt:255-270`、`AutomaticReadsTest`）已拦截全部自动 `/status` 请求（0 连接）；已授权时 `triggers` 经 `Channel.CONFLATED` + `MIN_GAP_MS` 节流（`DestinationDetailViewModel.kt:138,163`），且 `leave()` 立即抹除凭证（`DestinationDetailViewModel.kt:210`） |
+| M6（Medium）`MainActivity.kt:43` | 详情 VM 存在 Activity `ViewModelStore` 中，离开页面后 `stateIn(Eagerly)` 收集器仍存活 | **REJECTED（同 M5，留作优化）**：未授权时 F8 保证 0 联网，凭证在 `leave()` 立即抹除，不构成越权读取或泄露 |
+| M7（Medium）`SyncViewModel.kt:193` | `savePolicy` 每次点击单独 `scope.launch`，快速连点可能在入队前乱序 | **REJECTED（可接受）**：底层 `SqliteDataFlowPolicy.write` 在 `library.withDatabase` 单线程 SQLite 执行器串行提交（`SqliteDataFlowPolicy.kt:82`）且受 `PolicyGeneration.Write` 保护（`PolicyGeneration.kt:77`）；界面开关始终派生自持久化的 `status.dataFlow`，不会向用户谎报状态 |
+| M8（Medium）`AuriRuntime.kt:246` | `escapedFailureHandler` 只记异常类名不记栈帧 | **REJECTED（按隐私红线刻意如此）**：`CLAUDE.md` 与 `RuntimeScopeGuardTest` / `CredentialSurfaceGuardTest` 明确要求日志只写事件名与异常类名，不输出异常消息与调用栈细节 |
+| M9（Medium）`DestinationService.kt:292` | `NotPaired` / `NeedsRepair` 在详情行上归为 `UnknownReason.GATEWAY_UNREACHABLE` | **REJECTED（设计取舍）**：配对/令牌/版本问题已在同步页全局大标题与原因列表明确提示（`SyncStatus.kt:107-122`）；详情行仅负责不谎报“已入库/已确认”，显示未知状态符合合同 |
+| M10（Medium）`GatewayLocator.kt:32` | 无门重载 `locate(gateway)` 内部用 `RequestGate.Open` 与 `?: error(...)` | **REJECTED**：全部 4 处生产调用点均由 `PolicyGateWiringTest.kt:55-73` 静态钉死走带门的 `locate(gateway, gate)`；无门重载仅供测试，且 `RequestGate.Open`（`RequestGate.kt:22`）恒返回非空结果，`error(...)` 不可达 |
 | M11（Medium）`SendReviewScreen.kt:58` | `state.unreadable == true` 且列表为空时仍渲染“还没有文字。” | **FIXED（`fbbc971`）**：仅在 `!state.unreadable` 且为空时渲染“还没有文字。” |
+| M12（Medium）`SecretWindow.kt:61` / `ClipOwnership.kt:87` | `ClipboardManager` 读写/清理在受限设备抛 `SecurityException` 会从 `onPause`/`onWindowFocusChanged` 逃逸崩溃（另核查 `FLAG_SECURE`） | **FIXED（`b13b574`）**：`ClipOwnership.classifyClip`（`ClipOwnership.kt:87`）兜住 `read()` 异常并返回 `ClipboardPeek.Unreadable`（无证明绝不清）；`AndroidClipboardPort.put()` 与 `clear()`（`SecretWindow.kt:55,70`）均用 `try/catch` 兜住平台异常（`put` 失败即忘掉摘要）；先红后绿补 `ClipOwnershipTest`、`ClipboardWiringTest` 与 2 条 `r4ocr-m12-*` 变异（CAUGHT）。注：`SecureWhileShown`（`SecretWindow.kt:28-29`）调 `Window.addFlags(FLAG_SECURE)`/`clearFlags` 仅修改本进程 Activity `PhoneWindow` 的 `LayoutParams`，不经权限校验，不抛 `SecurityException` |
+| M13（Medium）`GatewayClient.kt:115` | `addDeliveries` 缺少客户端级坏响应单测 | **REJECTED（测试覆盖建议，非生产缺陷）**：`addDeliveries` 已在 `RealGatewayDestinationsTest` 与 `DestinationContractOutputTest` + `destination_contract_check.py` 对真网关与合同 schema 端到端验证，响应校验（`GatewayClient.kt:115-116`）本身正确 |
+| M14（Medium）`StoredStatesRecovery.kt:23` | `read()` 抛出非取消异常会穿透 `collectLatest` 杀死 `channelFlow` 与下游收集作用域 | **FIXED（`fa227dd`）**：`recoveringStoredStates`（`StoredStatesRecovery.kt:23`）用 `try/catch` 兜住 `read()`（`CancellationException` 照常外抛，其余 `Exception` 转 `null` → 立刻发 `StoredDataFlow.Closed` 并按 2s–30s 退避重试）；先红后绿补 `StoredStatesRecoveryTest` 用例与 `r4ocr-m14-recovery-lets-read-throw` 变异（CAUGHT） |
+| M15（Medium）`InMemoryDataFlowPolicy.kt:76` | 内存测试替身用 `state.value = state.value.copy(...)` 而非 `update` | **REJECTED（仅测试替身）**：`sync/src/testFixtures/` 不进生产构建；生产 `SqliteDataFlowPolicy`（`SqliteDataFlowPolicy.kt:82`）在单线程数据库执行器串行写；并发测试靠 `beforeCommit`/`afterCommit` 确定性驱动 |
+| M16（Medium）`ResumePlanner.kt:67` | `currentNeed`/`additionsOwed`/`gate` 带默认参数，漏传可静默编译 | **REJECTED**：生产装配（`SyncRuntime.kt:170-179`）已传入 `currentNeed = ::resumeNeededNow` 与共享 `wakes` 门，并由 `ResumeCurrentNeedWiringTest` 静态守卫钉死；默认参数仅供独立单测使用 |
 | M17（Medium）`SqliteDispatchStore.kt:37` | `ownChanges.value += 1` 非原子读改写 | **FIXED（`fbbc971`）**：改为原子 `ownChanges.update { it + 1 }` |
 | M18（Medium）`SyncRuntime.kt:190` | `policy.reconcile` 写库异常与 `engine.resolveAfterRepair()` 共用同一 `try` | **FIXED（`fbbc971`）**：为 `policy.reconcile` 单独 `try/catch` 兜底并记录事件名，不阻断 `resolveAfterRepair()` |
 | M19（Medium）`PolicyGeneration.kt:77` | `Write.changing()` / `Write.changed()` 并发交错可能导致 `writing` 永久为 1 | **FIXED（`fbbc971`）**：两个方法加 `@Synchronized` 串行化状态切换与外层计数器更新 |
+| M20（Medium）`InMemoryDispatchStore.kt:187` | 内存测试替身 `publish()` 无条件覆盖 `disk.items[key]` | **REJECTED（仅测试替身）**：`sync/src/testFixtures/` 不进生产；生产 SQLite 实现（`DispatchSql.kt:106`）使用 `INSERT OR IGNORE` 并由 `SqliteDispatchStoreTest` 跑完整 `DispatchStoreContract` 验证 |
+| M21（Medium）`BiometricLocalAuthenticator.kt:61` / `BiometricGate.kt:34` | `BiometricPrompt.Builder.build().authenticate(...)` 未兜住 `IllegalArgumentException`/`SecurityException` 等平台异常，逃逸后被视图层误报为网络中断且未取消 `CancellationSignal` | **FIXED（`3cc6e6c`）**：`AndroidBiometricFramework.prompt`（`BiometricLocalAuthenticator.kt:65-72`）兜住异常、调用 `signal.cancel()`、仅记 `auth.prompt-error <类名>` 并恢复为 `AuthResult.Unavailable(TEMPORARILY_UNAVAILABLE)`；`BiometricGate.authenticate`（`BiometricGate.kt:34-41`）同样兜住非取消异常并降级为 `TEMPORARILY_UNAVAILABLE`；先红后绿补 `BiometricGateTest` 2 条用例与 2 条 `r4ocr-m21-*` 变异（CAUGHT） |
+| M22（Medium）`ResumePlanner.kt:73` | 去掉 `distinctUntilChanged()` 后每次流提示都在门内现算 `currentNeed()` | **REJECTED（F4 刻意设计）**：F4（`5d7abac`）为防止旧快照取消刚登记的叫醒必须绕过流快照现读磁盘；`combine` 本身会合流高频变更，且 `resumeNeededNow()` 纯本地读库无网络开销 |
+| M24（Medium）`SqliteDispatchStore.kt:68` | `publicationFor` 未修改行时也会增加 `ownChanges` | **REJECTED（轻微性能建议，非缺陷）**：`publicationFor` 仅在同步尝试时触发（受退避节流），多一次本地只读查询不影响正确性或安全 |
+| M25（Medium）`AndroidSqlDb.kt:15` | `query()` 经 `toString()` 绑定参数而非 `bind()` 类型分发 | **REJECTED**：Android 框架 `SQLiteDatabase.rawQuery(sql, Array<String?>)` 仅接受 `String?` 数组；`DispatchSql` 查询参数均为 `String`/`Int`/`Long` 并由 SQLite 按列亲和性比较，与现有 `SqliteSyncJobStore` 一致 |
 | M26 / M28（Medium）`store.py:721,947` | `store_revision` / `add_deliveries` 先做 intent 校验再跳过暂停目标，暂停目标不接该 intent 会 422 拒收整条请求 | **FIXED（`3a57712`）**：先过滤暂停/过截止点目标，再对剩余目标做 `_validate_publication_destinations`（已撤销/不存在目标仍 422）；先红后绿补 `test_credential_suspension.py` 集成测试 |
 | M27（Medium）`store.py:1185` | `issue_destination_credential` 回退分支未检查 `_has_revocation_cutoff_column` | **FIXED（`3a57712`）**：改为 `elif _has_revocation_cutoff_column(conn):` |
-| M1、M3、M5、M6、M7、M8、M9、M10、M12、M13、M14、M15、M16、M20、M21、M22、M24、M25（18 条 Medium） | 其余架构/重构/风格/测试替身/异常兜底建议（如 `PairingService` 校验注入 `newEpoch`、`GatewayClient` 宽松解析 deliveries、`DestinationDetailViewModel` 在 Activity `ViewModelStore` 生命周期、为 `UnknownReason` 新增枚举、`GatewayLocator` 改 `Located.Withheld`、`SecretWindow` 捕 `SecurityException`、补 `addDeliveries` 客户端单测、`StoredStatesRecovery` 捕非取消异常、测试替身原子更新、`ResumePlanner` 构造参数去默认值与节流、`BiometricLocalAuthenticator` 捕 `authenticate()` 异常、`SqliteDispatchStore` 减少无变更信号、`AndroidSqlDb.query` 类型校验） | **REJECTED / DEFERRED（不属本轮缺陷或超出最小修复范围）**：均未违反 Ticket 22 合同或安全红线——例如 `PairingService` 默认用 `UUID.randomUUID()`、`GatewayClient` 严格解析确保合同响应一致、`DestinationDetailViewModel` 未授权时 F8 已拦住全部自动请求、改 `Located` / `ResumePlanner` 签名与 `UnknownReason` 枚举会大范围波及已有测试与变异锚点；作为后续清理/优化建议留档 |
 
 ### 16.4 第四轮验证结果与 `NOT_RUN` 项
 
-- **新增与重锚定变异检查（`r4f6`–`r4f9` + 重锚定 `r1/r2`）**：共 **28 条**（`r4f6-gw-*` 5 + 重锚定 `r1/r2` 3 + `r4f7-*` 8 + `r4f8-*` 8 + `r4f9-gw-*` 4），**28/28 全部 CAUGHT**，0 SURVIVED，0 INVALID；`r2-gw-first-store-ignores-cutoff` 已随 F6 退役。
+- **新增与重锚定变异检查（`r4f6`–`r4f9` + 重锚定 `r1/r2` + `r4ocr-*`）**：共 **33 条**（`r4f6-gw-*` 5 + 重锚定 `r1/r2` 3 + `r4f7-*` 8 + `r4f8-*` 8 + `r4f9-gw-*` 4 + `r4ocr-m21-*` 2 + `r4ocr-m12-*` 2 + `r4ocr-m14-*` 1），**33/33 全部 CAUGHT**，0 SURVIVED，0 INVALID；`r2-gw-first-store-ignores-cutoff` 已随 F6 退役。
 - **Android JVM 套件与真网关（本机 macOS，`--no-daemon --rerun`）**：
   - `:capture:test`：369 passed，0 failed，0 skipped
   - `:modelmgmt:testDebugUnitTest`：84 passed，0 failed，0 skipped
   - `:platform:testDebugUnitTest`：257 passed，0 failed，0 skipped
   - `:asr:testDebugUnitTest`：112 passed，0 failed，0 skipped
-  - `:sync:test`：631 passed，0 failed，0 skipped（含 OCR 修复后新增 2 条）
-  - `:syncplatform:testDebugUnitTest`：119 passed，0 failed，0 skipped
-  - `:app:testDebugUnitTest`：388 passed，0 failed，0 skipped（含 OCR 修复后新增 1 条）
+  - `:sync:test`：632 passed，0 failed，0 skipped（含 OCR M14 后新增）
+  - `:syncplatform:testDebugUnitTest`：121 passed，0 failed，0 skipped（含 OCR M21 后新增）
+  - `:app:testDebugUnitTest`：390 passed，0 failed，0 skipped（含 OCR M12 后新增）
   - `:sync:realGatewayTest`：25 passed，0 failed，0 skipped
   - `:app:assembleDebug`、`:syncplatform:assembleDebugAndroidTest`：exit 0，构建成功
 - **Python 验收与仓库套件**：
-  - `execution/acceptance/android-destinations`：1227 passed，0 failed（OCR 修复后复跑 `test_destination_mutation_table.py` + `test_credential_suspension.py` + `test_revocation_cutoff.py` + `test_delivery_additions.py`：1209 passed，0 failed）
-  - `tests/contract tests/integration tests/security`：**572 passed, 1 failed**（exit 1）。唯一失败仍是本机 mihomo TUN 代理环境问题：`tests/security/test_lan_transport.py::test_default_serve_binds_loopback_and_lan_only_never_vpn_or_public`（`Failed: DID NOT RAISE OSError`，第 143 行，原因同 15.6，未弱化该安全负例）。
+  - `execution/acceptance/android-destinations/test_destination_mutation_table.py`：1195 passed，0 failed（完整 `android-destinations` 1227+ passed）
+  - `tests/contract tests/integration tests/security`：本机 macOS 572 passed / 1 failed（本机 mihomo TUN 代理环境问题，见 15.6）；协调者在无 TUN 代理的 Linux 主机复跑全部 **574 passed**（含 `test_lan_transport`）。
 - **`NOT_RUN`（设备 / 模拟器行为，原因：本机禁用模拟器、无真机连接）**：
   - 真实 `NsdManager.resolveService` / `stopServiceDiscovery` 在授权收回后的网络停发（F7）
   - 真实 `BiometricPrompt`、`FLAG_SECURE`、剪贴板 `OnPrimaryClipChangedListener` 失焦清理（F3/F10）
