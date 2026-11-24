@@ -232,3 +232,36 @@ def test_a_destination_that_never_had_a_credential_is_not_suspended_it_keeps_col
     )
     assert stored.status_code == 200, stored.text
     assert [d["destination_id"] for d in stored.json()["deliveries"]] == [destination_id], "从没签发过凭证的不算暂停：照旧建 Delivery"
+
+
+def test_a_suspended_destination_with_different_allowed_intents_is_skipped_not_refused(world: World) -> None:
+    """OCR-M26/M28：暂停中的 Destination 即使不接收当前 intent，首次入库与追加 Delivery 也应跳过它而不 422 拒收整条请求。"""
+    suspended = world.destination("只收备忘但已暂停的", allowed_intents=["context"])
+    healthy = world.destination("正常收请求执行的", allowed_intents=["context", "action_request"])
+    revoke_credential(world.gw, active_credential_id(world.gw, suspended.destination_id))
+
+    submission = make_submission(
+        destination_ids=[suspended.destination_id, healthy.destination_id],
+        text="请求执行：暂停的目标应跳过，正常目标照常建",
+    )
+    submission["publication"]["intent"] = "action_request"
+    stored = httpx.put(
+        f"{world.gw.base_url}/v1/records/{submission['record_id']}/revisions/1",
+        trust_env=False,
+        json=submission,
+        headers={"Authorization": f"Bearer {world.device_token}"},
+        timeout=5.0,
+    )
+    assert stored.status_code == 200, stored.text
+    assert [d["destination_id"] for d in stored.json()["deliveries"]] == [healthy.destination_id]
+
+    preview = world.publish(text="先入库再追加请求执行")
+    added = httpx.post(
+        f"{world.gw.base_url}/v1/records/{preview['record_id']}/revisions/1/deliveries",
+        trust_env=False,
+        json={"schema_version": "1.2", "destination_ids": [suspended.destination_id, healthy.destination_id], "intent": "action_request"},
+        headers={"Authorization": f"Bearer {world.device_token}"},
+        timeout=5.0,
+    )
+    assert added.status_code == 200, added.text
+    assert [d["destination_id"] for d in added.json()["deliveries"]] == [healthy.destination_id]

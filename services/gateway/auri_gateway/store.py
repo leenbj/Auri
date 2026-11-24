@@ -715,11 +715,12 @@ def store_revision(
                 }
 
             destination_ids = list(publication["destination_ids"])
-            _validate_publication_destinations(conn, tenant_id, destination_ids, publication["intent"])
-            # 暂停的 Destination（凭证被撤销、还没签发新的）不建 Delivery，也不让整条文字被拒：手机可能还不知道
+            # 暂停的 Destination（凭证被撤销、还没签发新的）先跳过、不参与 intent 校验也不报错（contracts/README.md 规则 ②）；
+            # 已撤销或不存在的 Destination 不在 suspended 里，仍会被下面的校验 422 拒收。
             # 第四轮 F6：单调入库顺序下，新入库的 Revision 序号总是严格大于任何已有截止点，无需在首次入库时跳过截止点。
             suspended = _suspended_destination_ids(conn, tenant_id, destination_ids)
             destination_ids = [dest_id for dest_id in destination_ids if dest_id not in suspended]
+            _validate_publication_destinations(conn, tenant_id, destination_ids, publication["intent"])
 
             prior_published = conn.execute(
                 """
@@ -944,14 +945,14 @@ def add_revision_deliveries(
                 ).fetchall()
             }
             missing = [dest_id for dest_id in destination_ids if dest_id not in existing]
-            _validate_publication_destinations(conn, tenant_id, missing, intent)
-            # 暂停的 Destination（凭证被撤销、还没签发新的）不建，也不让整个请求失败：回答里没有它
+            # 暂停的与过截止点的 Destination 先跳过、不参与 intent 校验也不报错；已撤销/不存在的仍由下面 422 拒收
             suspended = _suspended_destination_ids(conn, tenant_id, missing)
             # 撤销截止点（再评审 R2，第四轮 F6）：撤销之前入库的文字，替换凭证永远看不到，延迟到达的追加也不为它建 Delivery
             suspended |= _past_cutoff_destination_ids(
                 conn, tenant_id, missing, stored["store_seq"] if has_seq else None, stored["stored_at"]
             )
             missing = [dest_id for dest_id in missing if dest_id not in suspended]
+            _validate_publication_destinations(conn, tenant_id, missing, intent)
 
             higher_exists = (
                 conn.execute(
@@ -1182,7 +1183,7 @@ def issue_destination_credential(
                         """,
                         (auth.tenant_id, auth.tenant_id, destination_id),
                     )
-                else:
+                elif _has_revocation_cutoff_column(conn):
                     conn.execute(
                         """
                         UPDATE destinations
