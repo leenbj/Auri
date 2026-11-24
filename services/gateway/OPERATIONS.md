@@ -49,7 +49,7 @@ PYTHONPATH=services/gateway .venv/bin/python -m auri_gateway serve --data-dir <d
 
 ## 4. 局域网监听与明文限制
 
-- 默认 `serve` 会自动发现并绑定本机回环（`127.0.0.1`）及私网局域网 IP（RFC 1918 / 链路本地 / IPv6 ULA），**拒绝**绑定 `0.0.0.0`、`::`、公网 IP 或 VPN/CGNAT 地址（如 `100.64.0.0/10`）。
+- 默认 `serve` 会自动发现并绑定本机回环（`127.0.0.1`）及私网局域网 IP（RFC 1918 / 链路本地 / 非 VPN 的 IPv6 ULA），跳过所有隧道/VPN 接口（如 `utun*`、`tun*`、`wg*`、`tailscale*` 等），并**拒绝**绑定 `0.0.0.0`、`::`、公网 IP、Tailscale ULA（`fd7a:115c:a1e0::/48`）、VPN/CGNAT 地址（如 `100.64.0.0/10`）以及任何属于隧道/VPN 接口的地址（ADR-0018）。
 - 默认强制使用 HTTPS（TLS）。仅本机开发调试时可通过 `--host 127.0.0.1 --plaintext-loopback` 启用回环明文；在任何非回环地址上指定 `--plaintext-loopback` 均会被拒绝启动。
 - 启动后 Gateway 会在局域网内广播 mDNS 服务 `_auri-gateway._tcp`（默认启用，可用 `--no-mdns` 关闭）。客户端仅将 mDNS 作为地址线索，连接前仍必须校验配对时绑定的 `public_key_sha256`，指纹不符即直接拒绝。
 

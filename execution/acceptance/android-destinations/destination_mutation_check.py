@@ -79,6 +79,7 @@ GATEWAY_DELIVERIES = "services/gateway/auri_gateway/deliveries.py"
 GATEWAY_QUERIES = "services/gateway/auri_gateway/queries.py"
 GATEWAY_MIGRATION_0005 = "services/gateway/auri_gateway/migrations/0005_destination_revocation_cutoff.sql"
 GATEWAY_MIGRATION_0006 = "services/gateway/auri_gateway/migrations/0006_monotonic_revocation_cutoff.sql"
+GATEWAY_NETWORK = "services/gateway/auri_gateway/network.py"
 CONTRACT_GUARD = SYNC_GATEWAY + "ContractGuard.kt"
 PAIRED_GATEWAY = ANDROID + "sync/src/main/kotlin/app/auri/sync/pairing/PairedGateway.kt"
 POLICY_GENERATION = ANDROID + "sync/src/main/kotlin/app/auri/sync/policy/PolicyGeneration.kt"
@@ -118,6 +119,7 @@ PYTEST = "pytest"
 GATEWAY_RESULTS = "build/gateway-pytest-results"
 REVOCATION_CUTOFF_TESTS = "tests/integration/test_revocation_cutoff.py"
 BACKFILL_TESTS = "tests/integration/test_revocation_cutoff_backfill.py"
+VPN_BIND_TESTS = "tests/security/test_vpn_bind_refusal.py"
 BACKFILL_CASE = "test_the_backfill_only_leaves_a_destination_uncut_when_its_history_proves_an_atomic_rotation"  # 参数化：BACKFILL_CASE[编号]
 
 
@@ -2978,6 +2980,35 @@ MUTATIONS: tuple = (
         (Edit(DETAIL_VM, "                loadItems(automatic = !manualPending.getAndSet(false))\n", "                loadItems(automatic = false)\n"),),
         app_tests("AutomaticReadsViewModelTest", "AutomaticReadsWiringTest"), APP_RESULTS,
         ("详情页：文字不能进网关时打开页面不联系网关", "详情页：页面进入走自动入口"),
+    ),
+    # ---- 第四轮 F9：网关不得自动或显式绑定 VPN / 隧道接口与 Tailscale ULA 地址（ADR-0018） ----
+    Mutation(
+        "r4f9-gw-tailscale-ula-allowed-as-lan",
+        "第四轮 F9（网关）：Tailscale ULA（fd7a:115c:a1e0::/48）绝不能算局域网：跳过检查后，is_lan_ip 与显式 --host 放行 Tailscale 地址",
+        (Edit(GATEWAY_NETWORK, "    if any(ip_obj in net for net in _VPN_IPV6_NETWORKS):\n        return False\n", ""),),
+        gateway_tests(VPN_BIND_TESTS), GATEWAY_RESULTS,
+        ("test_tailscale_ula_is_never_classified_as_lan_and_explicit_bind_is_refused", "test_cli_serve_refuses_explicit_tailscale_ula_bind"),
+    ),
+    Mutation(
+        "r4f9-gw-discovery-keeps-tunnel-interfaces",
+        "第四轮 F9（网关）：自动发现局域网 IP 必须跳过隧道/VPN 接口：不跳过，utun/wg/tun 上的 ULA 或 RFC1918 地址会被默认 serve 自动绑定",
+        (Edit(GATEWAY_NETWORK, "        if is_tunnel_interface(adapter):\n            continue\n", ""),),
+        gateway_tests(VPN_BIND_TESTS), GATEWAY_RESULTS,
+        ("test_default_discovery_skips_tunnel_and_vpn_interfaces_even_with_ula_or_rfc1918_ips",),
+    ),
+    Mutation(
+        "r4f9-gw-explicit-bind-allows-tunnel-ip",
+        "第四轮 F9（网关）：显式 --host 绑定属于隧道/VPN 接口的 IP 必须被拒绝：跳过接口检查后，显式绑定 utun/wg/tun 的地址会被放行",
+        (Edit(GATEWAY_NETWORK, "            tunnel_iface = _tunnel_interface_for_ip(canonical, adapters)\n", "            tunnel_iface = None\n"),),
+        gateway_tests(VPN_BIND_TESTS), GATEWAY_RESULTS,
+        ("test_explicit_bind_refuses_ip_assigned_to_tunnel_or_vpn_interface[fd00:abcd::1-utun12]",),
+    ),
+    Mutation(
+        "r4f9-gw-tunnel-name-pattern-disabled",
+        "第四轮 F9（网关）：隧道/VPN 接口名识别必须生效：恒返回 False 后，自动发现与显式绑定都会放行 VPN 网卡",
+        (Edit(GATEWAY_NETWORK, '    return any(_is_tunnel_name(label) for label in (getattr(adapter, "name", ""), getattr(adapter, "nice_name", "")))\n', "    return False\n"),),
+        gateway_tests(VPN_BIND_TESTS), GATEWAY_RESULTS,
+        ("test_default_discovery_skips_tunnel_and_vpn_interfaces_even_with_ula_or_rfc1918_ips", "test_explicit_bind_refuses_ip_assigned_to_tunnel_or_vpn_interface[10.8.0.2-wg0]"),
     ),
 )
 

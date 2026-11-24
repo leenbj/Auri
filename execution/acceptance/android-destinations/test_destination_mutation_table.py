@@ -275,6 +275,10 @@ ROUND4 = {
         "r4f8-gateway-call-skips-the-gate", "r4f8-status-loop-skips-the-gate",
         "r4f8-list-init-uses-manual-refresh", "r4f8-detail-load-always-manual",
     ],
+    "F9 网关不得自动或显式绑定 VPN / 隧道接口与 Tailscale ULA 地址（ADR-0018）": [
+        "r4f9-gw-tailscale-ula-allowed-as-lan", "r4f9-gw-discovery-keeps-tunnel-interfaces",
+        "r4f9-gw-explicit-bind-allows-tunnel-ip", "r4f9-gw-tunnel-name-pattern-disabled",
+    ],
 }
 
 

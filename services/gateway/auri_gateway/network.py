@@ -5,8 +5,10 @@ import ipaddress
 import json
 import os
 import pathlib
+import re
 import socket
 import uuid
+from collections.abc import Iterable
 from typing import Any
 
 import ifaddr
@@ -23,6 +25,53 @@ _LAN_IPV4_NETWORKS = (
 _LAN_IPV6_NETWORKS = (
     ipaddress.ip_network("fc00::/7"),
 )
+# Known VPN/overlay IPv6 ULA ranges that must never be treated as LAN (ADR-0018, round 4 F9).
+_VPN_IPV6_NETWORKS = (
+    ipaddress.ip_network("fd7a:115c:a1e0::/48"),  # Tailscale ULA
+)
+_TUNNEL_IFACE_RE = re.compile(
+    r"^(utun|tun|tap|wg|tailscale|ppp|ipsec|zt|nebula|nordlynx|mullvad|proton|clash|mihomo|singbox|sing-box|wireguard|openvpn|vpn|gif|stf)(\d|$|[-_.])"
+)
+_TUNNEL_KEYWORDS = ("tailscale", "wireguard", "openvpn", "tunnel", "vpn")
+
+
+def _is_tunnel_name(label: str | None) -> bool:
+    if not label:
+        return False
+    lowered = label.strip().lower()
+    if _TUNNEL_IFACE_RE.match(lowered):
+        return True
+    return any(keyword in lowered for keyword in _TUNNEL_KEYWORDS)
+
+
+def is_tunnel_interface(adapter: Any) -> bool:
+    """Return True if an adapter represents a VPN or tunnel interface (ADR-0018)."""
+    return any(_is_tunnel_name(label) for label in (getattr(adapter, "name", ""), getattr(adapter, "nice_name", "")))
+
+
+def _adapter_ip_strings(adapter: Any) -> list[str]:
+    ips: list[str] = []
+    for ip_info in getattr(adapter, "ips", ()):
+        raw = ip_info.ip[0] if isinstance(ip_info.ip, tuple) else ip_info.ip
+        try:
+            ips.append(str(ipaddress.ip_address(raw)))
+        except ValueError:
+            continue
+    return ips
+
+
+def _tunnel_interface_for_ip(canonical_ip: str, adapters: Iterable[Any] | None) -> str | None:
+    """Return the tunnel/VPN interface name if `canonical_ip` is only on a tunnel/VPN adapter."""
+    resolved_adapters = list(ifaddr.get_adapters() if adapters is None else adapters)
+    tunnel_name: str | None = None
+    for adapter in resolved_adapters:
+        if canonical_ip not in _adapter_ip_strings(adapter):
+            continue
+        if is_tunnel_interface(adapter):
+            tunnel_name = tunnel_name or getattr(adapter, "name", None) or getattr(adapter, "nice_name", None) or "tunnel"
+        else:
+            return None
+    return tunnel_name
 
 
 def is_loopback_ip(ip_str: str) -> bool:
@@ -39,11 +88,13 @@ def is_lan_ip(ip_str: str) -> bool:
         return False
     if ip_obj.version == 4:
         return any(ip_obj in net for net in _LAN_IPV4_NETWORKS)
+    if any(ip_obj in net for net in _VPN_IPV6_NETWORKS):
+        return False
     return any(ip_obj in net for net in _LAN_IPV6_NETWORKS)
 
 
 def is_allowed_bind_ip(ip_str: str) -> bool:
-    """Only loopback (127.0.0.0/8, ::1) and private LAN (RFC1918, 169.254/16, fc00::/7) are allowed."""
+    """Only loopback (127.0.0.0/8, ::1) and private LAN (RFC1918, 169.254/16, non-VPN fc00::/7) are allowed."""
     try:
         ip_obj = ipaddress.ip_address(ip_str)
     except ValueError:
@@ -53,11 +104,15 @@ def is_allowed_bind_ip(ip_str: str) -> bool:
     return is_loopback_ip(ip_str) or is_lan_ip(ip_str)
 
 
-def resolve_bind_hosts(requested_hosts: list[str] | None) -> list[str]:
+def resolve_bind_hosts(
+    requested_hosts: list[str] | None,
+    *,
+    adapters: Iterable[Any] | None = None,
+) -> list[str]:
     """Validate explicit --host values or discover default loopback + LAN addresses."""
     if not requested_hosts:
         hosts: list[str] = ["127.0.0.1"]
-        for lan_ip in detect_lan_ips():
+        for lan_ip in detect_lan_ips(adapters=adapters):
             if lan_ip not in hosts:
                 hosts.append(lan_ip)
         return hosts
@@ -81,6 +136,11 @@ def resolve_bind_hosts(requested_hosts: list[str] | None) -> list[str]:
             if not is_allowed_bind_ip(canonical):
                 raise ValueError(
                     f"Refusing bind host {canonical!r}: Gateway only listens on loopback and private LAN addresses."
+                )
+            tunnel_iface = _tunnel_interface_for_ip(canonical, adapters)
+            if tunnel_iface is not None:
+                raise ValueError(
+                    f"Refusing bind host {canonical!r}: tunnel/VPN interface {tunnel_iface!r} is not allowed (ADR-0018 LAN-only)."
                 )
         if canonical not in seen:
             seen.add(canonical)
@@ -116,11 +176,14 @@ def bind_tcp_sockets(hosts: list[str], port: int) -> tuple[list[socket.socket], 
     return sockets, actual_port
 
 
-def detect_lan_ips() -> list[str]:
-    """Return local private LAN IPv4/ULA IPv6 addresses (excluding loopback, VPN/CGNAT, and public IPs)."""
+def detect_lan_ips(*, adapters: Iterable[Any] | None = None) -> list[str]:
+    """Return local private LAN IPv4/ULA IPv6 addresses (excluding loopback, tunnel/VPN, CGNAT, and public IPs)."""
     found: list[str] = []
     seen: set[str] = set()
-    for adapter in ifaddr.get_adapters():
+    resolved_adapters = ifaddr.get_adapters() if adapters is None else adapters
+    for adapter in resolved_adapters:
+        if is_tunnel_interface(adapter):
+            continue
         for ip_info in adapter.ips:
             raw = ip_info.ip[0] if isinstance(ip_info.ip, tuple) else ip_info.ip
             if not is_lan_ip(raw):
