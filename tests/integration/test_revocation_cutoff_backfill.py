@@ -221,3 +221,86 @@ def test_an_upgrade_hides_the_acknowledged_texts_of_a_suspension_whose_revoke_an
         not_found(agent, "record_get", {"record_id": acked["record_id"]})
         not_found(agent, "record_get", {"record_id": waiting["record_id"]})
         assert agent.claim()["deliveries"] == []
+
+
+# ---- 第四轮 F6：迁移 0006 把截止点迁到持久单调的入库顺序（store_seq） ----
+
+
+def test_migration_0006_assigns_monotonic_store_seq_and_converts_existing_cutoffs_conservatively() -> None:
+    """在真实 0001–0005 建出的库上执行 0006：已有 Revision 按插入顺序拿 1..N，已有截止点的 Destination 保守迁到本 Tenant 的最大序号，
+    没设截止点（只轮换）的仍为 NULL，没有文字的 Tenant 迁到 0，跨 Tenant 不串号。"""
+    monotonic_migration = MIGRATIONS / "0006_monotonic_revocation_cutoff.sql"
+    assert monotonic_migration.exists(), "缺少迁移 0006_monotonic_revocation_cutoff.sql"
+
+    with contextlib.closing(legacy_database()) as conn:
+        add_destination(conn, TENANT, "suspended", HISTORIES["撤销之后隔了一阵才签发替换（真实的暂停）"])
+        add_destination(conn, TENANT, "rotated", HISTORIES["只轮换一次：旧凭证在新凭证签发的同一瞬间被撤销（数据里没有反证，不补）"])
+        add_destination(conn, OTHER_TENANT, "empty-tenant-suspended", HISTORIES["撤销之后隔了一阵才签发替换（真实的暂停）"])
+        add_revision(conn, TENANT, "t1-first", "2099-01-01T00:00:00.000000Z")
+        add_revision(conn, TENANT, "t1-second", at("01-02"))
+        add_revision(conn, "tenant-3", "t3-later", at("01-03"))
+        for dest_id, tenant, creds in (
+            ("suspended", TENANT, HISTORIES["撤销之后隔了一阵才签发替换（真实的暂停）"].credentials),
+            ("rotated", TENANT, HISTORIES["只轮换一次：旧凭证在新凭证签发的同一瞬间被撤销（数据里没有反证，不补）"].credentials),
+            ("empty-tenant-suspended", OTHER_TENANT, HISTORIES["撤销之后隔了一阵才签发替换（真实的暂停）"].credentials),
+        ):
+            for idx, cred in enumerate(creds, start=1):
+                conn.execute(
+                    "INSERT INTO destination_credentials (credential_id, tenant_id, destination_id, token_hash, issued_by_device_id, issued_at, revoked_at)"
+                    " VALUES (?, ?, ?, ?, 'device-1', ?, ?)",
+                    (f"{dest_id}-c{idx}", tenant, dest_id, f"{dest_id}-h{idx}", cred.issued, cred.revoked),
+                )
+        conn.executescript(BACKFILL.read_text(encoding="utf-8"))
+        conn.executescript(monotonic_migration.read_text(encoding="utf-8"))
+
+        seqs = dict(conn.execute("SELECT record_id, store_seq FROM revisions").fetchall())
+        assert seqs == {"t1-first-record": 1, "t1-second-record": 2, "t3-later-record": 3}
+        last_seq = conn.execute("SELECT last_seq FROM revision_sequence WHERE id = 1").fetchone()[0]
+        assert last_seq == 3
+        cutoffs = dict(conn.execute("SELECT destination_id, revocation_cutoff_seq FROM destinations").fetchall())
+        assert cutoffs == {
+            "suspended": 2,  # 本 Tenant 的最大序号（不含 tenant-3 的 3）
+            "rotated": None,  # 只轮换不设截止点
+            "empty-tenant-suspended": 0,  # 本 Tenant 尚无文字：0，之后新入库的序号 >= 4 > 0
+        }
+
+
+def test_an_upgrade_from_0005_with_future_stored_at_hides_old_and_delivers_new(tmp_path: pathlib.Path) -> None:
+    """真实网关进程从 0001–0005（含 2099 时间戳的旧文字与已补的墙上时间截止点）升到 0006：
+    升级前的旧文字（含 2099 那条）全部不可见；升级之后新入库的文字（哪怕当前时间早于 2099）照常建 Delivery 并可领取。"""
+    from harness import GatewayProcess
+
+    legacy_migrations = tmp_path / "migrations-0005"
+    legacy_migrations.mkdir()
+    for path in sorted(MIGRATIONS.glob("*.sql")):
+        if path.name <= BACKFILL.name:
+            (legacy_migrations / path.name).write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+
+    data_dir = tmp_path / "gw-0005-to-0006"
+    old_gw = GatewayProcess(data_dir, env_overrides={"AURI_GATEWAY_MIGRATIONS_DIR": str(legacy_migrations)})
+    old_gw.start()
+    try:
+        token = old_gw.pair_device("Phone")["device_token"]
+        dest = old_gw.create_agent_destination(token, "旧版升级的")
+        ahead = old_gw.publish(token, [dest.destination_id], text=f"{OLD_TEXT}（旧版 2099）")
+        with contextlib.closing(sqlite3.connect(data_dir / "gateway.db")) as conn:
+            conn.execute("UPDATE revisions SET stored_at = '2099-01-01T00:00:00.000000Z' WHERE record_id = ?", (ahead["record_id"],))
+            conn.execute("UPDATE destinations SET revocation_cutoff = '2099-01-01T00:00:00.000000Z' WHERE destination_id = ?", (dest.destination_id,))
+            conn.commit()
+    finally:
+        old_gw.stop()
+
+    upgraded = GatewayProcess(data_dir)
+    upgraded.start()
+    try:
+        agent = McpAgent(upgraded.base_url, dest.credential)
+        assert agent.record_list()["records"] == []
+        not_found(agent, "record_get", {"record_id": ahead["record_id"]})
+        assert agent.claim()["deliveries"] == []
+
+        fresh = upgraded.publish(token, [dest.destination_id], text="升级 0006 之后新入库的")
+        assert [d["destination_id"] for d in fresh["deliveries"]] == [dest.destination_id]
+        assert [d["record_id"] for d in agent.claim()["deliveries"]] == [fresh["record_id"]]
+        assert agent.record_get(fresh["record_id"])["text"] == "升级 0006 之后新入库的"
+    finally:
+        upgraded.stop()

@@ -362,14 +362,40 @@ def test_an_addition_for_a_text_stored_after_the_replacement_credential_works(wo
     assert [d["record_id"] for d in agent.claim()["deliveries"]] == [fresh["record_id"]]
 
 
-def test_a_first_store_that_is_not_later_than_the_cutoff_creates_no_delivery_either(world: World) -> None:
+def test_a_text_stored_after_recovery_is_delivered_even_when_an_earlier_text_had_a_future_stored_at(world: World) -> None:
+    """第四轮 F6：撤销截止点按持久单调的入库顺序（store_seq）算，不按墙上时间比。
+
+    旧测试曾把“2099 的旧文字把截止点推到 2099、导致时钟校正后新入库的文字永远建不出 Delivery”当成预期；
+    那是墙上时间截止点本身的缺陷。改成单调顺序之后：暂停之前入库（哪怕时间戳在 2099）仍然在每条路径上不可见，
+    对它的延迟追加也不建 Delivery；暂停恢复之后新入库的文字（顺序晚于截止点）照常建 Delivery、可被领取与读取。
+    """
     dest = world.destination("时钟回拨的")
     ahead = world.publish(dest, text=f"{OLD_TEXT}（入库时网关时钟跑在前面）")
+    old_preview = world.publish(text=f"{OLD_TEXT}（暂停前入库、延迟追加、时钟也在前面）")
     with sqlite3.connect(world.gw.data_dir / "gateway.db") as conn:
-        conn.execute("UPDATE revisions SET stored_at = '2099-01-01T00:00:00.000000Z' WHERE record_id = ?", (ahead["record_id"],))
+        conn.execute(
+            "UPDATE revisions SET stored_at = '2099-01-01T00:00:00.000000Z' WHERE record_id IN (?, ?)",
+            (ahead["record_id"], old_preview["record_id"]),
+        )
     agent = world.agent(suspend_and_reissue(world, dest))
 
-    stored = world.publish(dest, text="时钟校正之后入库的")
+    # 负例：暂停之前的文字（哪怕时间戳在 2099）仍然不可见，延迟追加也不建 Delivery
+    delayed = add_deliveries(world, old_preview["record_id"], [dest.destination_id])
+    assert delayed.status_code == 200, delayed.text
+    assert delayed.json()["deliveries"] == [], "暂停之前入库的文字，延迟追加不能建 Delivery"
+    not_found(agent, "record_get", {"record_id": ahead["record_id"]})
+    assert agent.record_search(OLD_TEXT)["matches"] == []
 
-    assert stored["deliveries"] == [], "它的入库时间也不晚于截止点：看不见，所以不建一条永远领不到的 PENDING"
-    assert agent.claim()["deliveries"] == []
+    # 正例：时钟校正之后（恢复之后）新入库的文字，入库顺序晚于截止点，照常建 Delivery 并可领取
+    stored = world.publish(dest, text="时钟校正之后入库的")
+    assert [d["destination_id"] for d in stored["deliveries"]] == [dest.destination_id]
+    assert [d["record_id"] for d in agent.claim()["deliveries"]] == [stored["record_id"]]
+    assert [row["record_id"] for row in agent.record_list()["records"]] == [stored["record_id"]]
+    assert agent.record_get(stored["record_id"])["text"] == "时钟校正之后入库的"
+
+    # 恢复之后入库的预览确认，追加也照常建 Delivery
+    fresh_preview = world.publish(text="时钟校正之后入库、再追加")
+    added = add_deliveries(world, fresh_preview["record_id"], [dest.destination_id])
+    assert added.status_code == 200, added.text
+    assert [d["destination_id"] for d in added.json()["deliveries"]] == [dest.destination_id]
+    assert [d["record_id"] for d in agent.claim()["deliveries"]] == [fresh_preview["record_id"]]

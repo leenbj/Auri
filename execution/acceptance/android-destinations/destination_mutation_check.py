@@ -78,6 +78,7 @@ GATEWAY_STORE = "services/gateway/auri_gateway/store.py"
 GATEWAY_DELIVERIES = "services/gateway/auri_gateway/deliveries.py"
 GATEWAY_QUERIES = "services/gateway/auri_gateway/queries.py"
 GATEWAY_MIGRATION_0005 = "services/gateway/auri_gateway/migrations/0005_destination_revocation_cutoff.sql"
+GATEWAY_MIGRATION_0006 = "services/gateway/auri_gateway/migrations/0006_monotonic_revocation_cutoff.sql"
 CONTRACT_GUARD = SYNC_GATEWAY + "ContractGuard.kt"
 PAIRED_GATEWAY = ANDROID + "sync/src/main/kotlin/app/auri/sync/pairing/PairedGateway.kt"
 POLICY_GENERATION = ANDROID + "sync/src/main/kotlin/app/auri/sync/policy/PolicyGeneration.kt"
@@ -85,6 +86,8 @@ PINNED_CLIENT = ANDROID + "sync/src/main/kotlin/app/auri/sync/http/PinnedHttpsCl
 REQUEST_GATE = ANDROID + "sync/src/main/kotlin/app/auri/sync/policy/RequestGate.kt"
 DISCOVERY = ANDROID + "sync/src/main/kotlin/app/auri/sync/discovery/GatewayDiscovery.kt"
 LOCATOR = ANDROID + "sync/src/main/kotlin/app/auri/sync/discovery/GatewayLocator.kt"
+RESOLVE_WHILE_OPEN = ANDROID + "sync/src/main/kotlin/app/auri/sync/discovery/ResolveWhileOpen.kt"
+NSD_DISCOVERY = ANDROID + "syncplatform/src/main/kotlin/app/auri/syncplatform/discovery/NsdGatewayDiscovery.kt"
 CLIP_OWNERSHIP = APP_DEST + "ClipOwnership.kt"
 
 APP_RESULTS, SYNC_RESULTS, REAL_RESULTS, PLATFORM_RESULTS = (
@@ -1048,8 +1051,8 @@ MUTATIONS: tuple = (
     ),
     Mutation(
         "r1-gw-cutoff-ignores-clock-ahead",
-        "再评审 R1（网关）：截止点要与已有文字的最晚入库时间取较大者：只取当前时间，网关时钟曾经跑快过的话，旧文字会落到截止点之后而重新可见",
-        (Edit(GATEWAY_STORE, "COALESCE((SELECT MAX(stored_at) FROM revisions WHERE tenant_id = ?), '')", "COALESCE((SELECT MAX(stored_at) FROM revisions WHERE tenant_id = ? AND 0), '')"),),
+        "再评审 R1（网关，第四轮 F6 重锚定到单调序号）：截止点要取本 Tenant 已有文字的最大持久单调序号（store_seq）：清零后，时钟跑快时入库的旧文字会落到截止点之后而重新可见",
+        (Edit(GATEWAY_STORE, "COALESCE((SELECT MAX(store_seq) FROM revisions WHERE tenant_id = ?), 0)", "COALESCE((SELECT MAX(store_seq) FROM revisions WHERE tenant_id = ? AND 0), 0)"),),
         gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
         ('test_a_text_stored_while_the_gateway_clock_ran_ahead_is_still_older_than_the_cutoff',),
     ),
@@ -1096,27 +1099,30 @@ MUTATIONS: tuple = (
         gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
         ('test_an_upgrade_does_not_mistake_a_rotation_after_a_clock_rollback_for_a_suspension', 'test_a_suspension_that_ended_before_the_upgrade_gets_its_cutoff_from_the_credential_history'),
     ),
-    # ---- 再评审 R2：延迟的追加与首次入库不为截止点之前的文字建 Delivery ----
+    # ---- 再评审 R2：延迟的追加不为截止点之前的文字建 Delivery（r2-gw-first-store-ignores-cutoff 已随第四轮 F6 退役：单调序号下首次入库总是严格晚于已有截止点） ----
     Mutation(
         "r2-gw-addition-ignores-cutoff",
-        "再评审 R2（网关）：延迟到达的追加要看这条文字的入库时间：不看，替换凭证之后才到的追加照样为撤销之前入库的文字建一条永远领不到的 PENDING",
-        (Edit(GATEWAY_STORE, '            suspended |= _past_cutoff_destination_ids(conn, tenant_id, missing, stored["stored_at"])\n', ""),),
+        "再评审 R2（网关，第四轮 F6 重锚定）：延迟到达的追加要看这条文字的入库顺序：不看，替换凭证之后才到的追加照样为撤销之前入库的文字建一条永远领不到的 PENDING",
+        (Edit(
+            GATEWAY_STORE,
+            '            suspended |= _past_cutoff_destination_ids(\n'
+            '                conn, tenant_id, missing, stored["store_seq"] if has_seq else None, stored["stored_at"]\n'
+            '            )\n',
+            "",
+        ),),
         gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
         ('test_a_delayed_addition_after_the_replacement_credential_creates_nothing_for_an_older_revision',),
     ),
     Mutation(
-        "r2-gw-first-store-ignores-cutoff",
-        "再评审 R2（网关）：首次入库的 publication 也要过截止点：不过，时钟回拨后入库的文字（入库时间不晚于截止点）照样建一条永远领不到的 PENDING",
-        (Edit(GATEWAY_STORE, '            suspended |= _past_cutoff_destination_ids(conn, tenant_id, destination_ids, now_iso)\n', ""),),
-        gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
-        ('test_a_first_store_that_is_not_later_than_the_cutoff_creates_no_delivery_either',),
-    ),
-    Mutation(
         "r2-gw-cutoff-ignores-revision-age",
-        "再评审 R2（网关）：只跳过入库时间不晚于截止点的文字：有截止点就一律跳过，恢复之后入库的新文字也建不出 Delivery",
-        (Edit(GATEWAY_STORE, '          AND revocation_cutoff IS NOT NULL AND revocation_cutoff >= ?\n', '          AND revocation_cutoff IS NOT NULL AND ? IS NOT NULL\n'),),
+        "再评审 R2（网关，第四轮 F6 重锚定）：只跳过入库顺序不晚于截止点的文字：有截止点就一律跳过，恢复之后入库的新文字追加也建不出 Delivery",
+        (Edit(
+            GATEWAY_STORE,
+            '                  (revocation_cutoff_seq IS NOT NULL AND revocation_cutoff_seq >= ?)\n',
+            '                  (revocation_cutoff_seq IS NOT NULL AND ? IS NOT NULL)\n',
+        ),),
         gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
-        ('test_an_addition_for_a_text_stored_after_the_replacement_credential_works', 'test_text_stored_after_the_replacement_credential_is_visible_on_every_path'),
+        ('test_an_addition_for_a_text_stored_after_the_replacement_credential_works',),
     ),
     # ---- 评审 R7：手机只和说合同 1.2 的网关说话（联系网关传任何东西之前先问版本） ----
     Mutation(
@@ -2335,7 +2341,7 @@ MUTATIONS: tuple = (
     Mutation(
         "s12-walk-skips-the-gate-for-mdns",
         "第三轮 S12：问 mDNS 也是一次联系（组播查询），交出去之前要过门：不过，记下的地址探测在路上时收回授权，mDNS 查询照发",
-        (Edit(DISCOVERY, "        gate.gated { discovery.find(gatewayId) } ?: return Walk.Withheld\n", "        discovery.find(gatewayId)\n"),),
+        (Edit(DISCOVERY, "        gate.gated { discovery.find(gatewayId, gate) } ?: return Walk.Withheld\n", "        discovery.find(gatewayId, gate)\n"),),
         sync_tests("PolicyHandoffRaceTest", "GatewayLocatorTest"), SYNC_RESULTS,
         ("revocationDuringTheLastStoredProbeStopsTheMdnsQuery", "记下的地址都试过之后门不放行：不问 mDNS"),
     ),
@@ -2788,6 +2794,65 @@ MUTATIONS: tuple = (
         (Edit(CONTRACT_GUARD, "            generation += 1\n", ""),),
         sync_tests("ContractStaleAnswerTest", "ContractRevalidationTest"), SYNC_RESULTS,
         ("变之前的兼容答复不交给提问的人", "已经在路上的版本询问遇到作废"),
+    ),
+    # ---- 第四轮 F6：撤销截止点改为持久单调入库顺序（store_seq / revocation_cutoff_seq，迁移 0006） ----
+    Mutation(
+        "r4f6-gw-visibility-still-uses-wall-clock",
+        "第四轮 F6（网关）：可见性必须按单调顺序 store_seq > revocation_cutoff_seq 比较：退回墙上时间后，2099 旧文字推高截止点会让恢复后的新文字永远不可见",
+        (Edit(
+            GATEWAY_STORE,
+            'AFTER_REVOCATION_CUTOFF = (\n'
+            '    "((dst.revocation_cutoff_seq IS NULL OR r.store_seq > dst.revocation_cutoff_seq)"\n'
+            '    " AND (dst.revocation_cutoff_seq IS NOT NULL OR dst.revocation_cutoff IS NULL OR r.stored_at > dst.revocation_cutoff))"\n'
+            ')\n',
+            'AFTER_REVOCATION_CUTOFF = "(dst.revocation_cutoff IS NULL OR r.stored_at > dst.revocation_cutoff)"\n',
+        ),),
+        gateway_tests(REVOCATION_CUTOFF_TESTS, BACKFILL_TESTS), GATEWAY_RESULTS,
+        ('test_the_replacement_credential_reads_nothing_from_before_the_revocation_on_any_path', 'test_an_upgrade_from_0005_with_future_stored_at_hides_old_and_delivers_new'),
+    ),
+    Mutation(
+        "r4f6-gw-sequence-never-increments",
+        "第四轮 F6（网关）：每次入库必须把 revision_sequence.last_seq 严格递增：不递增，恢复之后新入库的文字与旧截止点同号而被藏起来",
+        (Edit(
+            GATEWAY_STORE,
+            '    conn.execute("UPDATE revision_sequence SET last_seq = last_seq + 1 WHERE id = 1")\n',
+            '    conn.execute("UPDATE revision_sequence SET last_seq = last_seq WHERE id = 1")\n',
+        ),),
+        gateway_tests(REVOCATION_CUTOFF_TESTS), GATEWAY_RESULTS,
+        ('test_a_text_stored_after_recovery_is_delivered_even_when_an_earlier_text_had_a_future_stored_at',),
+    ),
+    Mutation(
+        "r4f6-gw-migration-0006-ignores-existing-cutoffs",
+        "第四轮 F6（网关迁移 0006）：升级时已有墙上时间截止点的 Destination 必须保守迁成 revocation_cutoff_seq：不迁，旧截止点丢失或继续被 2099 墙上时间卡死",
+        (Edit(
+            GATEWAY_MIGRATION_0006,
+            'WHERE revocation_cutoff IS NOT NULL\n  AND revocation_cutoff_seq IS NULL;\n',
+            'WHERE 0 AND revocation_cutoff IS NOT NULL\n  AND revocation_cutoff_seq IS NULL;\n',
+        ),),
+        gateway_tests(BACKFILL_TESTS), GATEWAY_RESULTS,
+        ('test_migration_0006_assigns_monotonic_store_seq_and_converts_existing_cutoffs_conservatively', 'test_an_upgrade_from_0005_with_future_stored_at_hides_old_and_delivers_new'),
+    ),
+    Mutation(
+        "r4f6-gw-migration-0006-crosses-tenants",
+        "第四轮 F6（网关迁移 0006）：迁移已有截止点只能取本 Tenant 的最大 store_seq：跨 Tenant 取最大值会把别的 Tenant 的序号算进来",
+        (Edit(
+            GATEWAY_MIGRATION_0006,
+            '    (SELECT MAX(r.store_seq) FROM revisions AS r WHERE r.tenant_id = destinations.tenant_id),\n',
+            '    (SELECT MAX(r.store_seq) FROM revisions AS r),\n',
+        ),),
+        gateway_tests(BACKFILL_TESTS), GATEWAY_RESULTS,
+        ('test_migration_0006_assigns_monotonic_store_seq_and_converts_existing_cutoffs_conservatively',),
+    ),
+    Mutation(
+        "r4f6-gw-migration-0006-leaves-sequence-at-zero",
+        "第四轮 F6（网关迁移 0006）：revision_sequence.last_seq 必须从已有最大 store_seq 起步：留在 0，升级后新入库的文字拿到 1 <= 旧截止点而被隐藏",
+        (Edit(
+            GATEWAY_MIGRATION_0006,
+            'VALUES (1, COALESCE((SELECT MAX(store_seq) FROM revisions), 0));\n',
+            'VALUES (1, 0);\n',
+        ),),
+        gateway_tests(BACKFILL_TESTS), GATEWAY_RESULTS,
+        ('test_migration_0006_assigns_monotonic_store_seq_and_converts_existing_cutoffs_conservatively', 'test_an_upgrade_from_0005_with_future_stored_at_hides_old_and_delivers_new'),
     ),
 )
 

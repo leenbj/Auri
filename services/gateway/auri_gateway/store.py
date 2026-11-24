@@ -366,10 +366,14 @@ def _cancel_open_deliveries(conn: Any, tenant_id: str, destination_id: str, now_
         )
 
 
-# 撤销截止点（Ticket 22 再评审 R1/R2）的可见性条件：入库时间不晚于 Destination 的截止点（暂停结束、签发替换凭证的那一刻）的文字，
+# 撤销截止点（Ticket 22 再评审 R1/R2，第四轮 F6 改为持久单调顺序）的可见性条件：
+# 入库顺序（r.store_seq）不晚于 Destination 的截止点（dst.revocation_cutoff_seq）的文字，
 # 这个 Destination 的 Agent 一律看不到（列表、搜索、读取、领取、续租、确认、拒收）。`dst` 是 destinations、`r` 是 revisions 的别名。
-# 严格大于：同一时钟刻度里分不出先后时，宁可不给。
-AFTER_REVOCATION_CUTOFF = "(dst.revocation_cutoff IS NULL OR r.stored_at > dst.revocation_cutoff)"
+# 仅当库里尚未把墙上时间截止点迁到序号（revocation_cutoff_seq IS NULL 但 revocation_cutoff IS NOT NULL）时，才退回比较 stored_at。
+AFTER_REVOCATION_CUTOFF = (
+    "((dst.revocation_cutoff_seq IS NULL OR r.store_seq > dst.revocation_cutoff_seq)"
+    " AND (dst.revocation_cutoff_seq IS NOT NULL OR dst.revocation_cutoff IS NULL OR r.stored_at > dst.revocation_cutoff))"
+)
 
 
 def _suspended_destination_ids(conn: Any, tenant_id: str, destination_ids: list[str]) -> set[str]:
@@ -410,10 +414,27 @@ def _has_revocation_cutoff_column(conn: Any) -> bool:
     return any(row[1] == "revocation_cutoff" for row in conn.execute("PRAGMA table_info(destinations)"))
 
 
+def _has_store_seq_column(conn: Any) -> bool:
+    """Whether this database already has migration 0006's monotonic sequence column on revisions."""
+    return any(row[1] == "store_seq" for row in conn.execute("PRAGMA table_info(revisions)"))
+
+
+def _has_revocation_cutoff_seq_column(conn: Any) -> bool:
+    """Whether this database already has migration 0006's monotonic cutoff column on destinations."""
+    return any(row[1] == "revocation_cutoff_seq" for row in conn.execute("PRAGMA table_info(destinations)"))
+
+
+def _allocate_revision_seq(conn: Any) -> int:
+    """Allocate the next durable monotonic revision sequence inside an active BEGIN IMMEDIATE transaction."""
+    conn.execute("UPDATE revision_sequence SET last_seq = last_seq + 1 WHERE id = 1")
+    row = conn.execute("SELECT last_seq FROM revision_sequence WHERE id = 1").fetchone()
+    return int(row["last_seq"])
+
+
 def _past_cutoff_destination_ids(
-    conn: Any, tenant_id: str, destination_ids: list[str], stored_at: str
+    conn: Any, tenant_id: str, destination_ids: list[str], store_seq: int | None, stored_at: str
 ) -> set[str]:
-    """Which of these Destinations have a revocation cutoff at or after `stored_at` (Ticket 22 re-review R2).
+    """Which of these Destinations have a revocation cutoff at or after this revision (R2, F6 monotonic order).
 
     A text stored by then is invisible to the Destination's Agent for good (`AFTER_REVOCATION_CUTOFF`), so no
     Delivery is created for it: a PENDING row nobody can ever claim would only make the phone's status say
@@ -422,14 +443,27 @@ def _past_cutoff_destination_ids(
     if not destination_ids or not _has_revocation_cutoff_column(conn):
         return set()
     placeholders = ", ".join("?" for _ in destination_ids)
-    rows = conn.execute(
-        f"""
-        SELECT destination_id FROM destinations
-        WHERE tenant_id = ? AND destination_id IN ({placeholders})
-          AND revocation_cutoff IS NOT NULL AND revocation_cutoff >= ?
-        """,
-        (tenant_id, *destination_ids, stored_at),
-    ).fetchall()
+    if _has_revocation_cutoff_seq_column(conn) and store_seq is not None:
+        rows = conn.execute(
+            f"""
+            SELECT destination_id FROM destinations
+            WHERE tenant_id = ? AND destination_id IN ({placeholders})
+              AND (
+                  (revocation_cutoff_seq IS NOT NULL AND revocation_cutoff_seq >= ?)
+                  OR (revocation_cutoff_seq IS NULL AND revocation_cutoff IS NOT NULL AND revocation_cutoff >= ?)
+              )
+            """,
+            (tenant_id, *destination_ids, store_seq, stored_at),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"""
+            SELECT destination_id FROM destinations
+            WHERE tenant_id = ? AND destination_id IN ({placeholders})
+              AND revocation_cutoff IS NOT NULL AND revocation_cutoff >= ?
+            """,
+            (tenant_id, *destination_ids, stored_at),
+        ).fetchall()
     return {row["destination_id"] for row in rows}
 
 
@@ -683,8 +717,8 @@ def store_revision(
             destination_ids = list(publication["destination_ids"])
             _validate_publication_destinations(conn, tenant_id, destination_ids, publication["intent"])
             # 暂停的 Destination（凭证被撤销、还没签发新的）不建 Delivery，也不让整条文字被拒：手机可能还不知道
+            # 第四轮 F6：单调入库顺序下，新入库的 Revision 序号总是严格大于任何已有截止点，无需在首次入库时跳过截止点。
             suspended = _suspended_destination_ids(conn, tenant_id, destination_ids)
-            suspended |= _past_cutoff_destination_ids(conn, tenant_id, destination_ids, now_iso)
             destination_ids = [dest_id for dest_id in destination_ids if dest_id not in suspended]
 
             prior_published = conn.execute(
@@ -729,44 +763,86 @@ def store_revision(
                 now=now,
                 now_iso=now_iso,
             )
-            conn.execute(
-                """
-                INSERT INTO revisions (
-                    tenant_id, record_id, revision, origin_device_id,
-                    operation_id, state, stored_at,
-                    text, text_sha256, source, language, review_state,
-                    execution_location, engine, model_id, model_version,
-                    confidence, segments_json, capture_json,
-                    intent, destination_ids_json,
-                    superseded_revisions_json, deliveries_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    tenant_id,
-                    record_id,
-                    revision,
-                    auth.device_id,
-                    operation_id,
-                    state,
-                    now_iso,
-                    content["text"],
-                    content["text_sha256"],
-                    content["source"],
-                    content["language"],
-                    content["review_state"],
-                    content["execution_location"],
-                    content["engine"],
-                    content["model_id"],
-                    content["model_version"],
-                    content["confidence"],
-                    json.dumps(content["segments"], ensure_ascii=False),
-                    json.dumps(capture, ensure_ascii=False),
-                    publication["intent"],
-                    json.dumps(destination_ids),
-                    json.dumps(superseded_revisions),
-                    json.dumps(deliveries),
-                ),
-            )
+            if _has_store_seq_column(conn):
+                store_seq = _allocate_revision_seq(conn)
+                conn.execute(
+                    """
+                    INSERT INTO revisions (
+                        tenant_id, record_id, revision, origin_device_id,
+                        operation_id, state, stored_at, store_seq,
+                        text, text_sha256, source, language, review_state,
+                        execution_location, engine, model_id, model_version,
+                        confidence, segments_json, capture_json,
+                        intent, destination_ids_json,
+                        superseded_revisions_json, deliveries_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        tenant_id,
+                        record_id,
+                        revision,
+                        auth.device_id,
+                        operation_id,
+                        state,
+                        now_iso,
+                        store_seq,
+                        content["text"],
+                        content["text_sha256"],
+                        content["source"],
+                        content["language"],
+                        content["review_state"],
+                        content["execution_location"],
+                        content["engine"],
+                        content["model_id"],
+                        content["model_version"],
+                        content["confidence"],
+                        json.dumps(content["segments"], ensure_ascii=False),
+                        json.dumps(capture, ensure_ascii=False),
+                        publication["intent"],
+                        json.dumps(destination_ids),
+                        json.dumps(superseded_revisions),
+                        json.dumps(deliveries),
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO revisions (
+                        tenant_id, record_id, revision, origin_device_id,
+                        operation_id, state, stored_at,
+                        text, text_sha256, source, language, review_state,
+                        execution_location, engine, model_id, model_version,
+                        confidence, segments_json, capture_json,
+                        intent, destination_ids_json,
+                        superseded_revisions_json, deliveries_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        tenant_id,
+                        record_id,
+                        revision,
+                        auth.device_id,
+                        operation_id,
+                        state,
+                        now_iso,
+                        content["text"],
+                        content["text_sha256"],
+                        content["source"],
+                        content["language"],
+                        content["review_state"],
+                        content["execution_location"],
+                        content["engine"],
+                        content["model_id"],
+                        content["model_version"],
+                        content["confidence"],
+                        json.dumps(content["segments"], ensure_ascii=False),
+                        json.dumps(capture, ensure_ascii=False),
+                        publication["intent"],
+                        json.dumps(destination_ids),
+                        json.dumps(superseded_revisions),
+                        json.dumps(deliveries),
+                    ),
+                )
             _insert_delivery_rows(
                 conn,
                 tenant_id=tenant_id,
@@ -841,9 +917,10 @@ def add_revision_deliveries(
                     RECORD_NOT_ORIGIN_DEVICE,
                     "Only the device that created this record may add deliveries to its revisions.",
                 )
+            has_seq = _has_store_seq_column(conn)
             stored = conn.execute(
-                """
-                SELECT stored_at FROM revisions
+                f"""
+                SELECT {'store_seq, ' if has_seq else ''}stored_at FROM revisions
                 WHERE tenant_id = ? AND record_id = ? AND revision = ?
                 """,
                 (tenant_id, record_id, revision),
@@ -870,8 +947,10 @@ def add_revision_deliveries(
             _validate_publication_destinations(conn, tenant_id, missing, intent)
             # 暂停的 Destination（凭证被撤销、还没签发新的）不建，也不让整个请求失败：回答里没有它
             suspended = _suspended_destination_ids(conn, tenant_id, missing)
-            # 撤销截止点（再评审 R2）：撤销之前入库的文字，替换凭证永远看不到，延迟到达的追加也不为它建 Delivery
-            suspended |= _past_cutoff_destination_ids(conn, tenant_id, missing, stored["stored_at"])
+            # 撤销截止点（再评审 R2，第四轮 F6）：撤销之前入库的文字，替换凭证永远看不到，延迟到达的追加也不为它建 Delivery
+            suspended |= _past_cutoff_destination_ids(
+                conn, tenant_id, missing, stored["store_seq"] if has_seq else None, stored["stored_at"]
+            )
             missing = [dest_id for dest_id in missing if dest_id not in suspended]
 
             higher_exists = (
@@ -1088,18 +1167,32 @@ def issue_destination_credential(
 
             replaced_previous = bool(dest["credential_issued"])
             if destination_id in _suspended_destination_ids(conn, auth.tenant_id, [destination_id]):
-                # 暂停到此结束：这一刻起，入库时间不晚于截止点的文字，替换凭证一律看不到、也不会为它们建 Delivery（再评审 R1/R2）。
-                # 与已有文字的最晚入库时间取较大者：网关时钟回拨过也不会让旧文字落到截止点之后。
-                conn.execute(
-                    """
-                    UPDATE destinations
-                    SET revocation_cutoff = MAX(
-                        ?, COALESCE((SELECT MAX(stored_at) FROM revisions WHERE tenant_id = ?), '')
+                # 暂停到此结束：这一刻起，入库顺序不晚于截止点的文字，替换凭证一律看不到、也不会为它们建 Delivery（R1/R2，第四轮 F6）。
+                # 取本 Tenant 已有文字的最大持久单调序号（与已有截止点取较大者，绝不倒退）；不依赖墙上时间。
+                if _has_revocation_cutoff_seq_column(conn):
+                    conn.execute(
+                        """
+                        UPDATE destinations
+                        SET revocation_cutoff_seq = MAX(
+                                COALESCE(revocation_cutoff_seq, 0),
+                                COALESCE((SELECT MAX(store_seq) FROM revisions WHERE tenant_id = ?), 0)
+                            ),
+                            revocation_cutoff = NULL
+                        WHERE tenant_id = ? AND destination_id = ?
+                        """,
+                        (auth.tenant_id, auth.tenant_id, destination_id),
                     )
-                    WHERE tenant_id = ? AND destination_id = ?
-                    """,
-                    (now_iso, auth.tenant_id, auth.tenant_id, destination_id),
-                )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE destinations
+                        SET revocation_cutoff = MAX(
+                            ?, COALESCE((SELECT MAX(stored_at) FROM revisions WHERE tenant_id = ?), '')
+                        )
+                        WHERE tenant_id = ? AND destination_id = ?
+                        """,
+                        (now_iso, auth.tenant_id, auth.tenant_id, destination_id),
+                    )
             if replaced_previous:
                 conn.execute(
                     """

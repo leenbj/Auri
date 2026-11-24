@@ -260,6 +260,11 @@ ROUND4 = {
         "r4f5-discards-every-compatible-answer", "r4f5-never-asks-again", "r4f5-asks-without-a-useful-bound",
         "r4f5-gives-up-with-the-stale-answer", "r4f5-invalidate-does-not-bump-the-generation",
     ],
+    "F6 撤销截止点改按持久单调入库顺序（store_seq / revocation_cutoff_seq，迁移 0006），不再被历史未来时间戳永久截断": [
+        "r4f6-gw-visibility-still-uses-wall-clock", "r4f6-gw-sequence-never-increments",
+        "r4f6-gw-migration-0006-ignores-existing-cutoffs", "r4f6-gw-migration-0006-crosses-tenants",
+        "r4f6-gw-migration-0006-leaves-sequence-at-zero",
+    ],
 }
 
 
