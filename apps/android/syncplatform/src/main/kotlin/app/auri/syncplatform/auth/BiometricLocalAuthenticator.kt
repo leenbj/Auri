@@ -8,6 +8,7 @@ import app.auri.sync.SyncLog
 import app.auri.sync.destinations.AuthPurpose
 import app.auri.sync.destinations.AuthResult
 import app.auri.sync.destinations.LocalAuthenticator
+import app.auri.sync.destinations.UnavailableReason
 import kotlin.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
 
@@ -24,10 +25,13 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 class BiometricLocalAuthenticator(
     context: Context,
     log: SyncLog = SyncLog.None,
-) : LocalAuthenticator by BiometricGate(AndroidBiometricFramework(context), log)
+) : LocalAuthenticator by BiometricGate(AndroidBiometricFramework(context, log), log)
 
 /** 系统框架那一侧：[BiometricManager] 与 [BiometricPrompt]。没有可单测的逻辑（逻辑都在 [BiometricGate] 与 [BiometricResults]），真机上才验证。 */
-internal class AndroidBiometricFramework(private val context: Context) : BiometricFramework {
+internal class AndroidBiometricFramework(
+    private val context: Context,
+    private val log: SyncLog = SyncLog.None,
+) : BiometricFramework {
     override fun canAuthenticate(allowedAuthenticators: Int): Int {
         val manager = context.getSystemService(BiometricManager::class.java) ?: return BiometricManager.BIOMETRIC_ERROR_NO_HARDWARE
         return manager.canAuthenticate(allowedAuthenticators)
@@ -58,6 +62,12 @@ internal class AndroidBiometricFramework(private val context: Context) : Biometr
             // 不用设备凭据作后备（评审 B4），系统就要求自己给“取消”按钮；它的回调不走 onAuthenticationError，这里按取消交回
             .setNegativeButton("取消", context.mainExecutor) { _, _ -> if (continuation.isActive) continuation.resume(AuthResult.Cancelled) }
             .setConfirmationRequired(true)
-        builder.build().authenticate(signal, context.mainExecutor, callback)
+        try {
+            builder.build().authenticate(signal, context.mainExecutor, callback)
+        } catch (failure: Exception) {
+            signal.cancel()
+            log.event("auth.prompt-error ${failure::class.simpleName}")
+            if (continuation.isActive) continuation.resume(AuthResult.Unavailable(UnavailableReason.TEMPORARILY_UNAVAILABLE))
+        }
     }
 }

@@ -53,6 +53,7 @@ LIBRARY_SOURCE = SYNC_ENGINE + "RecordLibrarySubmissionSource.kt"
 DISPATCH_SQL = SYNCPLATFORM + "dispatch/DispatchSql.kt"
 BIOMETRIC = SYNCPLATFORM + "auth/BiometricResults.kt"
 BIOMETRIC_GATE = SYNCPLATFORM + "auth/BiometricGate.kt"
+BIOMETRIC_AUTH = SYNCPLATFORM + "auth/BiometricLocalAuthenticator.kt"
 ENGINE = SYNC_ENGINE + "SyncEngine.kt"
 POLICY = ANDROID + "sync/src/main/kotlin/app/auri/sync/policy/DataFlowPolicy.kt"
 POLICY_SQL = SYNCPLATFORM + "policy/DataFlowPolicySql.kt"
@@ -3009,6 +3010,40 @@ MUTATIONS: tuple = (
         (Edit(GATEWAY_NETWORK, '    return any(_is_tunnel_name(label) for label in (getattr(adapter, "name", ""), getattr(adapter, "nice_name", "")))\n', "    return False\n"),),
         gateway_tests(VPN_BIND_TESTS), GATEWAY_RESULTS,
         ("test_default_discovery_skips_tunnel_and_vpn_interfaces_even_with_ula_or_rfc1918_ips", "test_explicit_bind_refuses_ip_assigned_to_tunnel_or_vpn_interface[wg0]"),
+    ),
+    # ---- 第四轮 OCR 复查修复（M12 / M14 / M21：防止进程崩溃与作用域死亡） ----
+    Mutation(
+        "r4ocr-m21-biometric-gate-lets-error-escape",
+        "第四轮 OCR M21：BiometricGate 必须兜住系统框架抛出的非取消异常并降级为暂时不可用：去掉 catch 后异常逃逸成网络中断",
+        (Edit(
+            BIOMETRIC_GATE,
+            "    } catch (failure: Exception) {\n"
+            "        log.event(\"auth.error ${failure::class.simpleName}\")\n"
+            "        AuthResult.Unavailable(UnavailableReason.TEMPORARILY_UNAVAILABLE)\n"
+            "    }\n",
+            "    } catch (failure: Exception) {\n"
+            "        throw failure\n"
+            "    }\n",
+        ),),
+        platform_tests("BiometricGateTest"), PLATFORM_RESULTS,
+        ("OCR M21：系统框架抛 SecurityException 或 IllegalArgumentException 时降级为暂时不可用",),
+    ),
+    Mutation(
+        "r4ocr-m21-biometric-framework-unguarded-authenticate",
+        "第四轮 OCR M21（接线守卫）：AndroidBiometricFramework 调 authenticate 必须兜住异常并取消信号：去掉 try/catch 后平台异常会逃逸出挂起块",
+        (Edit(
+            BIOMETRIC_AUTH,
+            "        try {\n"
+            "            builder.build().authenticate(signal, context.mainExecutor, callback)\n"
+            "        } catch (failure: Exception) {\n"
+            "            signal.cancel()\n"
+            "            log.event(\"auth.prompt-error ${failure::class.simpleName}\")\n"
+            "            if (continuation.isActive) continuation.resume(AuthResult.Unavailable(UnavailableReason.TEMPORARILY_UNAVAILABLE))\n"
+            "        }\n",
+            "        builder.build().authenticate(signal, context.mainExecutor, callback)\n",
+        ),),
+        platform_tests("BiometricGateTest"), PLATFORM_RESULTS,
+        ("OCR M21：AndroidBiometricFramework 调 authenticate 必须兜住异常",),
     ),
 )
 

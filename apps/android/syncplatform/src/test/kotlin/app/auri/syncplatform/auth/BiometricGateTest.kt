@@ -133,4 +133,34 @@ class BiometricGateTest {
         assertTrue(prompts.isEmpty())
         assertEquals(listOf("auth.Unavailable", "auth.Unavailable"), lines.toList())
     }
+
+    @Test
+    fun `OCR M21：系统框架抛 SecurityException 或 IllegalArgumentException 时降级为暂时不可用，不逃逸且只记异常类名`() = runBlocking {
+        val lines = CopyOnWriteArrayList<String>()
+        val log = SyncLog { lines += it }
+        val checkThrows = object : BiometricFramework {
+            override fun canAuthenticate(allowedAuthenticators: Int): Int = throw SecurityException("secret detail")
+
+            override suspend fun prompt(request: PromptRequest): AuthResult = error("should not reach prompt")
+        }
+        val promptThrows = object : BiometricFramework {
+            override fun canAuthenticate(allowedAuthenticators: Int): Int = BiometricManager.BIOMETRIC_SUCCESS
+
+            override suspend fun prompt(request: PromptRequest): AuthResult = throw IllegalArgumentException("bad combo")
+        }
+
+        assertEquals(AuthResult.Unavailable(UnavailableReason.TEMPORARILY_UNAVAILABLE), BiometricGate(checkThrows, log).authenticate(AuthPurpose.ISSUE_CREDENTIAL))
+        assertEquals(AuthResult.Unavailable(UnavailableReason.TEMPORARILY_UNAVAILABLE), BiometricGate(promptThrows, log).authenticate(AuthPurpose.ROTATE_CREDENTIAL))
+        assertEquals(listOf("auth.error SecurityException", "auth.error IllegalArgumentException"), lines.toList())
+    }
+
+    @Test
+    fun `OCR M21：AndroidBiometricFramework 调 authenticate 必须兜住异常、取消信号并恢复为暂时不可用`() {
+        val source = java.io.File("src/main/kotlin/app/auri/syncplatform/auth/BiometricLocalAuthenticator.kt").readText()
+        val promptBody = source.substringAfter("override suspend fun prompt(")
+
+        assertTrue("authenticate 调用必须包在 try/catch 里：$promptBody", "try {" in promptBody && "builder.build().authenticate(" in promptBody)
+        assertTrue("异常时必须取消 CancellationSignal：$promptBody", "signal.cancel()" in promptBody)
+        assertTrue("异常时必须恢复为 TEMPORARILY_UNAVAILABLE：$promptBody", "UnavailableReason.TEMPORARILY_UNAVAILABLE" in promptBody)
+    }
 }

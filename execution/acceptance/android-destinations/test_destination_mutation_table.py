@@ -293,3 +293,22 @@ def test_every_round4_mutation_in_the_table_is_attributed_to_a_fix():
     attributed = {i for ids in ROUND4.values() for i in ids}
     round4_ids = {m.id for m in dm.MUTATIONS if re.match(r"r4f\d+-", m.id)}
     assert round4_ids == attributed, (round4_ids - attributed, attributed - round4_ids)
+
+
+ROUND4_OCR = {
+    "OCR M21 生物识别框架抛异常时降级为暂时不可用并取消信号": [
+        "r4ocr-m21-biometric-gate-lets-error-escape",
+        "r4ocr-m21-biometric-framework-unguarded-authenticate",
+    ],
+}
+
+@pytest.mark.parametrize("item", list(ROUND4_OCR))
+def test_every_round4_ocr_fix_has_mutations_in_the_table(item):
+    ids = {m.id for m in dm.MUTATIONS}
+    assert set(ROUND4_OCR[item]) <= ids, set(ROUND4_OCR[item]) - ids
+
+
+def test_every_round4_ocr_mutation_is_attributed():
+    attributed = {i for ids in ROUND4_OCR.values() for i in ids}
+    ocr_ids = {m.id for m in dm.MUTATIONS if re.match(r"r4ocr-", m.id)}
+    assert ocr_ids == attributed, (ocr_ids - attributed, attributed - ocr_ids)

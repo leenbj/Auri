@@ -5,6 +5,8 @@ import app.auri.sync.SyncLog
 import app.auri.sync.destinations.AuthPurpose
 import app.auri.sync.destinations.AuthResult
 import app.auri.sync.destinations.LocalAuthenticator
+import app.auri.sync.destinations.UnavailableReason
+import kotlinx.coroutines.CancellationException
 
 /** 向系统要的一次核验：为什么要（界面据此写提示）和接受哪一类核验方式（[android.hardware.biometrics.BiometricManager.Authenticators] 的位）。 */
 data class PromptRequest(val purpose: AuthPurpose, val allowedAuthenticators: Int)
@@ -29,9 +31,14 @@ class BiometricGate(
     private val framework: BiometricFramework,
     private val log: SyncLog = SyncLog.None,
 ) : LocalAuthenticator {
-    override suspend fun authenticate(purpose: AuthPurpose): AuthResult {
+    override suspend fun authenticate(purpose: AuthPurpose): AuthResult = try {
         BiometricResults.availability(framework.canAuthenticate(REQUIRED))?.let { return it.also(::record) }
-        return framework.prompt(PromptRequest(purpose, REQUIRED)).also(::record)
+        framework.prompt(PromptRequest(purpose, REQUIRED)).also(::record)
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (failure: Exception) {
+        log.event("auth.error ${failure::class.simpleName}")
+        AuthResult.Unavailable(UnavailableReason.TEMPORARILY_UNAVAILABLE)
     }
 
     private fun record(result: AuthResult) = log.event("auth.${result::class.simpleName}")
