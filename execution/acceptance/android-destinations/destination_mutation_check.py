@@ -2854,6 +2854,74 @@ MUTATIONS: tuple = (
         gateway_tests(BACKFILL_TESTS), GATEWAY_RESULTS,
         ('test_migration_0006_assigns_monotonic_store_seq_and_converts_existing_cutoffs_conservatively', 'test_an_upgrade_from_0005_with_future_stored_at_hides_old_and_delivers_new'),
     ),
+    # ---- 第四轮 F7：mDNS 发现在跑的时候授权被收回，窗口里还没解析的服务一个也不能再解析，在跑的发现要停（以前整个发现只在开头过一次门） ----
+    Mutation(
+        "r4f7-walk-hands-down-an-open-gate",
+        "第四轮 F7：walkAddresses 要把自己的门交给发现，让发现里每次解析各过一次：交下去的是不设防的门，整个发现只在开头过一次，4 秒窗口里授权被收回照样解析",
+        (Edit(DISCOVERY, "        gate.gated { discovery.find(gatewayId, gate) } ?: return Walk.Withheld\n", "        gate.gated { discovery.find(gatewayId, RequestGate.Open) } ?: return Walk.Withheld\n"),),
+        sync_tests("DiscoveryGateHandoffTest"), SYNC_RESULTS,
+        ("walkAddresses 把自己的门原样交给发现",),
+    ),
+    Mutation(
+        "r4f7-resolution-skips-the-gate",
+        "第四轮 F7：每次解析（NsdManager.resolveService 会向局域网发请求）交出去之前都要过门：不过，授权收回之后后面来的服务照样解析",
+        (Edit(RESOLVE_WHILE_OPEN, "            val outcome = gate.gated { Resolved(resolve(service)) } ?: return@transformWhile false\n", "            val outcome = Resolved(resolve(service))\n"),),
+        sync_tests("ResolveWhileOpenTest"), SYNC_RESULTS,
+        ("解析途中授权被收回", "门一开始就不放行"),
+    ),
+    Mutation(
+        "r4f7-refusal-keeps-listening",
+        "第四轮 F7：门不放行就要停掉整个发现（取消上游，系统不再发多播查询）：只跳过这一个服务、接着听，系统的发现一直在发查询直到监听窗口到期",
+        (Edit(RESOLVE_WHILE_OPEN, "            val outcome = gate.gated { Resolved(resolve(service)) } ?: return@transformWhile false\n", "            val outcome = gate.gated { Resolved(resolve(service)) } ?: return@transformWhile true\n"),),
+        sync_tests("ResolveWhileOpenTest"), SYNC_RESULTS,
+        ("解析途中授权被收回", "门一开始就不放行"),
+    ),
+    Mutation(
+        "r4f7-no-sentinel",
+        "第四轮 F7：没有新服务来的时候授权被收回，等不到下一个服务触发检查：哨兵问了门却不停发现，在跑的发现一直听到超时",
+        (Edit(RESOLVE_WHILE_OPEN, "            if (gate.gated { Unit } == null) collecting.cancel()\n", "            if (gate.gated { Unit } == null) Unit\n"),),
+        sync_tests("ResolveWhileOpenTest"), SYNC_RESULTS,
+        ("没有新服务来的时候授权被收回",),
+    ),
+    Mutation(
+        "r4f7-sentinel-waits-far-too-long",
+        "第四轮 F7：哨兵的间隔就是授权收回之后发现还会多发多久的多播查询：间隔放大到一百倍，一个哨兵间隔内停不下来",
+        (Edit(RESOLVE_WHILE_OPEN, "            delay(watchMs)\n", "            delay(watchMs * 100)\n"),),
+        sync_tests("ResolveWhileOpenTest"), SYNC_RESULTS,
+        ("没有新服务来的时候授权被收回",),
+    ),
+    Mutation(
+        "r4f7-sentinel-outlives-the-listening",
+        "第四轮 F7：发现一结束（门不放行、被取消）哨兵也要立刻收工，调用方才能马上拿到结果：哨兵不收，resolveWhileOpen 要多等一个哨兵间隔才返回",
+        (Edit(RESOLVE_WHILE_OPEN, "    watching.cancel()\n", ""),),
+        sync_tests("ResolveWhileOpenTest"), SYNC_RESULTS,
+        ("解析途中授权被收回", "门一开始就不放行"),
+    ),
+    Mutation(
+        "r4f7-nsd-ignores-the-gate",
+        "第四轮 F7（接线守卫）：NSD 要把调用方的门交给 resolveWhileOpen：交的是不设防的门，授权收回之后 NsdManager 仍照样解析窗口里剩下的服务",
+        (Edit(NSD_DISCOVERY, "resolveWhileOpen(services(), gate, resolve = ::resolve)", "resolveWhileOpen(services(), RequestGate.Open, resolve = ::resolve)"),),
+        app_tests("NsdGateWiringTest"), APP_RESULTS,
+        ("NSD 里 resolveService 只有一处",),
+    ),
+    Mutation(
+        "r4f7-nsd-collects-by-itself",
+        "第四轮 F7（接线守卫）：NSD 又回到自己在 collect 里循环：整个发现只在开头过一次门，窗口里每个服务都绕过了授权被收回的检查",
+        (Edit(
+            NSD_DISCOVERY,
+            "                resolveWhileOpen(services(), gate, resolve = ::resolve) { resolved ->\n"
+            "                    val host = (resolved.host as? Inet4Address)?.hostAddress\n"
+            "                    gatewayAddressFrom(host, resolved.port, textAttributes(resolved), gatewayId)?.let(found::add)\n"
+            "                }\n",
+            "                services().collect { service ->\n"
+            "                    val resolved = resolve(service) ?: return@collect\n"
+            "                    val host = (resolved.host as? Inet4Address)?.hostAddress\n"
+            "                    gatewayAddressFrom(host, resolved.port, textAttributes(resolved), gatewayId)?.let(found::add)\n"
+            "                }\n",
+        ),),
+        app_tests("NsdGateWiringTest"), APP_RESULTS,
+        ("NSD 不再自己在 collect 里循环", "NSD 里 resolveService 只有一处"),
+    ),
 )
 
 base.MUTATIONS = MUTATIONS

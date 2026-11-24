@@ -12,6 +12,12 @@ import kotlinx.coroutines.CancellationException
  */
 interface GatewayDiscovery {
     suspend fun find(gatewayId: String): List<GatewayAddress>
+
+    /**
+     * 同 [find]，但把调用方的 [gate] 交给发现：发现过程中每个会向局域网发请求的步骤（NSD 的每次解析）各过一次门，
+     * 授权被收回就停（第四轮 F7）。walkAddresses 在外面还会为整个 find 过一道门；自己不会过门的实现不用管这个方法。
+     */
+    suspend fun find(gatewayId: String, gate: RequestGate): List<GatewayAddress> = find(gatewayId)
 }
 
 /** 候选地址的一次尝试：连上并完成要做的事（Done）、没连上（Unreachable）、对方的公钥不符（Mismatch）。 */
@@ -67,7 +73,7 @@ internal suspend fun <T> walkAddresses(
 
     tryAll(stored)?.let { return it }
     val discovered = try {
-        gate.gated { discovery.find(gatewayId) } ?: return Walk.Withheld
+        gate.gated { discovery.find(gatewayId, gate) } ?: return Walk.Withheld
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (_: Exception) {

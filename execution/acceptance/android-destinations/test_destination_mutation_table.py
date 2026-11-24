@@ -265,6 +265,10 @@ ROUND4 = {
         "r4f6-gw-migration-0006-ignores-existing-cutoffs", "r4f6-gw-migration-0006-crosses-tenants",
         "r4f6-gw-migration-0006-leaves-sequence-at-zero",
     ],
+    "F7 mDNS 发现里每次解析各过一次门，门不放行就停发现，没有新服务时哨兵也会发现授权被收回": [
+        "r4f7-walk-hands-down-an-open-gate", "r4f7-resolution-skips-the-gate", "r4f7-refusal-keeps-listening", "r4f7-no-sentinel",
+        "r4f7-sentinel-waits-far-too-long", "r4f7-sentinel-outlives-the-listening", "r4f7-nsd-ignores-the-gate", "r4f7-nsd-collects-by-itself",
+    ],
 }
 
 
