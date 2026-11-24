@@ -219,4 +219,54 @@ class RecordRevisionServiceTest {
         assertFalse("未确认的代理 A 绝不自动重发", destA.destinationId in pub2.destinationIds)
         assertTrue("日志不含目的地名与正文", log.lines.none { it.contains("代理A") || it.contains("代理B") || it.contains("修订后的正文") })
     }
+
+    @Test
+    fun `删除音频时文件删除失败不清空库元数据，重发沿用原记录意图并把拒收目标标为不可接收`() = runBlocking {
+        val gateway = SyncSamples.pairedGateway()
+        val fixture = InMemoryDispatchFixture()
+        val onlyContext = Destination(
+            Samples.uuid(20), "仅备忘代理", SendMode.AUTO_SEND, setOf(Intent.CONTEXT),
+            now, Samples.uuid(99), credentialIssued = true, revokedAt = null, credentialActive = true,
+        )
+        val both = destination(Samples.uuid(21), "全意图代理")
+        fixture.store.applyDestinations(gateway.identity, listOf(onlyContext, both), authoritative = true, now = now)
+        val library = InMemoryRecordLibrary { rev ->
+            runBlocking { fixture.publish(JobKey(rev.recordId, rev.number), rev.source, rev.createdAt) }
+        }
+        val entry = Samples.entry(5)
+        library.addRecord(entry)
+        fixture.store.setDefaultIntent(Intent.ACTION_REQUEST)
+        library.publishRevision(Samples.draft(entry.recordId, text = "动作请求初稿"))
+        fixture.store.gatewayHas(JobKey(entry.recordId, 1), listOf(both.destinationId))
+        // 用户随后改了默认意图为 CONTEXT，但这条 Record 原意图是 ACTION_REQUEST
+        fixture.store.setDefaultIntent(Intent.CONTEXT)
+
+        var fileDeleteResult = false
+        val http = HttpExchangeFactory { _ -> ScriptedExchange { _, _ -> ScriptedExchange.json(404, """{"code":"REQUEST_INVALID"}""") } }
+        val service = RecordRevisionService(
+            library = library,
+            dispatch = fixture.store,
+            pairing = InMemoryPairingStore(gateway),
+            http = http,
+            locator = GatewayLocator(http, NoDiscovery),
+            policy = InMemoryDataFlowPolicy(gateway = gateway.identity),
+            clock = clock,
+            deleteFile = { fileDeleteResult },
+        )
+
+        // OCR #30：文件删不掉时不清空元数据
+        assertFalse(service.deleteAudioOnly(entry.recordId))
+        assertTrue(library.get(entry.recordId)!!.audio != null)
+        fileDeleteResult = true
+        assertTrue(service.deleteAudioOnly(entry.recordId))
+        assertTrue(library.get(entry.recordId)!!.audio == null)
+
+        // OCR #31/#32/#14：重发沿用原记录意图 ACTION_REQUEST，onlyContext 被拒
+        service.saveEdit(entry.recordId, "修订稿")
+        assertEquals(ResendResult.NotEligible, service.confirmResend(entry.recordId, 2, onlyContext.destinationId))
+        assertEquals(ResendResult.Requested, service.confirmResend(entry.recordId, 2, both.destinationId))
+        fixture.store.refused(JobKey(entry.recordId, 2), listOf(both.destinationId), app.auri.sync.engine.Refusal.REJECTED)
+        val recipients = service.olderVersionRecipients(entry.recordId, latestRevision = 2, automatic = true)
+        assertEquals(ResendState.NOT_ELIGIBLE, recipients.single { it.destinationId == both.destinationId }.resendState)
+    }
 }

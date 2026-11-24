@@ -123,6 +123,7 @@ class RecordRevisionService(
         if (latestRevision <= 1) return emptyList()
         val cachedDestinations = dispatch.destinations().associateBy { it.destinationId }
         val latestItem = dispatch.item(JobKey(recordId, latestRevision))
+        val effectiveIntent = existingIntentFor(recordId, latestRevision)
 
         val olderFromGateway = queryGatewayDeliveries(recordId, automatic)
             ?.filter { it.revision < latestRevision }
@@ -130,12 +131,12 @@ class RecordRevisionService(
             ?.mapValues { (_, list) -> list.maxBy { it.revision } }
             .orEmpty()
 
-        // 兜底：离线或查不到网关时，从本机发送账里找旧版本（1 until latestRevision）里已建或已确认发送的目标
+        // 兜底：离线或查不到网关时，从本机发送账里找旧版本（1 until latestRevision）里已建或会接收的目标（排除已拒收/不可接收的目标，OCR #29）
         val olderFromLocal = linkedMapOf<String, Pair<Int, String>>()
         for (rev in 1 until latestRevision) {
             val item = dispatch.item(JobKey(recordId, rev)) ?: continue
             for (target in item.targets) {
-                if (target.delivery == GatewayDelivery.CREATED || target.decision == TargetDecision.AUTO || target.decision == TargetDecision.CONFIRMED) {
+                if (target.delivery == GatewayDelivery.CREATED || target.willReceive) {
                     val name = target.destinationName ?: cachedDestinations[target.destinationId]?.displayName ?: "未知目的地"
                     olderFromLocal[target.destinationId] = rev to name
                 }
@@ -159,8 +160,9 @@ class RecordRevisionService(
             val latestTarget = latestItem?.targets?.firstOrNull { it.destinationId == destId }
             val resendState = when {
                 latestTarget?.delivery == GatewayDelivery.CREATED -> ResendState.SENT_TO_GATEWAY
+                latestTarget?.delivery == GatewayDelivery.REFUSED -> ResendState.NOT_ELIGIBLE
                 latestTarget != null && (latestTarget.decision == TargetDecision.CONFIRMED || latestTarget.decision == TargetDecision.AUTO) -> ResendState.PENDING_RESEND
-                dest == null || !dest.receivesNewText -> ResendState.NOT_ELIGIBLE
+                dest == null || !dest.receivesNewText || !dest.allows(effectiveIntent) -> ResendState.NOT_ELIGIBLE
                 else -> ResendState.NOT_REQUESTED
             }
             OlderRecipient(
@@ -173,23 +175,34 @@ class RecordRevisionService(
         }
     }
 
-    /** 用户逐个确认把指定 Revision 重发给指定 Destination。 */
+    /** 用户逐个确认把指定 Revision 重发给指定 Destination。默认沿用该 Record 既有版本意图，无记录时再回退到默认意图（OCR #32）。 */
     suspend fun confirmResend(recordId: String, revision: Int, destinationId: String, intent: Intent? = null): ResendResult {
-        val chosenIntent = intent ?: dispatch.defaultIntent()
+        val chosenIntent = intent ?: existingIntentFor(recordId, revision)
         val result = dispatch.requestResend(JobKey(recordId, revision), destinationId, chosenIntent, clock.now())
         log.event("revision.resend result=${result::class.simpleName}")
         if (result == ResendResult.Requested) onSyncNeeded()
         return result
     }
 
-    /** 单独删除本地音频而保留文字与全部 Revision（FR-TXT-005）。 */
+    private suspend fun existingIntentFor(recordId: String, revision: Int): Intent {
+        for (rev in revision downTo 1) {
+            dispatch.item(JobKey(recordId, rev))?.let { return it.intent }
+        }
+        return dispatch.defaultIntent()
+    }
+
+    /** 单独删除本地音频而保留文字与全部 Revision（FR-TXT-005）。文件删除失败时不清空库元数据，避免孤儿文件泄漏（OCR #30）。 */
     suspend fun deleteAudioOnly(recordId: String): Boolean {
         val entry = library.get(recordId) ?: return false
         val audio = entry.audio ?: return false
-        try {
+        val removed = try {
             deleteFile(audio.location)
         } catch (_: Exception) {
-            // 文件已不存在或删除失败时仍尽力清理库元数据
+            false
+        }
+        if (!removed) {
+            log.event("record.audio-delete-failed")
+            return false
         }
         val cleared = library.deleteAudio(recordId)
         if (cleared) log.event("record.audio-deleted")
