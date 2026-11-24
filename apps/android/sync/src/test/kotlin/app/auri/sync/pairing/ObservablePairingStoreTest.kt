@@ -142,6 +142,35 @@ class ObservablePairingStoreTest {
     }
 
     @Test
+    fun `复评 R5：whileCurrent 经过可观察的外壳也持锁：动作进行时 save 排在后面，动作看到的是判断时的那一份`() = runTest(UnconfinedTestDispatcher()) {
+        val store = ObservablePairingStore(InMemoryPairingStore(paired))
+        val fresh = SyncSamples.pairedGateway(pairedAt = java.time.Instant.parse("2026-11-18T09:00:00Z"))
+        val release = CompletableDeferred<Unit>()
+        val events = mutableListOf<String>()
+
+        val working = launch {
+            store.whileCurrent(paired) {
+                events += "动作开始"
+                release.await()
+                events += "动作结束"
+            }
+        }
+        val saving = launch {
+            store.save(fresh)
+            events += "新配对已写入"
+        }
+
+        assertEquals("动作进行时 save 只能等着：$events", listOf("动作开始"), events)
+        release.complete(Unit)
+        working.join()
+        saving.join()
+
+        assertEquals(listOf("动作开始", "动作结束", "新配对已写入"), events)
+        assertEquals(PairingState.Paired(fresh), store.load())
+        assertEquals("配对已经换了：旧的那份不再执行", null, store.whileCurrent(paired) { "不该执行" })
+    }
+
+    @Test
     fun `同时进行的读写排队：读到旧状态后迟迟才发出的那次，不会盖掉后来写入的新状态`() = runTest(UnconfinedTestDispatcher()) {
         val inner = InMemoryPairingStore()
         val gate = CompletableDeferred<Unit>()

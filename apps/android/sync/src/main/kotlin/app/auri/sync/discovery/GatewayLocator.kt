@@ -7,6 +7,7 @@ import app.auri.sync.http.HttpExchangeFactory
 import app.auri.sync.http.TransportFailure
 import app.auri.sync.pairing.GatewayAddress
 import app.auri.sync.pairing.PairedGateway
+import app.auri.sync.policy.RequestGate
 
 /** 找网关的结果。 */
 sealed interface Located {
@@ -28,20 +29,29 @@ class GatewayLocator(
     private val discovery: GatewayDiscovery,
     private val log: SyncLog = SyncLog.None,
 ) {
-    suspend fun locate(gateway: PairedGateway): Located {
+    suspend fun locate(gateway: PairedGateway): Located = locate(gateway, RequestGate.Open) ?: error("不设防的门不会拦下任何请求")
+
+    /**
+     * 同 [locate]，但每个会发出请求的步骤（探测一个地址、问一次 mDNS）各自经 [gate] 交出去（第三轮 S12）：
+     * 门中途不放行（授权被收回）就停在那一步，返回 null，之后一个请求也不发。
+     */
+    suspend fun locate(gateway: PairedGateway, gate: RequestGate): Located? {
         val client = GatewayClient(http.forPin(gateway.pin))
         val stored = listOfNotNull(gateway.lastGoodAddress) + gateway.addresses
-        val walk = walkAddresses(stored, discovery, gateway.gatewayId, log) { address ->
+        val walk = walkAddresses(stored, discovery, gateway.gatewayId, log, gate) { address ->
             when (val probe = client.health(address)) {
                 is GatewayResult.Success -> Step.Done(address)
                 is GatewayResult.TransportFailed -> if (probe.failure is TransportFailure.KeyMismatch) Step.Mismatch else Step.Unreachable
                 is GatewayResult.Rejected, is GatewayResult.Garbled -> Step.Unreachable // 对方说话了但不是我们的网关服务
             }
         }
-        return when (walk) {
+        val located = when (walk) {
             is Walk.Found -> Located.Reachable(walk.value)
             Walk.Mismatched -> Located.KeyMismatch
             Walk.NothingReachable -> Located.Unreachable
-        }.also { log.event("locate.result=${it::class.simpleName}") }
+            Walk.Withheld -> null
+        }
+        log.event("locate.result=${located?.let { it::class.simpleName } ?: "Withheld"}")
+        return located
     }
 }

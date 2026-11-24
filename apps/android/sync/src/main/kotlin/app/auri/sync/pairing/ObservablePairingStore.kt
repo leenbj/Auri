@@ -41,6 +41,9 @@ class ObservablePairingStore(private val delegate: PairingStore) : PairingStore 
         written
     }
 
+    // 先拿这一把、再进底层那一把（与 save/update/clear 同一个顺序）；block 只改别处的账，不改配对记录，所以没有要发出的状态
+    override suspend fun <T : Any> whileCurrent(gateway: PairedGateway, block: suspend () -> T): T? = mutex.withLock { delegate.whileCurrent(gateway, block) }
+
     override suspend fun clear() {
         mutex.withLock {
             delegate.clear()

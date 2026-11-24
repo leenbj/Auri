@@ -53,7 +53,7 @@ def test_record_list_advertises_readonly_tool_and_pages_with_opaque_cursor(
         assert not produces_output.is_valid(instance), name
 
     # Empty result before anything is published.
-    assert agent_a.record_list() == {"schema_version": "1.1", "records": [], "next_cursor": None}
+    assert agent_a.record_list() == {"schema_version": "1.2", "records": [], "next_cursor": None}
 
     # Publish 5 records to Agent A, 1 only to Agent B, 1 with no destination.
     texts_a = [f"条目 {i}" for i in range(5)]
@@ -239,7 +239,7 @@ def test_record_search_isolates_destinations_paginates_and_marks_truncated_snipp
 
     # Normal empty result when nothing matches.
     assert agent_a.record_search("不存在的关键词") == {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "matches": [],
         "next_cursor": None,
     }

@@ -7,11 +7,15 @@ import app.auri.platform.storage.NoBackupStorage
 import app.auri.platform.system.SystemClock
 import app.auri.sync.SyncController
 import app.auri.sync.SyncLog
+import app.auri.sync.destinations.DestinationService
+import app.auri.sync.destinations.DispatchStore
+import app.auri.sync.destinations.LocalAuthenticator
 import app.auri.sync.discovery.GatewayDiscovery
 import app.auri.sync.discovery.GatewayLocator
-import app.auri.sync.engine.JobKey
 import app.auri.sync.engine.RecordLibrarySubmissionSource
 import app.auri.sync.engine.SyncEngine
+import app.auri.sync.engine.dueUpdates
+import app.auri.sync.gateway.ContractGuard
 import app.auri.sync.gateway.DeviceInfo
 import app.auri.sync.gateway.SubmissionBuilder
 import app.auri.sync.http.HttpExchangeFactory
@@ -24,16 +28,29 @@ import app.auri.sync.pairing.ObservablePairingStore
 import app.auri.sync.pairing.PairingOutcome
 import app.auri.sync.pairing.PairingPayload
 import app.auri.sync.pairing.PairingService
+import app.auri.sync.pairing.PairingState
 import app.auri.sync.pairing.SecretBox
+import app.auri.sync.policy.DataFlowPolicy
+import app.auri.sync.policy.DataFlowState
+import app.auri.sync.policy.current
+import app.auri.sync.policy.reconcile
+import app.auri.sync.policy.setGrantFor
+import app.auri.sync.policy.states
 import app.auri.sync.resume.ResumePlanner
 import app.auri.sync.resume.ResumeRunner
 import app.auri.sync.resume.ResumeScheduler
+import app.auri.sync.resume.WakeAheadDispatchStore
+import app.auri.sync.resume.WakeGate
 import app.auri.sync.resume.needsResume
 import app.auri.sync.status.SyncStatus
 import app.auri.syncplatform.discovery.NsdGatewayDiscovery
+import app.auri.syncplatform.dispatch.DispatchSql
+import app.auri.syncplatform.dispatch.SqliteDispatchStore
 import app.auri.syncplatform.jobs.SqliteSyncJobStore
 import app.auri.syncplatform.keystore.KeystoreKeys
 import app.auri.syncplatform.network.AndroidNetworkSignal
+import app.auri.syncplatform.policy.DataFlowPolicySql
+import app.auri.syncplatform.policy.SqliteDataFlowPolicy
 import app.auri.syncplatform.resume.JobSchedulerResume
 import java.io.File
 import kotlinx.coroutines.CancellationException
@@ -42,20 +59,23 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-/** 装配：Record 库和待同步任务表在同一个数据库文件里，发布 Revision 的事务里顺手登记任务。 */
+/**
+ * 装配：Record 库、待同步任务表、发送账（Destination 缓存、预览确认的决定、意图标签、网关上有没有 Delivery 的账）在同一个数据库文件里，
+ * 发布 Revision 的事务里一定登记任务、顺手规划目标（Ticket 22）。
+ */
 object SyncStorage {
-    /** 发布 Revision 时在**同一个事务**里入队一条待同步任务的 Record 库；任务的创建时间取 [clock]。 */
+    /** 发布 Revision 时在**同一个事务**里登记待同步任务、规划发送的 Record 库；时间取 [clock]。 */
     fun library(application: Application, databaseName: String?, clock: Clock = SystemClock): SqliteRecordLibrary =
         SqliteRecordLibrary(
             application,
             databaseName,
-            publicationStep = { db, revision -> SqliteSyncJobStore.enqueueIn(db, JobKey(revision.recordId, revision.number), clock.now()) },
-            extraSchema = SqliteSyncJobStore.SCHEMA,
+            publicationStep = { db, revision -> SqliteDispatchStore.publishIn(db, revision, clock.now()) },
+            extraSchema = DispatchSql.SCHEMA + DataFlowPolicySql.SCHEMA,
         )
 }
 
@@ -72,49 +92,108 @@ class SyncRuntime(
     pairingFile: File,
     box: SecretBox,
     private val scope: CoroutineScope,
-    clock: Clock,
+    private val clock: Clock,
     device: DeviceInfo,
     discovery: GatewayDiscovery,
     network: NetworkSignal,
-    http: HttpExchangeFactory = HttpExchangeFactory { pin -> PinnedHttpsClient(pin) },
+    private val http: HttpExchangeFactory = HttpExchangeFactory { pin -> PinnedHttpsClient(pin) },
     private val log: SyncLog = SyncLog.None,
     resume: ResumeScheduler = ResumeScheduler.None,
 ) : SyncController {
     val jobs = SqliteSyncJobStore(library)
 
+    /** 系统里那个叫醒的唯一出入口（复评 R12）：规划器与“用户确认预览”两条路共用它的锁，确认先登记叫醒、再提交，规划器手里过时的“没活了”抹不掉它。 */
+    private val wakes = WakeGate(resume, log)
+
+    /**
+     * 发送账（Ticket 22）：Destination 缓存、预览确认的决定、意图标签、网关上有没有 Delivery 的账。引擎每次发送前向它要 publication，每轮最后向它要还欠的 Delivery。
+     * 外面套着“确认之前先登记叫醒”的壳（复评 R12）：界面、引擎、状态汇总拿到的都是这一份。
+     */
+    val dispatch: DispatchStore = WakeAheadDispatchStore(SqliteDispatchStore(library), wakes)
+
+    /**
+     * “文字能不能进网关”的两道开关（评审 B1）：默认关、读不出来也当关；引擎在每个可能发请求的地方先问它，
+     * 叫醒计划与同步状态也据此判断。界面通过 [setGatewayTextGranted]、[setStrictLocal] 改。
+     */
+    val policy: DataFlowPolicy = SqliteDataFlowPolicy(library, clock)
+
     /** 配对状态（可观察）。读它之前先 [start]：启动时才读第一次，之前没有任何状态。 */
     val pairing = ObservablePairingStore(FilePairingStore(pairingFile, box))
 
-    private val pairingService = PairingService(pairing, http, discovery, clock, device, log)
+    /**
+     * 对**配对着的那个网关**的两道开关（复评 R3：授权是给某个网关的，换了配对就不再算数）。引擎问的是“对我要联系的这个网关”，
+     * 叫醒计划、同步状态汇总与发送审阅页看的都是这一份。
+     */
+    val dataFlow: Flow<DataFlowState> = policy.states(pairing.states.map { (it as? PairingState.Paired)?.gateway?.identity }.distinctUntilChanged())
+
+    // 换配对记录之前先作废不是给新网关的文字授权
+    private val pairingService = PairingService(pairing, http, discovery, clock, device, beforeSaving = { policy.forgetGrantExcept(it) }, log = log)
+    private val locator = GatewayLocator(http, discovery, log)
+
+    /** 手机只和说合同 1.2 的网关说话（评审 R7）：同步引擎与目的地管理共用，同一份配对在一个进程里只问一次网关的版本。 */
+    private val contract = ContractGuard()
     private val engine = SyncEngine(
         jobs = jobs,
         pairing = pairing,
-        source = RecordLibrarySubmissionSource(library, SubmissionBuilder(device.appVersion)),
+        source = RecordLibrarySubmissionSource(library, SubmissionBuilder(device.appVersion), dispatch),
         http = http,
-        locator = GatewayLocator(http, discovery, log),
+        locator = locator,
         clock = clock,
+        policy = policy,
+        additions = dispatch,
         log = log,
+        contract = contract,
     )
-    private val loop = SyncLoop(engine, jobs, network, clock, log = log)
+    private val loop = SyncLoop(engine, jobs, network, clock, log = log, additions = dispatch)
 
     /** [start] 的启动工作（读配对记录、接回中断的任务）做完了没有：被系统叫醒的那一轮要等它。 */
     private val started = CompletableDeferred<Unit>()
-    private val planner = ResumePlanner(pairing.states, jobs.observe(), resume, clock, log = log)
+    private val planner = ResumePlanner(
+        pairing.states,
+        jobs.observe(),
+        dataFlow,
+        resume,
+        clock,
+        log = log,
+        additionsOwed = { dispatch.due().isNotEmpty() },
+        additionsChanged = dispatch.changes(),
+        gate = wakes,
+        // 第四轮 F4：结论在门的锁里按磁盘上的账现算，流只当“有东西变了”的提示（流里的快照可能是在门外排队时读到的旧值）
+        currentNeed = { resumeNeededNow() },
+    )
     private val resumeRunner = ResumeRunner(
         ready = { started.await() },
         runPass = engine::runOnce,
-        stillNeeded = { needsResume(pairing.load(), jobs.all()) },
+        // 收尾判断在门的锁里做（再评 S8）：与“用户确认前先登记叫醒”、规划器的登记与取消串行；没活就同步取消系统里的叫醒，有活就请系统稍后再叫
+        stillNeeded = { wakes.finishing { resumeNeededNow() } },
         log = log,
     )
 
-    /** 界面要的同步状态汇总：配对状态与任务表任何一边变了都重新汇总。 */
-    override val status: Flow<SyncStatus> = combine(pairing.states, jobs.observe()) { pairingState, list -> SyncStatus.of(pairingState, list) }.distinctUntilChanged()
+    /**
+     * 现在要不要有叫醒：配对、任务表、授权、发送账各读各的存储，不缓存（第四轮 F4）。规划器在门的锁里用它登记或取消，
+     * 被叫醒那一轮的收尾判断也用它——两处是同一个判断（[needsResume]），读的是同一份实时的账。
+     */
+    private suspend fun resumeNeededNow(): Boolean {
+        val paired = pairing.load()
+        return needsResume(paired, jobs.all(), policy.current((paired as? PairingState.Paired)?.gateway?.identity), dispatch.due().isNotEmpty())
+    }
+
+    /** 界面要的同步状态汇总：配对状态、任务表、数据流开关与发送账里等用户确认的文字，任何一边变了都重新汇总（评审 M2）。 */
+    override val status: Flow<SyncStatus> = SyncStatus.watch(pairing.states, jobs.observe(), dataFlow, dispatch)
 
     fun start(): Job = scope.launch {
         // 同步出故障不能带倒整个进程（录音在同一个进程里，这个作用域又没有异常处理器，逃出来的异常就是应用崩溃）：
         // 记下来，循环照常起来，它的第一轮会再试
         try {
             pairing.refresh()
+            // 授权只留给配对着的那个网关：换配对时的清理万一没跑成（进程被杀、写库失败），在这里补上；单独兜底，不阻塞后续修复任务
+            try {
+                policy.reconcile(pairing.load())
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                log.event("start.reconcile.failed ${failure::class.simpleName}")
+            }
             // 上次进程在“刚配好对、还没把停下的任务放回队列”时被杀：配对记录是好的，任务却还停着。放回去。
             engine.resolveAfterRepair()
         } catch (cancelled: CancellationException) {
@@ -146,6 +225,27 @@ class SyncRuntime(
 
     /** 回到前台、用户点了“现在同步”：立刻跑一轮，并让探测的退避从头开始。 */
     override fun syncNow() = loop.nudge()
+
+    /**
+     * 用户明确打开或收回“文字可以进网关”。打开 = 同意发给**现在配对着的这个网关**（之后换了配对，这份同意就不再算数）；
+     * 没有配对着的网关时没有“我指定的网关”可授权，什么也不记。打开之后马上跑一轮：之前被留在本机的文字这时才发出去。
+     */
+    override suspend fun setGatewayTextGranted(granted: Boolean) {
+        if (policy.setGrantFor(pairing.load(), granted)) loop.nudge()
+    }
+
+    /** 用户打开或关闭“严格仅本地”。关掉之后马上跑一轮（授权仍在的话，被留住的文字这时才发）。 */
+    override suspend fun setStrictLocal(on: Boolean) {
+        policy.setStrictLocal(on)
+        loop.nudge()
+    }
+
+    /**
+     * Destination 管理（Ticket 22）：和同步引擎共用配对记录、地址探测与固定公钥的 HTTPS，没有第二套网络栈。
+     * [authenticator] 是界面层给的本机核验（生物识别）：生成或轮换凭证前每次都要过它。
+     */
+    fun destinationService(authenticator: LocalAuthenticator): DestinationService =
+        DestinationService(pairing, http, locator, dispatch, jobs, authenticator, policy, clock, log, contract)
 
     companion object {
         private const val PAIRING_KEY_ALIAS = "auri.sync.pairing.v1"

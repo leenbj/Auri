@@ -75,7 +75,7 @@ def test_claim_with_nothing_pending_returns_a_normal_empty_result_not_an_error(
 
     result = agent.claim()
 
-    assert result == {"schema_version": "1.1", "deliveries": [], "next_cursor": None}
+    assert result == {"schema_version": "1.2", "deliveries": [], "next_cursor": None}
 
 
 def test_claim_returns_the_delivery_published_to_the_destination_with_a_default_lease(
@@ -332,7 +332,7 @@ def test_a_retryable_nack_puts_the_delivery_back_to_pending_for_another_claim(
     (second,) = agent.claim()["deliveries"]
 
     assert nacked == {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "delivery_id": first["delivery_id"],
         "state": "PENDING",
     }

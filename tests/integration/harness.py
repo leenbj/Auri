@@ -32,7 +32,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 GATEWAY_SRC = REPO_ROOT / "services" / "gateway"
 SCHEMA_DIR = REPO_ROOT / "contracts" / "schemas"
 FIXTURE_DIR = REPO_ROOT / "contracts" / "fixtures"
-BASE_URI = "https://contracts.auri.invalid/1.1/"
+BASE_URI = "https://contracts.auri.invalid/1.2/"
 
 _SCHEMAS = {
     path.name: json.loads(path.read_text(encoding="utf-8"))
@@ -481,7 +481,7 @@ def make_redeem_request(
     pairing_code: str, display_name: str = "Test iPhone"
 ) -> dict[str, Any]:
     return {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "pairing_code": pairing_code,
         "device": {
             "platform": "ios",
@@ -501,7 +501,7 @@ def make_submission(
 ) -> dict[str, Any]:
     is_asr = source == "asr"
     return {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "record_id": record_id or str(uuid.uuid4()),
         "revision": revision,
         "capture": {

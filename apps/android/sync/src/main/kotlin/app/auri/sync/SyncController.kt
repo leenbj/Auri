@@ -18,4 +18,10 @@ interface SyncController {
 
     /** 立刻跑一轮同步（回到前台、用户点了“现在同步”）。 */
     fun syncNow()
+
+    /** 用户明确打开（true）或收回（false）“文字可以进我的网关”。默认关；这是独立于配对的一道授权（评审 B1）。 */
+    suspend fun setGatewayTextGranted(granted: Boolean)
+
+    /** 用户打开或关闭“严格仅本地”：开着时文字一个字节也不会离开手机，压过上面的授权。 */
+    suspend fun setStrictLocal(on: Boolean)
 }

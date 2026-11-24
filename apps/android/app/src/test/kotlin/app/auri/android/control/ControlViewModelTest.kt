@@ -880,7 +880,7 @@ class ControlViewModelTest {
     }
 
     private val storedProfileJson = """
-        {"schema_version":"1.1","profile_id":"android-old","profile_version":3,"manufacturer_hint":null,"model_hint":null,"firmware_constraint":null,
+        {"schema_version":"1.2","profile_id":"android-old","profile_version":3,"manufacturer_hint":null,"model_hint":null,"firmware_constraint":null,
          "platform":"android","raw_gesture_visible":false,"command_mapping":{"play":"START","pause":"STOP","toggle":"TOGGLE"},"input_policy":"bluetooth_only",
          "capabilities":{"foreground_start_stop":{"status":"NOT_TESTED","evidence_level":null,"evidence_ids":[]},
          "stop_while_bluetooth_mic_active":{"status":"NOT_TESTED","evidence_level":null,"evidence_ids":[]},

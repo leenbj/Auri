@@ -7,7 +7,7 @@
     "keyword": "minItems"
   },
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "gateway_id": "fa1b98ec-1bfb-53b3-85a3-4d36b680fe6e",
     "addresses": [],
     "mdns_service_type": "_auri-gateway._tcp",

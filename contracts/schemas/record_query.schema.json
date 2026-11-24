@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.auri.invalid/1.1/record_query.schema.json",
+  "$id": "https://contracts.auri.invalid/1.2/record_query.schema.json",
   "title": "Record 的只读查询（MCP 工具的输入输出）",
   "description": "PRD 第 17.3、17.5 节。只读访问已投递给当前认证 Destination 的 Record 与 Revision；调用者身份只由认证结果得出，输入里没有 agent_id、tenant_id 或 destination_id。",
   "$defs": {

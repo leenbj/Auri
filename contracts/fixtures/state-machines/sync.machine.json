@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "machine": "sync",
   "description": "手机上一条待同步任务的状态机（PRD 第 12.4 节、ADR-0018）。",
   "initial_state": "PENDING",

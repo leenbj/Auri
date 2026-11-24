@@ -7,7 +7,7 @@
     "keyword": "enum"
   },
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "code": "SOMETHING_WENT_WRONG",
     "message": "网关的公钥与配对时记下的不一致，已拒绝连接。",
     "retryable": false,

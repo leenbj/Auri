@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.auri.invalid/1.1/error.schema.json",
+  "$id": "https://contracts.auri.invalid/1.2/error.schema.json",
   "title": "统一错误结构",
   "description": "PRD 第 14 章。错误响应不得伪装成正常的空结果。",
   "type": "object",

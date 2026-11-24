@@ -16,7 +16,7 @@ sealed interface GatewayResult<out T> {
     data class Rejected(val status: Int, val code: ErrorCode?, val rawCode: String?, val retryable: Boolean) : GatewayResult<Nothing>
 
     /**
-     * 网关回了 2xx，但内容不符合合同（缺字段、类型不对、版本不是 1.1、回答的不是我们问的那个 Record）。
+     * 网关回了 2xx，但内容不符合合同（缺字段、类型不对、版本不是 1.2、回答的不是我们问的那个 Record）。
      * 对“提交”来说这等于结果不确定：请求确实送到了，网关可能已经入库。
      */
     data class Garbled(val status: Int, val reason: String) : GatewayResult<Nothing>
@@ -50,11 +50,49 @@ class RevisionSubmission(val recordId: String, val revision: Int, val textSha256
     override fun toString() = "RevisionSubmission($recordId#$revision)"
 }
 
-/** PUT 入库成功（revision.schema.json#/$defs/stored）。[duplicate] = 这是重复提交，返回的是首次入库的结果。 */
-data class StoredResponse(val operationId: String, val recordId: String, val revision: Int, val textSha256: String, val storedAt: Instant, val duplicate: Boolean)
+/**
+ * 网关回答里的一份 Delivery（revision.schema.json 里入库结果与追加结果的 deliveries 项）。[state] 是网关的原话，不在这里翻译。
+ * 入库结果里还可能有因这次发布而被取代的旧版本的 Delivery（[revision] 是旧版本号），所以用之前先看 [revision]。
+ */
+data class DeliveryOnRevision(val deliveryId: String, val destinationId: String, val revision: Int, val state: String)
+
+/** PUT 入库成功（revision.schema.json#/$defs/stored）。[duplicate] = 这是重复提交，返回的是首次入库的结果；[deliveries] 是首次入库时创建的那些。 */
+data class StoredResponse(
+    val operationId: String,
+    val recordId: String,
+    val revision: Int,
+    val textSha256: String,
+    val storedAt: Instant,
+    val duplicate: Boolean,
+    val deliveries: List<DeliveryOnRevision> = emptyList(),
+)
+
+/** 追加 Delivery 成功（revision.schema.json#/$defs/deliveries_added）：请求里每个 Destination 一项（新建的与本来就有的）。 */
+data class DeliveriesAdded(val recordId: String, val revision: Int, val deliveries: List<DeliveryOnRevision>)
 
 /** 网关上记着的一条 Revision（gateway.schema.json#/$defs/revision_status_summary）。 */
 data class RevisionOnGateway(val revision: Int, val state: String, val textSha256: String)
 
-/** GET /v1/records/{id}/status 里手机关心的部分：这条 Record 还在不在、网关记了哪些 Revision、各自的文字哈希。 */
-data class RecordStatus(val recordId: String, val originDeviceId: String, val deleted: Boolean, val revisions: List<RevisionOnGateway>)
+/**
+ * GET /v1/records/{id}/status 里手机关心的部分：这条 Record 还在不在、网关记了哪些 Revision、各自的文字哈希，
+ * 以及（Ticket 22）每个 Destination 上的投递状态 [destinations]（读不懂的条目被丢掉，字段缺失按没有投递算；同步引擎只看 [revisions]）。
+ */
+data class RecordStatus(
+    val recordId: String,
+    val originDeviceId: String,
+    val deleted: Boolean,
+    val revisions: List<RevisionOnGateway>,
+    val destinations: List<DeliveryOnGateway> = emptyList(),
+)
+
+/** 网关通告的合同版本对手机意味着什么（GET /v1/capabilities 的 supported_schema_versions；评审 R7）。 */
+enum class ContractVerdict {
+    /** 通告里有手机要的版本：可以说话。 */
+    COMPATIBLE,
+
+    /** 通告的全是更旧的版本：要先更新网关，一个数据请求都不能发。 */
+    TOO_OLD,
+
+    /** 无法判断（只有更新的版本、新旧都有但没有手机要的、读不懂的版本号、空列表）：不放行，也不冤枉网关“太旧”。 */
+    UNCONFIRMED,
+}

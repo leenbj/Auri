@@ -38,6 +38,29 @@ def test_a_subclass_of_the_contract_is_expected_to_run_every_inherited_test(sour
     assert "demo.jobs.SubJobStoreTest#enqueue_creates_a_pending_job_and_is_idempotent" in inherited
 
 
+def test_a_subclass_of_the_dispatch_contract_is_expected_to_run_every_inherited_test(tmp_path):
+    # Ticket 22：发送账的行为合同（DispatchStoreContract）也有设备上的子类；日志里以子类名报出继承来的测试，不能被判成“源码里没有”
+    (tmp_path / "Sub.kt").write_text("package demo.dispatch\n\nclass SubDispatchTest : DispatchStoreContract() {\n    override fun newFixture() = TODO()\n}\n", encoding="utf-8")
+
+    expected = ci.expected_tests([tmp_path])
+    inherited = {n for n in expected if n.startswith("demo.dispatch.SubDispatchTest#")}
+
+    assert len(inherited) == len(ci.contract_test_names(ci.DISPATCH_CONTRACT_SOURCE)) >= 30
+    assert "demo.dispatch.SubDispatchTest#the_default_intent_is_context_and_what_the_user_sets_survives_a_restart" in inherited
+    assert ci.check(log_for(all_pass(expected)), [tmp_path]) == []
+
+
+def test_a_dispatch_contract_test_that_never_ran_on_the_device_is_reported(tmp_path):
+    (tmp_path / "Sub.kt").write_text("package demo.dispatch\n\nclass SubDispatchTest : DispatchStoreContract() {\n    override fun newFixture() = TODO()\n}\n", encoding="utf-8")
+    entries = all_pass(ci.expected_tests([tmp_path]))
+    missing = sorted(entries)[0]
+    del entries[missing]
+
+    problems = ci.check(log_for(entries), [tmp_path])
+
+    assert len(problems) == 1 and missing in problems[0] and "没有这个测试的记录" in problems[0]
+
+
 def test_a_log_where_everything_ran_and_passed_has_no_problems(sources):
     assert ci.check(log_for(all_pass(ci.expected_tests(sources))), sources) == []
 
@@ -105,3 +128,6 @@ def test_the_real_sources_are_read_completely():
     ):
         assert name in expected, name
     assert len([n for n in expected if n.startswith("app.auri.syncplatform.SqliteSyncJobStoreTest#")]) == len(ci.contract_test_names())
+    # Ticket 22：发送账在设备上的合同测试（继承来的）
+    assert "app.auri.syncplatform.SqliteDispatchStoreOnDeviceTest#the_default_intent_is_context_and_what_the_user_sets_survives_a_restart" in expected
+    assert len([n for n in expected if n.startswith("app.auri.syncplatform.SqliteDispatchStoreOnDeviceTest#")]) == len(ci.contract_test_names(ci.DISPATCH_CONTRACT_SOURCE))

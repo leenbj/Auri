@@ -52,6 +52,8 @@ fun SyncPage(viewModel: SyncViewModel, onBack: () -> Unit) {
         onStopScan = { scanning = false },
         onDismissProblem = viewModel::dismissPairingProblem,
         onSyncNow = viewModel::syncNow,
+        onGatewayTextGranted = viewModel::setGatewayTextGranted,
+        onStrictLocal = viewModel::setStrictLocal,
         cameraUnavailable = cameraUnavailable,
         manualEntry = { ManualPairingEntry(onSubmit = viewModel::onQrText, enabled = state.pairing != PairingProgress.Pairing) },
         scanner = {

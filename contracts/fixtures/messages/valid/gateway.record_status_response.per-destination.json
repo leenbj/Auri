@@ -3,7 +3,7 @@
   "expect": "valid",
   "description": "一条 Record 在各 Destination 上分别处于已入库、已领取、已确认状态。",
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
     "origin_device_id": "3f9a1b6e-2f44-4d30-9f48-4b75617df2b1",
     "deleted": false,

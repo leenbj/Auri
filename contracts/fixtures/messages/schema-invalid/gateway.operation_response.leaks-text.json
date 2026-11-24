@@ -7,7 +7,7 @@
     "keyword": "additionalProperties"
   },
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "operation_id": "f248f8a6-694e-52a8-8aaf-76e5a7625808",
     "operation_type": "revision_store",
     "status": "succeeded",

@@ -8,7 +8,9 @@ import app.auri.sync.machine.SyncState
 import app.auri.sync.pairing.NeedsUser
 import app.auri.sync.pairing.ObservablePairingStore
 import app.auri.sync.pairing.PairingState
+import app.auri.sync.policy.DataFlowState
 import app.auri.sync.testing.CollectingLog
+import app.auri.sync.testing.InMemoryDataFlowPolicy
 import app.auri.sync.testing.InMemoryPairingStore
 import app.auri.sync.testing.SyncSamples
 import java.time.Instant
@@ -60,9 +62,11 @@ class ResumePlannerTest {
         val scheduler = FakeScheduler()
         val pairing = MutableStateFlow(pairing)
         val jobs = MutableStateFlow(jobs)
+        val policy = MutableStateFlow(InMemoryDataFlowPolicy.GRANTED)
+        val additionsDue = MutableStateFlow(false)
         val log = CollectingLog()
         val clock = FakeClock(scope.testScheduler)
-        val planner = ResumePlanner(this.pairing, this.jobs, scheduler, clock, RetryPolicy(), log)
+        val planner = ResumePlanner(this.pairing, this.jobs, policy, scheduler, clock, RetryPolicy(), log, { additionsDue.value }, additionsDue)
     }
 
     private fun TestScope.rig(pairing: PairingState, jobs: List<SyncJob>) = Rig(this, pairing, jobs).also {
@@ -75,6 +79,20 @@ class ResumePlannerTest {
         for (state in listOf(SyncState.PENDING, SyncState.SENDING, SyncState.WAITING_GATEWAY, SyncState.RETRY_SCHEDULED)) {
             val rig = rig(paired, listOf(job(state)))
             assertEquals("$state", listOf("ensure"), rig.scheduler.calls.toList())
+        }
+    }
+
+    @Test
+    fun `文字不许进网关（没授权、严格仅本地、读不出来）：有任务也不叫醒，授权之后才登记（评审 B1）`() = runTest {
+        for (closed in listOf(DataFlowState.Unset, DataFlowState(gatewayTextGranted = true, strictLocal = true), DataFlowState.Closed)) {
+            val rig = Rig(this, paired, listOf(job(SyncState.PENDING))).also { it.policy.value = closed }
+            rig.planner.start(backgroundScope)
+            runCurrent()
+            assertEquals("$closed：醒来也发不出去", listOf("cancel"), rig.scheduler.calls.toList())
+
+            rig.policy.value = InMemoryDataFlowPolicy.GRANTED
+            runCurrent()
+            assertEquals("$closed → 授权", listOf("cancel", "ensure"), rig.scheduler.calls.toList())
         }
     }
 
@@ -114,11 +132,41 @@ class ResumePlannerTest {
     }
 
     @Test
+    fun `网关太旧（不是连接坏了，用户只要更新网关）：有活就留着叫醒，更新之后进程被杀也能被叫醒接着发；没活才取消（再评 S7）`() = runTest {
+        val tooOld = PairingState.Paired(SyncSamples.pairedGateway(needsUser = NeedsUser.GATEWAY_TOO_OLD))
+
+        val withWork = rig(tooOld, listOf(job(SyncState.WAITING_GATEWAY)))
+        assertEquals("以前这里是 cancel：叫醒被取消，升级网关之后要等用户打开应用才接着发", listOf("ensure"), withWork.scheduler.calls.toList())
+
+        val additionsOnly = Rig(this, tooOld, listOf(job(SyncState.STORED))).also { it.additionsDue.value = true }
+        additionsOnly.planner.start(backgroundScope)
+        runCurrent()
+        assertEquals("欠着追加也一样", listOf("ensure"), additionsOnly.scheduler.calls.toList())
+
+        val nothingToSend = rig(tooOld, listOf(job(SyncState.STORED)))
+        assertEquals("没有活就没有叫醒的必要", listOf("cancel"), nothingToSend.scheduler.calls.toList())
+    }
+
+    @Test
+    fun `网关太旧的标记被清掉（用户更新了网关、被叫醒的一轮问出来了）：叫醒不重复登记；标记被打上：叫醒也不被取消`() = runTest {
+        val rig = rig(paired, listOf(job(SyncState.PENDING)))
+        assertEquals(listOf("ensure"), rig.scheduler.calls.toList())
+
+        rig.pairing.value = PairingState.Paired(SyncSamples.pairedGateway(needsUser = NeedsUser.GATEWAY_TOO_OLD))
+        runCurrent()
+        assertEquals("被打上“网关太旧”：叫醒留着，不取消也不重复登记", listOf("ensure"), rig.scheduler.calls.toList())
+
+        rig.pairing.value = paired
+        runCurrent()
+        assertEquals("标记清掉：结论还是“有活”，不重复登记", listOf("ensure"), rig.scheduler.calls.toList())
+    }
+
+    @Test
     fun `配对记录还没读出来：什么也不做，不能把已经登记的叫醒取消掉；读出来之后才决定`() = runTest {
         // 用真的 ObservablePairingStore：它读过一次之前不发出任何状态（不猜一个“未配对”）
         val store = ObservablePairingStore(InMemoryPairingStore(SyncSamples.pairedGateway()))
         val scheduler = FakeScheduler()
-        ResumePlanner(store.states, MutableStateFlow(listOf(job(SyncState.PENDING))), scheduler, FakeClock(testScheduler), RetryPolicy(), CollectingLog()).start(backgroundScope)
+        ResumePlanner(store.states, MutableStateFlow(listOf(job(SyncState.PENDING))), MutableStateFlow(InMemoryDataFlowPolicy.GRANTED), scheduler, FakeClock(testScheduler), RetryPolicy(), CollectingLog()).start(backgroundScope)
         runCurrent()
         assertEquals("还没读：不能当成没活取消掉已登记的叫醒", emptyList<String>(), scheduler.calls.toList())
 
@@ -166,7 +214,7 @@ class ResumePlannerTest {
         val pairing = MutableStateFlow<PairingState>(paired)
         val jobs = MutableStateFlow(listOf(job(SyncState.PENDING)))
         val log = CollectingLog()
-        ResumePlanner(pairing, jobs, scheduler, FakeClock(testScheduler), RetryPolicy(), log).start(backgroundScope)
+        ResumePlanner(pairing, jobs, MutableStateFlow(InMemoryDataFlowPolicy.GRANTED), scheduler, FakeClock(testScheduler), RetryPolicy(), log).start(backgroundScope)
         runCurrent()
         assertEquals(listOf("ensure"), scheduler.calls.toList())
         assertEquals(listOf("loop.resume.failed IllegalStateException"), log.lines.toList())
@@ -178,21 +226,54 @@ class ResumePlannerTest {
     }
 
     @Test
+    fun `任务都已入库，但还欠网关追加的 Delivery（用户确认过预览）：登记叫醒，追加做完就取消（评审 B2）`() = runTest {
+        val rig = rig(paired, listOf(job(SyncState.STORED)))
+        assertEquals("只有入库的任务、没有欠的追加：不叫醒", listOf("cancel"), rig.scheduler.calls.toList())
+
+        rig.additionsDue.value = true
+        runCurrent()
+        assertEquals("用户确认了预览，网关上还没有它的 Delivery：进程被杀也要被叫醒做完", listOf("cancel", "ensure"), rig.scheduler.calls.toList())
+
+        rig.additionsDue.value = false
+        runCurrent()
+        assertEquals(listOf("cancel", "ensure", "cancel"), rig.scheduler.calls.toList())
+    }
+
+    @Test
+    fun `欠着追加，但文字不许进网关或连接要用户处理：叫醒也做不成，不叫醒`() = runTest {
+        for (closed in listOf(DataFlowState.Unset, DataFlowState(gatewayTextGranted = true, strictLocal = true), DataFlowState.Closed)) {
+            val rig = Rig(this, paired, listOf(job(SyncState.STORED))).also { it.policy.value = closed; it.additionsDue.value = true }
+            rig.planner.start(backgroundScope)
+            runCurrent()
+            assertEquals("$closed", listOf("cancel"), rig.scheduler.calls.toList())
+        }
+        val needsRepair = rig(PairingState.Paired(SyncSamples.pairedGateway(needsUser = NeedsUser.AUTH_REJECTED)), listOf(job(SyncState.STORED)))
+        needsRepair.additionsDue.value = true
+        runCurrent()
+        assertEquals(listOf("cancel"), needsRepair.scheduler.calls.toList())
+    }
+
+    @Test
     fun `决策表：只有已配对、连接可用、并且有没入库也没被永久拒绝的任务才需要叫醒`() {
         val states = SyncState.entries
         val pairings = listOf(
             PairingState.NotPaired to false,
             PairingState.Lost to false,
             PairingState.Paired(SyncSamples.pairedGateway(needsUser = NeedsUser.KEY_MISMATCH)) to false,
+            PairingState.Paired(SyncSamples.pairedGateway(needsUser = NeedsUser.AUTH_REJECTED)) to false,
+            // 网关太旧不是“停下等用户处理”：用户只要更新网关，更新之后下一轮自己恢复（再评 S7），所以叫醒要留着
+            PairingState.Paired(SyncSamples.pairedGateway(needsUser = NeedsUser.GATEWAY_TOO_OLD)) to true,
             paired to true,
         )
         for ((pairing, usable) in pairings) {
             for (state in states) {
                 val expected = usable && state != SyncState.STORED && state != SyncState.BLOCKED
-                assertEquals("$pairing / $state", expected, needsResume(pairing, listOf(job(state))))
+                assertEquals("$pairing / $state", expected, needsResume(pairing, listOf(job(state)), InMemoryDataFlowPolicy.GRANTED))
             }
-            assertFalse("$pairing 没有任务", needsResume(pairing, emptyList()))
+            assertFalse("$pairing 没有任务", needsResume(pairing, emptyList(), InMemoryDataFlowPolicy.GRANTED))
         }
-        assertTrue(needsResume(paired, listOf(job(SyncState.STORED), job(SyncState.WAITING_GATEWAY, "b5b8d19e-3878-5ae7-a349-7fb388144b5a"))))
+        assertTrue(needsResume(paired, listOf(job(SyncState.STORED), job(SyncState.WAITING_GATEWAY, "b5b8d19e-3878-5ae7-a349-7fb388144b5a")), InMemoryDataFlowPolicy.GRANTED))
+        assertTrue("欠着追加的 Delivery：即使任务都已入库也要叫醒", needsResume(paired, listOf(job(SyncState.STORED)), InMemoryDataFlowPolicy.GRANTED, additionsDue = true))
+        assertFalse("没配对就没法追加", needsResume(PairingState.NotPaired, emptyList(), InMemoryDataFlowPolicy.GRANTED, additionsDue = true))
     }
 }

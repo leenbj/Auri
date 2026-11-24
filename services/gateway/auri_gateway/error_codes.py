@@ -1,9 +1,9 @@
-"""Centralized error codes and unified error response builder (contracts 1.1)."""
+"""Centralized error codes and unified error response builder (contracts 1.2)."""
 from __future__ import annotations
 
 from typing import Any
 
-# Frozen codes in contracts/schemas/common.schema.json#/$defs/error_code (v1.1)
+# Frozen codes in contracts/schemas/common.schema.json#/$defs/error_code (v1.2)
 GATEWAY_UNREACHABLE = "GATEWAY_UNREACHABLE"
 GATEWAY_AUTH_INVALID = "GATEWAY_AUTH_INVALID"
 GATEWAY_AUTH_REVOKED = "GATEWAY_AUTH_REVOKED"
@@ -55,9 +55,9 @@ def build_error_payload(
     required_action: str | None = None,
     operation_id: str | None = None,
 ) -> dict[str, Any]:
-    """Construct a response dict matching contracts/schemas/error.schema.json (1.1)."""
+    """Construct a response dict matching contracts/schemas/error.schema.json (1.2)."""
     return {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "code": code,
         "message": message[:500],
         "retryable": retryable,

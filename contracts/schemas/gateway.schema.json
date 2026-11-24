@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.auri.invalid/1.1/gateway.schema.json",
+  "$id": "https://contracts.auri.invalid/1.2/gateway.schema.json",
   "title": "网关存活检查、能力、操作与 Record 状态查询",
   "description": "PRD 第 17.2 节。GET /health 不带认证；GET /v1/capabilities、GET /v1/operations/{operation_id} 与 GET /v1/records/{record_id}/status 要求设备令牌认证，且不返回正文、密钥或内部拓扑。",
   "$defs": {

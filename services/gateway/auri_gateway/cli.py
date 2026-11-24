@@ -341,7 +341,7 @@ def _cmd_pair(args: argparse.Namespace) -> int:
         host_overrides=args.hosts,
     )
     payload = {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "gateway_id": code_info["gateway_id"],
         "addresses": addresses,
         "mdns_service_type": MDNS_SERVICE_TYPE,

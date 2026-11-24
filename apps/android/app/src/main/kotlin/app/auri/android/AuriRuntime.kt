@@ -6,12 +6,18 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import app.auri.android.control.ControlWiring
 import app.auri.android.control.PROFILE_FILE_NAME
+import app.auri.android.destinations.DestinationDetailViewModel
+import app.auri.android.destinations.DestinationsViewModel
+import app.auri.android.destinations.LibraryItemTexts
+import app.auri.android.destinations.SecretClipboardGuard
+import app.auri.android.destinations.SendReviewViewModel
 import app.auri.android.home.CoordinatorControls
 import app.auri.android.home.HomeViewModel
 import app.auri.android.modelui.ManagerModelControls
 import app.auri.android.modelui.ModelsViewModel
 import app.auri.android.modelui.SchedulerControls
 import app.auri.android.sync.SyncViewModel
+import app.auri.android.ui.AndroidClipboardPort
 import app.auri.asr.engine.SherpaOnnxEngineFactory
 import app.auri.capture.adapter.TranscriptionAdapter
 import app.auri.capture.calibration.ProfileStore
@@ -51,7 +57,10 @@ import app.auri.platform.system.SystemClock
 import app.auri.syncplatform.AndroidSyncLog
 import app.auri.syncplatform.SyncRuntime
 import app.auri.syncplatform.SyncStorage
+import app.auri.syncplatform.auth.BiometricLocalAuthenticator
 import java.io.File
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -84,7 +93,7 @@ class AuriRuntime(
     modelStoreRoot: File = application.filesDir,
     transport: HttpTransport = UrlConnectionTransport(),
 ) {
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val scope = scopeOf()
 
     private val lifecycle = AppLifecycleTracker(application)
     val headset = AndroidHeadsetPresence(application)
@@ -163,6 +172,10 @@ class AuriRuntime(
     /** 配对与同步（Ticket 21）。构造时不碰网络与相机；[SyncRuntime.start] 由 AuriApplication 调用。 */
     val sync: SyncRuntime = SyncRuntime.create(application, library, scope)
 
+    /** 目的地管理（Ticket 22）：每次生成或轮换 Destination 凭证前现场做本机核验（生物识别或设备锁屏凭据）。 */
+    val destinations = sync.destinationService(BiometricLocalAuthenticator(application, AndroidSyncLog))
+    private val itemTexts = LibraryItemTexts(library)
+
     init {
         // 前台服务跟着采集状态走；服务起不来就取消这次采集（没有前台服务，录音一进后台就会被系统静音）
         scope.bindForegroundService(coordinator.snapshot, AndroidForegroundServiceController(application)) { coordinator.foregroundServiceFailed() }
@@ -181,23 +194,59 @@ class AuriRuntime(
     val homeViewModelFactory = object : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
-            HomeViewModel(controls, headset, library, pipeline.notices, CoroutineScope(SupervisorJob() + Dispatchers.Default), durationSetting) as T
+            HomeViewModel(controls, headset, library, pipeline.notices, scopeOf(), durationSetting) as T
     }
 
     val syncViewModelFactory = object : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
-            SyncViewModel(sync, CoroutineScope(SupervisorJob() + Dispatchers.Default), AndroidSyncLog) as T
+            SyncViewModel(sync, scopeOf(), AndroidSyncLog) as T
     }
 
     val modelsViewModelFactory = object : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T =
-            ModelsViewModel(ManagerModelControls(modelManager), SchedulerControls(scheduler), CoroutineScope(SupervisorJob() + Dispatchers.Default)) as T
+            ModelsViewModel(ManagerModelControls(modelManager), SchedulerControls(scheduler), scopeOf()) as T
+    }
+
+    /** 复制出去的凭证到点从剪贴板清掉（评审 B5）；比任何一页都长寿，定时器挂在主线程上。 */
+    val secretClipboard = SecretClipboardGuard(
+        AndroidClipboardPort(application),
+        scopeOf(Dispatchers.Main.immediate),
+        { android.os.SystemClock.elapsedRealtime() },
+        AndroidSyncLog,
+    )
+
+    val destinationsViewModelFactory = object : ViewModelProvider.Factory {
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : ViewModel> create(modelClass: Class<T>): T =
+            DestinationsViewModel(destinations, scopeOf(), AndroidSyncLog) as T
+    }
+
+    val sendReviewViewModelFactory = object : ViewModelProvider.Factory {
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : ViewModel> create(modelClass: Class<T>): T =
+            SendReviewViewModel(sync.dispatch, itemTexts, SystemClock, sync::syncNow, scopeOf(), sync.dataFlow, AndroidSyncLog) as T
+    }
+
+    /** 每个目的地一个详情视图模型（以编号为键，见 MainActivity）；离开详情页时它自己抹掉凭证。 */
+    fun destinationDetailViewModelFactory(destinationId: String) = object : ViewModelProvider.Factory {
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : ViewModel> create(modelClass: Class<T>): T =
+            DestinationDetailViewModel(destinationId, destinations, itemTexts, scopeOf(), AndroidSyncLog, sync.status.map { }) as T
     }
 
     companion object {
         const val MODEL_MANIFEST_ASSET = "sensevoice-small-int8-2024-07-17.manifest.json"
+
+        /**
+         * 逃出作用域的异常只记一行日志，不再走到线程的默认处理器（评审 H4）：在 Android 上那就是整个进程退出，包括正在录音的前台服务。
+         * 日志只有事件名与异常类名：没有异常信息（里面可能有路径与文字）、没有正文、没有标识。
+         */
+        private val escapedFailureHandler = CoroutineExceptionHandler { _, failure -> AndroidSyncLog.event("scope.escaped ${failure::class.simpleName}") }
+
+        /** 这个运行时的每一个作用域都经这里造（GuardTest 钉住）：SupervisorJob（一个子协程失败不连累别的）加上面的处理器。 */
+        private fun scopeOf(dispatcher: CoroutineDispatcher = Dispatchers.Default) = CoroutineScope(SupervisorJob() + dispatcher + escapedFailureHandler)
     }
 }
 

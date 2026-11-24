@@ -7,7 +7,7 @@ import app.auri.capture.control.ControlProfile
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-// 本文件是 contracts/schemas/headset-profile.schema.json（合同 1.1）的 Kotlin 镜像：字段名、取值、约束一一对应。
+// 本文件是 contracts/schemas/headset-profile.schema.json（合同 1.2）的 Kotlin 镜像：字段名、取值、约束一一对应。
 // 与 adapter 类型一样，约束写在构造函数里，构造不出非法值；合同自带的样本在 HeadsetProfileContractTest 里逐个对表。
 
 /** common.schema.json#/$defs/compat_status */
@@ -105,7 +105,7 @@ data class HeadsetProfile(
     fun toJson(): String = ContractJson.json.encodeToString(serializer(), this)
 
     companion object {
-        const val SCHEMA_VERSION = "1.1"
+        const val SCHEMA_VERSION = "1.2"
         const val INPUT_POLICY = "bluetooth_only"
 
         fun fromJson(text: String): HeadsetProfile = ContractJson.json.decodeFromString(serializer(), text)

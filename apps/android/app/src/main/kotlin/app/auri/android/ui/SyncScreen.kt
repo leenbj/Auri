@@ -8,8 +8,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import app.auri.android.sync.PairingProblem
@@ -37,6 +39,8 @@ fun SyncScreen(
     onStopScan: () -> Unit,
     onDismissProblem: () -> Unit,
     onSyncNow: () -> Unit,
+    onGatewayTextGranted: (Boolean) -> Unit,
+    onStrictLocal: (Boolean) -> Unit,
     cameraUnavailable: Boolean = false,
     scanner: @Composable () -> Unit,
     manualEntry: @Composable () -> Unit = {},
@@ -53,7 +57,17 @@ fun SyncScreen(
         } else {
             Text(describeHeadline(status))
             status.causes.forEach { Text("· " + describeCause(it)) }
+            describeAwaitingYou(status.awaitingYou)?.let { Text(it) }
             Text(describeCounts(status.counts))
+            DataFlowSwitch(
+                "允许把文字发送到我配对的网关",
+                describeGrantHint(),
+                status.dataFlow.gatewayTextGranted,
+                onGatewayTextGranted,
+                enabled = status.headline != SyncHeadline.NOT_PAIRED, // 没有配对就没有“我配对的网关”可同意
+            )
+            DataFlowSwitch("严格仅本地", describeStrictLocalHint(), status.dataFlow.strictLocal, onStrictLocal)
+            if (state.policyNotSaved) Text(describePolicyNotSaved())
         }
         when (val pairing = state.pairing) {
             PairingProgress.Idle -> Unit
@@ -77,15 +91,40 @@ fun SyncScreen(
     }
 }
 
+@Composable
+private fun DataFlowSwitch(label: String, hint: String, checked: Boolean, onChange: (Boolean) -> Unit, enabled: Boolean = true) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
+        Column {
+            Text(label)
+            Text(hint)
+        }
+    }
+}
+
 /** 一句话说清现在是哪种情形。三种“同步没完成”的句子互不相同，只有需要用户处理的那一种让用户做事。 */
 internal fun describeHeadline(status: SyncStatus): String = when (status.headline) {
     SyncHeadline.NOT_PAIRED -> "还没有配对：录下的文字只保存在这台手机上，不会发出去。请在网关电脑上运行配对命令，再扫描它显示的二维码。"
+    SyncHeadline.HELD_BY_POLICY ->
+        if (status.dataFlow.strictLocal) "已开启严格仅本地：录下的文字只保存在这台手机上，不会发出去。"
+        else "文字还没有发出去：配对只说明手机认得这台网关，并不代表你同意把文字送过去。打开下面的“允许把文字发送到我配对的网关”后才会发送；在此之前录下的文字只保存在这台手机上。"
     SyncHeadline.NEEDS_USER -> "需要你处理：下面的问题解决之前，相关文字不会再自动发送。"
     SyncHeadline.RETRYING_LATER -> "网关暂时没有成功处理，稍后会自动重试，不需要你做什么。" + (status.nextRetryAt?.let { "（下次重试：$it）" } ?: "")
     SyncHeadline.WAITING_FOR_GATEWAY -> "现在连不上网关（可能不在同一个网络，或网关没开机）。连上之后会自动发送，不需要你做什么。"
     SyncHeadline.SENDING -> "正在发送…"
     SyncHeadline.UP_TO_DATE -> "已同步：所有文字都已进入网关。"
 }
+
+/** 有文字在等用户确认（预览确认的目的地）：说出几条，并说清确认之前对应的 Agent 领不到——只说“已同步”会让人以为 Agent 早就有了（评审 M2）。一条都没有就不多说。 */
+internal fun describeAwaitingYou(count: Int): String? =
+    if (count <= 0) null else "有 $count 条文字在等你确认：确认之前不会发给对应的 Agent，Agent 领不到它们。请到“发送”页逐条确认，或选择不发送。"
+
+internal fun describeGrantHint(): String =
+    "默认关闭。关闭时，即使已经配对，录下的文字也只留在这台手机上；这与“音频上传”“Agent 读取”“自动发送”是各自独立的授权。同意只对现在配对的这台网关有效，改配别的网关后要重新打开。"
+
+internal fun describeStrictLocalHint(): String = "开启后文字一个字节也不会离开这台手机，优先于上面的开关；也不会改走云端或其它通道。"
+
+internal fun describePolicyNotSaved(): String = "这个开关没能保存（本机存储暂时不可用），仍是原来的位置。请稍后再拨一次。"
 
 /** 读本机的同步记录时出了故障（比如数据库暂时被锁）：和“网关连不上”是两回事，下面显示的状态是最后一次读到的。 */
 internal fun describeStorageProblem(): String = "本机的同步记录暂时读不出来，正在自动重试，不需要你做什么。下面显示的是最后一次读到的状态。"
@@ -94,6 +133,7 @@ internal fun describeCause(cause: UserCause): String = when (cause) {
     UserCause.KEY_MISMATCH -> "这台网关的身份与配对时记录的不一样（可能换了网关或证书）。为安全起见没有发送任何内容。请在网关上重新生成配对二维码，重新配对。"
     UserCause.AUTH_REJECTED -> "网关不再承认这台手机（可能被撤销了）。请重新配对。"
     UserCause.PAIRING_LOST -> "本机保存的配对信息丢失（例如清除了安全存储）。请重新配对。"
+    UserCause.GATEWAY_TOO_OLD -> "这台网关的版本太旧（手机需要合同 1.2），为避免文字被它拒收，没有发送任何内容。请先更新网关到最新版本；更新后会自动恢复，不需要重新配对。"
     UserCause.VERSION_CONFLICT -> "有一版文字与网关上同一版的内容冲突，没有被收下。"
     UserCause.RECORD_DELETED -> "有一条记录已在网关上被删除，它的文字不会再发送。"
     UserCause.NOT_ORIGIN_DEVICE -> "网关说有一条记录属于另一台设备，没有被收下。"
@@ -106,6 +146,7 @@ internal fun describeCounts(counts: SyncCounts): String =
 
 internal fun describeProblem(problem: PairingProblem): String = when (problem) {
     PairingProblem.INVALID_QR -> "这不是 Auri 的配对二维码。"
+    PairingProblem.GATEWAY_TOO_OLD -> "这台网关的版本太旧（手机需要合同 1.2），没有向它发送任何请求。请先更新网关到最新版本，再重新生成配对二维码。"
     PairingProblem.EXPIRED -> "二维码已过期。请在网关上重新生成配对二维码。"
     PairingProblem.NOT_FOUND -> "在局域网里找不到网关。请确认手机和网关电脑连在同一个网络，网关已启动。"
     PairingProblem.KEY_MISMATCH -> "对方不是二维码对应的那台网关（公钥指纹不符），配对码没有发给它。"

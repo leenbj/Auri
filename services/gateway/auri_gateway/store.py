@@ -56,6 +56,11 @@ class AuthenticatedDestination:
 
 MAX_PAIRING_TTL_SECONDS = 3600
 
+# One Tenant may have at most this many active (not revoked) Destinations: it equals the contract's `maxItems` for the
+# Destinations of one publication or addition, so "send to every active Destination" always fits in one request
+# (contracts/README.md, Ticket 22 review M4). Enforced here, in the creating transaction, never by a phone's cached list.
+MAX_ACTIVE_DESTINATIONS = 50
+
 
 def issue_pairing_code(data_dir: pathlib.Path, *, ttl_seconds: int = 300) -> dict[str, Any]:
     """Generate a one-time short-lived pairing code and persist only its SHA-256 hash."""
@@ -168,7 +173,7 @@ def redeem_pairing_code(db_path: pathlib.Path, body: dict[str, Any]) -> dict[str
             )
             conn.execute("COMMIT")
             return {
-                "schema_version": "1.1",
+                "schema_version": "1.2",
                 "gateway_id": meta["gateway_id"],
                 "device_id": device_id,
                 "device_token": device_token,
@@ -333,6 +338,135 @@ def expire_due_leases(
             )
 
 
+def _cancel_open_deliveries(conn: Any, tenant_id: str, destination_id: str, now_iso: str) -> None:
+    """Cancel the Destination's open Deliveries (PENDING and LEASED) with the machine's DESTINATION_REVOKED event.
+
+    The event means "this Destination can no longer receive": used when the Destination is revoked and
+    when its last active credential is revoked (suspension, Ticket 22 review B3). ACKNOWLEDGED, REJECTED
+    and already CANCELLED Deliveries are history and stay as they are (the machine ignores or rejects them).
+    """
+    rows = conn.execute(
+        "SELECT delivery_id, state FROM deliveries WHERE tenant_id = ? AND destination_id = ?",
+        (tenant_id, destination_id),
+    ).fetchall()
+    for row in rows:
+        outcome = step(row["state"], DESTINATION_REVOKED)
+        if outcome.kind != "transition":
+            continue
+        conn.execute(
+            """
+            UPDATE deliveries
+            SET state = ?,
+                cancelled_at = ?,
+                lease_token_hash = NULL,
+                lease_expires_at = NULL
+            WHERE delivery_id = ?
+            """,
+            (outcome.state, now_iso, row["delivery_id"]),
+        )
+
+
+# 撤销截止点（Ticket 22 再评审 R1/R2，第四轮 F6 改为持久单调顺序）的可见性条件：
+# 入库顺序（r.store_seq）不晚于 Destination 的截止点（dst.revocation_cutoff_seq）的文字，
+# 这个 Destination 的 Agent 一律看不到（列表、搜索、读取、领取、续租、确认、拒收）。`dst` 是 destinations、`r` 是 revisions 的别名。
+# 仅当库里尚未把墙上时间截止点迁到序号（revocation_cutoff_seq IS NULL 但 revocation_cutoff IS NOT NULL）时，才退回比较 stored_at。
+AFTER_REVOCATION_CUTOFF = (
+    "((dst.revocation_cutoff_seq IS NULL OR r.store_seq > dst.revocation_cutoff_seq)"
+    " AND (dst.revocation_cutoff_seq IS NOT NULL OR dst.revocation_cutoff IS NULL OR r.stored_at > dst.revocation_cutoff))"
+)
+
+
+def _suspended_destination_ids(conn: Any, tenant_id: str, destination_ids: list[str]) -> set[str]:
+    """Which of these Destinations are suspended: a credential was issued once, none is active now.
+
+    Only revoking credentials causes it (rotating always leaves one active), and issuing a new one ends it,
+    so it is computed from the credential rows instead of being stored (backup, restore and rotation can
+    never leave a flag behind that disagrees with them). A Destination that never had a credential is not
+    suspended, and neither is a revoked one (that is handled where `revoked_at` is checked).
+    """
+    if not destination_ids:
+        return set()
+    placeholders = ", ".join("?" for _ in destination_ids)
+    rows = conn.execute(
+        f"""
+        SELECT d.destination_id
+        FROM destinations AS d
+        WHERE d.tenant_id = ? AND d.destination_id IN ({placeholders})
+          AND d.credential_issued = 1 AND d.revoked_at IS NULL
+          AND NOT EXISTS (
+              SELECT 1 FROM destination_credentials AS c
+              WHERE c.tenant_id = d.tenant_id AND c.destination_id = d.destination_id AND c.revoked_at IS NULL
+          )
+        """,
+        (tenant_id, *destination_ids),
+    ).fetchall()
+    return {row["destination_id"] for row in rows}
+
+
+def _has_revocation_cutoff_column(conn: Any) -> bool:
+    """Whether this database already has migration 0005's column.
+
+    shortcut: always true in a real deployment (migrations run before serving). The upgrade test runs the current code
+    on a schema frozen at migration 0002 (AURI_GATEWAY_MIGRATIONS_DIR) to create "legacy" data through the public API, so
+    the write path (first store) must not require a column that legacy schema lacks; drop this once that test seeds
+    its legacy database another way.
+    """
+    return any(row[1] == "revocation_cutoff" for row in conn.execute("PRAGMA table_info(destinations)"))
+
+
+def _has_store_seq_column(conn: Any) -> bool:
+    """Whether this database already has migration 0006's monotonic sequence column on revisions."""
+    return any(row[1] == "store_seq" for row in conn.execute("PRAGMA table_info(revisions)"))
+
+
+def _has_revocation_cutoff_seq_column(conn: Any) -> bool:
+    """Whether this database already has migration 0006's monotonic cutoff column on destinations."""
+    return any(row[1] == "revocation_cutoff_seq" for row in conn.execute("PRAGMA table_info(destinations)"))
+
+
+def _allocate_revision_seq(conn: Any) -> int:
+    """Allocate the next durable monotonic revision sequence inside an active BEGIN IMMEDIATE transaction."""
+    conn.execute("UPDATE revision_sequence SET last_seq = last_seq + 1 WHERE id = 1")
+    row = conn.execute("SELECT last_seq FROM revision_sequence WHERE id = 1").fetchone()
+    return int(row["last_seq"])
+
+
+def _past_cutoff_destination_ids(
+    conn: Any, tenant_id: str, destination_ids: list[str], store_seq: int | None, stored_at: str
+) -> set[str]:
+    """Which of these Destinations have a revocation cutoff at or after this revision (R2, F6 monotonic order).
+
+    A text stored by then is invisible to the Destination's Agent for good (`AFTER_REVOCATION_CUTOFF`), so no
+    Delivery is created for it: a PENDING row nobody can ever claim would only make the phone's status say
+    "stored". Like a suspended Destination it is skipped, not refused, so the other targets of the request still get theirs.
+    """
+    if not destination_ids or not _has_revocation_cutoff_column(conn):
+        return set()
+    placeholders = ", ".join("?" for _ in destination_ids)
+    if _has_revocation_cutoff_seq_column(conn) and store_seq is not None:
+        rows = conn.execute(
+            f"""
+            SELECT destination_id FROM destinations
+            WHERE tenant_id = ? AND destination_id IN ({placeholders})
+              AND (
+                  (revocation_cutoff_seq IS NOT NULL AND revocation_cutoff_seq >= ?)
+                  OR (revocation_cutoff_seq IS NULL AND revocation_cutoff IS NOT NULL AND revocation_cutoff >= ?)
+              )
+            """,
+            (tenant_id, *destination_ids, store_seq, stored_at),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"""
+            SELECT destination_id FROM destinations
+            WHERE tenant_id = ? AND destination_id IN ({placeholders})
+              AND revocation_cutoff IS NOT NULL AND revocation_cutoff >= ?
+            """,
+            (tenant_id, *destination_ids, stored_at),
+        ).fetchall()
+    return {row["destination_id"] for row in rows}
+
+
 def _validate_publication_destinations(
     conn: Any, tenant_id: str, destination_ids: list[str], intent: str
 ) -> None:
@@ -467,6 +601,40 @@ def _prepare_destination_deliveries(
     return [*cancelled_old, *new_deliveries], new_rows
 
 
+def _insert_delivery_rows(
+    conn: Any,
+    *,
+    tenant_id: str,
+    record_id: str,
+    revision: int,
+    intent: str,
+    rows: list[tuple[dict[str, Any], list[int], str | None]],
+    now_iso: str,
+) -> None:
+    """Insert the Delivery rows prepared by `_prepare_destination_deliveries` (inside the caller's write transaction)."""
+    for item, dest_supersedes, cancelled_at in rows:
+        conn.execute(
+            """
+            INSERT INTO deliveries (
+                delivery_id, tenant_id, record_id, revision, destination_id,
+                state, intent, supersedes_revisions_json, created_at, cancelled_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item["delivery_id"],
+                tenant_id,
+                record_id,
+                revision,
+                item["destination_id"],
+                item["state"],
+                intent,
+                json.dumps(dest_supersedes),
+                now_iso,
+                cancelled_at,
+            ),
+        )
+
+
 def store_revision(
     db_path: pathlib.Path, auth: AuthenticatedDevice, submission: dict[str, Any]
 ) -> dict[str, Any]:
@@ -535,7 +703,7 @@ def store_revision(
                     )
                 conn.execute("COMMIT")
                 return {
-                    "schema_version": "1.1",
+                    "schema_version": "1.2",
                     "operation_id": existing["operation_id"],
                     "record_id": record_id,
                     "revision": revision,
@@ -547,6 +715,11 @@ def store_revision(
                 }
 
             destination_ids = list(publication["destination_ids"])
+            # 暂停的 Destination（凭证被撤销、还没签发新的）先跳过、不参与 intent 校验也不报错（contracts/README.md 规则 ②）；
+            # 已撤销或不存在的 Destination 不在 suspended 里，仍会被下面的校验 422 拒收。
+            # 第四轮 F6：单调入库顺序下，新入库的 Revision 序号总是严格大于任何已有截止点，无需在首次入库时跳过截止点。
+            suspended = _suspended_destination_ids(conn, tenant_id, destination_ids)
+            destination_ids = [dest_id for dest_id in destination_ids if dest_id not in suspended]
             _validate_publication_destinations(conn, tenant_id, destination_ids, publication["intent"])
 
             prior_published = conn.execute(
@@ -591,68 +764,98 @@ def store_revision(
                 now=now,
                 now_iso=now_iso,
             )
-            conn.execute(
-                """
-                INSERT INTO revisions (
-                    tenant_id, record_id, revision, origin_device_id,
-                    operation_id, state, stored_at,
-                    text, text_sha256, source, language, review_state,
-                    execution_location, engine, model_id, model_version,
-                    confidence, segments_json, capture_json,
-                    intent, destination_ids_json,
-                    superseded_revisions_json, deliveries_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    tenant_id,
-                    record_id,
-                    revision,
-                    auth.device_id,
-                    operation_id,
-                    state,
-                    now_iso,
-                    content["text"],
-                    content["text_sha256"],
-                    content["source"],
-                    content["language"],
-                    content["review_state"],
-                    content["execution_location"],
-                    content["engine"],
-                    content["model_id"],
-                    content["model_version"],
-                    content["confidence"],
-                    json.dumps(content["segments"], ensure_ascii=False),
-                    json.dumps(capture, ensure_ascii=False),
-                    publication["intent"],
-                    json.dumps(destination_ids),
-                    json.dumps(superseded_revisions),
-                    json.dumps(deliveries),
-                ),
-            )
-            for item, dest_supersedes, cancelled_at in new_delivery_rows:
+            if _has_store_seq_column(conn):
+                store_seq = _allocate_revision_seq(conn)
                 conn.execute(
                     """
-                    INSERT INTO deliveries (
-                        delivery_id, tenant_id, record_id, revision, destination_id,
-                        state, intent, supersedes_revisions_json, created_at, cancelled_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO revisions (
+                        tenant_id, record_id, revision, origin_device_id,
+                        operation_id, state, stored_at, store_seq,
+                        text, text_sha256, source, language, review_state,
+                        execution_location, engine, model_id, model_version,
+                        confidence, segments_json, capture_json,
+                        intent, destination_ids_json,
+                        superseded_revisions_json, deliveries_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        item["delivery_id"],
                         tenant_id,
                         record_id,
                         revision,
-                        item["destination_id"],
-                        item["state"],
-                        publication["intent"],
-                        json.dumps(dest_supersedes),
+                        auth.device_id,
+                        operation_id,
+                        state,
                         now_iso,
-                        cancelled_at,
+                        store_seq,
+                        content["text"],
+                        content["text_sha256"],
+                        content["source"],
+                        content["language"],
+                        content["review_state"],
+                        content["execution_location"],
+                        content["engine"],
+                        content["model_id"],
+                        content["model_version"],
+                        content["confidence"],
+                        json.dumps(content["segments"], ensure_ascii=False),
+                        json.dumps(capture, ensure_ascii=False),
+                        publication["intent"],
+                        json.dumps(destination_ids),
+                        json.dumps(superseded_revisions),
+                        json.dumps(deliveries),
                     ),
                 )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO revisions (
+                        tenant_id, record_id, revision, origin_device_id,
+                        operation_id, state, stored_at,
+                        text, text_sha256, source, language, review_state,
+                        execution_location, engine, model_id, model_version,
+                        confidence, segments_json, capture_json,
+                        intent, destination_ids_json,
+                        superseded_revisions_json, deliveries_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        tenant_id,
+                        record_id,
+                        revision,
+                        auth.device_id,
+                        operation_id,
+                        state,
+                        now_iso,
+                        content["text"],
+                        content["text_sha256"],
+                        content["source"],
+                        content["language"],
+                        content["review_state"],
+                        content["execution_location"],
+                        content["engine"],
+                        content["model_id"],
+                        content["model_version"],
+                        content["confidence"],
+                        json.dumps(content["segments"], ensure_ascii=False),
+                        json.dumps(capture, ensure_ascii=False),
+                        publication["intent"],
+                        json.dumps(destination_ids),
+                        json.dumps(superseded_revisions),
+                        json.dumps(deliveries),
+                    ),
+                )
+            _insert_delivery_rows(
+                conn,
+                tenant_id=tenant_id,
+                record_id=record_id,
+                revision=revision,
+                intent=publication["intent"],
+                rows=new_delivery_rows,
+                now_iso=now_iso,
+            )
             conn.execute("COMMIT")
             return {
-                "schema_version": "1.1",
+                "schema_version": "1.2",
                 "operation_id": operation_id,
                 "record_id": record_id,
                 "revision": revision,
@@ -669,9 +872,163 @@ def store_revision(
         conn.close()
 
 
+def add_revision_deliveries(
+    db_path: pathlib.Path,
+    auth: AuthenticatedDevice,
+    record_id: str,
+    revision: int,
+    intent: str,
+    destination_ids: list[str],
+) -> dict[str, Any]:
+    """Add Deliveries to an already stored Revision (Ticket 22 review B2; closes README gap G13).
+
+    The Revision itself (text, hash, operation, first-store snapshot) is never touched. Per
+    (Revision, Destination) there is at most one Delivery: asking again answers the existing one,
+    whatever state it is in. All-or-nothing: one invalid Destination creates no Delivery at all.
+    The `intent` belongs to the Deliveries created here (that is what an Agent reads); every
+    Destination that gets a new Delivery must allow it. Supersession works as at first store.
+    """
+    tenant_id = auth.tenant_id
+    now = utc_now()
+    now_iso = format_utc(now)
+
+    conn = open_connection(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            record_row = conn.execute(
+                """
+                SELECT origin_device_id, deleted_at
+                FROM records
+                WHERE tenant_id = ? AND record_id = ?
+                """,
+                (tenant_id, record_id),
+            ).fetchone()
+            if record_row is None:
+                raise GatewayError(404, REQUEST_INVALID, "Record was not found.")
+            if record_row["deleted_at"] is not None:
+                raise GatewayError(
+                    410,
+                    RECORD_DELETED,
+                    "Record has been deleted and cannot accept new deliveries.",
+                )
+            if record_row["origin_device_id"] != auth.device_id:
+                raise GatewayError(
+                    403,
+                    RECORD_NOT_ORIGIN_DEVICE,
+                    "Only the device that created this record may add deliveries to its revisions.",
+                )
+            has_seq = _has_store_seq_column(conn)
+            stored = conn.execute(
+                f"""
+                SELECT {'store_seq, ' if has_seq else ''}stored_at FROM revisions
+                WHERE tenant_id = ? AND record_id = ? AND revision = ?
+                """,
+                (tenant_id, record_id, revision),
+            ).fetchone()
+            if stored is None:
+                raise GatewayError(404, REQUEST_INVALID, "Revision was not found.")
+
+            for dest_id in destination_ids:
+                expire_due_leases(conn, tenant_id, dest_id, now)
+            placeholders = ", ".join("?" for _ in destination_ids)
+            existing = {
+                row["destination_id"]: row
+                for row in conn.execute(
+                    f"""
+                    SELECT delivery_id, destination_id, state
+                    FROM deliveries
+                    WHERE tenant_id = ? AND record_id = ? AND revision = ?
+                      AND destination_id IN ({placeholders})
+                    """,
+                    (tenant_id, record_id, revision, *destination_ids),
+                ).fetchall()
+            }
+            missing = [dest_id for dest_id in destination_ids if dest_id not in existing]
+            # 暂停的与过截止点的 Destination 先跳过、不参与 intent 校验也不报错；已撤销/不存在的仍由下面 422 拒收
+            suspended = _suspended_destination_ids(conn, tenant_id, missing)
+            # 撤销截止点（再评审 R2，第四轮 F6）：撤销之前入库的文字，替换凭证永远看不到，延迟到达的追加也不为它建 Delivery
+            suspended |= _past_cutoff_destination_ids(
+                conn, tenant_id, missing, stored["store_seq"] if has_seq else None, stored["stored_at"]
+            )
+            missing = [dest_id for dest_id in missing if dest_id not in suspended]
+            _validate_publication_destinations(conn, tenant_id, missing, intent)
+
+            higher_exists = (
+                conn.execute(
+                    """
+                    SELECT 1 FROM revisions
+                    WHERE tenant_id = ? AND record_id = ? AND revision > ?
+                    LIMIT 1
+                    """,
+                    (tenant_id, record_id, revision),
+                ).fetchone()
+                is not None
+            )
+            _, new_rows = _prepare_destination_deliveries(
+                conn,
+                tenant_id=tenant_id,
+                record_id=record_id,
+                revision=revision,
+                destination_ids=missing,
+                superseded_revisions=[],
+                higher_exists=higher_exists,
+                now=now,
+                now_iso=now_iso,
+            )
+            _insert_delivery_rows(
+                conn,
+                tenant_id=tenant_id,
+                record_id=record_id,
+                revision=revision,
+                intent=intent,
+                rows=new_rows,
+                now_iso=now_iso,
+            )
+            created = {item["destination_id"]: item for item, _, _ in new_rows}
+            deliveries = [
+                created[dest_id]
+                if dest_id in created
+                else {
+                    "delivery_id": existing[dest_id]["delivery_id"],
+                    "destination_id": dest_id,
+                    "revision": revision,
+                    "state": existing[dest_id]["state"],
+                }
+                for dest_id in destination_ids
+                if dest_id in created or dest_id in existing
+            ]
+            conn.execute("COMMIT")
+            return {
+                "schema_version": "1.2",
+                "record_id": record_id,
+                "revision": revision,
+                "deliveries": deliveries,
+            }
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+
+
+# Destination 资源的全部列。`credential_active` 不存：从凭证表现算，所以撤销、轮换、备份恢复都不会让它与凭证状态不一致
+_DESTINATION_SELECT = """
+    SELECT destination_id, display_name, send_mode, allowed_intents_json,
+           created_at, created_by_device_id, credential_issued, revoked_at,
+           EXISTS (
+               SELECT 1 FROM destination_credentials AS c
+               WHERE c.tenant_id = destinations.tenant_id
+                 AND c.destination_id = destinations.destination_id
+                 AND c.revoked_at IS NULL
+           ) AS credential_active
+    FROM destinations
+"""
+
+
 def _destination_row_to_resource(row: Any) -> dict[str, Any]:
     return {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "destination_id": row["destination_id"],
         "display_name": row["display_name"],
         "send_mode": row["send_mode"],
@@ -679,6 +1036,7 @@ def _destination_row_to_resource(row: Any) -> dict[str, Any]:
         "created_at": row["created_at"],
         "created_by_device_id": row["created_by_device_id"],
         "credential_issued": bool(row["credential_issued"]),
+        "credential_active": bool(row["credential_active"]),
         "revoked_at": row["revoked_at"],
     }
 
@@ -695,6 +1053,16 @@ def create_destination(
     try:
         conn.execute("BEGIN IMMEDIATE")
         try:
+            active = conn.execute(
+                "SELECT COUNT(*) FROM destinations WHERE tenant_id = ? AND revoked_at IS NULL", (auth.tenant_id,)
+            ).fetchone()[0]
+            if active >= MAX_ACTIVE_DESTINATIONS:
+                raise GatewayError(
+                    409,
+                    REQUEST_INVALID,
+                    f"The Tenant already has {MAX_ACTIVE_DESTINATIONS} active Destinations; no Destination was created.",
+                    required_action="Revoke a Destination you no longer use, then create the new one.",
+                )
             conn.execute(
                 """
                 INSERT INTO destinations (
@@ -714,12 +1082,7 @@ def create_destination(
                 ),
             )
             row = conn.execute(
-                """
-                SELECT destination_id, display_name, send_mode, allowed_intents_json,
-                       created_at, created_by_device_id, credential_issued, revoked_at
-                FROM destinations
-                WHERE tenant_id = ? AND destination_id = ?
-                """,
+                _DESTINATION_SELECT + " WHERE tenant_id = ? AND destination_id = ?",
                 (auth.tenant_id, destination_id),
             ).fetchone()
             assert row is not None
@@ -737,19 +1100,13 @@ def list_destinations(db_path: pathlib.Path, auth: AuthenticatedDevice) -> dict[
     conn = open_connection(db_path)
     try:
         rows = conn.execute(
-            """
-            SELECT destination_id, display_name, send_mode, allowed_intents_json,
-                   created_at, created_by_device_id, credential_issued, revoked_at
-            FROM destinations
-            WHERE tenant_id = ?
-            ORDER BY created_at ASC, destination_id ASC
-            """,
+            _DESTINATION_SELECT + " WHERE tenant_id = ? ORDER BY created_at ASC, destination_id ASC",
             (auth.tenant_id,),
         ).fetchall()
     finally:
         conn.close()
     return {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "destinations": [_destination_row_to_resource(row) for row in rows],
     }
 
@@ -761,12 +1118,7 @@ def get_destination(
     conn = open_connection(db_path)
     try:
         row = conn.execute(
-            """
-            SELECT destination_id, display_name, send_mode, allowed_intents_json,
-                   created_at, created_by_device_id, credential_issued, revoked_at
-            FROM destinations
-            WHERE tenant_id = ? AND destination_id = ?
-            """,
+            _DESTINATION_SELECT + " WHERE tenant_id = ? AND destination_id = ?",
             (auth.tenant_id, destination_id),
         ).fetchone()
     finally:
@@ -815,6 +1167,33 @@ def issue_destination_credential(
                 )
 
             replaced_previous = bool(dest["credential_issued"])
+            if destination_id in _suspended_destination_ids(conn, auth.tenant_id, [destination_id]):
+                # 暂停到此结束：这一刻起，入库顺序不晚于截止点的文字，替换凭证一律看不到、也不会为它们建 Delivery（R1/R2，第四轮 F6）。
+                # 取本 Tenant 已有文字的最大持久单调序号（与已有截止点取较大者，绝不倒退）；不依赖墙上时间。
+                if _has_revocation_cutoff_seq_column(conn):
+                    conn.execute(
+                        """
+                        UPDATE destinations
+                        SET revocation_cutoff_seq = MAX(
+                                COALESCE(revocation_cutoff_seq, 0),
+                                COALESCE((SELECT MAX(store_seq) FROM revisions WHERE tenant_id = ?), 0)
+                            ),
+                            revocation_cutoff = NULL
+                        WHERE tenant_id = ? AND destination_id = ?
+                        """,
+                        (auth.tenant_id, auth.tenant_id, destination_id),
+                    )
+                elif _has_revocation_cutoff_column(conn):
+                    conn.execute(
+                        """
+                        UPDATE destinations
+                        SET revocation_cutoff = MAX(
+                            ?, COALESCE((SELECT MAX(stored_at) FROM revisions WHERE tenant_id = ?), '')
+                        )
+                        WHERE tenant_id = ? AND destination_id = ?
+                        """,
+                        (now_iso, auth.tenant_id, auth.tenant_id, destination_id),
+                    )
             if replaced_previous:
                 conn.execute(
                     """
@@ -851,7 +1230,7 @@ def issue_destination_credential(
             )
             conn.execute("COMMIT")
             return {
-                "schema_version": "1.1",
+                "schema_version": "1.2",
                 "destination_id": destination_id,
                 "credential": credential,
                 "issued_at": now_iso,
@@ -874,12 +1253,7 @@ def revoke_destination(
         conn.execute("BEGIN IMMEDIATE")
         try:
             row = conn.execute(
-                """
-                SELECT destination_id, display_name, send_mode, allowed_intents_json,
-                       created_at, created_by_device_id, credential_issued, revoked_at
-                FROM destinations
-                WHERE tenant_id = ? AND destination_id = ?
-                """,
+                _DESTINATION_SELECT + " WHERE tenant_id = ? AND destination_id = ?",
                 (auth.tenant_id, destination_id),
             ).fetchone()
             if row is None:
@@ -908,36 +1282,9 @@ def revoke_destination(
                 """,
                 (now_iso, auth.tenant_id, destination_id),
             )
-            delivery_rows = conn.execute(
-                """
-                SELECT delivery_id, state
-                FROM deliveries
-                WHERE tenant_id = ? AND destination_id = ?
-                """,
-                (auth.tenant_id, destination_id),
-            ).fetchall()
-            for delivery_row in delivery_rows:
-                outcome = step(delivery_row["state"], DESTINATION_REVOKED)
-                if outcome.kind != "transition":
-                    continue
-                conn.execute(
-                    """
-                    UPDATE deliveries
-                    SET state = ?,
-                        cancelled_at = ?,
-                        lease_token_hash = NULL,
-                        lease_expires_at = NULL
-                    WHERE delivery_id = ?
-                    """,
-                    (outcome.state, now_iso, delivery_row["delivery_id"]),
-                )
+            _cancel_open_deliveries(conn, auth.tenant_id, destination_id, now_iso)
             updated = conn.execute(
-                """
-                SELECT destination_id, display_name, send_mode, allowed_intents_json,
-                       created_at, created_by_device_id, credential_issued, revoked_at
-                FROM destinations
-                WHERE tenant_id = ? AND destination_id = ?
-                """,
+                _DESTINATION_SELECT + " WHERE tenant_id = ? AND destination_id = ?",
                 (auth.tenant_id, destination_id),
             ).fetchone()
             assert updated is not None
@@ -983,7 +1330,7 @@ def _delete_record_in_tx(
             cancelled_ids = json.loads(row["delete_cancelled_delivery_ids_json"] or "[]")
             return (
                 {
-                    "schema_version": "1.1",
+                    "schema_version": "1.2",
                     "record_id": record_id,
                     "deleted_at": row["deleted_at"],
                     "cancelled_delivery_ids": cancelled_ids,
@@ -1010,7 +1357,7 @@ def _delete_record_in_tx(
         )
         return (
             {
-                "schema_version": "1.1",
+                "schema_version": "1.2",
                 "record_id": record_id,
                 "deleted_at": now_iso,
                 "cancelled_delivery_ids": [],
@@ -1066,7 +1413,7 @@ def _delete_record_in_tx(
     )
     return (
         {
-            "schema_version": "1.1",
+            "schema_version": "1.2",
             "record_id": record_id,
             "deleted_at": now_iso,
             "cancelled_delivery_ids": cancelled_delivery_ids,
@@ -1233,6 +1580,7 @@ def revoke_credential(data_dir: pathlib.Path, credential_id: str) -> dict[str, A
             row = conn.execute(
                 """
                 SELECT c.credential_id,
+                       c.tenant_id,
                        c.destination_id,
                        d.display_name AS destination_display_name,
                        c.issued_by_device_id,
@@ -1263,6 +1611,9 @@ def revoke_credential(data_dir: pathlib.Path, credential_id: str) -> dict[str, A
                 "UPDATE destination_credentials SET revoked_at = ? WHERE credential_id = ?",
                 (now_iso, credential_id),
             )
+            # 撤销的是最后一条有效凭证：Destination 暂停，排着的（PENDING/LEASED）取消，之后签发的新凭证领不到它们
+            if row["destination_id"] in _suspended_destination_ids(conn, row["tenant_id"], [row["destination_id"]]):
+                _cancel_open_deliveries(conn, row["tenant_id"], row["destination_id"], now_iso)
             conn.execute("COMMIT")
             return {
                 "credential_id": row["credential_id"],

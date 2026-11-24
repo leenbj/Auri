@@ -134,7 +134,7 @@ class ContractOutputTest {
             val dir = all.getValue(name)
             val error = dir.json("error.json")
             assertEquals(name, code, error.getValue("code").jsonPrimitive.content)
-            assertEquals(name, "1.1", error.getValue("schema_version").jsonPrimitive.content)
+            assertEquals(name, "1.2", error.getValue("schema_version").jsonPrimitive.content)
             assertEquals(name, dir.json("task-handle.json").getValue("job_id"), error.getValue("operation_id"))
             assertFalse("$name：没有产出文本就不该有修订内容", File(dir, "revision-content.json").exists())
         }

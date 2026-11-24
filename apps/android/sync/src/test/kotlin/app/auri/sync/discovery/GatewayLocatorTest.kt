@@ -2,6 +2,7 @@ package app.auri.sync.discovery
 
 import app.auri.sync.http.HttpReply
 import app.auri.sync.pairing.GatewayAddress
+import app.auri.sync.policy.RequestGate
 import app.auri.sync.testing.FakeDiscovery
 import app.auri.sync.testing.FakeLan
 import app.auri.sync.testing.ScriptedExchange
@@ -10,6 +11,7 @@ import app.auri.sync.testing.TlsFixtures
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
@@ -119,6 +121,66 @@ class GatewayLocatorTest {
         lanHost.lan.host(lan, TlsFixtures.gatewayA) { ScriptedExchange.json(200, """{"status":"starting"}""") }
 
         assertEquals(Located.Unreachable, locate())
+    }
+
+    /**
+     * 找网关是一串请求（逐个地址探测、再问 mDNS）：每一个各自过一次门，不是整串只在第一个之前过一次（第三轮 S12）。
+     * 为什么要紧：第一个探测在路上的时候用户收回了授权，后面的请求不该再发；这里的门放行前 [allowed] 个请求，之后一律不放行，并数着被拦了几次。
+     */
+    private class AllowsFirst(private var allowed: Int) : RequestGate {
+        var withheld = 0
+
+        override suspend fun <T : Any> gated(request: suspend () -> T): T? =
+            if (allowed-- > 0) request() else { withheld++; null }
+    }
+
+    private fun locate(gateway: app.auri.sync.pairing.PairedGateway, gate: RequestGate) = runBlocking { lanHost.locator.locate(gateway, gate) }
+
+    @Test
+    fun `第一个探测放行之后门不放行：不试下一个地址，结果是 null，之后一个请求也没发，也不再问门`() {
+        lanHost.lan.host(lan, TlsFixtures.gatewayA) // nas 上没人；lan 是通的，但门不让探
+        val gate = AllowsFirst(1)
+
+        assertNull(locate(SyncSamples.pairedGateway(), gate))
+
+        assertEquals("第一个探测放行了；第二个地址在门口被拦下", listOf(nas), lanHost.lan.attempts.toList())
+        assertTrue(lanHost.lan.delivered.isEmpty())
+        assertEquals("被拦下就停：不再往后一个一个问门", 1, gate.withheld)
+    }
+
+    @Test
+    fun `记下的地址都试过之后门不放行：不问 mDNS`() {
+        val gate = AllowsFirst(1)
+
+        assertNull(locate(SyncSamples.pairedGateway(addresses = listOf(nas)), gate))
+
+        assertEquals(listOf(nas), lanHost.lan.attempts.toList())
+        assertTrue("被门拦下的 mDNS 查询没有发出", lanHost.discovery.asked.isEmpty())
+    }
+
+    @Test
+    fun `mDNS 问过之后门不放行：找到的地址一个也不探`() {
+        lanHost.lan.host(moved, TlsFixtures.gatewayA)
+        lanHost.discovery.result = { listOf(moved) }
+        val gate = AllowsFirst(2) // 记下的地址的探测、mDNS 查询放行；mDNS 找到的地址的探测被拦
+
+        assertNull(locate(SyncSamples.pairedGateway(addresses = listOf(nas)), gate))
+
+        assertEquals(listOf(SyncSamples.GATEWAY_ID), lanHost.discovery.asked.toList())
+        assertEquals(listOf(nas), lanHost.lan.attempts.toList())
+        assertTrue(lanHost.lan.delivered.isEmpty())
+    }
+
+    @Test
+    fun `一直放行的门：每个地址与 mDNS 照常走完，结论与不设门一样`() {
+        lanHost.lan.host(moved, TlsFixtures.gatewayA)
+        lanHost.discovery.result = { listOf(moved) }
+        val gate = AllowsFirst(Int.MAX_VALUE)
+
+        assertEquals(Located.Reachable(moved), locate(SyncSamples.pairedGateway(), gate))
+
+        assertEquals(listOf(nas, lan, moved), lanHost.lan.attempts.toList())
+        assertEquals(0, gate.withheld)
     }
 
     @Test

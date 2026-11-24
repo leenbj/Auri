@@ -3,7 +3,7 @@
   "expect": "valid",
   "description": "请求缺少凭证或凭证未被识别。",
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "code": "GATEWAY_AUTH_INVALID",
     "message": "缺少凭证或凭证无效，网关已拒绝请求。",
     "retryable": false,

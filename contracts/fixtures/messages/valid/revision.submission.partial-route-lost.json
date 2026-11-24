@@ -3,7 +3,7 @@
   "expect": "valid",
   "description": "耳机断开导致录音被截断，status 为 partial。",
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "record_id": "84be5ff8-0e17-5621-8d52-4ed0cff38811",
     "revision": 1,
     "capture": {

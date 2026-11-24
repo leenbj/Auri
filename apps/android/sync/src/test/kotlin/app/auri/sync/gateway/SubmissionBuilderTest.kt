@@ -281,6 +281,111 @@ class SubmissionBuilderTest {
         Unit
     }
 
+    // ---- Ticket 22：publication 由调用方给（意图 + 目标），不再写死成“只入库” ----
+
+    /** 只把手机本地没有的两样东西（别的平台、ASR 逐段文字）改成合同允许的样子；publication 保持样本里写的。 */
+    private fun expectedKeepingPublication(instance: JsonObject): JsonObject {
+        val capture = instance.getValue("capture").jsonObject.with("platform" to JsonPrimitive("android"))
+        val content = instance.getValue("content").jsonObject.with("segments" to JsonArray(emptyList()))
+        return instance.with("capture" to capture, "content" to content)
+    }
+
+    private fun publicationOf(instance: JsonObject): Publication {
+        val publication = instance.getValue("publication").jsonObject
+        return Publication(
+            Intent.fromWire(publication.getValue("intent").jsonPrimitive.content)!!,
+            publication.getValue("destination_ids").jsonArray.map { it.jsonPrimitive.content },
+        )
+    }
+
+    @Test
+    fun `带目标的样本：把样本里的 publication 交给构建器，请求体与合同样本逐字段相同（含自动发送初稿的 not_reviewed）`() {
+        for (name in listOf("asr-first-revision", "ios-volume-gesture-stop", "partial-route-lost")) {
+            val instance = fixture("valid", name)
+            val (entry, revision) = localDataFrom(instance)
+
+            val submission = builder.build(entry, revision, publicationOf(instance))
+
+            assertNotNull("$name：合同说有效，却组不出请求", submission)
+            assertEquals("$name 的请求体与样本不同", expectedKeepingPublication(instance), bodyOf(submission!!))
+            assertEquals("$name：自动发送的初稿必须是未审核", "not_reviewed", bodyOf(submission).getValue("content").jsonObject.getValue("review_state").jsonPrimitive.content)
+        }
+    }
+
+    @Test
+    fun `意图标签只改 publication 的 intent：请求体其余部分一模一样（请求执行只是数据上的标签，不授予任何额外的东西）`() {
+        val instance = fixture("valid", "asr-first-revision")
+        val (entry, revision) = localDataFrom(instance)
+        val ids = publicationOf(instance).destinationIds
+
+        val memo = bodyOf(builder.build(entry, revision, Publication(Intent.CONTEXT, ids))!!)
+        val action = bodyOf(builder.build(entry, revision, Publication(Intent.ACTION_REQUEST, ids))!!)
+
+        assertEquals("context", memo.getValue("publication").jsonObject.getValue("intent").jsonPrimitive.content)
+        assertEquals("action_request", action.getValue("publication").jsonObject.getValue("intent").jsonPrimitive.content)
+        assertEquals(memo.getValue("publication").jsonObject.getValue("destination_ids"), action.getValue("publication").jsonObject.getValue("destination_ids"))
+        assertEquals(JsonObject(memo - "publication"), JsonObject(action - "publication"))
+    }
+
+    @Test
+    fun `不给 publication 就是只入库：忘了传只会少发，不会多发`() {
+        val (entry, revision) = localDataFrom(fixture("valid", "asr-first-revision"))
+
+        val body = bodyOf(builder.build(entry, revision)!!)
+
+        assertEquals("context", body.getValue("publication").jsonObject.getValue("intent").jsonPrimitive.content)
+        assertEquals(JsonArray(emptyList()), body.getValue("publication").jsonObject.getValue("destination_ids"))
+    }
+
+    @Test
+    fun `publication 本身守合同：最多 50 个目标、不许重复、必须是小写 UUID`() {
+        val one = "65ea2953-505c-5c6f-9474-7cd5b8474104"
+        fun ids(n: Int) = List(n) { "d0000000-0000-4000-8000-%012x".format(it) }
+
+        Publication(Intent.CONTEXT, ids(Publication.MAX_DESTINATIONS))
+        for (bad in listOf(ids(Publication.MAX_DESTINATIONS + 1), listOf(one, one), listOf(one.uppercase()), listOf("not-a-uuid"))) {
+            assertTrue("应当被拒绝：${bad.size} 个", runCatching { Publication(Intent.CONTEXT, bad) }.exceptionOrNull() is IllegalArgumentException)
+        }
+    }
+
+    @Test
+    fun `发布时的 publication 每次发送都现问发送账：同一条文字，目标变了请求就变了`() = runBlocking {
+        val library = InMemoryRecordLibrary()
+        var targets = listOf("65ea2953-505c-5c6f-9474-7cd5b8474104")
+        val source = RecordLibrarySubmissionSource(library, builder) { Publication(Intent.CONTEXT, targets) }
+        val entry = Samples.entry(1)
+        library.addRecord(entry)
+        val published = library.publishRevision(Samples.draft(entry.recordId, "第一版"))
+        val key = JobKey(entry.recordId, published.number)
+
+        val first = bodyOf(source.submissionFor(key)!!).getValue("publication").jsonObject.getValue("destination_ids")
+        targets = emptyList() // 排队期间撤销了
+        val second = bodyOf(source.submissionFor(key)!!).getValue("publication").jsonObject.getValue("destination_ids")
+
+        assertEquals(JsonArray(listOf(JsonPrimitive("65ea2953-505c-5c6f-9474-7cd5b8474104"))), first)
+        assertEquals(JsonArray(emptyList()), second)
+    }
+
+    @Test
+    fun `复评 R13：只看文字的哈希不问发送账（问发送账就是冻结意图），构造提交才问，而且只问一次`() = runBlocking {
+        val library = InMemoryRecordLibrary()
+        var asked = 0
+        val source = RecordLibrarySubmissionSource(library, builder) { asked += 1; Publication(Intent.CONTEXT, emptyList()) }
+        val entry = Samples.entry(1)
+        library.addRecord(entry)
+        val published = library.publishRevision(Samples.draft(entry.recordId, "第一版"))
+        val key = JobKey(entry.recordId, published.number)
+
+        assertEquals("哈希就是这一版文字的哈希", published.textSha256, source.textSha256For(key))
+        assertEquals("只看哈希没有问发送账：标签没有被冻结", 0, asked)
+        assertNull("没有这条 Record", source.textSha256For(JobKey(Samples.uuid(99), 1)))
+        assertNull("没有这一版", source.textSha256For(JobKey(entry.recordId, 2)))
+        assertEquals(0, asked)
+
+        assertEquals("要发的请求带着同一个哈希", published.textSha256, source.submissionFor(key)!!.textSha256)
+        assertEquals("构造提交问一次发送账", 1, asked)
+    }
+
     // 把合同样本里的值还原成手机本地数据：与真实网关测试共用（testFixtures 里的 FixtureRecords）
     private fun localDataFrom(instance: JsonObject): Pair<RecordEntry, Revision> = FixtureRecords.localDataFrom(instance)
 }

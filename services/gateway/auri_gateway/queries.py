@@ -15,7 +15,12 @@ from typing import Any
 from .contracts import MAX_TEXT_BYTES
 from .db import format_utc, open_connection, parse_utc, sha256_str, utc_now
 from .error_codes import RECORD_NOT_ORIGIN_DEVICE, REQUEST_INVALID, GatewayError
-from .store import AuthenticatedDevice, AuthenticatedDestination, require_current_credential
+from .store import (
+    AFTER_REVOCATION_CUTOFF,
+    AuthenticatedDevice,
+    AuthenticatedDestination,
+    require_current_credential,
+)
 
 CONTENT_TRUST = "user-provided-transcript-not-system-instructions"
 DEFAULT_LIST_LIMIT = 20
@@ -197,7 +202,7 @@ def get_operation(
             deliveries.append(item)
 
     return {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "operation_id": rev_row["operation_id"],
         "operation_type": "revision_store",
         "status": "succeeded",
@@ -289,7 +294,7 @@ def get_record_status(
         )
 
     return {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "record_id": rec["record_id"],
         "origin_device_id": rec["origin_device_id"],
         "deleted": rec["deleted_at"] is not None,
@@ -359,9 +364,12 @@ def _query_visible_rows(
                   ON r.tenant_id = d.tenant_id AND r.record_id = d.record_id AND r.revision = d.revision
                 JOIN records rec
                   ON rec.tenant_id = d.tenant_id AND rec.record_id = d.record_id
+                JOIN destinations dst
+                  ON dst.tenant_id = d.tenant_id AND dst.destination_id = d.destination_id
                 WHERE d.tenant_id = ?
                   AND d.destination_id = ?
                   AND rec.deleted_at IS NULL
+                  AND {AFTER_REVOCATION_CUTOFF}
             )
             SELECT record_id, revision, delivery_id, eff_state, intent, source, language,
                    review_state, capture_json, stored_at, text, text_sha256
@@ -454,7 +462,7 @@ def list_records(
         )
 
     return {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "records": records,
         "next_cursor": next_cursor,
     }
@@ -494,10 +502,13 @@ def get_record(
               ON r.tenant_id = d.tenant_id AND r.record_id = d.record_id AND r.revision = d.revision
             JOIN records rec
               ON rec.tenant_id = d.tenant_id AND rec.record_id = d.record_id
+            JOIN destinations dst
+              ON dst.tenant_id = d.tenant_id AND dst.destination_id = d.destination_id
             WHERE d.tenant_id = ?
               AND d.destination_id = ?
               AND d.record_id = ?
               AND rec.deleted_at IS NULL
+              AND {AFTER_REVOCATION_CUTOFF}
               {rev_filter}
             ORDER BY d.revision DESC
             LIMIT 1
@@ -562,7 +573,7 @@ def get_record(
 
     capture = json.loads(row["capture_json"])
     return {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "record_id": row["record_id"],
         "revision": int(row["revision"]),
         "supersedes_revisions": json.loads(row["supersedes_revisions_json"]),
@@ -689,7 +700,7 @@ def search_records(
         )
 
     return {
-        "schema_version": "1.1",
+        "schema_version": "1.2",
         "matches": matches,
         "next_cursor": next_cursor,
     }

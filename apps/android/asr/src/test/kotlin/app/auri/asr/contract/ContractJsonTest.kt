@@ -126,7 +126,7 @@ class ContractJsonTest {
             setOf("schema_version", "code", "message", "retryable", "required_action", "operation_id"),
             json.keys,
         )
-        assertEquals("1.1", json["schema_version"]!!.jsonPrimitive.content)
+        assertEquals("1.2", json["schema_version"]!!.jsonPrimitive.content)
         assertEquals("MODEL_NOT_INSTALLED", json["code"]!!.jsonPrimitive.content)
         assertEquals(JsonNull, json["required_action"])
         assertEquals(JsonNull, json["operation_id"])

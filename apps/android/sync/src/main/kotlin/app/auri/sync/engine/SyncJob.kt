@@ -66,7 +66,26 @@ interface SyncJobStore {
 
 class NoSuchJobException(val key: JobKey) : IllegalArgumentException("没有这条同步任务：$key")
 
-/** 读出要发的那条 Revision 的请求（来自本地 Record 库）。本机已经没有它时返回 null。 */
+/**
+ * 读出要发的那条 Revision 的请求（来自本地 Record 库）。本机已经没有它时返回 null。
+ *
+ * 两个入口的区别是**有没有副作用**（复评 R13）：[submissionFor] 构造的请求带着意图标签，带标签的实现（发送账）在这一刻把它冻结（评审 M3）——
+ * 所以它只在请求真的要离开手机的那一刻调用：最后一道放行问过之后、紧挨着 PUT 之前。之前的任何一步（找网关、问“上次那份到了没有”）
+ * 只许用不冻结任何东西的 [textSha256For]，这样被拦下或中途作废的尝试不会把用户还想改的标签锁死。
+ */
 fun interface SubmissionSource {
     suspend fun submissionFor(key: JobKey): RevisionSubmission?
+
+    /**
+     * 这条文字的 SHA-256，不冻结任何东西；本机已经没有它或不合规时返回 null。
+     * 默认实现经 [submissionFor]：没有副作用的来源（测试里的 lambda）这样就够；[submissionFor] 有副作用的实现必须覆盖它。
+     */
+    suspend fun textSha256For(key: JobKey): String? = submissionFor(key)?.textSha256
+
+    /**
+     * [submissionFor] 冻结了意图标签、而请求最终没有离开手机（再评 S3：构造提交挂着的时候授权被收回；再评 S9：连不上、握手没成）——
+     * 把冻结放开，用户还能改标签。**只有引擎确定这是第一次尝试（之前没有任何一次可能送出过）时才调用**；
+     * 上一次可能已经送到的，网关上可能已经有那个标签，冻结必须留着。默认什么也不做（没有冻结的来源）。
+     */
+    suspend fun unfreezeUnsent(key: JobKey) = Unit
 }

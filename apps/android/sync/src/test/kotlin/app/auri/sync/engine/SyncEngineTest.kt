@@ -588,6 +588,13 @@ class SyncEngineTest {
         token = DeviceToken.parse(newTokenText)!!,
     )
 
+    /** 用户改配到 B，并对 B 另行同意文字发给它（复评 R3：授权是给某个网关的，换了配对就得重新同意）。这些测试讲的是配对代次，不是同意。 */
+    private suspend fun SyncRig.repairToB() {
+        val gatewayB = pairedToB()
+        pairing.save(gatewayB)
+        policy.grantTo(gatewayB.identity)
+    }
+
     private fun SyncRig.hostGatewayB(): FakeGateway = FakeGateway(now = clock::now).also { serverB -> lan.host(addressB, TlsFixtures.gatewayB) { serverB.handle(it) } }
 
     /** 启动一轮同步，让它的第一个 PUT 停在网关里（任务处于发送中）；返回放行用的闸门和这一轮的作业。 */
@@ -641,7 +648,7 @@ class SyncEngineTest {
         val serverB = rig.hostGatewayB()
         val (gate, pass) = rig.startPassHeldAtFirstPut(key)
 
-        rig.pairing.save(pairedToB())
+        rig.repairToB()
         gate.complete(null) // 旧网关正常入库并回了 200
         pass.join()
 
@@ -659,7 +666,7 @@ class SyncEngineTest {
         val serverB = rig.hostGatewayB()
         val (gate, pass) = rig.startPassHeldAtFirstPut(first)
 
-        rig.pairing.save(pairedToB())
+        rig.repairToB()
         gate.complete(null)
         pass.join()
 
@@ -681,7 +688,7 @@ class SyncEngineTest {
         rig.scope.runCurrent()
         assertEquals("卡在向旧网关问结果这一步", listOf("GET status ${key.recordId}"), rig.server.calls.toList())
 
-        rig.pairing.save(pairedToB())
+        rig.repairToB()
         gate.complete(null) // 旧网关回答：已入库，哈希相同
         pass.join()
 
@@ -689,6 +696,68 @@ class SyncEngineTest {
         rig.engine.runOnce()
         assertEquals(SyncState.STORED, rig.job(key).state)
         assertTrue("新网关上有这一版", key in serverB.stored)
+    }
+
+    @Test
+    fun `发送途中用户改配了另一个网关：旧网关对 PUT 的永久拒绝是旧配对的结论，不能把任务停在需要用户处理，之后对新网关重新问、重新发`() = runRig { rig ->
+        val key = rig.publish()
+        val serverB = rig.hostGatewayB()
+        val (gate, pass) = rig.startPassHeldAtFirstPut(key)
+
+        rig.repairToB()
+        gate.complete(Fault.Reject(409, "RECORD_VERSION_CONFLICT", false)) // 旧网关的永久拒绝这时才到
+        pass.join()
+
+        assertNotEquals("旧配对得到的永久拒绝，不能让任务停在“需要用户处理”", SyncState.BLOCKED, rig.job(key).state)
+        assertEquals("新配对原样保留", pairedToB(), rig.pairing.gateway)
+        rig.engine.runOnce()
+        assertEquals(SyncState.STORED, rig.job(key).state)
+        assertTrue("新网关上有这一版", key in serverB.stored)
+    }
+
+    @Test
+    fun `问结果的途中改配了另一个网关：旧网关说这条 Record 已被删除，那是旧配对的结论，不能把任务停在需要用户处理，之后对新网关重新问`() = runRig { rig ->
+        val key = rig.publish()
+        rig.jobs.update(rig.job(key).copy(uncertain = true))
+        rig.server.stored[key] = rig.submissions.getValue(key).textSha256
+        rig.server.deleted = true
+        val serverB = rig.hostGatewayB()
+        val gate = CompletableDeferred<Fault?>()
+        rig.server.holdNext = gate
+        val pass = rig.scope.launch { rig.engine.runOnce() }
+        rig.scope.runCurrent()
+        assertEquals("卡在向旧网关问结果这一步", listOf("GET status ${key.recordId}"), rig.server.calls.toList())
+
+        rig.repairToB()
+        gate.complete(null) // 旧网关回答：这条 Record 已被删除
+        pass.join()
+
+        assertNotEquals("旧网关的“已删除”对新配对没有意义，不能让任务停在“需要用户处理”", SyncState.BLOCKED, rig.job(key).state)
+        rig.engine.runOnce()
+        assertEquals(SyncState.STORED, rig.job(key).state)
+        assertTrue("新网关上有这一版", key in serverB.stored)
+    }
+
+    @Test
+    fun `问结果的途中用户重新配对了：旧网关说没有这一版，也不能再拿旧令牌把正文发过去，之后用新令牌问、用新令牌发`() = runRig { rig ->
+        val key = rig.publish()
+        rig.jobs.update(rig.job(key).copy(uncertain = true))
+        val fresh = SyncSamples.pairedGateway(pairedAt = rePaired, token = DeviceToken.parse(newTokenText)!!)
+        val gate = CompletableDeferred<Fault?>()
+        rig.server.holdNext = gate
+        val pass = rig.scope.launch { rig.engine.runOnce() }
+        rig.scope.runCurrent()
+        assertEquals("卡在向旧令牌问结果这一步", listOf("GET status ${key.recordId}"), rig.server.calls.toList())
+
+        rig.pairing.save(fresh) // 用户重新配对（同一个网关、新令牌）：同意仍然有效，挡住旧请求的只剩“配对已经换了”
+        gate.complete(null) // 旧令牌得到的回答：网关没有这一版，要往下重发
+        pass.join()
+
+        assertEquals("重新配对之后，不能再有带旧令牌的 PUT 离开手机", 0, rig.server.putCount)
+        assertEquals("新配对原样保留", fresh, rig.pairing.gateway)
+        rig.engine.runOnce()
+        assertEquals(SyncState.STORED, rig.job(key).state)
+        assertEquals("Bearer $newTokenText", rig.lan.delivered.last { it.second.method == "PUT" }.second.headers["Authorization"])
     }
 
     @Test
@@ -845,12 +914,29 @@ class SyncEngineTest {
     }
 
     @Test
+    fun `复评 R13：看过哈希之后、构造提交之前本机把这条文字删了：停下等用户，一个 PUT 都不发`() = runRig { rig ->
+        val key = rig.publish()
+        var readsAfterProbe = 0
+        // 探测之后第二次问放行（紧挨着 PUT 的最后一道）放行了，同一刻本机的文字没了：先看哈希时还在，构造提交时读不到
+        rig.policy.onRead = {
+            if (rig.server.capabilityCalls.get() > 0 && ++readsAfterProbe == 2) rig.submissions.remove(key)
+        }
+
+        rig.engine.runOnce()
+
+        assertTrue("文字是在最后一道放行时没的", readsAfterProbe >= 2)
+        assertEquals(SyncState.BLOCKED, rig.job(key).state)
+        assertEquals(BlockedReason.LOCAL_DATA_MISSING, rig.job(key).blockedReason)
+        assertTrue("PUT 不能发出去：${rig.lan.delivered.map { it.second.path }}", rig.lan.delivered.none { it.second.method == "PUT" })
+    }
+
+    @Test
     fun `任务表写不进去：不会假装已经开始发送（先落盘后发送）`() = runRig { rig ->
         val key = rig.publish()
         val failing = object : SyncJobStore by rig.jobs {
             override suspend fun update(job: SyncJob) = throw IOException("disk full")
         }
-        val engine = SyncEngine(failing, rig.pairing, { rig.submissions[it] }, rig.lan.factory, GatewayLocator(rig.lan.factory, rig.discovery), rig.clock)
+        val engine = SyncEngine(failing, rig.pairing, { rig.submissions[it] }, rig.lan.factory, GatewayLocator(rig.lan.factory, rig.discovery), rig.clock, rig.policy)
 
         assertEquals(SendResult.SKIPPED, engine.send(key))
 

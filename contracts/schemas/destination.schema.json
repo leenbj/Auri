@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://contracts.auri.invalid/1.1/destination.schema.json",
+  "$id": "https://contracts.auri.invalid/1.2/destination.schema.json",
   "title": "Destination 管理",
   "description": "ADR-008、ADR-009。每个 Destination 一套专属凭证；响应不回显已有凭证。",
   "$defs": {
@@ -51,6 +51,10 @@
         "created_by_device_id": { "$ref": "common.schema.json#/$defs/uuid" },
         "credential_issued": {
           "description": "是否已签发过凭证。凭证本身不在这里出现。",
+          "type": "boolean"
+        },
+        "credential_active": {
+          "description": "当前是否有一条有效（未被撤销、未被轮换掉）的凭证（Ticket 22 评审 B3，可选字段）。credential_issued 为 true 而它为 false、且 revoked_at 为 null，表示凭证被撤销、Destination 暂停接收新文字，直到签发新凭证；没有这个字段的旧响应按“未知”处理。",
           "type": "boolean"
         },
         "revoked_at": {

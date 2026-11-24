@@ -12,7 +12,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
 
-BASE_URI = "https://contracts.auri.invalid/1.1/"
+BASE_URI = "https://contracts.auri.invalid/1.2/"
 MAX_TEXT_BYTES = 1024 * 1024
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 

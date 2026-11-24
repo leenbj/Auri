@@ -4,7 +4,7 @@
   "rejected_because": "text_sha256 与正文不符。",
   "rule": "SR-01",
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
     "revision": 1,
     "capture": {

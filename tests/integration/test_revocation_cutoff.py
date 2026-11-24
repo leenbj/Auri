@@ -1,0 +1,401 @@
+"""Ticket 22 再评审 R1：撤销凭证之后签发的替换凭证，在每一条 Agent 读取路径上都看不到撤销之前的文字。
+
+以前（评审 B3 之后）：撤销最后一条凭证会取消排着的 Delivery，替换凭证领不到它们；但 `record_list` / `record_search` /
+`record_get` 只按“这个 Destination 有没有 Delivery”查，已取消的、已确认的旧 Delivery 连同全文照样交给替换凭证，
+`delivery_ack` 也认得旧租约。撤销往往就是因为旧凭证的持有者不再可信，替换凭证的持有者不该读到它之前的任何文字。
+现在：Destination 记一个“撤销截止点”（暂停结束、签发替换凭证的那一刻；与库里已有文字的最晚入库时间取较大者，
+所以网关时钟回拨也不会漏），入库时间不晚于它的文字对这个 Destination 的 Agent 一律不可见——列表、搜索、读取、领取、
+续租、确认、拒收全部一样。没有暂停的轮换不设截止点（排队的文字照常交给新凭证）。
+真实网关进程；Agent 一侧用官方 MCP 客户端，带的是替换凭证。
+"""
+from __future__ import annotations
+
+import contextlib
+import hashlib
+import pathlib
+import sqlite3
+
+from harness import GatewayProcess, McpAgent, World, gateway, world  # noqa: F401
+from test_credential_suspension import active_credential_id, add_deliveries, delivery_states, revoke_credential
+
+OLD_TEXT = "撤销之前口述的"
+
+
+def suspend_and_reissue(world: World, dest):
+    """CLI 撤销最后一条凭证（Destination 暂停），手机再签发替换凭证。"""
+    revoke_credential(world.gw, active_credential_id(world.gw, dest.destination_id))
+    return world.rotate_credential(dest)
+
+
+def not_found(agent, tool: str, arguments: dict) -> dict:
+    error = agent.call_error(tool, arguments)
+    assert error["code"] == "REQUEST_INVALID", error
+    assert OLD_TEXT not in str(error), "拒绝的回答里也不能带出旧文字"
+    return error
+
+
+def test_the_replacement_credential_reads_nothing_from_before_the_revocation_on_any_path(world: World) -> None:
+    dest = world.destination("被撤销凭证的")
+    acked = world.publish(dest, text=f"{OLD_TEXT}（已确认的）")
+    leased = world.publish(dest, text=f"{OLD_TEXT}（已领取的）")
+    pending = world.publish(dest, text=f"{OLD_TEXT}（还没被领取的）")
+    old_agent = world.agent(dest)
+    first, second = old_agent.claim(limit=2)["deliveries"]
+    old_agent.ack(first["delivery_id"], first["lease_token"])  # 第一条确认；第二条留在租约里；第三条还是 PENDING
+
+    agent = world.agent(suspend_and_reissue(world, dest))
+
+    assert agent.claim()["deliveries"] == [], "领取：撤销之前排着的一条也领不到"
+    assert agent.record_list()["records"] == [], "列表：已取消、已确认的旧 Delivery 都不显示"
+    assert agent.record_search(OLD_TEXT)["matches"] == [], "搜索：搜得到全文片段就是泄露"
+    for stored in (acked, leased, pending):
+        not_found(agent, "record_get", {"record_id": stored["record_id"]})
+        not_found(agent, "record_get", {"record_id": stored["record_id"], "revision": 1})
+    # 确认 / 续租 / 拒收：旧租约在替换凭证面前就是“没有这个 Delivery”，连已确认那条的重复确认也不再回答
+    for delivery in (first, second):
+        arguments = {"delivery_id": delivery["delivery_id"], "lease_token": delivery["lease_token"]}
+        not_found(agent, "delivery_ack", arguments)
+        not_found(agent, "delivery_renew_lease", arguments)
+        not_found(agent, "delivery_nack", {**arguments, "reason": "测试", "retryable": True})
+
+
+def test_text_stored_after_the_replacement_credential_is_visible_on_every_path(world: World) -> None:
+    dest = world.destination("恢复之后的")
+    world.publish(dest, text=f"{OLD_TEXT}（旧的）")
+    agent = world.agent(suspend_and_reissue(world, dest))
+    fresh = world.publish(dest, text="恢复之后口述的内容")
+
+    listed = agent.record_list()["records"]
+    assert [row["record_id"] for row in listed] == [fresh["record_id"]]
+    assert [m["record_id"] for m in agent.record_search("口述")["matches"]] == [fresh["record_id"]]
+    assert agent.record_get(fresh["record_id"])["text"] == "恢复之后口述的内容"
+    claimed = agent.claim()["deliveries"]
+    assert [d["record_id"] for d in claimed] == [fresh["record_id"]]
+    assert agent.ack(claimed[0]["delivery_id"], claimed[0]["lease_token"])["state"] == "ACKNOWLEDGED"
+
+
+def test_rotating_without_a_suspension_hides_nothing(world: World) -> None:
+    dest = world.destination("只轮换的")
+    waiting = world.publish(dest, text=f"{OLD_TEXT}（轮换时还在排队的）")
+    agent = world.agent(world.rotate_credential(dest))  # 轮换总留着一条有效凭证：不是暂停，没有截止点
+
+    assert [row["record_id"] for row in agent.record_list()["records"]] == [waiting["record_id"]]
+    assert [m["record_id"] for m in agent.record_search(OLD_TEXT)["matches"]] == [waiting["record_id"]]
+    assert agent.record_get(waiting["record_id"])["text"].startswith(OLD_TEXT)
+    assert [d["record_id"] for d in agent.claim()["deliveries"]] == [waiting["record_id"]]
+
+
+def test_each_new_suspension_moves_the_cutoff_forward(world: World) -> None:
+    dest = world.destination("暂停两次的")
+    agent = world.agent(suspend_and_reissue(world, dest))
+    between = world.publish(dest, text="两次暂停之间口述的")
+    assert [row["record_id"] for row in agent.record_list()["records"]] == [between["record_id"]]
+
+    second = world.agent(suspend_and_reissue(world, dest))
+    after = world.publish(dest, text="第二次恢复之后口述的")
+
+    assert [row["record_id"] for row in second.record_list()["records"]] == [after["record_id"]]
+    not_found(second, "record_get", {"record_id": between["record_id"]})
+
+
+def test_a_text_stored_while_the_gateway_clock_ran_ahead_is_still_older_than_the_cutoff(world: World) -> None:
+    dest = world.destination("时钟回拨的")
+    ahead = world.publish(dest, text=f"{OLD_TEXT}（入库时网关时钟跑在前面）")
+    with sqlite3.connect(world.gw.data_dir / "gateway.db") as conn:  # 时钟曾经快过，后来被校正回来
+        conn.execute("UPDATE revisions SET stored_at = '2099-01-01T00:00:00.000000Z' WHERE record_id = ?", (ahead["record_id"],))
+
+    agent = world.agent(suspend_and_reissue(world, dest))
+
+    assert agent.record_list()["records"] == []
+    not_found(agent, "record_get", {"record_id": ahead["record_id"]})
+    assert agent.claim()["deliveries"] == []
+
+
+def test_a_suspension_that_ended_before_the_upgrade_gets_its_cutoff_from_the_credential_history(tmp_path: pathlib.Path) -> None:
+    """旧库里已经发生过的暂停：升级（迁移 0005）时按凭证历史补上截止点；只是轮换的 Destination 不设。
+
+    先用当前网关造数据，再把库退回“迁移 0005 之前”的样子（去掉那一列、删掉迁移记录），重启时迁移会重新执行。
+    第三轮 S1：升级补出的截止点是保守的（库里已有文字的最晚入库时间与凭证历史里的最晚时刻），所以升级那一刻库里已有的文字，
+    对补了截止点的 Destination 一律不可见——包括暂停结束之后、升级之前入库的 `after`（原来这里断言它可见）：同一份数据里
+    “恢复之后入库”与“时钟回拨之前入库、时间戳偏晚”长得一模一样，分不开，宁可多藏。升级之后入库的文字照常可见。
+    """
+    data_dir = tmp_path / "upgrade-gw"
+    first = GatewayProcess(data_dir)
+    first.start()
+    try:
+        token = first.pair_device("Legacy Phone")["device_token"]
+        suspended = first.create_agent_destination(token, "暂停过的")
+        rotated = first.create_agent_destination(token, "只轮换过的")
+        before = first.publish(token, [suspended.destination_id], text=f"{OLD_TEXT}（暂停之前入库）")
+        after = first.publish(token, [suspended.destination_id], text="暂停结束之后入库")
+        kept = first.publish(token, [rotated.destination_id], text="轮换之前入库、一直排着的")
+    finally:
+        first.stop()
+
+    def sha(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+    with contextlib.closing(sqlite3.connect(data_dir / "gateway.db")) as conn:
+        tenant_id, device_id = conn.execute("SELECT tenant_id, device_id FROM devices").fetchone()
+
+        def add_credential(destination_id: str, token_value: str, issued_at: str) -> None:
+            conn.execute(
+                "INSERT INTO destination_credentials (credential_id, tenant_id, destination_id, token_hash, issued_by_device_id, issued_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (f"cred-{token_value}", tenant_id, destination_id, sha(token_value), device_id, issued_at),
+            )
+
+        conn.execute("ALTER TABLE destinations DROP COLUMN revocation_cutoff")
+        conn.execute("DELETE FROM schema_migrations WHERE version = 5")
+        conn.execute("UPDATE destination_credentials SET issued_at = '2025-12-31T00:00:00.000000Z'")  # 原凭证签发在一切之前
+        # 暂停：旧凭证 01-02 被撤销，替换凭证 01-03 才签发；暂停之前的文字入库于 01-01，之后那条留在真实时间
+        conn.execute("UPDATE revisions SET stored_at = '2026-01-01T00:00:00.000000Z' WHERE record_id = ?", (before["record_id"],))
+        # 只轮换过的那条文字也要入库在轮换（01-03）之前，和真实的故事一致：用真实时间入库的话它晚于迁移可能补出的任何截止点，
+        # “只轮换过的不补截止点”就测不出来（变异 r1-gw-migration-backfills-rotations 暴露过这个缺口）
+        conn.execute("UPDATE revisions SET stored_at = '2026-01-02T12:00:00.000000Z' WHERE record_id = ?", (kept["record_id"],))
+        conn.execute("UPDATE destination_credentials SET revoked_at = '2026-01-02T00:00:00.000000Z' WHERE destination_id = ?", (suspended.destination_id,))
+        add_credential(suspended.destination_id, "replacement-after-suspension", "2026-01-03T00:00:00.000000Z")
+        # 轮换：旧凭证在新凭证签发的同一刻被撤销，不是暂停
+        conn.execute("UPDATE destination_credentials SET revoked_at = '2026-01-03T00:00:00.000000Z' WHERE destination_id = ?", (rotated.destination_id,))
+        add_credential(rotated.destination_id, "replacement-after-rotation", "2026-01-03T00:00:00.000000Z")
+        conn.commit()
+
+    upgraded = GatewayProcess(data_dir)
+    upgraded.start()
+    try:
+        agent = McpAgent(upgraded.base_url, "replacement-after-suspension")
+        assert agent.record_list()["records"] == []
+        not_found(agent, "record_get", {"record_id": before["record_id"]})
+        not_found(agent, "record_get", {"record_id": after["record_id"]})
+        assert agent.claim()["deliveries"] == []
+        fresh = upgraded.publish(token, [suspended.destination_id], text="升级之后入库的")
+        assert [row["record_id"] for row in agent.record_list()["records"]] == [fresh["record_id"]]
+        assert [d["record_id"] for d in agent.claim()["deliveries"]] == [fresh["record_id"]]
+        rotation_agent = McpAgent(upgraded.base_url, "replacement-after-rotation")
+        assert [d["record_id"] for d in rotation_agent.claim()["deliveries"]] == [kept["record_id"]]
+    finally:
+        upgraded.stop()
+
+
+# ---- 第三轮 S1：升级补截止点不能被网关时钟回拨骗过 ----
+#
+# 旧库里一次已经结束的暂停，只剩墙上时间可以用来补截止点。时钟回拨过时，替换凭证的签发时间可能比撤销之前入库的文字
+# 的入库时间还早，甚至比旧凭证的撤销时间还早（按时间先后连“暂停”都认不出来）。迁移因此不信时间先后：用插入顺序与
+# “轮换是在签发的同一瞬间撤销旧凭证”认出结束过的暂停，截止点取库里已有文字的最晚入库时间与凭证历史里最晚时刻的较大者。
+
+
+def sha(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+@contextlib.contextmanager
+def upgraded_gateway(tmp_path: pathlib.Path, seed, rewrite):
+    """用当前网关造数据（`seed(网关, 手机令牌) -> seeded`），把库退回迁移 0005 之前的样子，由 `rewrite` 伪造凭证与时钟的历史，
+    再重启让迁移在这份历史上执行；交出升级之后的网关、手机令牌与 `seeded`。"""
+    data_dir = tmp_path / "upgrade-gw"
+    first = GatewayProcess(data_dir)
+    first.start()
+    try:
+        token = first.pair_device("Legacy Phone")["device_token"]
+        seeded = seed(first, token)
+    finally:
+        first.stop()
+    with contextlib.closing(sqlite3.connect(data_dir / "gateway.db")) as conn:
+        tenant_id, device_id = conn.execute("SELECT tenant_id, device_id FROM devices").fetchone()
+
+        def add_credential(destination_id: str, token_value: str, issued_at: str) -> None:
+            conn.execute(
+                "INSERT INTO destination_credentials (credential_id, tenant_id, destination_id, token_hash, issued_by_device_id, issued_at)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (f"cred-{token_value}", tenant_id, destination_id, sha(token_value), device_id, issued_at),
+            )
+
+        conn.execute("ALTER TABLE destinations DROP COLUMN revocation_cutoff")
+        conn.execute("DELETE FROM schema_migrations WHERE version = 5")
+        rewrite(conn, add_credential, seeded)
+        conn.commit()
+    upgraded = GatewayProcess(data_dir)
+    upgraded.start()
+    try:
+        yield upgraded, token, seeded
+    finally:
+        upgraded.stop()
+
+
+def seed_one_destination_with_one_text(text: str, name: str):
+    def seed(gateway: GatewayProcess, token: str):
+        dest = gateway.create_agent_destination(token, name)
+        return dest, gateway.publish(token, [dest.destination_id], text=text)
+
+    return seed
+
+
+def test_an_upgrade_hides_a_text_stored_while_the_clock_ran_ahead_of_the_replacement_credential(tmp_path: pathlib.Path) -> None:
+    """暂停之前入库的文字，入库时网关时钟跑在前面：时间戳（06-01）比后来校正过的替换凭证（01-03）还晚。
+
+    旧的补法只取替换凭证的签发时间（01-03）：文字落在截止点之后，替换凭证读得到撤销之前的文字。
+    """
+
+    def rewrite(conn, add_credential, seeded):
+        dest, ahead = seeded
+        conn.execute(
+            "UPDATE destination_credentials SET issued_at = '2025-12-31T00:00:00.000000Z', revoked_at = '2026-01-02T00:00:00.000000Z'"
+            " WHERE destination_id = ?",
+            (dest.destination_id,),
+        )
+        conn.execute("UPDATE revisions SET stored_at = '2026-06-01T00:00:00.000000Z' WHERE record_id = ?", (ahead["record_id"],))
+        # 真实的暂停会取消排着的投递：这条文字的 Delivery 在撤销那一刻被取消，列表、搜索、读取照样认得它
+        conn.execute(
+            "UPDATE deliveries SET state = 'CANCELLED', cancelled_at = '2026-01-02T00:00:00.000000Z' WHERE destination_id = ?",
+            (dest.destination_id,),
+        )
+        add_credential(dest.destination_id, "replacement-after-fast-clock", "2026-01-03T00:00:00.000000Z")
+
+    seed = seed_one_destination_with_one_text(f"{OLD_TEXT}（入库时网关时钟跑在前面）", "时钟快过的")
+    with upgraded_gateway(tmp_path, seed, rewrite) as (gateway, _token, (_dest, ahead)):
+        agent = McpAgent(gateway.base_url, "replacement-after-fast-clock")
+        assert agent.record_list()["records"] == []
+        assert agent.record_search(OLD_TEXT)["matches"] == []
+        not_found(agent, "record_get", {"record_id": ahead["record_id"]})
+        assert agent.claim()["deliveries"] == []
+
+
+def test_an_upgrade_recognises_a_finished_suspension_even_when_the_clock_was_set_back_before_the_replacement(tmp_path: pathlib.Path) -> None:
+    """旧凭证签发在 02-01、撤销在 02-02（时钟偏快），时钟校正之后替换凭证签发在 01-15：按时间先后，替换凭证“早于”旧凭证，
+    旧的补法认不出这是一次结束过的暂停，根本不补截止点，替换凭证什么都读得到。"""
+
+    def rewrite(conn, add_credential, seeded):
+        dest, text = seeded
+        conn.execute(
+            "UPDATE destination_credentials SET issued_at = '2026-02-01T00:00:00.000000Z', revoked_at = '2026-02-02T00:00:00.000000Z'"
+            " WHERE destination_id = ?",
+            (dest.destination_id,),
+        )
+        conn.execute("UPDATE revisions SET stored_at = '2026-02-01T12:00:00.000000Z' WHERE record_id = ?", (text["record_id"],))
+        conn.execute(
+            "UPDATE deliveries SET state = 'CANCELLED', cancelled_at = '2026-02-02T00:00:00.000000Z' WHERE destination_id = ?",
+            (dest.destination_id,),
+        )
+        add_credential(dest.destination_id, "replacement-after-set-back-clock", "2026-01-15T00:00:00.000000Z")
+
+    seed = seed_one_destination_with_one_text(f"{OLD_TEXT}（旧凭证有效期间入库）", "时钟回拨过的")
+    with upgraded_gateway(tmp_path, seed, rewrite) as (gateway, _token, (_dest, text)):
+        agent = McpAgent(gateway.base_url, "replacement-after-set-back-clock")
+        assert agent.record_list()["records"] == []
+        assert agent.record_search(OLD_TEXT)["matches"] == []
+        not_found(agent, "record_get", {"record_id": text["record_id"]})
+        assert agent.claim()["deliveries"] == []
+
+
+def test_an_upgrade_does_not_mistake_a_rotation_after_a_clock_rollback_for_a_suspension(tmp_path: pathlib.Path) -> None:
+    """同样是时钟被调回去，但这次只是轮换：旧凭证在新凭证签发的同一瞬间被撤销（01-20），排着的文字照常交给新凭证。
+    保守是对“暂停”而言；把每一次轮换都当暂停，会让排队的文字悄悄领不到。"""
+
+    def rewrite(conn, add_credential, seeded):
+        dest, waiting = seeded
+        conn.execute(
+            "UPDATE destination_credentials SET issued_at = '2026-02-01T00:00:00.000000Z', revoked_at = '2026-01-20T00:00:00.000000Z'"
+            " WHERE destination_id = ?",
+            (dest.destination_id,),
+        )
+        conn.execute("UPDATE revisions SET stored_at = '2026-02-01T12:00:00.000000Z' WHERE record_id = ?", (waiting["record_id"],))
+        add_credential(dest.destination_id, "replacement-after-rotation-under-rollback", "2026-01-20T00:00:00.000000Z")
+
+    seed = seed_one_destination_with_one_text("轮换之前入库、一直排着的", "只轮换过的")
+    with upgraded_gateway(tmp_path, seed, rewrite) as (gateway, _token, (_dest, waiting)):
+        agent = McpAgent(gateway.base_url, "replacement-after-rotation-under-rollback")
+        assert [row["record_id"] for row in agent.record_list()["records"]] == [waiting["record_id"]]
+        assert [d["record_id"] for d in agent.claim()["deliveries"]] == [waiting["record_id"]]
+
+
+# ---- R2：延迟到达的“追加 Delivery”不能把撤销之前入库的文字送给替换凭证 ----
+
+
+def test_an_addition_before_any_suspension_still_creates_the_delivery(world: World) -> None:
+    dest = world.destination("没暂停过的")
+    stored = world.publish(text="先入库、预览确认之后才追加")  # 入库时不点名任何目标（预览确认的做法）
+
+    added = add_deliveries(world, stored["record_id"], [dest.destination_id])
+
+    assert added.status_code == 200, added.text
+    assert [d["destination_id"] for d in added.json()["deliveries"]] == [dest.destination_id]
+    assert [d["record_id"] for d in world.agent(dest).claim()["deliveries"]] == [stored["record_id"]]
+
+
+def test_an_addition_during_the_suspension_creates_nothing(world: World) -> None:
+    dest = world.destination("暂停中的")
+    stored = world.publish(text="暂停之前入库、暂停期间才追加")
+    revoke_credential(world.gw, active_credential_id(world.gw, dest.destination_id))
+
+    added = add_deliveries(world, stored["record_id"], [dest.destination_id])
+
+    assert added.status_code == 200, added.text
+    assert added.json()["deliveries"] == []
+    assert delivery_states(world.gw, dest.destination_id) == []
+
+
+def test_a_delayed_addition_after_the_replacement_credential_creates_nothing_for_an_older_revision(world: World) -> None:
+    dest = world.destination("恢复之后才收到追加的")
+    healthy = world.destination("没暂停的")
+    old = world.publish(text=f"{OLD_TEXT}（撤销之前入库，用户迟迟没点确认）")
+    agent = world.agent(suspend_and_reissue(world, dest))
+
+    added = add_deliveries(world, old["record_id"], [dest.destination_id, healthy.destination_id])
+
+    assert added.status_code == 200, added.text
+    assert [d["destination_id"] for d in added.json()["deliveries"]] == [healthy.destination_id], "只跳过截止点之前的那个，别的目标照常建"
+    assert delivery_states(world.gw, dest.destination_id) == [], "没有为它建 PENDING：状态页不会把一条永远领不到的文字说成已入库"
+    assert agent.claim()["deliveries"] == []
+    assert agent.record_list()["records"] == []
+    assert [d["record_id"] for d in world.agent(healthy).claim()["deliveries"]] == [old["record_id"]]
+
+
+def test_an_addition_for_a_text_stored_after_the_replacement_credential_works(world: World) -> None:
+    dest = world.destination("恢复之后的")
+    agent = world.agent(suspend_and_reissue(world, dest))
+    fresh = world.publish(text="恢复之后入库、再追加")
+
+    added = add_deliveries(world, fresh["record_id"], [dest.destination_id])
+
+    assert added.status_code == 200, added.text
+    assert [d["destination_id"] for d in added.json()["deliveries"]] == [dest.destination_id]
+    assert [d["record_id"] for d in agent.claim()["deliveries"]] == [fresh["record_id"]]
+
+
+def test_a_text_stored_after_recovery_is_delivered_even_when_an_earlier_text_had_a_future_stored_at(world: World) -> None:
+    """第四轮 F6：撤销截止点按持久单调的入库顺序（store_seq）算，不按墙上时间比。
+
+    旧测试曾把“2099 的旧文字把截止点推到 2099、导致时钟校正后新入库的文字永远建不出 Delivery”当成预期；
+    那是墙上时间截止点本身的缺陷。改成单调顺序之后：暂停之前入库（哪怕时间戳在 2099）仍然在每条路径上不可见，
+    对它的延迟追加也不建 Delivery；暂停恢复之后新入库的文字（顺序晚于截止点）照常建 Delivery、可被领取与读取。
+    """
+    dest = world.destination("时钟回拨的")
+    ahead = world.publish(dest, text=f"{OLD_TEXT}（入库时网关时钟跑在前面）")
+    old_preview = world.publish(text=f"{OLD_TEXT}（暂停前入库、延迟追加、时钟也在前面）")
+    with sqlite3.connect(world.gw.data_dir / "gateway.db") as conn:
+        conn.execute(
+            "UPDATE revisions SET stored_at = '2099-01-01T00:00:00.000000Z' WHERE record_id IN (?, ?)",
+            (ahead["record_id"], old_preview["record_id"]),
+        )
+    agent = world.agent(suspend_and_reissue(world, dest))
+
+    # 负例：暂停之前的文字（哪怕时间戳在 2099）仍然不可见，延迟追加也不建 Delivery
+    delayed = add_deliveries(world, old_preview["record_id"], [dest.destination_id])
+    assert delayed.status_code == 200, delayed.text
+    assert delayed.json()["deliveries"] == [], "暂停之前入库的文字，延迟追加不能建 Delivery"
+    not_found(agent, "record_get", {"record_id": ahead["record_id"]})
+    assert agent.record_search(OLD_TEXT)["matches"] == []
+
+    # 正例：时钟校正之后（恢复之后）新入库的文字，入库顺序晚于截止点，照常建 Delivery 并可领取
+    stored = world.publish(dest, text="时钟校正之后入库的")
+    assert [d["destination_id"] for d in stored["deliveries"]] == [dest.destination_id]
+    assert [d["record_id"] for d in agent.claim()["deliveries"]] == [stored["record_id"]]
+    assert [row["record_id"] for row in agent.record_list()["records"]] == [stored["record_id"]]
+    assert agent.record_get(stored["record_id"])["text"] == "时钟校正之后入库的"
+
+    # 恢复之后入库的预览确认，追加也照常建 Delivery
+    fresh_preview = world.publish(text="时钟校正之后入库、再追加")
+    added = add_deliveries(world, fresh_preview["record_id"], [dest.destination_id])
+    assert added.status_code == 200, added.text
+    assert [d["destination_id"] for d in added.json()["deliveries"]] == [dest.destination_id]
+    assert [d["record_id"] for d in agent.claim()["deliveries"]] == [fresh_preview["record_id"]]

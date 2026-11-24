@@ -9,6 +9,7 @@ import app.auri.sync.machine.SyncState
 import app.auri.sync.pairing.NeedsUser
 import app.auri.sync.pairing.PairingState
 import app.auri.sync.testing.FakeGateway.Fault
+import app.auri.sync.testing.InMemoryDataFlowPolicy
 import app.auri.sync.testing.SyncRig
 import app.auri.sync.testing.SyncSamples
 import app.auri.sync.testing.TlsFixtures
@@ -42,7 +43,7 @@ class SyncStatusTest {
 
     private val paired = PairingState.Paired(SyncSamples.pairedGateway())
 
-    private fun status(vararg jobs: SyncJob, pairing: PairingState = paired) = SyncStatus.of(pairing, jobs.toList())
+    private fun status(vararg jobs: SyncJob, pairing: PairingState = paired) = SyncStatus.of(pairing, jobs.toList(), InMemoryDataFlowPolicy.GRANTED)
 
     @Test
     fun `没配对：只说没配对，文字留在本机，排队的条数照实报出来`() {
@@ -101,6 +102,14 @@ class SyncStatusTest {
             assertEquals(SyncHeadline.NEEDS_USER, result.headline)
             assertEquals(listOf(cause), result.causes)
         }
+    }
+
+    @Test
+    fun `网关太旧（评审 R7）：需要用户处理，原因单独一项——处置是更新网关，不是重新配对`() {
+        val result = status(pairing = PairingState.Paired(SyncSamples.pairedGateway().copy(needsUser = NeedsUser.GATEWAY_TOO_OLD)))
+
+        assertEquals(SyncHeadline.NEEDS_USER, result.headline)
+        assertEquals(listOf(UserCause.GATEWAY_TOO_OLD), result.causes)
     }
 
     @Test
@@ -171,7 +180,7 @@ class SyncStatusTest {
 
     // ---- 真引擎做出来的状态，汇总出来的必须是对的情形 ----
 
-    private suspend fun SyncRig.status() = SyncStatus.of(pairing.load(), jobs.all())
+    private suspend fun SyncRig.status() = SyncStatus.of(pairing.load(), jobs.all(), policy.current())
 
     @Test
     fun `真引擎：连不上网关 → 等网关（不是出错，也没有重试时间）`() = runTest {
@@ -234,5 +243,13 @@ class SyncStatusTest {
         fresh.publish()
         fresh.engine.runOnce()
         assertEquals(SyncHeadline.UP_TO_DATE, fresh.status().headline)
+    }
+
+    @Test
+    fun `配对记录读不出来且未授权：大标题是需要用户处理而不是被隐私策略拦住`() {
+        val status = SyncStatus.of(PairingState.Lost, emptyList(), app.auri.sync.policy.DataFlowState.Unset)
+
+        assertEquals(SyncHeadline.NEEDS_USER, status.headline)
+        assertEquals(listOf(UserCause.PAIRING_LOST), status.causes)
     }
 }

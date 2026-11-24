@@ -51,7 +51,7 @@ class LocalTranscriptionAdapterTest {
     )
 
     private fun asrError(code: app.auri.asr.contract.ErrorCode, retryable: Boolean = false) =
-        AsrError("1.1", code, "测试", retryable = retryable, requiredAction = null, operationId = null)
+        AsrError("1.2", code, "测试", retryable = retryable, requiredAction = null, operationId = null)
 
     private fun content(text: String) = RevisionContent(
         text = text,

@@ -3,7 +3,7 @@
   "expect": "valid",
   "description": "领到一条，它取代了第 1 版。",
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "next_cursor": null,
     "deliveries": [
       {

@@ -3,7 +3,7 @@
   "expect": "valid",
   "description": "返回发给当前 Destination 的 Record 摘要与下一页不透明游标。",
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "records": [
       {
         "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",

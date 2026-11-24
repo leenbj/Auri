@@ -3,7 +3,7 @@
   "expect": "valid",
   "description": "返回匹配片段、完整长度元数据及内容信任标记。",
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "matches": [
       {
         "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",

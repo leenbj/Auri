@@ -160,17 +160,17 @@ MUTATIONS += (
     ),
     Mutation(
         "response-schema-version-unchecked",
-        "响应的 schema_version 必须是 1.1",
+        "响应的 schema_version 必须是 1.2",
         (Edit(WIRE, 'if (string("schema_version") != Wire.SCHEMA_VERSION) throw Unreadable("schema_version")', "Unit"),),
         CLIENT_TESTS, "sync/build/test-results/test",
-        ("令牌太短、含空白或版本不是 1_1", "读不懂"),
+        ("令牌太短、含空白或版本不是 1_2", "读不懂"),
     ),
     Mutation(
         "device-token-format-unchecked",
         "令牌必须是 32..512 个可见 ASCII（不含空白与换行），否则不存",
         (Edit(TOKEN, r'private val FORMAT = Regex("^[\\x21-\\x7e]{32,512}$")', r'private val FORMAT = Regex("^.*$", RegexOption.DOT_MATCHES_ALL)'),),
         CLIENT_TESTS, "sync/build/test-results/test",
-        ("令牌太短、含空白或版本不是 1_1",),
+        ("令牌太短、含空白或版本不是 1_2",),
     ),
     Mutation(
         "device-token-printed-by-toString",
@@ -278,7 +278,7 @@ MUTATIONS += (
     Mutation(
         "pairing-save-can-be-cancelled",
         "令牌只出现一次：网关签发之后，即使调用方被取消也必须存下来",
-        (Edit(PAIRING, "withContext(NonCancellable) { store.save(gateway) }", "store.save(gateway)"),),
+        (Edit(PAIRING, "            val gateway = withContext(NonCancellable) {\n", "            val gateway = run {\n"),),
         PAIRING_TESTS, "sync/build/test-results/test",
         ("即使调用方被取消，令牌也要存下来",),
     ),
@@ -307,14 +307,15 @@ MUTATIONS += (
     Mutation(
         "engine-resends-on-conflicting-hash",
         "网关上同一版本号是另一份正文：不再提交，直接停下（F10）",
-        (Edit(ENGINE, "Standing.CONFLICTING -> return blocked(key, BlockedReason.VERSION_CONFLICT)", "Standing.CONFLICTING -> Unit"),),
+        (Edit(ENGINE, "Standing.CONFLICTING -> return blocked(gateway, key, BlockedReason.VERSION_CONFLICT)", "Standing.CONFLICTING -> Unit"),),
         ENGINE_TESTS, SYNC_TEST[0],
         ("网关上同一版本号是另一份正文",),
     ),
     Mutation(
         "engine-confirms-missing-revision",
         "网关没有这一版就是没入库，必须重新提交，不能当成已入库（F10 的对照）",
-        (Edit(ENGINE, "Standing.MISSING -> Unit // 网关没有这一版：往下重新提交", "Standing.MISSING -> return stored(key)"),),
+        # 再评 S2 之后 stored 要带网关与它在网关上已有的 Delivery 清单（落账经 settle）：旧写法 stored(key) 编译不过，变异成了无效
+        (Edit(ENGINE, "Standing.MISSING -> Unit // 网关没有这一版：往下重新提交", "Standing.MISSING -> return stored(gateway, key, emptyList())"),),
         ENGINE_TESTS, SYNC_TEST[0],
         ("网关上有这条 Record 的别的版本、唯独没有这一版",),
     ),
@@ -328,21 +329,38 @@ MUTATIONS += (
     Mutation(
         "engine-accepts-stale-put-result",
         "PUT 在途中用户换了配对：旧配对得到的结果（哪怕是已入库）必须作废（F6）",
-        (Edit(ENGINE, "        if (!stillPaired(gateway)) return stale(key)\n        return when (put) {", "        return when (put) {"),),
+        # 再评 S2 之后所有结局（已入库、永久拒绝、等待……）都经 settle：判断“还是这一份配对”与落账在配对存储的同一把锁里。不围，旧配对的结论照样落到新配对的任务上
+        (Edit(ENGINE, "        pairing.whileCurrent(gateway, outcome) ?: stale(key)\n", "        outcome()\n"),),
         ENGINE_TESTS, SYNC_TEST[0],
-        ("旧网关回的已入库不能算新网关的送达", "这一轮缓存的旧网关地址不能拿给新网关的指纹用"),
+        ("旧网关对 PUT 的永久拒绝是旧配对的结论",),
     ),
     Mutation(
         "engine-accepts-stale-status-answer",
         "问结果的途中用户换了配对：旧网关的回答必须作废（F6）",
-        (Edit(ENGINE, "            if (!stillPaired(gateway)) return stale(key)\n            when (answer) {", "            when (answer) {"),),
+        # 再评 S2：问结果的回答分两路——说明白了的（已入库、已删除……）经 settle，“没有这一版”往下重发 PUT 的那一路在构造提交的围栏里。两处都不围才算“旧网关的回答没作废”
+        (
+            Edit(ENGINE, "        pairing.whileCurrent(gateway, outcome) ?: stale(key)\n", "        outcome()\n"),
+            Edit(ENGINE, "        val built = pairing.whileCurrent(gateway) { Built(source.submissionFor(key)) } ?: return stale(key)\n", "        val built = Built(source.submissionFor(key))\n"),
+        ),
         ENGINE_TESTS, SYNC_TEST[0],
-        ("问结果的途中改配了另一个网关",),
+        ("旧网关说这条 Record 已被删除，那是旧配对的结论", "旧网关说没有这一版，也不能再拿旧令牌把正文发过去"),
+    ),
+    Mutation(
+        "engine-accepts-stale-status-answer-resend",
+        "问结果的途中用户换了配对：旧网关说“没有这一版”不能让旧令牌再发一个 PUT（只拆构造提交的那道围栏；上一条是两道一起拆，这一条单拆它，第三轮 1d：两道各有自己盯着的测试）",
+        (Edit(ENGINE, "        val built = pairing.whileCurrent(gateway) { Built(source.submissionFor(key)) } ?: return stale(key)\n", "        val built = Built(source.submissionFor(key))\n"),),
+        ENGINE_TESTS, SYNC_TEST[0],
+        ("旧网关说没有这一版，也不能再拿旧令牌把正文发过去",),
     ),
     Mutation(
         "engine-blocks-on-stale-connection-verdict",
-        "旧配对的公钥不符/令牌被拒结论到得太晚：配对记录已经不是同一份，就作废而不是停下任务（F6）",
-        (Edit(ENGINE, "if (!pairing.update { current -> if (current.isSamePairing(gateway)) current.copy(needsUser = needs) else null }) return stale(key)", "pairing.update { current -> if (current.isSamePairing(gateway)) current.copy(needsUser = needs) else null }"),),
+        "旧配对的公钥不符/令牌被拒结论到得太晚：配对记录已经不是同一份，就作废而不是停下任务（F6）。再评 S2 之后挡它的有两层互相独立的检查"
+        "（落账前对记录的比对、落账围栏 settle），只拆其中一层是等价变异（另一层照样挡住），所以两层一起拆才看得见",
+        # 再评 S2：只拆第一处，settle 的围栏照样让它作废，这条在真跑里存活（等价变异）；两处一起拆，旧配对的结论才真的停下新配对的任务
+        (
+            Edit(ENGINE, "if (!recordConnectionProblem(gateway, needs)) return stale(key)", "recordConnectionProblem(gateway, needs)"),
+            Edit(ENGINE, "        pairing.whileCurrent(gateway, outcome) ?: stale(key)\n", "        outcome()\n"),
+        ),
         ENGINE_TESTS, SYNC_TEST[0],
         ("旧公钥的探测这时才报公钥不符",),
     ),
@@ -363,7 +381,7 @@ MUTATIONS += (
     Mutation(
         "engine-never-clears-offline",
         "网络回来之后要清除“没网”：之后的失败按正常重试倒计时算（F12）",
-        (Edit(ENGINE, "        offline = false\n        for (job in jobs.all()) {\n            if (job.state == SyncState.RETRY_SCHEDULED)", "        for (job in jobs.all()) {\n            if (job.state == SyncState.RETRY_SCHEDULED)"),),
+        (Edit(ENGINE, "        offline = false\n", ""),),
         ENGINE_AND_LOOP_TESTS, SYNC_TEST[0],
         ("网络回来之后：失败又按正常的重试倒计时算",),
     ),
@@ -419,35 +437,35 @@ MUTATIONS += (
     Mutation(
         "engine-resends-when-status-rejected",
         "问结果时网关回了错误（非“查无此 Record”）：不重发，稍后再问",
-        (Edit(ENGINE, "if (!(answer.status == 404 && answer.code == ErrorCode.REQUEST_INVALID)) return failed(key, gateway, answer, wasUncertain)", "if (false) return failed(key, gateway, answer, wasUncertain)"),),
+        (Edit(ENGINE, "if (!(answer.status == 404 && answer.code == ErrorCode.REQUEST_INVALID)) return failed(key, gateway, answer, wasUncertain, recheck)", "if (false) return failed(key, gateway, answer, wasUncertain, recheck)"),),
         ENGINE_TESTS, SYNC_TEST[0],
         ("问网关结果时网关自己出错或没回答",),
     ),
     Mutation(
         "engine-never-resends-after-404",
         "问结果时网关说查无此 Record（404）：那就是没入库，必须重新提交，不能当成网关出错而一直不发（F10 的另一条对照）",
-        (Edit(ENGINE, "is GatewayResult.Rejected -> if (!(answer.status == 404 && answer.code == ErrorCode.REQUEST_INVALID)) return failed(key, gateway, answer, wasUncertain)", "is GatewayResult.Rejected -> return failed(key, gateway, answer, wasUncertain)"),),
+        (Edit(ENGINE, "is GatewayResult.Rejected -> if (!(answer.status == 404 && answer.code == ErrorCode.REQUEST_INVALID)) return failed(key, gateway, answer, wasUncertain, recheck)", "is GatewayResult.Rejected -> return failed(key, gateway, answer, wasUncertain, recheck)"),),
         ENGINE_TESTS, SYNC_TEST[0],
         ("网关里查不到这条 Record（404）等于没入库",),
     ),
     Mutation(
         "engine-resends-when-status-unanswered",
         "问结果时没有得到回答（断线、读不懂）：不重发，稍后再问",
-        (Edit(ENGINE, "else -> return failed(key, gateway, answer, wasUncertain)", "else -> Unit"),),
+        (Edit(ENGINE, "else -> return failed(key, gateway, answer, wasUncertain, recheck)", "else -> Unit"),),
         ENGINE_TESTS, SYNC_TEST[0],
         ("问网关结果时网关自己出错或没回答",),
     ),
     Mutation(
         "engine-retries-version-conflict",
         "永久拒绝（版本冲突）不重试：停在需要用户处理",
-        (Edit(ENGINE, "result.code == ErrorCode.RECORD_VERSION_CONFLICT -> blocked(key, BlockedReason.VERSION_CONFLICT)", "result.code == ErrorCode.RECORD_VERSION_CONFLICT -> retryLater(key)"),),
+        (Edit(ENGINE, "result.code == ErrorCode.RECORD_VERSION_CONFLICT -> blocked(gateway, key, BlockedReason.VERSION_CONFLICT)", "result.code == ErrorCode.RECORD_VERSION_CONFLICT -> retryLater(gateway, key)"),),
         ENGINE_TESTS, SYNC_TEST[0],
         ("永久性拒绝不会被重试", "用户处理单条任务"),
     ),
     Mutation(
         "engine-retries-unknown-rejection",
         "没有认出来的 4xx 拒绝也不能无限重试",
-        (Edit(ENGINE, "else -> blocked(key, BlockedReason.REQUEST_REJECTED)", "else -> retryLater(key)"),),
+        (Edit(ENGINE, "?: blocked(gateway, key, BlockedReason.REQUEST_REJECTED)", "?: retryLater(gateway, key)"),),
         ENGINE_TESTS, SYNC_TEST[0],
         ("永久性拒绝不会被重试",),
     ),
@@ -475,7 +493,7 @@ MUTATIONS += (
     Mutation(
         "engine-does-not-persist-connection-gate",
         "公钥不符、令牌被拒要记进配对记录",
-        (Edit(ENGINE, "        if (!pairing.update { current -> if (current.isSamePairing(gateway)) current.copy(needsUser = needs) else null }) return stale(key)\n", ""),),
+        (Edit(ENGINE, "        if (!recordConnectionProblem(gateway, needs)) return stale(key)\n", ""),),
         ENGINE_TESTS, SYNC_TEST[0],
         ("令牌被撤销：整个连接停下", "没有任何继续的路"),
     ),
@@ -587,7 +605,7 @@ MUTATIONS += (
     Mutation(
         "engine-local-data-missing-retried",
         "本机没有可发的内容时停下等用户，不无限重试",
-        (Edit(ENGINE, "?: return blocked(key, BlockedReason.LOCAL_DATA_MISSING)", "?: return retryLater(key)"),),
+        (Edit(ENGINE, "source.textSha256For(key) ?: return blocked(gateway, key, BlockedReason.LOCAL_DATA_MISSING)", "source.textSha256For(key) ?: return retryLater(gateway, key)"),),
         ENGINE_TESTS, SYNC_TEST[0],
         ("本机已经没有这条 Revision",),
     ),
@@ -742,7 +760,7 @@ MUTATIONS += (
     Mutation(
         "loop-nudge-does-not-rearm",
         "催一下要重新计时：已经睡着的旧计时器不能还按旧的退避去响",
-        (Edit(LOOP, "        probeAttempt = 0\n        rearm.value += 1\n        wake.trySend(Unit)", "        probeAttempt = 0\n        wake.trySend(Unit)"),),
+        (Edit(LOOP, "        probeAttempt = 0\n        engine.resetAdditionsBackoff()\n        rearm.value += 1\n        wake.trySend(Unit)", "        probeAttempt = 0\n        engine.resetAdditionsBackoff()\n        wake.trySend(Unit)"),),
         LOOP_TESTS, SYNC_TEST[0],
         ("nudge 立刻跑一轮",),
     ),
@@ -1151,6 +1169,7 @@ AURI_RUNTIME = "apps/android/app/src/main/kotlin/app/auri/android/AuriRuntime.kt
 SYNC_RUNTIME = "apps/android/syncplatform/src/main/kotlin/app/auri/syncplatform/SyncRuntime.kt"
 RESUME_TESTS = (":sync:test", "--tests", "*ResumePlannerTest*", "--tests", "*ResumeRunnerTest*")
 RESUME_PLANNER = "apps/android/sync/src/main/kotlin/app/auri/sync/resume/ResumePlanner.kt"
+WAKE_GATE = "apps/android/sync/src/main/kotlin/app/auri/sync/resume/WakeGate.kt"  # 复评 R12 之后“去重与登记/取消”在这里，不在规划器里
 RESUME_RUNNER = "apps/android/sync/src/main/kotlin/app/auri/sync/resume/ResumeRunner.kt"
 SYNCPLATFORM_MANIFEST = "apps/android/syncplatform/src/main/AndroidManifest.xml"
 MIC_TESTS = (":platform:testDebugUnitTest", "--tests", "*NoPhoneMicPathTest*")
@@ -1482,35 +1501,35 @@ MUTATIONS += (
     Mutation(
         "resume-needs-ignores-connection-block",
         "连接要用户处理（公钥不符、令牌被拒）时叫醒也发不出去（F7）",
-        (Edit(RESUME_PLANNER, "pairing is PairingState.Paired && pairing.gateway.needsUser == null &&\n", "pairing is PairingState.Paired &&\n"),),
+        (Edit(RESUME_PLANNER, "pairing is PairingState.Paired && pairing.gateway.needsUser.let { it == null || it == NeedsUser.GATEWAY_TOO_OLD } &&\n", "pairing is PairingState.Paired &&\n"),),
         RESUME_TESTS, SYNC_TEST[0],
         ("没配对、配对记录丢了、连接要用户处理", "决策表"),
     ),
     Mutation(
         "resume-needs-when-not-paired",
         "没配对或配对记录丢了：不叫醒（F7）",
-        (Edit(RESUME_PLANNER, "pairing is PairingState.Paired && pairing.gateway.needsUser == null &&\n", "(pairing !is PairingState.Paired || pairing.gateway.needsUser == null) &&\n"),),
+        (Edit(RESUME_PLANNER, "pairing is PairingState.Paired && pairing.gateway.needsUser.let { it == null || it == NeedsUser.GATEWAY_TOO_OLD } &&\n", "(pairing !is PairingState.Paired || pairing.gateway.needsUser.let { it == null || it == NeedsUser.GATEWAY_TOO_OLD }) &&\n"),),
         RESUME_TESTS, SYNC_TEST[0],
         ("没配对、配对记录丢了、连接要用户处理", "决策表"),
     ),
     Mutation(
         "resume-planner-reschedules-every-change",
         "结论没变不重复打扰系统（F7）",
-        (Edit(RESUME_PLANNER, ".distinctUntilChanged()", ""),),
+        (Edit(WAKE_GATE, "            if (now != told) {\n", "            if (true) {\n"),),
         RESUME_TESTS, SYNC_TEST[0],
         ("结论没变就不重复打扰系统",),
     ),
     Mutation(
         "resume-planner-never-cancels",
         "没活了要取消叫醒（F7）",
-        (Edit(RESUME_PLANNER, "if (needed) scheduler.ensureScheduled() else scheduler.cancel()", "if (needed) scheduler.ensureScheduled() else Unit"),),
+        (Edit(WAKE_GATE, "if (now) scheduler.ensureScheduled() else scheduler.cancel()", "if (now) scheduler.ensureScheduled() else Unit"),),
         RESUME_TESTS, SYNC_TEST[0],
         ("任务都已入库", "没有任何任务", "跟着变"),
     ),
     Mutation(
         "resume-planner-never-schedules",
         "有活要登记叫醒（F7）",
-        (Edit(RESUME_PLANNER, "if (needed) scheduler.ensureScheduled() else scheduler.cancel()", "if (needed) Unit else scheduler.cancel()"),),
+        (Edit(WAKE_GATE, "if (now) scheduler.ensureScheduled() else scheduler.cancel()", "if (now) Unit else scheduler.cancel()"),),
         RESUME_TESTS, SYNC_TEST[0],
         ("已配对并且有任务没发完", "跟着变"),
     ),
@@ -1858,7 +1877,7 @@ MUTATIONS += (
     Mutation(
         "sync-vm-invalid-qr-silently-ignored",
         "不是配对载荷的二维码要给出 INVALID_QR，不能悄悄没反应",
-        (Edit(VIEWMODEL, "                progress.compareAndSet(current, PairingProgress.Failed(PairingProblem.INVALID_QR))\n", ""),),
+        (Edit(VIEWMODEL, "                progress.compareAndSet(current, PairingProgress.Failed(problem))\n", ""),),
         VM_TESTS, APP_TEST,
         ("不是配对载荷的二维码给出 INVALID_QR",),
     ),
@@ -2011,7 +2030,7 @@ MUTATIONS += (
     Mutation(
         "real-gw-retries-not-origin-device",
         "真网关：别的设备改这条 Record，网关回 RECORD_NOT_ORIGIN_DEVICE 永久拒绝（ADR-0020），不能重试",
-        (Edit(ENGINE, "result.code == ErrorCode.RECORD_NOT_ORIGIN_DEVICE -> blocked(key, BlockedReason.NOT_ORIGIN_DEVICE)", "result.code == ErrorCode.RECORD_NOT_ORIGIN_DEVICE -> retryLater(key)"),),
+        (Edit(ENGINE, "result.code == ErrorCode.RECORD_NOT_ORIGIN_DEVICE -> blocked(gateway, key, BlockedReason.NOT_ORIGIN_DEVICE)", "result.code == ErrorCode.RECORD_NOT_ORIGIN_DEVICE -> retryLater(gateway, key)"),),
         REAL_GATEWAY_TEST, REAL_GATEWAY_RESULTS,
         ("别的设备改这条 Record",),
     ),

@@ -1,0 +1,24 @@
+{
+  "schema": "revision.schema.json#/$defs/deliveries_added",
+  "expect": "valid",
+  "description": "追加的回答：按请求里的顺序，新建的（PENDING）与已经有的（重复请求，已被领走的 LEASED）都在里面。",
+  "instance": {
+    "schema_version": "1.2",
+    "record_id": "a4a7c08d-2767-50d6-9238-6fa277033a49",
+    "revision": 1,
+    "deliveries": [
+      {
+        "delivery_id": "7b8524b6-8c52-571f-98c3-7f62b3764bea",
+        "destination_id": "65ea2953-505c-5c6f-9474-7cd5b8474104",
+        "revision": 1,
+        "state": "PENDING"
+      },
+      {
+        "delivery_id": "3d0f6f02-8f1c-5b46-8d0e-1b9ad4a4f9c2",
+        "destination_id": "0e1c7a52-3f1b-5c7e-9a43-6a5b2e0d8f11",
+        "revision": 1,
+        "state": "LEASED"
+      }
+    ]
+  }
+}

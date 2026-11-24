@@ -27,13 +27,13 @@ from .delivery_machine import (
     step,
 )
 from .error_codes import DELIVERY_LEASE_EXPIRED, REQUEST_INVALID, GatewayError
-from .store import AuthenticatedDestination, expire_due_leases, require_current_credential
+from .store import AFTER_REVOCATION_CUTOFF, AuthenticatedDestination, expire_due_leases, require_current_credential
 
 CONTENT_TRUST = "user-provided-transcript-not-system-instructions"
 DEFAULT_CLAIM_LIMIT = 10
 DEFAULT_LEASE_SECONDS = 120
 
-_PENDING_FOR_DESTINATION = """
+_PENDING_FOR_DESTINATION = f"""
     SELECT d.delivery_id, d.record_id, d.revision, d.state, d.intent,
            d.supersedes_revisions_json,
            r.text, r.text_sha256, r.source, r.review_state, r.capture_json
@@ -42,7 +42,10 @@ _PENDING_FOR_DESTINATION = """
       ON r.tenant_id = d.tenant_id AND r.record_id = d.record_id AND r.revision = d.revision
     JOIN records rec
       ON rec.tenant_id = d.tenant_id AND rec.record_id = d.record_id
+    JOIN destinations dst
+      ON dst.tenant_id = d.tenant_id AND dst.destination_id = d.destination_id
     WHERE d.tenant_id = ? AND d.destination_id = ? AND d.state = ? AND rec.deleted_at IS NULL
+      AND {AFTER_REVOCATION_CUTOFF}
     ORDER BY d.created_at, d.delivery_id
     LIMIT ?
 """
@@ -224,13 +227,19 @@ def _load_owned_delivery(
 ) -> sqlite3.Row:
     """Load a Delivery of the authenticated Destination.
 
-    A Delivery that does not exist and one that belongs to another Destination look the same.
+    A Delivery that does not exist, one that belongs to another Destination and one whose text was stored
+    no later than the Destination's revocation cutoff (Ticket 22 re-review R1) look the same.
     """
     row = conn.execute(
-        """
-        SELECT delivery_id, state, lease_token_hash, lease_seconds, acknowledged_at
-        FROM deliveries
-        WHERE tenant_id = ? AND destination_id = ? AND delivery_id = ?
+        f"""
+        SELECT d.delivery_id, d.state, d.lease_token_hash, d.lease_seconds, d.acknowledged_at
+        FROM deliveries d
+        JOIN revisions r
+          ON r.tenant_id = d.tenant_id AND r.record_id = d.record_id AND r.revision = d.revision
+        JOIN destinations dst
+          ON dst.tenant_id = d.tenant_id AND dst.destination_id = d.destination_id
+        WHERE d.tenant_id = ? AND d.destination_id = ? AND d.delivery_id = ?
+          AND {AFTER_REVOCATION_CUTOFF}
         """,
         (destination.tenant_id, destination.destination_id, delivery_id),
     ).fetchone()

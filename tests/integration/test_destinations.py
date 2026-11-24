@@ -102,7 +102,7 @@ def test_credential_appears_once_is_hashed_at_rest_and_never_echoed_on_query(
         )
         assert list_resp.status_code == 200
         list_body = list_resp.json()
-        assert list_body["schema_version"] == "1.1"
+        assert list_body["schema_version"] == "1.2"
         assert len(list_body["destinations"]) == 1
         assert_valid_contract("destination.schema.json#/$defs/resource", list_body["destinations"][0])
         assert list_body["destinations"][0]["credential_issued"] is True

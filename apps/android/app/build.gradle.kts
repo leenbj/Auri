@@ -82,6 +82,7 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(testFixtures(project(":capture")))
+    testImplementation(testFixtures(project(":sync"))) // Ticket 22：目的地视图模型的测试用假网关、内存发送账
 
     androidTestImplementation(libs.androidx.test.core)
     androidTestImplementation(libs.androidx.test.runner)

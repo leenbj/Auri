@@ -3,7 +3,7 @@
   "expect": "valid",
   "description": "iOS 上用音量手势停止（ADR-0014）。",
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "record_id": "b3ba07ca-829e-5185-a231-deb0f54399a5",
     "revision": 1,
     "capture": {

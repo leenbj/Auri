@@ -104,7 +104,7 @@ def test_pairing_payload_matches_contract_and_renders_qr(tmp_path: pathlib.Path)
         payload = json.loads(res_json.stdout)
 
         assert_valid_contract("pairing.schema.json#/$defs/payload", payload)
-        assert payload["schema_version"] == "1.1"
+        assert payload["schema_version"] == "1.2"
         assert payload["mdns_service_type"] == "_auri-gateway._tcp"
         assert payload["public_key_sha256"] == live_fp
         assert {"host": "127.0.0.1", "port": gw.port} in payload["addresses"]

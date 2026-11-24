@@ -3,7 +3,7 @@
   "expect": "valid",
   "description": "只入库，不创建 Delivery。",
   "instance": {
-    "schema_version": "1.1",
+    "schema_version": "1.2",
     "record_id": "bea727a1-0f5b-5e71-b05e-61de556ac06b",
     "revision": 1,
     "capture": {

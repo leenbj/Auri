@@ -19,6 +19,7 @@ import app.auri.sync.machine.SyncState
 import app.auri.sync.pairing.GatewayAddress
 import app.auri.sync.testing.FakeDiscovery
 import app.auri.sync.testing.FakeGateway
+import app.auri.sync.testing.InMemoryDataFlowPolicy
 import app.auri.sync.testing.InMemoryPairingStore
 import app.auri.sync.testing.SyncSamples
 import app.auri.sync.tls.SpkiPin
@@ -79,13 +80,15 @@ class UpgradeThenSyncTest {
 
             override fun now(): Instant = Instant.now()
         }
+        val pairedGateway = SyncSamples.pairedGateway(pin = SpkiPin.parse("3d".repeat(32))!!)
         val engine = SyncEngine(
             jobs = jobs,
-            pairing = InMemoryPairingStore(SyncSamples.pairedGateway(pin = SpkiPin.parse("3d".repeat(32))!!)),
+            pairing = InMemoryPairingStore(pairedGateway),
             source = RecordLibrarySubmissionSource(library, SubmissionBuilder("test")),
             http = http,
             locator = GatewayLocator(http, FakeDiscovery()),
             clock = clock,
+            policy = InMemoryDataFlowPolicy(gateway = pairedGateway.identity), // 装配时显式授权（给这个网关）：这个测试测的是升级后的同步
         )
 
         engine.runOnce()

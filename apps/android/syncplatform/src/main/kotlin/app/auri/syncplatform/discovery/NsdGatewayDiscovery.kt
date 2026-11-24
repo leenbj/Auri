@@ -5,7 +5,9 @@ import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import app.auri.sync.SyncLog
 import app.auri.sync.discovery.GatewayDiscovery
+import app.auri.sync.discovery.resolveWhileOpen
 import app.auri.sync.pairing.GatewayAddress
+import app.auri.sync.policy.RequestGate
 import java.io.IOException
 import java.net.Inet4Address
 import kotlinx.coroutines.channels.awaitClose
@@ -32,13 +34,18 @@ class NsdGatewayDiscovery(
 ) : GatewayDiscovery {
     private val manager = context.applicationContext.getSystemService(NsdManager::class.java)
 
-    override suspend fun find(gatewayId: String): List<GatewayAddress> {
+    override suspend fun find(gatewayId: String): List<GatewayAddress> = find(gatewayId, RequestGate.Open)
+
+    /**
+     * 每次 `resolveService`（会向局域网发请求）各过一次 [gate]，门不放行就停、并停掉系统的发现（第四轮 F7）：
+     * 授权被收回之后，4 秒监听窗口里还没解析的服务一个也不再解析。细节见 [resolveWhileOpen]。
+     */
+    override suspend fun find(gatewayId: String, gate: RequestGate): List<GatewayAddress> {
         val found = LinkedHashSet<GatewayAddress>()
         withTimeoutOrNull(listenMs) {
             try {
-                services().collect { service ->
-                    // 一次只解析一个：旧版系统同时解析多个会直接报 FAILURE_ALREADY_ACTIVE
-                    val resolved = resolve(service) ?: return@collect
+                // 一次只解析一个：旧版系统同时解析多个会直接报 FAILURE_ALREADY_ACTIVE（resolveWhileOpen 是一个接一个）
+                resolveWhileOpen(services(), gate, resolve = ::resolve) { resolved ->
                     val host = (resolved.host as? Inet4Address)?.hostAddress
                     gatewayAddressFrom(host, resolved.port, textAttributes(resolved), gatewayId)?.let(found::add)
                 }
