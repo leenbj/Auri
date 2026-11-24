@@ -93,5 +93,9 @@ class SqliteDispatchStore(private val library: SqliteRecordLibrary) : DispatchSt
          */
         fun publishIn(db: SQLiteDatabase, revision: Revision, now: Instant) =
             DispatchSql(AndroidSqlDb(db)).publish(JobKey(revision.recordId, revision.number), revision.source, now)
+
+        /** 交给 [SqliteRecordLibrary] 的 deletionStep：在删除 Record 的事务里一并清掉待同步任务与发送账。 */
+        fun deleteRecordIn(db: SQLiteDatabase, recordId: String) =
+            DispatchSql(AndroidSqlDb(db)).deleteRecord(recordId)
     }
 }

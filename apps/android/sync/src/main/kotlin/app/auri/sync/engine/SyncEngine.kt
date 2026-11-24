@@ -105,6 +105,7 @@ class SyncEngine(
     private val log: SyncLog = SyncLog.None,
     private val onDecision: (SyncDecision) -> Unit = {},
     private val contract: ContractGuard = ContractGuard(),
+    private val deletions: PendingDeletions = PendingDeletions.None,
 ) {
     private val passLock = Mutex()
     private val jobLocks = ConcurrentHashMap<JobKey, Mutex>()
@@ -118,6 +119,14 @@ class SyncEngine(
 
     /** 追加 Delivery 在等重试时，重试的时间（SyncLoop 据此排计时）；没有要重试的为 null。 */
     val additionsRetryAt: StateFlow<Instant?> get() = additionsRetry
+
+    @Volatile
+    private var deletionsAttempts = 0
+
+    private val deletionsRetry = MutableStateFlow<Instant?>(null)
+
+    /** 删除墓碑同步在等重试时的时间（SyncLoop 据此排计时）；没有要重试的为 null。 */
+    val deletionsRetryAt: StateFlow<Instant?> get() = deletionsRetry
 
     /** 平台最近一次报告的网络状态（[networkLost] 置位、[networkChanged] 清除）。引擎自己不监听网络，只记下被告知的结果。 */
     @Volatile
@@ -136,6 +145,8 @@ class SyncEngine(
                 val location = Location()
                 healContract(location) // 配对记录上有“网关太旧”的标记：先问一次网关现在会不会说 1.2，会了就清掉，下面照常发
                 if (usableGateway() == null) return // 没配对、记录丢失或连接要用户处理：什么都不能发
+                syncDeletions(location)
+                if (usableGateway() == null) return // 删除同步若触发了连接问题，这一轮到此为止
                 probe(location)
                 for (job in jobs.all()) {
                     if (job.state != SyncState.PENDING) continue
@@ -190,6 +201,7 @@ class SyncEngine(
         offline = false
         contract.invalidate() // 换了网络（或网络回来了）：同上，重新问版本（再评 S6）
         resetAdditionsBackoff() // 旧的失败发生在另一个网络上
+        resetDeletionsBackoff()
         for (job in jobs.all()) {
             if (job.state == SyncState.RETRY_SCHEDULED) deliver(job.key, SyncEvent.RETRY_DUE) { it.copy(attempts = 0) }
         }
@@ -199,6 +211,12 @@ class SyncEngine(
     fun resetAdditionsBackoff() {
         additionsAttempts = 0
         additionsRetry.value = null
+    }
+
+    /** 删除墓碑同步的退避从头算（网络变了、用户点了“现在同步”）。 */
+    fun resetDeletionsBackoff() {
+        deletionsAttempts = 0
+        deletionsRetry.value = null
     }
 
     /** 探测网关；找得到（含“有人应答但公钥不符”）就让等待网关的任务回到排队。 */
@@ -632,6 +650,110 @@ class SyncEngine(
     private fun additionsRetryLater() {
         additionsAttempts += 1
         additionsRetry.value = clock.now().plusMillis(retry.delayMs(additionsAttempts))
+    }
+
+    // ---- 删除墓碑同步（Ticket 23，FR-TXT-005 / FR-SYNC-002）----
+
+    /**
+     * 把本地删除墓碑同步到网关（`DELETE /v1/records/{record_id}`）。
+     * 与追加 Delivery 遵循同样的安全门禁：先问 DataFlowPolicy、核对合同版本 1.2、写账前做配对围栏检查；
+     * 网关 DELETE 对来源设备幂等，所以 Garbled/中断/连不上都按有界退避重试；非来源设备（403）不再重试。
+     */
+    private suspend fun syncDeletions(location: Location) {
+        val pending = deletions.pending()
+        if (pending.isEmpty()) {
+            resetDeletionsBackoff()
+            return
+        }
+        if (offline) return
+        val gateway = usableGateway() ?: return
+        var permit = permitFor(gateway) ?: return
+        val located = location.get(gateway, permit) ?: return
+        val address = when (located) {
+            is Located.Reachable -> located.address
+            Located.Unreachable -> return deletionsRetryLater()
+            Located.KeyMismatch -> {
+                recordConnectionProblem(gateway, NeedsUser.KEY_MISMATCH)
+                return
+            }
+        }
+        permit = permitFor(gateway) ?: return
+        rememberAddress(gateway, address)
+        val client = GatewayClient(http.forPin(gateway.pin))
+        if (!deletionsMayProceed(gateway, permit.gated { contract.check(gateway, address, client) } ?: return)) return
+        for (recordId in pending) {
+            permit = permitFor(gateway) ?: return
+            val result = permit.gated { client.deleteRecord(address, gateway.token, recordId) } ?: return
+            if (!stillPaired(gateway)) return
+            when (result) {
+                is GatewayResult.Success -> {
+                    log.event("delete.synced")
+                    if (!fenced(gateway) { deletions.markSynced(recordId) }) return
+                }
+
+                is GatewayResult.Garbled -> return deletionsRetryLater()
+                is GatewayResult.TransportFailed -> {
+                    contract.invalidate()
+                    when (result.failure) {
+                        is TransportFailure.KeyMismatch -> {
+                            recordConnectionProblem(gateway, NeedsUser.KEY_MISMATCH)
+                            return
+                        }
+
+                        else -> return deletionsRetryLater()
+                    }
+                }
+
+                is GatewayResult.Rejected -> when {
+                    result.status == 401 || result.code == ErrorCode.GATEWAY_AUTH_REVOKED || result.code == ErrorCode.GATEWAY_AUTH_INVALID -> {
+                        recordConnectionProblem(gateway, NeedsUser.AUTH_REJECTED)
+                        return
+                    }
+
+                    result.code == ErrorCode.RECORD_NOT_ORIGIN_DEVICE -> {
+                        log.event("delete.not-origin")
+                        if (!fenced(gateway) { deletions.markSynced(recordId) }) return
+                    }
+
+                    result.retryable -> return deletionsRetryLater()
+                    else -> {
+                        if (!deletionsMayProceed(gateway, revalidate(gateway, address, client) ?: return)) return
+                        log.event("delete.rejected status=${result.status}")
+                        if (!fenced(gateway) { deletions.markSynced(recordId) }) return
+                    }
+                }
+            }
+        }
+        resetDeletionsBackoff()
+    }
+
+    private suspend fun deletionsMayProceed(gateway: PairedGateway, verdict: ContractAnswer): Boolean = when (verdict) {
+        ContractAnswer.COMPATIBLE -> true
+        ContractAnswer.TOO_OLD -> {
+            pairing.markGatewayTooOld(gateway)
+            deletionsRetryLater()
+            false
+        }
+
+        ContractAnswer.UNCONFIRMED -> {
+            deletionsRetryLater()
+            false
+        }
+
+        ContractAnswer.AUTH_REJECTED -> {
+            recordConnectionProblem(gateway, NeedsUser.AUTH_REJECTED)
+            false
+        }
+
+        ContractAnswer.KEY_MISMATCH -> {
+            recordConnectionProblem(gateway, NeedsUser.KEY_MISMATCH)
+            false
+        }
+    }
+
+    private fun deletionsRetryLater() {
+        deletionsAttempts += 1
+        deletionsRetry.value = clock.now().plusMillis(retry.delayMs(deletionsAttempts))
     }
 
     // ---- 其余 ----

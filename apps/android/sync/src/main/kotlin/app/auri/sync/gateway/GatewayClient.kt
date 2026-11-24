@@ -138,6 +138,27 @@ class GatewayClient(private val http: HttpExchange) {
         }
     }
 
+    /**
+     * DELETE /v1/records/{record_id}：在网关上种下删除墓碑并取消该 Record 尚未确认的 Delivery（FR-TXT-005、ADR-0020）。
+     * 来源设备重复删除在网关上是幂等的；回答必须就是我们请求删除的那个 record_id。
+     */
+    suspend fun deleteRecord(address: GatewayAddress, token: DeviceToken, recordId: String): GatewayResult<RecordDeletedResponse> {
+        require(Wire.UUID.matches(recordId)) { "record_id 必须是小写 UUID" }
+        return call(address, HttpRequest("DELETE", "/v1/records/$recordId", authorization(token))) { reply ->
+            reply.requireVersion()
+            val deleted = RecordDeletedResponse(
+                recordId = reply.uuid("record_id"),
+                deletedAt = reply.timestamp("deleted_at"),
+                cancelledDeliveryIds = reply.strings("cancelled_delivery_ids").map { id ->
+                    if (!Wire.UUID.matches(id)) throw Unreadable("cancelled_delivery_ids")
+                    id
+                },
+            )
+            if (deleted.recordId != recordId) throw Unreadable("answer is about a different record")
+            deleted
+        }
+    }
+
     // ---- Destination（Ticket 22）：同一个 HttpExchange，同一套严格读取，没有第二套 HTTP 栈 ----
 
     /** GET /v1/destinations：这个租户的全部 Destination（含已撤销的）。任何一项读不懂就整个不采信。 */

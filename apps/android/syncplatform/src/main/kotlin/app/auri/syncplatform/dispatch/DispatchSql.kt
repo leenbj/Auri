@@ -247,6 +247,16 @@ class DispatchSql(private val sql: SqlDb) {
         }
     }
 
+    /**
+     * 删除整条 Record 的同一事务里清理其待同步任务与发送账（FR-TXT-005）：
+     * 删除之后不再把该 Record 的旧 Revision 推给网关，也不再追加它的 Delivery。
+     */
+    fun deleteRecord(recordId: String) = sql.transaction<Unit> {
+        sql.update("DELETE FROM sync_jobs WHERE record_id = ?", recordId)
+        sql.update("DELETE FROM dispatch_targets WHERE record_id = ?", recordId)
+        sql.update("DELETE FROM dispatch_items WHERE record_id = ?", recordId)
+    }
+
     // ---- 内部 ----
 
     private fun upsert(destination: Destination) {

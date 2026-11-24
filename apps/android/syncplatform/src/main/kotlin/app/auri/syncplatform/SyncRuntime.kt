@@ -46,6 +46,7 @@ import app.auri.sync.status.SyncStatus
 import app.auri.syncplatform.discovery.NsdGatewayDiscovery
 import app.auri.syncplatform.dispatch.DispatchSql
 import app.auri.syncplatform.dispatch.SqliteDispatchStore
+import app.auri.syncplatform.jobs.SqlitePendingDeletions
 import app.auri.syncplatform.jobs.SqliteSyncJobStore
 import app.auri.syncplatform.keystore.KeystoreKeys
 import app.auri.syncplatform.network.AndroidNetworkSignal
@@ -75,6 +76,7 @@ object SyncStorage {
             application,
             databaseName,
             publicationStep = { db, revision -> SqliteDispatchStore.publishIn(db, revision, clock.now()) },
+            deletionStep = { db, recordId, _ -> SqliteDispatchStore.deleteRecordIn(db, recordId) },
             extraSchema = DispatchSql.SCHEMA + DataFlowPolicySql.SCHEMA,
         )
 }
@@ -101,6 +103,7 @@ class SyncRuntime(
     resume: ResumeScheduler = ResumeScheduler.None,
 ) : SyncController {
     val jobs = SqliteSyncJobStore(library)
+    val deletions = SqlitePendingDeletions(library)
 
     /** 系统里那个叫醒的唯一出入口（复评 R12）：规划器与“用户确认预览”两条路共用它的锁，确认先登记叫醒、再提交，规划器手里过时的“没活了”抹不掉它。 */
     private val wakes = WakeGate(resume, log)
@@ -143,8 +146,9 @@ class SyncRuntime(
         additions = dispatch,
         log = log,
         contract = contract,
+        deletions = deletions,
     )
-    private val loop = SyncLoop(engine, jobs, network, clock, log = log, additions = dispatch)
+    private val loop = SyncLoop(engine, jobs, network, clock, log = log, additions = dispatch, deletions = deletions)
 
     /** [start] 的启动工作（读配对记录、接回中断的任务）做完了没有：被系统叫醒的那一轮要等它。 */
     private val started = CompletableDeferred<Unit>()
@@ -175,7 +179,13 @@ class SyncRuntime(
      */
     private suspend fun resumeNeededNow(): Boolean {
         val paired = pairing.load()
-        return needsResume(paired, jobs.all(), policy.current((paired as? PairingState.Paired)?.gateway?.identity), dispatch.due().isNotEmpty())
+        return needsResume(
+            paired,
+            jobs.all(),
+            policy.current((paired as? PairingState.Paired)?.gateway?.identity),
+            dispatch.due().isNotEmpty(),
+            deletions.pending().isNotEmpty(),
+        )
     }
 
     /** 界面要的同步状态汇总：配对状态、任务表、数据流开关与发送账里等用户确认的文字，任何一边变了都重新汇总（评审 M2）。 */

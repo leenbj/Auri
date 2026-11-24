@@ -4,11 +4,13 @@ import app.auri.capture.coordinator.Clock
 import app.auri.sync.SyncLog
 import app.auri.sync.engine.DeliveryAdditions
 import app.auri.sync.engine.JobKey
+import app.auri.sync.engine.PendingDeletions
 import app.auri.sync.engine.RetryPolicy
 import app.auri.sync.engine.SyncEngine
 import app.auri.sync.engine.SyncJob
 import app.auri.sync.engine.SyncJobStore
 import app.auri.sync.engine.dueUpdates
+import app.auri.sync.engine.pendingUpdates
 import app.auri.sync.machine.SyncState
 import java.time.Duration
 import kotlinx.coroutines.CancellationException
@@ -62,6 +64,7 @@ class SyncLoop(
     private val retry: RetryPolicy = RetryPolicy(),
     private val log: SyncLog = SyncLog.None,
     private val additions: DeliveryAdditions = DeliveryAdditions.None,
+    private val deletions: PendingDeletions = PendingDeletions.None,
 ) {
     private val wake = Channel<Unit>(Channel.CONFLATED)
     private val rearm = MutableStateFlow(0L)
@@ -80,6 +83,7 @@ class SyncLoop(
         producer("network") { watchNetwork() }
         producer("jobs") { watchJobs() }
         producer("additions") { watchAdditions() }
+        producer("deletions") { watchDeletions() }
         runPasses()
     }
 
@@ -87,6 +91,7 @@ class SyncLoop(
     fun nudge() {
         probeAttempt = 0
         engine.resetAdditionsBackoff()
+        engine.resetDeletionsBackoff()
         rearm.value += 1
         wake.trySend(Unit)
     }
@@ -127,6 +132,17 @@ class SyncLoop(
     private suspend fun watchAdditions() = coroutineScope {
         launch { additions.dueUpdates().collect { due -> if (due.isNotEmpty()) wake.trySend(Unit) } }
         engine.additionsRetryAt.collectLatest { at ->
+            if (at != null) {
+                delay(Duration.between(clock.now(), at).toMillis().coerceAtLeast(0))
+                wake.trySend(Unit)
+            }
+        }
+    }
+
+    /** 待同步的删除墓碑一变就跑一轮；失败了按引擎排的重试时间再跑。 */
+    private suspend fun watchDeletions() = coroutineScope {
+        launch { deletions.pendingUpdates().collect { pending -> if (pending.isNotEmpty()) wake.trySend(Unit) } }
+        engine.deletionsRetryAt.collectLatest { at ->
             if (at != null) {
                 delay(Duration.between(clock.now(), at).toMillis().coerceAtLeast(0))
                 wake.trySend(Unit)

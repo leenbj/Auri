@@ -28,9 +28,9 @@ import kotlinx.coroutines.flow.onStart
  * “网关升级了没有”，文字一直留在手机上，直到用户碰巧打开应用（再评 S7）。所以叫醒留着，重新探测的频率有界：叫醒是 JobScheduler 的持久任务，
  * 每次被叫醒后还有活就请系统稍后再叫（初始 30 秒、指数增长、系统上限 5 小时），没有活（发完、授权收回、用户重新配对）就取消。
  */
-fun needsResume(pairing: PairingState, jobs: List<SyncJob>, policy: DataFlowState, additionsDue: Boolean = false): Boolean =
+fun needsResume(pairing: PairingState, jobs: List<SyncJob>, policy: DataFlowState, additionsDue: Boolean = false, deletionsPending: Boolean = false): Boolean =
     policy.textMayEnterGateway && pairing is PairingState.Paired && pairing.gateway.needsUser.let { it == null || it == NeedsUser.GATEWAY_TOO_OLD } &&
-        (additionsDue || jobs.any { it.state != SyncState.STORED && it.state != SyncState.BLOCKED })
+        (additionsDue || deletionsPending || jobs.any { it.state != SyncState.STORED && it.state != SyncState.BLOCKED })
 
 /**
  * 进程活着时有 [SyncLoop][app.auri.sync.loop.SyncLoop] 负责什么时候发；进程被系统杀掉之后没人在跑了——
