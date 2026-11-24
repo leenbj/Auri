@@ -165,7 +165,10 @@ class DestinationsViewModel(
                 when {
                     // 不是“没做成”：根本没联系网关，页面如实说显示的是本机缓存
                     result is ServiceResult.Failed && result.failure == ServiceFailure.AutomaticReadsOff -> cacheOnly.value = true
-                    result is ServiceResult.Failed -> problem.value = result.failure
+                    result is ServiceResult.Failed -> {
+                        if (!automatic) cacheOnly.value = false
+                        problem.value = result.failure
+                    }
                     else -> cacheOnly.value = false
                 }
             } catch (cancelled: CancellationException) {

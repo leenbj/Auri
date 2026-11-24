@@ -186,8 +186,14 @@ class SyncRuntime(
         // 记下来，循环照常起来，它的第一轮会再试
         try {
             pairing.refresh()
-            // 授权只留给配对着的那个网关：换配对时的清理万一没跑成（进程被杀、写库失败），在这里补上
-            policy.reconcile(pairing.load())
+            // 授权只留给配对着的那个网关：换配对时的清理万一没跑成（进程被杀、写库失败），在这里补上；单独兜底，不阻塞后续修复任务
+            try {
+                policy.reconcile(pairing.load())
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                log.event("start.reconcile.failed ${failure::class.simpleName}")
+            }
             // 上次进程在“刚配好对、还没把停下的任务放回队列”时被杀：配对记录是好的，任务却还停着。放回去。
             engine.resolveAfterRepair()
         } catch (cancelled: CancellationException) {

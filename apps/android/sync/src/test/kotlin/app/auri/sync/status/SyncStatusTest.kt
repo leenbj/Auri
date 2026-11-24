@@ -244,4 +244,12 @@ class SyncStatusTest {
         fresh.engine.runOnce()
         assertEquals(SyncHeadline.UP_TO_DATE, fresh.status().headline)
     }
+
+    @Test
+    fun `配对记录读不出来且未授权：大标题是需要用户处理而不是被隐私策略拦住`() {
+        val status = SyncStatus.of(PairingState.Lost, emptyList(), app.auri.sync.policy.DataFlowState.Unset)
+
+        assertEquals(SyncHeadline.NEEDS_USER, status.headline)
+        assertEquals(listOf(UserCause.PAIRING_LOST), status.causes)
+    }
 }

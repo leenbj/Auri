@@ -118,6 +118,7 @@ data class SyncStatus(
 
             val headline = when {
                 pairing == PairingState.NotPaired -> SyncHeadline.NOT_PAIRED
+                pairing == PairingState.Lost -> SyncHeadline.NEEDS_USER
                 !dataFlow.textMayEnterGateway -> SyncHeadline.HELD_BY_POLICY // 引擎一个字节也不会发：不能说“正在发送”或“已同步”
                 causes.isNotEmpty() -> SyncHeadline.NEEDS_USER
                 counts.retryingLater > 0 -> SyncHeadline.RETRYING_LATER

@@ -74,11 +74,13 @@ class PolicyGeneration {
         private val state = AtomicInteger(NEW)
 
         /** 开窗口（幂等）；已经落定的凭据不会再开。 */
+        @Synchronized
         fun changing() {
             if (state.compareAndSet(NEW, OPEN)) this@PolicyGeneration.changing()
         }
 
         /** 关窗口（幂等）：数据库线程上的 `finally` 与调用方外层的 `finally` 都可以调，只有第一次算数。 */
+        @Synchronized
         fun changed() {
             if (state.compareAndSet(OPEN, SETTLED)) this@PolicyGeneration.changed() else state.compareAndSet(NEW, SETTLED)
         }

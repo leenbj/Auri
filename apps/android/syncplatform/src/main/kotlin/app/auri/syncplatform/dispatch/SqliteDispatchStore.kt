@@ -19,6 +19,7 @@ import java.time.Instant
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.update
 
 /**
  * [DispatchStore] 的 SQLite 实现：发送账和 Record 库、待同步任务表在**同一个数据库文件**里，用库的同一条连接（[SqliteRecordLibrary.withDatabase]）。
@@ -35,7 +36,7 @@ class SqliteDispatchStore(private val library: SqliteRecordLibrary) : DispatchSt
 
     private suspend fun <T> write(block: DispatchSql.() -> T): T {
         val result = read(block)
-        ownChanges.value += 1
+        ownChanges.update { it + 1 }
         return result
     }
 
@@ -48,7 +49,7 @@ class SqliteDispatchStore(private val library: SqliteRecordLibrary) : DispatchSt
 
     /** 引擎每次发请求前都会调用：没换网关时什么都没改，不发变化信号。 */
     override suspend fun useGateway(gateway: GatewayIdentity) {
-        if (read { useGateway(gateway) }) ownChanges.value += 1
+        if (read { useGateway(gateway) }) ownChanges.update { it + 1 }
     }
 
     override suspend fun item(key: JobKey): DispatchItem? = read { item(key) }

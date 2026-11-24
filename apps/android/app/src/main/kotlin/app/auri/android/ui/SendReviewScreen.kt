@@ -55,7 +55,10 @@ fun SendReviewScreen(
                 }
             }
         }
-        item { Text(if (state.items.isEmpty()) "还没有文字。" else "最近的文字（等你确认的排在前面）") }
+        when {
+            state.items.isNotEmpty() -> item { Text("最近的文字（等你确认的排在前面）") }
+            !state.unreadable -> item { Text("还没有文字。") }
+        }
         items(state.items, key = { "${it.key.recordId}/${it.key.revision}" }) { Item(it, onConfirm, onSkip, onSetIntent) }
     }
 }

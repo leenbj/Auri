@@ -78,6 +78,21 @@ class AutomaticReadsViewModelTest {
     }
 
     @Test
+    fun `列表页：自动刷新被拦下之后用户点“刷新”但连不上网关：显示错误，不再说“现在不会自动联系网关”`() = runTest {
+        val rig = DispatchRig(this, policyState = DataFlowState.Unset)
+        rig.lan.hosts.clear() // 网关连不上
+        val viewModel = DestinationsViewModel(rig.service, backgroundScope, rig.log)
+        settle()
+        assertTrue("前提：自动刷新被拦下", viewModel.state.value.cacheOnly)
+
+        viewModel.refresh()
+        settle()
+
+        assertFalse("用户已经点过手动刷新并尝试联系网关，不再显示自动读已关闭的提示", viewModel.state.value.cacheOnly)
+        assertEquals(app.auri.sync.destinations.ServiceFailure.Unreachable, viewModel.state.value.problem)
+    }
+
+    @Test
     fun `列表页：授权了、没开严格仅本地时，打开页面照常自动刷新，不说只有本机缓存`() = runTest {
         val rig = DispatchRig(this)
         rig.server.addDestinations(2)

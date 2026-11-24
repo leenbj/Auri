@@ -68,7 +68,7 @@ class PolicyGateWiringTest {
         val direct = Regex("""\battempt\(|discovery\.find\(""").find(outside)?.value
 
         assertTrue("门之外还有直接的探测或 mDNS 查询：$direct", direct == null)
-        assertEquals("walkAddresses 里应有两道门：探测一个地址、问一次 mDNS（新增请求步骤要加门，并更新这里的数）", 2, gates)
+        assertEquals("walkAddresses 里应有三道门：探测一个地址、问一次 mDNS、发现返回空列表后复核门是否已关（新增请求步骤要加门，并更新这里的数）", 3, gates)
         val locator = code("sync/src/main/kotlin/app/auri/sync/discovery/GatewayLocator.kt")
         assertTrue("定位器必须把门交给 walkAddresses：$locator", "walkAddresses(stored, discovery, gateway.gatewayId, log, gate)" in locator)
     }

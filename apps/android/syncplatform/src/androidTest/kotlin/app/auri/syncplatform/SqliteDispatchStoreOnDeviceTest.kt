@@ -27,26 +27,29 @@ import org.junit.After
  */
 class SqliteDispatchStoreOnDeviceTest : DispatchStoreContract() {
     private val context: Context = ApplicationProvider.getApplicationContext()
-    private val name = "dispatch-contract-${UUID.randomUUID()}.db"
+    private val createdNames = mutableListOf<String>()
     private val opened = mutableListOf<SqliteRecordLibrary>()
 
     @After
     fun cleanUp() {
         opened.forEach { it.close() }
-        context.deleteDatabase(name)
+        createdNames.forEach { context.deleteDatabase(it) }
     }
 
-    override fun newFixture(): DispatchFixture = OnDeviceFixture()
+    override fun newFixture(): DispatchFixture {
+        val dbName = "dispatch-contract-${UUID.randomUUID()}.db".also { createdNames += it }
+        return OnDeviceFixture(dbName)
+    }
 
     /** 同一个数据库文件上的一个“进程”：[reopen] 在同一个文件上再开一个全新的实例（打开时的建表与回填再跑一遍）。 */
-    private inner class OnDeviceFixture : DispatchFixture {
+    private inner class OnDeviceFixture(private val dbName: String) : DispatchFixture {
         private val now = AtomicReference(Instant.EPOCH)
         private val clock = object : Clock {
             override fun monotonicNs(): Long = 0L
 
             override fun now(): Instant = now.get()
         }
-        private val library = SyncStorage.library(context.applicationContext as Application, name, clock).also { opened += it }
+        private val library = SyncStorage.library(context.applicationContext as Application, dbName, clock).also { opened += it }
 
         override val store: DispatchStore = SqliteDispatchStore(library)
 
@@ -57,11 +60,11 @@ class SqliteDispatchStoreOnDeviceTest : DispatchStoreContract() {
             library.addRecord(Samples.entry(1).copy(recordId = key.recordId)) // 已经有就什么也不做
             // 版号由库在事务里按顺序分配：要发布第 n 版，前面不够的补成不规划、只入库的用户修订
             val have = library.get(key.recordId)?.revisions?.size ?: 0
-            repeat(key.revision - 1 - have) { library.publishRevision(Samples.draft(key.recordId, at = now).copy(source = RevisionSource.USER_EDIT)) }
+            repeat((key.revision - 1 - have).coerceAtLeast(0)) { library.publishRevision(Samples.draft(key.recordId, at = now).copy(source = RevisionSource.USER_EDIT)) }
             val published = library.publishRevision(Samples.draft(key.recordId, at = now).copy(source = source))
             check(published.number == key.revision) { "库分配的版号 ${published.number} 与合同里要的 ${key.revision} 不一致" }
         }
 
-        override fun reopen(): DispatchFixture = OnDeviceFixture()
+        override fun reopen(): DispatchFixture = OnDeviceFixture(dbName)
     }
 }

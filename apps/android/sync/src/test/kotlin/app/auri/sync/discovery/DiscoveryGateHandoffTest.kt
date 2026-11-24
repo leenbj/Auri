@@ -69,4 +69,19 @@ class DiscoveryGateHandoffTest {
         assertEquals(Walk.Withheld, walk)
         assertEquals("授权被收回之后，连探测都不能发", 0, probes)
     }
+
+    @Test
+    fun `发现过程中门关上了且一个候选也没解析出来：结果是被拦下而不是连不上`() = runBlocking {
+        val gate = SwitchGate()
+        val discovery = GateAwareDiscovery { given ->
+            gate.open = false
+            val found = mutableListOf<GatewayAddress>()
+            resolveWhileOpen(flowOf("a"), given, resolve = { GatewayAddress("192.168.1.9", 8443) }, accept = { found += it })
+            found
+        }
+
+        val walk = walkAddresses<String>(emptyList(), discovery, "gateway-1", SyncLog.None, gate) { Step.Done("reached") }
+
+        assertEquals(Walk.Withheld, walk)
+    }
 }

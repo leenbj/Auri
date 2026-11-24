@@ -82,5 +82,6 @@ internal suspend fun <T> walkAddresses(
     }
     log.event("discovery.found count=${discovered.size}")
     tryAll(discovered)?.let { return it }
+    if (gate.gated { Unit } == null) return Walk.Withheld
     return if (mismatched) Walk.Mismatched else Walk.NothingReachable
 }
