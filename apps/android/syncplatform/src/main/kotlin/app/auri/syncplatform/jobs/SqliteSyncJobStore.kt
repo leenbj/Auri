@@ -89,6 +89,7 @@ class SqliteSyncJobStore(private val library: SqliteRecordLibrary) : SyncJobStor
                    r.created_at_s, r.created_at_nano, r.created_at_s, r.created_at_nano
             FROM revisions r
             WHERE NOT EXISTS (SELECT 1 FROM sync_jobs j WHERE j.record_id = r.record_id AND j.revision = r.number)
+              AND NOT EXISTS (SELECT 1 FROM record_tombstones t WHERE t.record_id = r.record_id)
             ORDER BY r.created_at_s, r.created_at_nano, r.record_id, r.number
         """.trimIndent()
 

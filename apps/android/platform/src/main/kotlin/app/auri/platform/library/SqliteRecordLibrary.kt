@@ -11,6 +11,7 @@ import app.auri.capture.contract.ContractJson
 import app.auri.capture.contract.ErrorCode
 import app.auri.capture.contract.TimeRange
 import app.auri.capture.library.NoSuchRecordException
+import app.auri.capture.library.RecordDeletedException
 import app.auri.capture.library.RecordEntry
 import app.auri.capture.library.RecordLibrary
 import app.auri.capture.library.Revision
@@ -48,6 +49,7 @@ class SqliteRecordLibrary(
     /** 数据库文件名；null 是内存数据库（只给测试用，关了就没了）。 */
     databaseName: String?,
     private val publicationStep: (SQLiteDatabase, Revision) -> Unit = { _, _ -> },
+    private val deletionStep: (SQLiteDatabase, String, Instant) -> Unit = { _, _, _ -> },
     private val io: CoroutineDispatcher = Dispatchers.IO,
     private val extraSchema: List<String> = emptyList(),
 ) : RecordLibrary {
@@ -61,10 +63,17 @@ class SqliteRecordLibrary(
         }
 
         override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-            if (oldVersion == 1 && newVersion == 2) {
+            var version = oldVersion
+            if (version == 1 && newVersion >= 2) {
                 db.execSQL("ALTER TABLE revisions ADD COLUMN publication_key TEXT")
                 db.execSQL("CREATE UNIQUE INDEX revisions_publication_key ON revisions(publication_key)")
-            } else {
+                version = 2
+            }
+            if (version == 2 && newVersion >= 3) {
+                MIGRATION_2_TO_3.forEach(db::execSQL)
+                version = 3
+            }
+            if (version != newVersion) {
                 error("没有从版本 $oldVersion 升级到 $newVersion 的迁移")
             }
         }
@@ -114,7 +123,7 @@ class SqliteRecordLibrary(
         val db = helper.writableDatabase
         db.beginTransaction()
         val inserted = try {
-            val isNew = !db.exists(entry.recordId)
+            val isNew = !db.hasTombstone(entry.recordId) && !db.exists(entry.recordId)
             if (isNew) db.insertOrThrow("records", null, entry.toValues())
             db.setTransactionSuccessful()
             isNew
@@ -129,6 +138,7 @@ class SqliteRecordLibrary(
         val db = helper.writableDatabase
         db.beginTransaction()
         val revision = try {
+            if (db.hasTombstone(draft.recordId)) throw RecordDeletedException(draft.recordId)
             if (!db.exists(draft.recordId)) throw NoSuchRecordException(draft.recordId)
             val existing = draft.publicationKey?.let { key ->
                 db.rawQuery("SELECT * FROM revisions WHERE publication_key = ?", arrayOf(key)).use {
@@ -169,6 +179,7 @@ class SqliteRecordLibrary(
             val db = helper.writableDatabase
             db.beginTransaction()
             try {
+                if (db.hasTombstone(recordId)) throw RecordDeletedException(recordId)
                 val current = db.rawQuery("SELECT transcription FROM records WHERE record_id = ?", arrayOf(recordId))
                     .use { if (it.moveToFirst()) it.getString(0) else throw NoSuchRecordException(recordId) }
                 check(current != TranscriptionStatus.DONE.name) { "已经有 Revision 的 Record 不能再改转录状态" }
@@ -187,6 +198,79 @@ class SqliteRecordLibrary(
             }
             changes.value += 1
         }
+    }
+
+    override suspend fun deleteRecord(recordId: String, deletedAt: Instant): Boolean = withContext(io) {
+        val db = helper.writableDatabase
+        db.beginTransaction()
+        val newlyDeleted = try {
+            if (db.hasTombstone(recordId)) {
+                db.setTransactionSuccessful()
+                false
+            } else {
+                db.insertOrThrow(
+                    "record_tombstones",
+                    null,
+                    ContentValues().apply {
+                        put("record_id", recordId)
+                        put("deleted_at_s", deletedAt.epochSecond)
+                        put("deleted_at_nano", deletedAt.nano)
+                        put("gateway_synced", 0)
+                    },
+                )
+                db.delete("revisions", "record_id = ?", arrayOf(recordId))
+                db.delete("records", "record_id = ?", arrayOf(recordId))
+                deletionStep(db, recordId, deletedAt)
+                db.setTransactionSuccessful()
+                true
+            }
+        } finally {
+            db.endTransaction()
+        }
+        if (newlyDeleted) changes.value += 1
+        newlyDeleted
+    }
+
+    override suspend fun isDeleted(recordId: String): Boolean = withContext(io) {
+        helper.readableDatabase.hasTombstone(recordId)
+    }
+
+    override suspend fun deleteAudio(recordId: String): Boolean = withContext(io) {
+        val db = helper.writableDatabase
+        val changed = db.update(
+            "records",
+            ContentValues().apply {
+                putNull("audio_location")
+                putNull("audio_sha256")
+                putNull("audio_size_bytes")
+                putNull("audio_sample_count")
+                putNull("audio_sample_rate_hz")
+                putNull("audio_channels")
+            },
+            "record_id = ? AND audio_location IS NOT NULL",
+            arrayOf(recordId),
+        )
+        if (changed > 0) changes.value += 1
+        changed > 0
+    }
+
+    /** 尚未同步到网关的删除墓碑（record_id，按删除时间升序）。 */
+    suspend fun pendingGatewayDeletions(): List<String> = withContext(io) {
+        helper.readableDatabase.rawQuery(
+            "SELECT record_id FROM record_tombstones WHERE gateway_synced = 0 ORDER BY deleted_at_s, deleted_at_nano, record_id",
+            emptyArray(),
+        ).use { cursor -> generateSequence { if (cursor.moveToNext()) cursor.getString(0) else null }.toList() }
+    }
+
+    /** 网关已确认删除该 Record（或已无需再发）：把墓碑标记为已同步。 */
+    suspend fun markGatewayDeleted(recordId: String) = withContext(io) {
+        val changed = helper.writableDatabase.update(
+            "record_tombstones",
+            ContentValues().apply { put("gateway_synced", 1) },
+            "record_id = ? AND gateway_synced = 0",
+            arrayOf(recordId),
+        )
+        if (changed > 0) changes.value += 1
     }
 
     override suspend fun get(recordId: String): RecordEntry? = withContext(io) {
@@ -219,8 +303,28 @@ class SqliteRecordLibrary(
     private fun SQLiteDatabase.exists(recordId: String) =
         rawQuery("SELECT 1 FROM records WHERE record_id = ?", arrayOf(recordId)).use { it.moveToFirst() }
 
+    private fun SQLiteDatabase.hasTombstone(recordId: String) =
+        rawQuery("SELECT 1 FROM record_tombstones WHERE record_id = ?", arrayOf(recordId)).use { it.moveToFirst() }
+
     companion object {
-        private const val SCHEMA_VERSION = 2
+        private const val SCHEMA_VERSION = 3
+
+        val MIGRATION_2_TO_3 = listOf(
+            """
+            CREATE TABLE IF NOT EXISTS record_tombstones (
+                record_id TEXT NOT NULL PRIMARY KEY,
+                deleted_at_s INTEGER NOT NULL,
+                deleted_at_nano INTEGER NOT NULL,
+                gateway_synced INTEGER NOT NULL CHECK (gateway_synced IN (0, 1)) DEFAULT 0
+            )
+            """.trimIndent(),
+            "DROP TRIGGER IF EXISTS revisions_immutable_delete",
+            """
+            CREATE TRIGGER revisions_immutable_delete BEFORE DELETE ON revisions
+            WHEN NOT EXISTS (SELECT 1 FROM record_tombstones t WHERE t.record_id = OLD.record_id)
+            BEGIN SELECT RAISE(ABORT, 'revision 不可删除'); END
+            """.trimIndent(),
+        )
 
         /**
          * 改音频位置的目录前缀（参数依次：新前缀、旧前缀、旧前缀、旧前缀）。用 substr 比较而不是 LIKE：路径里的 % 与 _ 在 LIKE 里是通配符。
@@ -277,8 +381,20 @@ class SqliteRecordLibrary(
             )
             """.trimIndent(),
             "CREATE UNIQUE INDEX revisions_publication_key ON revisions(publication_key)",
+            """
+            CREATE TABLE record_tombstones (
+                record_id TEXT NOT NULL PRIMARY KEY,
+                deleted_at_s INTEGER NOT NULL,
+                deleted_at_nano INTEGER NOT NULL,
+                gateway_synced INTEGER NOT NULL CHECK (gateway_synced IN (0, 1)) DEFAULT 0
+            )
+            """.trimIndent(),
             "CREATE TRIGGER revisions_immutable_update BEFORE UPDATE ON revisions BEGIN SELECT RAISE(ABORT, 'revision 不可改写'); END",
-            "CREATE TRIGGER revisions_immutable_delete BEFORE DELETE ON revisions BEGIN SELECT RAISE(ABORT, 'revision 不可删除'); END",
+            """
+            CREATE TRIGGER revisions_immutable_delete BEFORE DELETE ON revisions
+            WHEN NOT EXISTS (SELECT 1 FROM record_tombstones t WHERE t.record_id = OLD.record_id)
+            BEGIN SELECT RAISE(ABORT, 'revision 不可删除'); END
+            """.trimIndent(),
         )
     }
 }

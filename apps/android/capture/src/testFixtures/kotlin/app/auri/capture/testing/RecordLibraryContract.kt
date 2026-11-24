@@ -223,4 +223,45 @@ abstract class RecordLibraryContract {
 
         assertEquals(setOf(pending.recordId, waiting.recordId), library.incomplete().map { it.recordId }.toSet())
     }
+
+    @Test
+    fun `删除 Record 留下墓碑：本地不可见，重复删除幂等，再次登记或发布修订都不会复活`() = run {
+        val library = newLibrary()
+        val entry = Samples.entry(1)
+        library.addRecord(entry)
+        library.publishRevision(Samples.draft(entry.recordId, text = "将被删除的正文"))
+
+        val deletedAt = entry.startedAt.plusSeconds(60)
+        assertTrue(library.deleteRecord(entry.recordId, deletedAt))
+        assertFalse("重复删除幂等", library.deleteRecord(entry.recordId, deletedAt.plusSeconds(10)))
+        assertNull(library.get(entry.recordId))
+        assertTrue(library.observe().first().isEmpty())
+        assertTrue(library.isDeleted(entry.recordId))
+        assertFalse("已删除的 Record 不能被再次登记复活", library.addRecord(entry))
+        assertNull(library.get(entry.recordId))
+
+        try {
+            library.publishRevision(Samples.draft(entry.recordId, text = "尝试复活"))
+            fail("已删除的 Record 不得再发布 Revision")
+        } catch (expected: app.auri.capture.library.RecordDeletedException) {
+            assertEquals(entry.recordId, expected.recordId)
+        }
+    }
+
+    @Test
+    fun `单独删除音频只清空 audio，保留 Record 与全部 Revision，且不产生墓碑`() = run {
+        val library = newLibrary()
+        val entry = Samples.entry(1)
+        library.addRecord(entry)
+        val rev1 = library.publishRevision(Samples.draft(entry.recordId, text = "第一版文字"))
+
+        assertTrue(library.deleteAudio(entry.recordId))
+        assertFalse("重复删除音频返回 false", library.deleteAudio(entry.recordId))
+        assertFalse("删除音频不是删除 Record，不产生墓碑", library.isDeleted(entry.recordId))
+
+        val stored = checkNotNull(library.get(entry.recordId))
+        assertNull(stored.audio)
+        assertEquals(listOf(rev1), stored.revisions)
+        assertEquals("第一版文字", stored.latestText)
+    }
 }
