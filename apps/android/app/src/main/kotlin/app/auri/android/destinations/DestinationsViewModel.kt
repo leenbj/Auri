@@ -31,6 +31,8 @@ import kotlinx.coroutines.launch
  *   DestinationsUiState
  *   ├─ destinations: List<DestinationItem>   本机缓存的目的地（读它不联网）：有效的在前，其次按创建时间从新到旧；含已撤销的。
  *   ├─ refreshing: Boolean                   正在向网关要完整列表。
+ *   ├─ cacheOnly: Boolean                    自动刷新被拦下了（文字不能进网关：没授权或“严格仅本地”开着）：一个请求也没发，destinations 是本机缓存、可能不是网关上的最新情况；
+ *   │                                         用户点“刷新”才联系网关（第四轮 F8：自动读不发请求，用户自己发起的照常）。
  *   ├─ form: CreateForm                      创建表单。
  *   │   ├─ name                              用户起的名字（1..100 个字符）。
  *   │   ├─ sendMode: SendMode?               **没有默认值**：一开始是 null，用户必须明确选“自动发送”或“预览确认”。
@@ -41,7 +43,7 @@ import kotlinx.coroutines.launch
  *   │                                         “结果不确定”（Unreadable / Interrupted）时表单不清空，提示用户先刷新确认。
  *   └─ unreadable: Boolean                   读不到本机缓存的目的地（评审 H4）：destinations 是最近一次读到的，会自动重试；页面如实说读不到。
  *
- * 写（都不阻塞）：setName / chooseSendMode / setAllowActionRequests / submit / refresh / dismissProblem。
+ * 写（都不阻塞）：setName / chooseSendMode / setAllowActionRequests / submit / refresh（用户点的）/ dismissProblem。打开页面时的那一次刷新是自动的，不是 refresh。
  *
  * 规则：创建请求里的 send_mode 就是用户选的那个；没选就根本不会发请求（submit 什么也不做）。
  *       日志只有事件名与异常类名，没有目的地名字、编号或地址。
@@ -90,6 +92,8 @@ data class DestinationsUiState(
     val problem: ServiceFailure? = null,
     /** 读不到本机缓存的目的地（评审 H4）：[destinations] 是最近一次读到的（可能是旧的，也可能是空的），会自动重试，读到之后恢复。 */
     val unreadable: Boolean = false,
+    /** 自动刷新被拦下了（见类说明）：[destinations] 是本机缓存，没有联系过网关；用户点“刷新”之后联系成功就恢复。 */
+    val cacheOnly: Boolean = false,
 )
 
 class DestinationsViewModel(
@@ -99,6 +103,7 @@ class DestinationsViewModel(
 ) : ViewModel() {
     private val form = MutableStateFlow(CreateForm())
     private val refreshing = MutableStateFlow(false)
+    private val cacheOnly = MutableStateFlow(false)
     private val creating = MutableStateFlow(false)
     private val problem = MutableStateFlow<ServiceFailure?>(null)
 
@@ -110,15 +115,15 @@ class DestinationsViewModel(
             .map { list -> Cache(list.sortedWith(compareByDescending<Destination> { it.active }.thenByDescending { it.createdAt }).map { it.toItem() }) }
             .containReadFailures("destinations", log) { last -> emit((last ?: Cache()).copy(unreadable = true)) },
         form,
-        refreshing,
+        combine(refreshing, cacheOnly) { running, cached -> running to cached },
         creating,
         problem,
-    ) { cache, form, refreshing, creating, problem ->
-        DestinationsUiState(cache.destinations, refreshing, form, creating, problem, cache.unreadable)
+    ) { cache, form, (refreshing, cacheOnly), creating, problem ->
+        DestinationsUiState(cache.destinations, refreshing, form, creating, problem, cache.unreadable, cacheOnly)
     }.stateIn(scope, SharingStarted.Eagerly, DestinationsUiState())
 
     init {
-        refresh()
+        startRefresh(automatic = true) // 打开页面时自己刷新：用户没点，文字不能进网关时不联系网关
     }
 
     fun setName(name: String) = form.update { it.copy(name = name) }
@@ -149,11 +154,20 @@ class DestinationsViewModel(
         }
     }
 
-    fun refresh() {
+    /** 用户点了“刷新”：他自己发起的，不看文字授权（它不带文字）。 */
+    fun refresh() = startRefresh(automatic = false)
+
+    private fun startRefresh(automatic: Boolean) {
         if (!refreshing.compareAndSet(false, true)) return
         scope.launch {
             try {
-                (controller.refresh() as? ServiceResult.Failed)?.let { problem.value = it.failure }
+                val result = if (automatic) controller.refreshAutomatically() else controller.refresh()
+                when {
+                    // 不是“没做成”：根本没联系网关，页面如实说显示的是本机缓存
+                    result is ServiceResult.Failed && result.failure == ServiceFailure.AutomaticReadsOff -> cacheOnly.value = true
+                    result is ServiceResult.Failed -> problem.value = result.failure
+                    else -> cacheOnly.value = false
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {

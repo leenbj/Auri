@@ -68,7 +68,7 @@ fun DestinationsPage(
                     clipboard.onLeaving() // 离开详情页：剪贴板里还是自己放的凭证就清（读不到、或是别人的不动）
                 }
             }
-            LaunchedEffect(viewModel) { viewModel.refreshStatuses() }
+            LaunchedEffect(viewModel) { viewModel.refreshStatusesAutomatically() }
             BackHandler { route = LIST }
             val state by viewModel.state.collectAsStateWithLifecycle()
             DestinationDetailScreen(

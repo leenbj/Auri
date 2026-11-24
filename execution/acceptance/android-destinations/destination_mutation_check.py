@@ -2922,6 +2922,63 @@ MUTATIONS: tuple = (
         app_tests("NsdGateWiringTest"), APP_RESULTS,
         ("NSD 不再自己在 collect 里循环", "NSD 里 resolveService 只有一处"),
     ),
+    # ---- 第四轮 F8：文字不能进网关时自动读（列表、状态）一个请求也不发，用户自己发起的照常 ----
+    Mutation(
+        "r4f8-automatic-refresh-skips-the-permit",
+        "第四轮 F8：自动刷新列表必须先问放行（permitFor）：改用不设防的门，没授权或严格仅本地时照样发请求",
+        (Edit(SERVICE, "        val permit = permitFor(gateway) ?: return ServiceResult.Failed(ServiceFailure.AutomaticReadsOff)\n", "        val permit = RequestGate.Open\n"),),
+        sync_tests("AutomaticReadsTest"), SYNC_RESULTS,
+        ("没有授权文字进网关：自动刷新列表一个请求也不发", "严格仅本地开着，哪怕授权过：自动刷新列表一个请求也不发"),
+    ),
+    Mutation(
+        "r4f8-automatic-deliveries-skips-the-permit",
+        "第四轮 F8：自动读状态必须先问放行（permitFor）：改用不设防的门，文字不能进网关时照样向网关查状态",
+        (Edit(SERVICE, "        return deliveriesThrough(destinationId, limit, gateway?.let { permitFor(it) }, only = gateway)\n", "        return deliveriesThrough(destinationId, limit, RequestGate.Open, only = gateway)\n"),),
+        sync_tests("AutomaticReadsTest"), SYNC_RESULTS,
+        ("文字不能进网关时自动读状态：不问网关",),
+    ),
+    Mutation(
+        "r4f8-connect-locates-without-the-gate",
+        "第四轮 F8：自动读找网关必须把放行门交给定位器：交不设防的门，问 mDNS 途中授权被收回后仍去探测新地址",
+        (Edit(SERVICE, "        return when (val located = locator.locate(gateway, gate) ?: return Connect.Blocked(ServiceFailure.AutomaticReadsOff)) {\n", "        return when (val located = locator.locate(gateway, RequestGate.Open) ?: return Connect.Blocked(ServiceFailure.AutomaticReadsOff)) {\n"),),
+        sync_tests("AutomaticReadsTest"), SYNC_RESULTS,
+        ("自动刷新找网关时问 mDNS 的当口授权被收回", "自动读状态找网关时问 mDNS 的当口授权被收回"),
+    ),
+    Mutation(
+        "r4f8-verified-skips-the-gate",
+        "第四轮 F8：自动读问合同版本前必须再过一次门：跳过门，健康检查在路上时授权被收回后仍去问合同版本",
+        (Edit(SERVICE, "        val answer = gate.gated { contract.check(gateway, address, client) } ?: return Connect.Blocked(ServiceFailure.AutomaticReadsOff)\n", "        val answer = contract.check(gateway, address, client)\n"),),
+        sync_tests("AutomaticReadsTest"), SYNC_RESULTS,
+        ("自动刷新进行中授权被收回（健康检查在路上）",),
+    ),
+    Mutation(
+        "r4f8-gateway-call-skips-the-gate",
+        "第四轮 F8：自动刷新发列表请求前必须再过一次门：跳过门，合同版本在路上时授权被收回后仍发列表请求",
+        (Edit(SERVICE, "        val answered = gate.gated { request(session) } ?: return@withLock ServiceResult.Failed(ServiceFailure.AutomaticReadsOff)\n", "        val answered = request(session)\n"),),
+        sync_tests("AutomaticReadsTest"), SYNC_RESULTS,
+        ("自动刷新进行中授权被收回（合同版本在路上）",),
+    ),
+    Mutation(
+        "r4f8-status-loop-skips-the-gate",
+        "第四轮 F8：自动读状态的每一条状态查询前都要过门：跳过门，第一条在路上时授权被收回后第二条照样发出去",
+        (Edit(SERVICE, "            val asked = gate.gated { session.client.recordStatus(session.address, session.gateway.token, recordId) } ?: return@associateWith Remote.Unusable(UnknownReason.NOT_ASKED)\n", "            val asked = session.client.recordStatus(session.address, session.gateway.token, recordId)\n"),),
+        sync_tests("AutomaticReadsTest"), SYNC_RESULTS,
+        ("自动读状态进行中授权被收回（第一条的状态查询在路上）",),
+    ),
+    Mutation(
+        "r4f8-list-init-uses-manual-refresh",
+        "第四轮 F8：目的地列表页打开时必须是自动刷新（automatic = true）：改成手动刷新，打开页面无视授权照常敲网关",
+        (Edit(DESTINATIONS_VM, "        startRefresh(automatic = true)", "        startRefresh(automatic = false)"),),
+        app_tests("AutomaticReadsViewModelTest", "AutomaticReadsWiringTest"), APP_RESULTS,
+        ("列表页：文字不能进网关时打开页面不联系网关", "列表页：打开页面是自动刷新"),
+    ),
+    Mutation(
+        "r4f8-detail-load-always-manual",
+        "第四轮 F8：目的地详情页读状态必须区分自动触发与用户点刷新：一律按手动读，打开页面无视授权照常问网关",
+        (Edit(DETAIL_VM, "                loadItems(automatic = !manualPending.getAndSet(false))\n", "                loadItems(automatic = false)\n"),),
+        app_tests("AutomaticReadsViewModelTest", "AutomaticReadsWiringTest"), APP_RESULTS,
+        ("详情页：文字不能进网关时打开页面不联系网关", "详情页：页面进入走自动入口"),
+    ),
 )
 
 base.MUTATIONS = MUTATIONS

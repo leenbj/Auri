@@ -126,7 +126,7 @@ class ReadFailureContainmentTest {
     }
 
     private fun DispatchRig.serviceOver(store: DispatchStore) =
-        DestinationService(pairing, lan.factory, GatewayLocator(lan.factory, discovery, log), store, jobs, authenticator, clock, log)
+        DestinationService(pairing, lan.factory, GatewayLocator(lan.factory, discovery, log), store, jobs, authenticator, policy, clock, log)
 
     private fun TestScope.waitForRetry() {
         advanceTimeBy(READ_RETRY_BASE_MS + 1)
@@ -245,6 +245,12 @@ class ReadFailureContainmentTest {
         override suspend fun deliveries(destinationId: String, limit: Int): List<ItemDelivery> {
             deliveryReads.incrementAndGet()
             return inner.deliveries(destinationId, limit)
+        }
+
+        // 第四轮 F8：详情页自动重读走自动读的入口；两个入口都算“读了一次”，断言（读了几次）原样不动
+        override suspend fun deliveriesAutomatically(destinationId: String, limit: Int): List<ItemDelivery> {
+            deliveryReads.incrementAndGet()
+            return inner.deliveriesAutomatically(destinationId, limit)
         }
     }
 

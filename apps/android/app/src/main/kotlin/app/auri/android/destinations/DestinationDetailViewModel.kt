@@ -13,6 +13,7 @@ import app.auri.sync.engine.JobKey
 import app.auri.sync.gateway.DestinationCredential
 import app.auri.sync.gateway.Intent
 import java.time.Instant
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.cancel
@@ -136,6 +137,9 @@ class DestinationDetailViewModel(
     /** 刷新状态的触发：合并成一次（正在刷新时再来的只记一次），两次之间留一点间隔——缓存每变一下都会触发，不能每次都去敲网关。 */
     private val triggers = Channel<Unit>(Channel.CONFLATED)
 
+    /** 用户点了“刷新状态”还没读：下一次读是他自己发起的，不看文字授权；其余触发（页面打开、缓存变了、同步状态变了）都是自动的（第四轮 F8）。 */
+    private val manualPending = AtomicBoolean(false)
+
     private class Operations(val credential: CredentialUi, val revoke: RevokeUi, val problem: ServiceFailure?)
 
     /** 读本机缓存的结果：没读到过就是 loaded=false（不是“找不到”）；读不到时留着最近读到的，并标上 [unreadable]（评审 H4）。 */
@@ -155,7 +159,7 @@ class DestinationDetailViewModel(
     init {
         scope.launch {
             for (trigger in triggers) {
-                loadItems()
+                loadItems(automatic = !manualPending.getAndSet(false))
                 delay(MIN_GAP_MS)
             }
         }
@@ -164,7 +168,14 @@ class DestinationDetailViewModel(
         scope.launch { refreshOn.containReadFailures("destination.detail.refresh", log).collect { triggers.trySend(Unit) } }
     }
 
+    /** 用户点了“刷新状态”：这一次读是他自己发起的，文字不能进网关时也会去问网关。 */
     fun refreshStatuses() {
+        manualPending.set(true)
+        triggers.trySend(Unit)
+    }
+
+    /** 页面打开时自己刷新（不是用户点的）：文字不能进网关时不联系网关，需要问网关的各条显示“没有查询”。 */
+    fun refreshStatusesAutomatically() {
         triggers.trySend(Unit)
     }
 
@@ -292,10 +303,11 @@ class DestinationDetailViewModel(
         scope.cancel()
     }
 
-    private suspend fun loadItems() {
+    private suspend fun loadItems(automatic: Boolean) {
         itemsLoading.value = true
         try {
-            items.value = controller.deliveries(destinationId, ITEM_LIMIT).map { it.toRow() }
+            val deliveries = if (automatic) controller.deliveriesAutomatically(destinationId, ITEM_LIMIT) else controller.deliveries(destinationId, ITEM_LIMIT)
+            items.value = deliveries.map { it.toRow() }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (failure: Exception) {

@@ -136,7 +136,7 @@ class RealGatewayDestinationsTest {
             retry = RetryPolicy(baseMs = 100, maxMs = 400),
             log = log,
         )
-        val service = DestinationService(store, http, locator, fixture.store, fixture.jobs, authenticator, RealClock, log)
+        val service = DestinationService(store, http, locator, fixture.store, fixture.jobs, authenticator, policy, RealClock, log)
         private var counter = 0
 
         suspend fun pairWith(payloadText: String) {

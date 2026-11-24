@@ -269,6 +269,12 @@ ROUND4 = {
         "r4f7-walk-hands-down-an-open-gate", "r4f7-resolution-skips-the-gate", "r4f7-refusal-keeps-listening", "r4f7-no-sentinel",
         "r4f7-sentinel-waits-far-too-long", "r4f7-sentinel-outlives-the-listening", "r4f7-nsd-ignores-the-gate", "r4f7-nsd-collects-by-itself",
     ],
+    "F8 文字不能进网关时自动读（列表、状态）一个请求也不发，显示本机缓存与明确状态，用户自己发起的照常": [
+        "r4f8-automatic-refresh-skips-the-permit", "r4f8-automatic-deliveries-skips-the-permit",
+        "r4f8-connect-locates-without-the-gate", "r4f8-verified-skips-the-gate",
+        "r4f8-gateway-call-skips-the-gate", "r4f8-status-loop-skips-the-gate",
+        "r4f8-list-init-uses-manual-refresh", "r4f8-detail-load-always-manual",
+    ],
 }
 
 

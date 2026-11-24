@@ -19,6 +19,7 @@ import androidx.compose.ui.unit.dp
 import app.auri.android.destinations.DestinationItem
 import app.auri.android.destinations.DestinationsUiState
 import app.auri.android.destinations.SUSPENDED_TAG
+import app.auri.android.destinations.describeAutomaticReadsOff
 import app.auri.android.destinations.describeCreateHint
 import app.auri.android.destinations.describeFailure
 import app.auri.android.destinations.describeIntent
@@ -52,6 +53,7 @@ fun DestinationsScreen(
             }
         }
         if (state.unreadable) item { Text(describeUnreadable()) }
+        if (state.cacheOnly) item { Text(describeAutomaticReadsOff()) }
         state.problem?.let { problem ->
             item {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

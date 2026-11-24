@@ -239,7 +239,7 @@ class SyncRuntime(
      * [authenticator] 是界面层给的本机核验（生物识别）：生成或轮换凭证前每次都要过它。
      */
     fun destinationService(authenticator: LocalAuthenticator): DestinationService =
-        DestinationService(pairing, http, locator, dispatch, jobs, authenticator, clock, log, contract)
+        DestinationService(pairing, http, locator, dispatch, jobs, authenticator, policy, clock, log, contract)
 
     companion object {
         private const val PAIRING_KEY_ALIAS = "auri.sync.pairing.v1"

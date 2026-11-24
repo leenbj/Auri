@@ -55,6 +55,13 @@ internal fun describeDataFlowHold(state: DataFlowState): String? = when {
     else -> "你还没有允许把文字发送到网关：点“确认发送”只是记下你的决定，现在不会发出。到“同步与配对”打开“允许把文字发送到我配对的网关”之后才会发。"
 }
 
+/**
+ * 自动读取被拦下时页面顶上的一句话（第四轮 F8）：文字现在不能进网关（没授权给这台网关，或“严格仅本地”开着），所以打开页面不会自己联系网关，
+ * 下面显示的是这台手机本机的记录，可能不是网关上的最新情况。点“刷新”是你自己发起的，会去联系网关。
+ */
+internal fun describeAutomaticReadsOff(): String =
+    "现在不会自动联系网关：文字还不能发送到网关（没有授权，或“严格仅本地”开着）。下面是这台手机本机的记录，可能不是网关上的最新情况；点“刷新”才会去联系网关。"
+
 /** 每一条自动发送的初稿都还没有人审核过：发出去的请求里就是这个状态（review_state=not_reviewed）。 */
 internal const val UNREVIEWED_LABEL = "未审核"
 
@@ -72,6 +79,7 @@ internal fun describeFailure(failure: ServiceFailure): String = when (failure) {
     ServiceFailure.DestinationUnavailable -> "这个目的地已经被撤销，或这台手机已经不认识它了。"
     ServiceFailure.Busy -> "上一次生成凭证还没结束，请稍等。"
     ServiceFailure.LimitReached -> "网关上有效的目的地已经有 50 个，最多只能有这么多，所以没有创建新的。请先撤销用不到的，再试一次。"
+    ServiceFailure.AutomaticReadsOff -> describeAutomaticReadsOff()
 }
 
 /** 生成或轮换凭证前的本机核验没通过时，用户该做什么。没通过时凭证根本没有生成：一个请求都没发给网关。 */
@@ -139,6 +147,7 @@ internal fun describeDelivery(view: DeliveryView): String = when (view) {
         UnknownReason.NO_DELIVERY_RECORD -> "网关上没有这一条在这个目的地的投递记录"
         UnknownReason.UNRECOGNIZED_STATE -> "网关给了这个版本的 App 不认识的状态"
         UnknownReason.DELIVERY_REFUSED -> "网关没有为它建投递，这条文字没有送给它"
+        UnknownReason.NOT_ASKED -> "没有向网关查询：文字现在不能发送到网关，自动查询不联系网关。点“刷新状态”才会去问"
     }
 }
 

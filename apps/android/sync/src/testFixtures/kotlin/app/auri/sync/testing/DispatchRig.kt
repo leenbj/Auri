@@ -102,7 +102,7 @@ class DispatchRig(
             log = log,
             contract = contract,
         )
-        service = DestinationService(pairing, lan.factory, locator, ledger, jobs, authenticator, clock, log, contract)
+        service = DestinationService(pairing, lan.factory, locator, ledger, jobs, authenticator, policy, clock, log, contract)
     }
 
     /** 进程被杀后重启：引擎、服务、发送账实例全换新，磁盘（任务表、发送账、配对记录、Record 库）还是原来的。 */

@@ -25,6 +25,10 @@ import app.auri.sync.pairing.PairingState
 import app.auri.sync.pairing.PairingStore
 import app.auri.sync.pairing.clearGatewayTooOld
 import app.auri.sync.pairing.markGatewayTooOld
+import app.auri.sync.policy.DataFlowPolicy
+import app.auri.sync.policy.PolicyGeneration
+import app.auri.sync.policy.RequestGate
+import app.auri.sync.policy.current
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onStart
@@ -65,6 +69,12 @@ sealed interface ServiceFailure {
      * 什么也没创建；本机缓存说了不算（它可能是旧的，别的手机也在建）。请先撤销用不到的。
      */
     data object LimitReached : ServiceFailure
+
+    /**
+     * 这是一次**自动**读取（页面打开时自己去读，用户没点），而文字现在不能进网关（没授权给这台网关、“严格仅本地”开着、或设置读不出来）：
+     * 一个请求也没发（健康检查、合同版本、列表、状态查询都没有），界面显示的是本机缓存，可能不是最新的。用户点“刷新”才会联系网关（第四轮 F8）。
+     */
+    data object AutomaticReadsOff : ServiceFailure
 }
 
 sealed interface ServiceResult<out T> {
@@ -91,8 +101,14 @@ interface DestinationController {
      */
     val destinations: Flow<List<Destination>>
 
-    /** 向网关要完整列表并更新缓存。 */
+    /** 向网关要完整列表并更新缓存。用户自己点的“刷新”：不看文字授权（它不带文字）。 */
     suspend fun refresh(): ServiceResult<List<Destination>>
+
+    /**
+     * 同 [refresh]，但这是**自动**读（页面打开时自己去读，用户没点）：文字不能进网关时一个请求也不发，回 [ServiceFailure.AutomaticReadsOff]；
+     * 能进时每个请求交出去的前一刻再确认一次（授权随时可能被收回），和同步引擎是同一套规矩（第四轮 F8）。
+     */
+    suspend fun refreshAutomatically(): ServiceResult<List<Destination>>
 
     /** 创建：[CreateDestinationRequest] 没有默认参数，所以调用方一定显式选过发送方式。 */
     suspend fun create(request: CreateDestinationRequest): ServiceResult<Destination>
@@ -102,8 +118,14 @@ interface DestinationController {
     /** 生成或轮换凭证：先本机核验，通过了才联网。凭证只在返回值里出现这一次。 */
     suspend fun issueCredential(destinationId: String): CredentialOutcome
 
-    /** 这个 Destination 上最近 [limit] 条文字各自的情形（已入库的会去网关问状态）。 */
+    /** 这个 Destination 上最近 [limit] 条文字各自的情形（已入库的会去网关问状态）。用户自己点的“刷新状态”：不看文字授权。 */
     suspend fun deliveries(destinationId: String, limit: Int): List<ItemDelivery>
+
+    /**
+     * 同 [deliveries]，但这是**自动**读：文字不能进网关时不问网关，要问网关才说得清的各条是 [UnknownReason.NOT_ASKED]（本机账上说得清的照常给）；
+     * 能进时每个状态查询交出去的前一刻再确认一次（第四轮 F8）。
+     */
+    suspend fun deliveriesAutomatically(destinationId: String, limit: Int): List<ItemDelivery>
 }
 
 /**
@@ -113,6 +135,8 @@ interface DestinationController {
  * - 日志只写事件名与异常类名：没有凭证、令牌、Destination 名字与编号、地址。
  * - 生成/轮换凭证：**每次**现场核验（[LocalAuthenticator]），通过才联网；核验没过则零请求。凭证不进缓存、不进日志、不落盘。
  * - 缓存（[DispatchStore]）里只有 Destination 的公开信息（名字、模式、意图、是否已签发过凭证）。
+ * - **自动读**（[refreshAutomatically]、[deliveriesAutomatically]：页面自己去读、用户没点）只在文字可以进网关时才联系网关，每个请求各过一次放行（第四轮 F8）；
+ *   用户自己发起的（配对、创建、撤销、签发凭证、点“刷新”）不受这条限制。
  * - 连接问题（公钥不符、令牌被拒）只回报给调用方，不改写配对记录：那是同步引擎的职责，它下一次尝试会自己发现并记下。
  * - 唯一的例外是“网关太旧”（评审 R7）：每个管理请求之前先问网关会哪些合同版本（[ContractGuard]，与同步引擎共用），太旧就一个请求都不发；
  *   这个结论是这里问出来的，也是这里确认好了的，所以由这里打上与清掉配对记录上的标记，同步页与管理页说的是同一件事。
@@ -124,6 +148,8 @@ class DestinationService(
     private val dispatch: DispatchStore,
     private val jobs: SyncJobStore,
     private val authenticator: LocalAuthenticator,
+    /** 自动读之前问“文字现在能不能进网关”（第四轮 F8）；用户自己发起的操作不问它。 */
+    private val policy: DataFlowPolicy,
     private val clock: Clock,
     private val log: SyncLog = SyncLog.None,
     private val contract: ContractGuard = ContractGuard(),
@@ -138,8 +164,18 @@ class DestinationService(
 
     override val destinations: Flow<List<Destination>> = dispatch.changes().onStart { emit(0L) }.map { dispatch.destinations() }
 
-    override suspend fun refresh(): ServiceResult<List<Destination>> = gatewayCall(
+    override suspend fun refresh(): ServiceResult<List<Destination>> = list(RequestGate.Open, only = null)
+
+    override suspend fun refreshAutomatically(): ServiceResult<List<Destination>> {
+        val gateway = (pairing.load() as? PairingState.Paired)?.gateway ?: return ServiceResult.Failed(ServiceFailure.NotPaired)
+        val permit = permitFor(gateway) ?: return ServiceResult.Failed(ServiceFailure.AutomaticReadsOff)
+        return list(permit, only = gateway)
+    }
+
+    private suspend fun list(gate: RequestGate, only: PairedGateway?): ServiceResult<List<Destination>> = gatewayCall(
         "refresh",
+        gate = gate,
+        only = only,
         request = { it.client.listDestinations(it.address, it.gateway.token) },
         apply = { session, list -> dispatch.applyDestinations(session.gateway.identity, list, authoritative = true, now = clock.now()) },
     )
@@ -214,13 +250,25 @@ class DestinationService(
         }
     }
 
-    override suspend fun deliveries(destinationId: String, limit: Int): List<ItemDelivery> {
+    override suspend fun deliveries(destinationId: String, limit: Int): List<ItemDelivery> = deliveriesThrough(destinationId, limit, RequestGate.Open, only = null)
+
+    override suspend fun deliveriesAutomatically(destinationId: String, limit: Int): List<ItemDelivery> {
+        val gateway = (pairing.load() as? PairingState.Paired)?.gateway
+        return deliveriesThrough(destinationId, limit, gateway?.let { permitFor(it) }, only = gateway)
+    }
+
+    /** [gate] 为 null = 不许联系网关：要问网关才说得清的各条记 [UnknownReason.NOT_ASKED]。 */
+    private suspend fun deliveriesThrough(destinationId: String, limit: Int, gate: RequestGate?, only: PairedGateway?): List<ItemDelivery> {
         val items = dispatch.itemsFor(destinationId, limit)
         // 只有“已入库”、而且本机的账说不清的才需要问网关（用户跳过的、还在等用户的、网关拒绝建的，账上就是答案）；一条 Record 只问一次
         val needGateway = items.filter { item ->
             jobs.get(item.key)?.state == SyncState.STORED && item.targets.first { it.destinationId == destinationId }.needsGatewayAnswer()
         }.map { it.key.recordId }.distinct()
-        val remote = if (needGateway.isEmpty()) emptyMap() else askGateway(needGateway)
+        val remote = when {
+            needGateway.isEmpty() -> emptyMap()
+            gate == null -> needGateway.associateWith { Remote.Unusable(UnknownReason.NOT_ASKED) }
+            else -> askGateway(needGateway, gate, only)
+        }
         return items.map { item ->
             val job = jobs.get(item.key)
             val target = item.targets.first { it.destinationId == destinationId }
@@ -237,13 +285,17 @@ class DestinationService(
         data class Unusable(val reason: UnknownReason) : Remote
     }
 
-    private suspend fun askGateway(recordIds: List<String>): Map<String, Remote> {
-        val session = when (val connected = connect()) {
+    private suspend fun askGateway(recordIds: List<String>, gate: RequestGate, only: PairedGateway?): Map<String, Remote> {
+        val session = when (val connected = connect(gate, only)) {
             is Connect.Ready -> connected.session
-            is Connect.Blocked -> return recordIds.associateWith { Remote.Unusable(UnknownReason.GATEWAY_UNREACHABLE) }
+            is Connect.Blocked -> {
+                val reason = if (connected.failure == ServiceFailure.AutomaticReadsOff) UnknownReason.NOT_ASKED else UnknownReason.GATEWAY_UNREACHABLE
+                return recordIds.associateWith { Remote.Unusable(reason) }
+            }
         }
         return recordIds.associateWith { recordId ->
-            when (val result = session.client.recordStatus(session.address, session.gateway.token, recordId).noteOutcome()) {
+            val asked = gate.gated { session.client.recordStatus(session.address, session.gateway.token, recordId) } ?: return@associateWith Remote.Unusable(UnknownReason.NOT_ASKED)
+            when (val result = asked.noteOutcome()) {
                 is GatewayResult.Success -> Remote.Answer(result.value.destinations)
                 is GatewayResult.TransportFailed -> Remote.Unusable(UnknownReason.GATEWAY_UNREACHABLE)
                 is GatewayResult.Rejected, is GatewayResult.Garbled -> Remote.Unusable(UnknownReason.GATEWAY_ANSWER_UNUSABLE)
@@ -297,15 +349,20 @@ class DestinationService(
         data class Blocked(val failure: ServiceFailure) : Connect
     }
 
-    private suspend fun connect(): Connect {
-        val gateway = when (val state = pairing.load()) {
+    /**
+     * 连上网关：[gate] 是每个会发请求的步骤（探测一个地址、问 mDNS、问合同版本）各过一次的门；用户自己发起的操作用不设防的 [RequestGate.Open]，
+     * 自动读用一张放行（[permitFor]）：中途授权被收回，后面的一个请求也不发，回 [ServiceFailure.AutomaticReadsOff]。
+     * [only] 不为 null = 就连这一份配对（放行是对它问的）：不再重读配对记录，免得放行问的是 A、连上的却是刚配上的 B。
+     */
+    private suspend fun connect(gate: RequestGate = RequestGate.Open, only: PairedGateway? = null): Connect {
+        val gateway = only ?: when (val state = pairing.load()) {
             is PairingState.Paired -> state.gateway
             else -> return Connect.Blocked(ServiceFailure.NotPaired)
         }
         // “网关太旧”不是要重新配对的问题，更新网关之后自己会好：带着这个标记也再问一次版本；别的连接问题照旧直接拦
         gateway.needsUser?.takeIf { it != NeedsUser.GATEWAY_TOO_OLD }?.let { return Connect.Blocked(ServiceFailure.NeedsRepair(it)) }
-        return when (val located = locator.locate(gateway)) {
-            is Located.Reachable -> verified(gateway, located.address)
+        return when (val located = locator.locate(gateway, gate) ?: return Connect.Blocked(ServiceFailure.AutomaticReadsOff)) {
+            is Located.Reachable -> verified(gateway, located.address, gate)
             Located.Unreachable -> {
                 contract.invalidate() // 连不上过：回来时网关可能已不是原来的版本，下一次操作重新问（再评 S6）
                 Connect.Blocked(ServiceFailure.Unreachable)
@@ -315,10 +372,25 @@ class DestinationService(
         }
     }
 
+    /**
+     * 文字可以进 [gateway] 吗？可以就给一张放行，不可以是 null。和同步引擎的 Permit 是同一个办法（再评 S3）：世代在问之前记下，
+     * 每个请求交出去的前一刻再比一次（[PolicyGeneration.handoff]），问与发之间有人动过设置就不发。授权是对这一台网关问的（复评 R3）；
+     * [DataFlowPolicy.stored] 读不出来就回答“不许”。引擎那份是它的内部类、有源码守卫钉着，这里不去合并。
+     */
+    private suspend fun permitFor(gateway: PairedGateway): Permit? {
+        val generation = policy.generation
+        return if (policy.current(gateway.identity).textMayEnterGateway) Permit(generation) else null
+    }
+
+    private inner class Permit(private val generation: Long) : RequestGate {
+        override suspend fun <T : Any> gated(request: suspend () -> T): T? = PolicyGeneration.handoff({ policy.generation == generation }, request)
+    }
+
     /** 连上之后、第一个管理请求之前：确认这台网关说的是手机说的合同版本（评审 R7）。太旧、没问成，一个管理请求都不发。 */
-    private suspend fun verified(gateway: PairedGateway, address: GatewayAddress): Connect {
+    private suspend fun verified(gateway: PairedGateway, address: GatewayAddress, gate: RequestGate): Connect {
         val client = GatewayClient(http.forPin(gateway.pin))
-        return when (contract.check(gateway, address, client)) {
+        val answer = gate.gated { contract.check(gateway, address, client) } ?: return Connect.Blocked(ServiceFailure.AutomaticReadsOff)
+        return when (answer) {
             ContractAnswer.COMPATIBLE -> {
                 if (gateway.needsUser == NeedsUser.GATEWAY_TOO_OLD) pairing.clearGatewayTooOld(gateway) // 网关已经更新：同步页一起恢复
                 Connect.Ready(Session(gateway, address, client))
@@ -355,12 +427,15 @@ class DestinationService(
         name: String,
         request: suspend (Session) -> GatewayResult<T>,
         apply: suspend (Session, T) -> Unit,
+        gate: RequestGate = RequestGate.Open,
+        only: PairedGateway? = null,
     ): ServiceResult<T> = exchange.withLock {
-        val session = when (val connected = connect()) {
+        val session = when (val connected = connect(gate, only)) {
             is Connect.Ready -> connected.session
             is Connect.Blocked -> return@withLock ServiceResult.Failed(connected.failure)
         }
-        val result = request(session).noteOutcome()
+        val answered = gate.gated { request(session) } ?: return@withLock ServiceResult.Failed(ServiceFailure.AutomaticReadsOff)
+        val result = answered.noteOutcome()
         when (result) {
             is GatewayResult.Success -> {
                 pairing.whileCurrent(session.gateway) { apply(session, result.value) } ?: return@withLock ServiceResult.Failed(ServiceFailure.NotPaired)

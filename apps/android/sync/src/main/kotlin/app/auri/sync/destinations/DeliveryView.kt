@@ -75,6 +75,9 @@ enum class UnknownReason {
 
     /** 网关明确不给它建 Delivery（或这条追加被永久拒绝）：文字没有送给它。 */
     DELIVERY_REFUSED,
+
+    /** 这是自动查询，而文字现在不能进网关（没授权、严格仅本地开着）：没有联系网关，所以不知道。用户点“刷新状态”才会去问（第四轮 F8）。 */
+    NOT_ASKED,
 }
 
 /** 一条文字在一个 Destination 上现在是什么情形。 */
